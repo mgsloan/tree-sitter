@@ -3410,6 +3410,9 @@ void ts_query_disable_pattern(
   for (unsigned i = 0; i < self->pattern_map.size; i++) {
     PatternEntry *pattern = array_get(&self->pattern_map, i);
     if (pattern->pattern_index == pattern_index) {
+      if (i < self->wildcard_root_pattern_count) {
+        self->wildcard_root_pattern_count--;
+      }
       array_erase(&self->pattern_map, i);
       i--;
     }
