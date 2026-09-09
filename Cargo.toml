@@ -9,6 +9,7 @@ members = [
   "crates/tags",
   "crates/xtask",
   "crates/language",
+  "crates/squatter",
   "lib",
 ]
 resolver = "2"
