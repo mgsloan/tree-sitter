@@ -8,7 +8,7 @@ uint8_t sq_width(uint32_t max) {
   return bits;
 }
 uint8_t sq_group_width(unsigned column) {
-  return column == G_WASTE ? 4 : 32;
+  return column == G_WASTE ? sq_width(SQ_GROUP_SIZE - 1) : 32;
 }
 uint8_t sq_node_width(const SQLayout *layout, unsigned column) {
   if (column < N_SPAN) {

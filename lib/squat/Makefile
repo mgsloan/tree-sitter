@@ -3,7 +3,7 @@ CC ?= cc
 CFLAGS ?= -O2 -g
 CPPFLAGS += -I$(ROOT)/lib/include -I$(ROOT)/lib/src -Iinclude
 WARNINGS := -std=c11 -Wall -Wextra -Werror
-SOURCES := slab.c pack.c node.c index.c
+SOURCES := slab.c pack.c node.c index.c scan.c
 BUILD ?= $(ROOT)/build/squat
 
 .PHONY: all clean test
@@ -36,3 +36,6 @@ $(BUILD)/unit: tests/unit.c $(BUILD)/libtree-sitter-squat.a $(BUILD)/runtime.o
 .PHONY: check
 check: $(BUILD)/unit
 	$(BUILD)/unit
+
+$(BUILD)/scan-bench: experiments/scan.c $(BUILD)/libtree-sitter-squat.a $(BUILD)/runtime.o
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) $^ -o $@

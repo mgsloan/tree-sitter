@@ -15,6 +15,22 @@ typedef struct {
   uint32_t slot;
 } SQNode;
 typedef struct SQCursor SQCursor;
+/* Encoded node columns: coordinate values are deltas from their group bases;
+ * symbols are raw IDs with builtin errors remapped after the grammar range. */
+typedef enum {
+  SQ_COLUMN_SUBTREE_SIZE,
+  SQ_COLUMN_START_BYTE,
+  SQ_COLUMN_END_BYTE_SUB,
+  SQ_COLUMN_START_ROW,
+  SQ_COLUMN_END_ROW_SUB,
+  SQ_COLUMN_START_COL,
+  SQ_COLUMN_END_COL_SUB,
+  SQ_COLUMN_SUPERTYPES,
+  SQ_COLUMN_DISPLAY_SYMBOL,
+  SQ_COLUMN_GRAMMAR_SYMBOL,
+  SQ_COLUMN_FIELD,
+  SQ_COLUMN_COUNT
+} SQColumn;
 typedef enum {
   SQ_OK = 0,
   SQ_ERROR_ARGUMENT,
@@ -50,6 +66,9 @@ SQNode sq_tree_root_node(const SQTree *);
 /* Invalid/wasted slots return null. Logical slots are stable across repacking. */
 SQNode sq_tree_node_at_slot(const SQTree *, uint32_t);
 /* False positives are possible for common symbols, never false negatives. */
+/* One bit per physical slot within a group; leading waste never matches.
+ * This compares encoded values and does not apply public-symbol mapping. */
+uint64_t sq_tree_group_equal(const SQTree *, uint32_t group, SQColumn, uint32_t value);
 bool sq_tree_group_has_symbol(const SQTree *, uint32_t group, TSSymbol public_symbol);
 
 bool sq_node_is_null(SQNode);

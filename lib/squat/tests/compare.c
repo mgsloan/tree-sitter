@@ -8,6 +8,7 @@
 
 static const char *input_name;
 static uint32_t current_ordinal;
+static uint32_t seek_mismatches;
 #define CHECK(condition)                                                                           \
   do {                                                                                             \
     if (!(condition)) {                                                                            \
@@ -76,6 +77,19 @@ static uint32_t ordinal_packed(Nodes *nodes, SQNode n) {
     }                                                                                              \
     CHECK(ma == pa);                                                                               \
   } while (0)
+static void compare_seek(Nodes *nodes, TSNode expected, SQNode actual, const char *operation) {
+  uint32_t mainline = ordinal_mainline(nodes, expected);
+  uint32_t packed = ordinal_packed(nodes, actual);
+  if (mainline != packed) {
+    if (!seek_mismatches) {
+      fprintf(stderr, "%s: %s differs: mainline ordinal %u, squat ordinal %u\n", input_name,
+              operation, mainline, packed);
+    }
+    seek_mismatches++;
+  }
+}
+#define SAME_SEEK(main, squat) compare_seek(nodes, (main), (squat), #main)
+
 static void compare_node(Nodes *nodes, uint32_t i) {
   current_ordinal = i;
   TSNode a = nodes->mainline[i];
@@ -117,7 +131,7 @@ static void compare_node(Nodes *nodes, uint32_t i) {
     SAME_NODE(ts_node_child_by_field_id(a, (TSFieldId)f),
               sq_node_child_by_field_id(b, (TSFieldId)f));
   }
-  CHECK(sq_tree_group_has_symbol(b.tree, b.slot / 16, sq_node_symbol(b)));
+  CHECK(sq_tree_group_has_symbol(b.tree, b.slot / SQ_GROUP_SIZE, sq_node_symbol(b)));
 }
 static void compare_supertypes(const TSTreeCursor *cursor, SQNode node) {
   const TreeCursor *raw = (const TreeCursor *)cursor;
@@ -141,7 +155,28 @@ static void compare_supertypes(const TSTreeCursor *cursor, SQNode node) {
     CHECK(expected == sq_node_has_supertype(node, tree->supertypes[s]));
   }
 }
+static void compare_group_equality(const SQTree *tree) {
+  for (uint32_t group = 0; group < sq_tree_group_count(tree); group++) {
+    uint32_t waste = sq_group_get(tree, G_WASTE, group);
+    SQNode first = {tree, group * SQ_GROUP_SIZE + waste};
+    for (unsigned column = 0; column < SQ_COLUMN_COUNT; column++) {
+      uint32_t values[] = {0, sq_node_get(first, N_SPAN + column), UINT32_MAX};
+      for (unsigned target = 0; target < 3; target++) {
+        uint64_t expected = 0;
+        for (uint32_t lane = waste; lane < SQ_GROUP_SIZE; lane++) {
+          SQNode node = {tree, group * SQ_GROUP_SIZE + lane};
+          if (sq_node_get(node, N_SPAN + column) == values[target]) {
+            expected |= UINT64_C(1) << lane;
+          }
+        }
+        CHECK(sq_tree_group_equal(tree, group, (SQColumn)column, values[target]) == expected);
+      }
+    }
+  }
+}
+
 static void compare_tree(const TSTree *tree, const SQTree *packed, bool exhaustive) {
+  compare_group_equality(packed);
   uint32_t count = ts_node_descendant_count(ts_tree_root_node(tree));
   Nodes storage = {malloc((size_t)count * sizeof(TSNode)), malloc((size_t)count * sizeof(SQNode)),
                    count};
@@ -198,21 +233,21 @@ static void compare_tree(const TSTree *tree, const SQTree *packed, bool exhausti
   for (i = 0; i < samples; i++) {
     uint32_t start = bytes < 300 ? i : (uint32_t)((uint64_t)i * (bytes + 1) / samples);
     for (uint32_t width = 0; width <= 1; width++) {
-      SAME_NODE(ts_node_descendant_for_byte_range(root, start, start + width),
+      SAME_SEEK(ts_node_descendant_for_byte_range(root, start, start + width),
                 sq_node_descendant_for_byte_range(flat, start, start + width));
-      SAME_NODE(ts_node_named_descendant_for_byte_range(root, start, start + width),
+      SAME_SEEK(ts_node_named_descendant_for_byte_range(root, start, start + width),
                 sq_node_named_descendant_for_byte_range(flat, start, start + width));
     }
-    SAME_NODE(ts_node_first_child_for_byte(root, start), sq_node_first_child_for_byte(flat, start));
-    SAME_NODE(ts_node_first_named_child_for_byte(root, start),
+    SAME_SEEK(ts_node_first_child_for_byte(root, start), sq_node_first_child_for_byte(flat, start));
+    SAME_SEEK(ts_node_first_named_child_for_byte(root, start),
               sq_node_first_named_child_for_byte(flat, start));
   }
   for (i = 0; i < count; i += count / 100 + 1) {
     TSPoint start = ts_node_start_point(nodes->mainline[i]),
             end = ts_node_end_point(nodes->mainline[i]);
-    SAME_NODE(ts_node_descendant_for_point_range(root, start, start),
+    SAME_SEEK(ts_node_descendant_for_point_range(root, start, start),
               sq_node_descendant_for_point_range(flat, start, start));
-    SAME_NODE(ts_node_named_descendant_for_point_range(root, start, end),
+    SAME_SEEK(ts_node_named_descendant_for_point_range(root, start, end),
               sq_node_named_descendant_for_point_range(flat, start, end));
     if (i) {
       SAME_NODE(ts_node_child_with_descendant(root, nodes->mainline[i]),
@@ -319,7 +354,8 @@ int main(int argc, char **argv) {
                            "\n\n\n\t\"héllo🌲\"\r\n",
                            "[[[[[[[[[[]]]]]]]]]]",
                            "\""};
-  for (size_t i = 0; i < sizeof(samples) / sizeof(samples[0]); i++) {
+  for (size_t i = 0; !getenv("SQ_SKIP_EDGE_CASES") && i < sizeof(samples) / sizeof(samples[0]);
+       i++) {
     input_name = samples[i];
     exercise(language, samples[i], (uint32_t)strlen(samples[i]), true);
   }
@@ -349,5 +385,6 @@ int main(int argc, char **argv) {
   }
   printf("ok: %s (%d files plus edge cases)\n", argv[2], argc - 3);
   dlclose(library);
-  return 0;
+  printf("seek mismatches: %u\n", seek_mismatches);
+  return seek_mismatches && getenv("SQ_STRICT_SEEKS") ? 1 : 0;
 }

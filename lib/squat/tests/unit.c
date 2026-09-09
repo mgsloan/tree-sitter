@@ -2,7 +2,30 @@
 #include <assert.h>
 #include <stdio.h>
 
+static void equality_tests(void) {
+  uint64_t state = 42;
+  for (uint8_t bits = 2; bits <= 32; bits++) {
+    uint64_t lane_mask = (UINT64_C(1) << bits) - 1;
+    for (unsigned trial = 0; trial < 10000; trial++) {
+      state = state * UINT64_C(6364136223846793005) + 1;
+      uint64_t word = state;
+      uint32_t target = (uint32_t)(state >> 32) & (uint32_t)lane_mask;
+      uint64_t expected = 0;
+      for (unsigned lane = 0; lane < 64 / bits; lane++) {
+        if (((word >> (lane * bits)) & lane_mask) == target) {
+          expected |= UINT64_C(1) << (lane * bits + bits - 1);
+        }
+      }
+      assert(sq_equal_lanes(word, target, bits) == expected);
+    }
+    // These adjacent lanes catch borrow/carry false positives in has-zero idioms.
+    assert(sq_equal_lanes(0, 0, bits) == (sq_lane_starts(bits) << (bits - 1)));
+    assert(sq_equal_lanes(sq_lane_starts(bits), 0, bits) == 0);
+  }
+}
+
 int main(void) {
+  equality_tests();
   for (uint32_t symbols = 2; symbols <= 32768; symbols *= 2) {
     TSSymbolMetadata *metadata = calloc(symbols, sizeof(TSSymbolMetadata));
     assert(metadata);

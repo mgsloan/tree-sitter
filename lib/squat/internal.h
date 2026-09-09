@@ -6,8 +6,13 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* Alternate sizes are experiment builds, with distinct magic flags. */
+#ifndef SQ_GROUP_SIZE
 #define SQ_GROUP_SIZE 16u
-#define SQ_VERSION 0x10u
+#endif
+_Static_assert(SQ_GROUP_SIZE == 16 || SQ_GROUP_SIZE == 32 || SQ_GROUP_SIZE == 64,
+               "supported experimental group sizes");
+#define SQ_VERSION (0x10u | (SQ_GROUP_SIZE == 32 ? 2u : SQ_GROUP_SIZE == 64 ? 4u : 0u))
 #define SQ_DICTIONARY 1u
 #define SQ_NONE UINT32_MAX
 
@@ -71,6 +76,8 @@ static inline TSSymbol sq_decode_symbol(const SQTree *tree, uint32_t symbol) {
          : symbol == sq_symbols(tree) - 1 ? ts_builtin_sym_error_repeat
                                           : (TSSymbol)symbol;
 }
+uint64_t sq_lane_starts(uint8_t bits);
+uint64_t sq_equal_lanes(uint64_t word, uint32_t value, uint8_t bits);
 uint8_t sq_width(uint32_t max);
 uint8_t sq_group_width(unsigned col);
 uint8_t sq_node_width(const SQLayout *, unsigned col);
