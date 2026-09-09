@@ -12,6 +12,13 @@
 #endif
 _Static_assert(SQ_GROUP_SIZE == 16 || SQ_GROUP_SIZE == 32 || SQ_GROUP_SIZE == 64,
                "supported experimental group sizes");
+/* Iterator unpack windows are independent of the serialized group layout. */
+#ifndef SQ_ITERATOR_UNPACK_SLOTS
+#define SQ_ITERATOR_UNPACK_SLOTS SQ_GROUP_SIZE
+#endif
+_Static_assert(SQ_ITERATOR_UNPACK_SLOTS >= SQ_GROUP_SIZE &&
+                   (SQ_ITERATOR_UNPACK_SLOTS & (SQ_ITERATOR_UNPACK_SLOTS - 1)) == 0,
+               "unpack windows must contain a power-of-two number of whole groups");
 #ifndef SQ_COLUMN_ALIGNMENT
 #define SQ_COLUMN_ALIGNMENT 8u
 #endif

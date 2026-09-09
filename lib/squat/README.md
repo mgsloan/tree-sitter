@@ -152,3 +152,9 @@ flag columns and their group bases. This is an alternative build of the cached
 mode, not an additional public API. Counts still use ordinary tree scans. The
 default (`0`) caches only IDs; compare both builds before choosing the larger
 cache for a workload.
+
+`SQ_ITERATOR_UNPACK_SLOTS=32/64/128` widens the iterator cache independently of
+`SQ_GROUP_SIZE`. With the default 16-slot slab groups, these windows decode ahead
+across 2/4/8 groups without changing serialization or node addresses. The final
+window stops at the last live group. Full-cache builds still update coordinate
+bases on each group transition. The default unpack window remains one group.

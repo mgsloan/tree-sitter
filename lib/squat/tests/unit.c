@@ -44,7 +44,7 @@ static void read_tests(void) {
 static void unpack_tests(void) {
   for (uint8_t bits = 1; bits <= 16; bits++) {
     uint32_t lanes = 64 / bits;
-    uint32_t slots = 4 * SQ_GROUP_SIZE + lanes;
+    uint32_t slots = 4 * SQ_ITERATOR_UNPACK_SLOTS + lanes;
     size_t bytes = (size_t)sq_column_size(slots, bits);
     uint8_t *data = malloc(bytes);
     assert(data);
@@ -59,9 +59,9 @@ static void unpack_tests(void) {
       }
       SQUnpack unpack = sq_unpack_select(kernel);
       for (uint32_t first = 0; first < lanes; first++) {
-        for (uint32_t count = 0; count <= SQ_GROUP_SIZE; count++) {
-          uint16_t values[SQ_GROUP_SIZE + 2];
-          for (unsigned index = 0; index < SQ_GROUP_SIZE + 2; index++) values[index] = 0xbeef;
+        for (uint32_t count = 0; count <= SQ_ITERATOR_UNPACK_SLOTS; count++) {
+          uint16_t values[SQ_ITERATOR_UNPACK_SLOTS + 2];
+          for (unsigned index = 0; index < SQ_ITERATOR_UNPACK_SLOTS + 2; index++) values[index] = 0xbeef;
           unpack(data, first, count, bits, values + 1);
           assert(values[0] == 0xbeef && values[count + 1] == 0xbeef);
           for (uint32_t index = 0; index < count; index++) {
@@ -69,11 +69,11 @@ static void unpack_tests(void) {
           }
         }
       }
-      // The last group ends at the last allocated word, with no overread slack.
-      uint16_t values[SQ_GROUP_SIZE];
-      unpack(data, slots - SQ_GROUP_SIZE, SQ_GROUP_SIZE, bits, values);
-      for (uint32_t index = 0; index < SQ_GROUP_SIZE; index++) {
-        assert(values[index] == sq_get(data, 0, slots - SQ_GROUP_SIZE + index, bits));
+      // The last window ends at the last allocated word, with no overread slack.
+      uint16_t values[SQ_ITERATOR_UNPACK_SLOTS];
+      unpack(data, slots - SQ_ITERATOR_UNPACK_SLOTS, SQ_ITERATOR_UNPACK_SLOTS, bits, values);
+      for (uint32_t index = 0; index < SQ_ITERATOR_UNPACK_SLOTS; index++) {
+        assert(values[index] == sq_get(data, 0, slots - SQ_ITERATOR_UNPACK_SLOTS + index, bits));
       }
     }
     free(data);

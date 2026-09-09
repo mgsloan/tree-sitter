@@ -17,7 +17,7 @@ int main(void) {
   const uint32_t slots = 131072;
   const char *names[] = {"", "scalar", "swar", "bmi2", "avx2"};
   volatile uint64_t checksum = 0;
-  puts("group_size,bits,kernel,ns_per_value");
+  puts("group_size,unpack_slots,bits,kernel,ns_per_value");
   for (uint8_t bits = 2; bits <= 16; bits++) {
     size_t bytes = (size_t)sq_column_size(slots, bits);
     uint8_t *column = malloc(bytes);
@@ -32,10 +32,10 @@ int main(void) {
       // Volatile indirection prevents hoisting repeated unpack calls. Each
       // kernel writes the same u16 group and consumes every value for checking.
       SQUnpack volatile unpack = sq_unpack_select(kernel);
-      uint16_t values[SQ_GROUP_SIZE];
-      for (uint32_t first = 0; first < slots; first += SQ_GROUP_SIZE) {
-        unpack(column, first, SQ_GROUP_SIZE, bits, values);
-        for (unsigned lane = 0; lane < SQ_GROUP_SIZE; lane++) {
+      uint16_t values[SQ_ITERATOR_UNPACK_SLOTS];
+      for (uint32_t first = 0; first < slots; first += SQ_ITERATOR_UNPACK_SLOTS) {
+        unpack(column, first, SQ_ITERATOR_UNPACK_SLOTS, bits, values);
+        for (unsigned lane = 0; lane < SQ_ITERATOR_UNPACK_SLOTS; lane++) {
           assert(values[lane] == sq_get(column, 0, first + lane, bits));
         }
       }
@@ -46,12 +46,12 @@ int main(void) {
         unsigned kernel = 1 + (repeat + step) % 4;
         if (!sq_unpack_supported(kernel)) continue;
         SQUnpack volatile unpack = sq_unpack_select(kernel);
-        uint16_t values[SQ_GROUP_SIZE];
+        uint16_t values[SQ_ITERATOR_UNPACK_SLOTS];
         double start = now();
         uint64_t sum = 0;
         for (unsigned batch = 0; batch < 8; batch++) {
-          for (uint32_t first = 0; first < slots; first += SQ_GROUP_SIZE) {
-            unpack(column, first, SQ_GROUP_SIZE, bits, values);
+          for (uint32_t first = 0; first < slots; first += SQ_ITERATOR_UNPACK_SLOTS) {
+            unpack(column, first, SQ_ITERATOR_UNPACK_SLOTS, bits, values);
             sum += values[0];
           }
         }
@@ -62,7 +62,8 @@ int main(void) {
     for (unsigned kernel = 1; kernel <= 4; kernel++) {
       if (!sq_unpack_supported(kernel)) continue;
       qsort(timings[kernel], 9, sizeof(double), compare_double);
-      printf("%u,%u,%s,%.6f\n", SQ_GROUP_SIZE, bits, names[kernel], timings[kernel][4]);
+      printf("%u,%u,%u,%s,%.6f\n", SQ_GROUP_SIZE, SQ_ITERATOR_UNPACK_SLOTS,
+             bits, names[kernel], timings[kernel][4]);
     }
     free(column);
   }

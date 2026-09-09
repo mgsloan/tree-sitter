@@ -499,6 +499,23 @@ int main(int argc, char **argv) {
     input_name = samples[i];
     exercise(language, samples[i], (uint32_t)strlen(samples[i]), true);
   }
+  if (!getenv("SQ_SKIP_EDGE_CASES")) {
+    // Several unpack windows, changing group bases, and a partial final window.
+    // Other grammars also exercise the iterator over their error recovery trees.
+    char source[4096];
+    size_t length = 0;
+    source[length++] = '[';
+    for (unsigned index = 0; index < 37; index++) {
+      int written = snprintf(source + length, sizeof(source) - length,
+                             "%s{\"key\":[%u,%u],\"value\":true}",
+                             index ? "," : "", index, index + 1);
+      CHECK(written > 0 && (size_t)written < sizeof(source) - length);
+      length += (size_t)written;
+    }
+    source[length++] = ']';
+    input_name = "iterator unpack windows";
+    exercise(language, source, (uint32_t)length, false);
+  }
   for (int i = 3; i < argc; i++) {
     input_name = argv[i];
     FILE *file = fopen(argv[i], "rb");
