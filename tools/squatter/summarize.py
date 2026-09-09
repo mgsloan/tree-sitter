@@ -46,7 +46,9 @@ def main():
                 name: sum(row[name] for row in rows) for name in [
                     "grammar_bytes", "sparse_grammar_bytes", "super_bytes", "var_super_bytes",
                     "separate_symbol_field_bytes", "interleaved_symbol_field_bytes"]}
-            variants[variant]["field_exception_bytes"] = sum(row["field_exception_bytes"] for row in rows)
+            # Historical version-2 logs include the now-removed exception section.
+            if "field_exception_bytes" in rows[0]:
+                variants[variant]["field_exception_bytes"] = sum(row["field_exception_bytes"] for row in rows)
         records.extend(rows)
     scan = (args.run / "scan-kernels.log").read_text().splitlines()
     # make output precedes CSV. The header is emitted by the executable itself.

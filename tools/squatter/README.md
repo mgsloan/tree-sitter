@@ -71,6 +71,14 @@ outside timed regions. Walk timings include recording the supported attributes.
 Seek differences are counted but ignored by default at the human's request;
 `--strict-seeks` makes them fail again.
 
+Field-lookup API differences are expected only when squat agrees with mainline's
+visible-child cursor (with no fields on ERROR parents). Any other field mismatch
+fails. `expected_field_differences` records the count in run metadata and each
+file's `cold-parse` record, separately from ignored seek differences. Counts are
+per checked node/field pair across repeats, not unique nodes; they are collected
+by the untimed relationship checks when `cold-parse` is selected. Large trees use
+the existing relationship-check sampling stride. Query results remain strict.
+
 Outputs are `NAME-files.jsonl`, `NAME-languages.jsonl`, `NAME-aggregate.jsonl`, and
 `NAME-run.json`. File metrics are medians of repeats; ratios are medians of paired
 repeat ratios (squat divided by mainline). Summaries report the requested six

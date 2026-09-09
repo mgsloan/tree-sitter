@@ -113,50 +113,6 @@ bool sq_append_dictionary(SQTree *tree, const uint64_t *dictionary, uint32_t cou
   return true;
 }
 
-bool sq_append_field_exceptions(SQTree *tree, const SQFieldException *entries, uint32_t count,
-                                SQError *error) {
-  if (!count) {
-    return true;
-  }
-  uint64_t bytes = ((uint64_t)count * sizeof(SQFieldException) + 7) & ~UINT64_C(7);
-  if ((uint64_t)tree->size + bytes > UINT32_MAX) {
-    sq_fail(error, SQ_ERROR_OVERFLOW);
-    return false;
-  }
-  uint8_t *data = sq_reallocate_data(tree->data, tree->size, tree->size + (size_t)bytes);
-  if (!data) {
-    sq_fail(error, SQ_ERROR_ALLOCATION);
-    return false;
-  }
-  tree->data = data;
-  sq_header(tree)->field_exceptions_byte_offset = tree->size;
-  sq_header(tree)->field_exceptions_count = count;
-  memset(data + tree->size, 0, (size_t)bytes);
-  memcpy(data + tree->size, entries, (size_t)count * sizeof(SQFieldException));
-  tree->size += (uint32_t)bytes;
-  return true;
-}
-
-bool sq_lookup_field_exception(SQNode node, TSFieldId field, SQNode *result) {
-  SQHeader *header = sq_header(node.tree);
-  uint32_t low = 0, high = header->field_exceptions_count;
-  const uint8_t *entries = node.tree->data + header->field_exceptions_byte_offset;
-  while (low < high) {
-    uint32_t middle = low + (high - low) / 2;
-    SQFieldException entry;
-    memcpy(&entry, entries + (size_t)middle * sizeof(entry), sizeof(entry));
-    if (entry.parent < node.slot || (entry.parent == node.slot && entry.field < field)) {
-      low = middle + 1;
-    } else if (entry.parent > node.slot || (entry.parent == node.slot && entry.field > field)) {
-      high = middle;
-    } else {
-      *result = sq_tree_node_at_slot(node.tree, entry.target);
-      return true;
-    }
-  }
-  return false;
-}
-
 /* Validate before exposing any nodes. Layout offsets must be canonical, so no
  * column read can escape the buffer even when the input is hostile. */
 static bool validate_nodes(SQTree *tree, SQError *error) {
@@ -289,17 +245,6 @@ SQTree *sq_tree_from_bytes(const TSLanguage *language, const void *bytes, size_t
     sq_tree_delete(tree);
     goto invalid;
   }
-  if (header.field_exceptions_count) {
-    if (header.field_exceptions_byte_offset != expected) {
-      sq_tree_delete(tree);
-      goto invalid;
-    }
-    expected +=
-        ((uint64_t)header.field_exceptions_count * sizeof(SQFieldException) + 7) & ~UINT64_C(7);
-  } else if (header.field_exceptions_byte_offset) {
-    sq_tree_delete(tree);
-    goto invalid;
-  }
   if (expected != length) {
     sq_tree_delete(tree);
     goto invalid;
@@ -329,24 +274,6 @@ SQTree *sq_tree_from_bytes(const TSLanguage *language, const void *bytes, size_t
       }
     }
   }
-  SQFieldException previous = {0};
-  for (uint32_t i = 0; i < header.field_exceptions_count; i++) {
-    SQFieldException entry;
-    memcpy(&entry, data + header.field_exceptions_byte_offset + (size_t)i * sizeof(entry),
-           sizeof(entry));
-    SQNode parent = sq_tree_node_at_slot(tree, entry.parent);
-    bool ordered = !i || entry.parent > previous.parent ||
-                   (entry.parent == previous.parent && entry.field > previous.field);
-    bool valid_target = entry.target == SQ_NONE || (parent.tree && entry.target > entry.parent &&
-                                                    entry.target < sq_node_end_slot(parent) &&
-                                                    sq_tree_node_at_slot(tree, entry.target).tree);
-    if (!ordered || !parent.tree || !entry.field || entry.field > tree->language->field_count ||
-        !valid_target) {
-      sq_tree_delete(tree);
-      goto invalid;
-    }
-    previous = entry;
-  }
   if (header.symbol_presence_byte_offset) {
     /* Rebuilding also checks sorted occurrence lists, unused IDs, sentinels,
      * mode choices, padding and bitmap tail bits. */
@@ -359,8 +286,6 @@ SQTree *sq_tree_from_bytes(const TSLanguage *language, const void *bytes, size_t
     sq_header(check)->symbol_presence_byte_offset = 0;
     sq_header(check)->supertype_dictionary_byte_offset = 0;
     sq_header(check)->supertype_dictionary_count = 0;
-    sq_header(check)->field_exceptions_byte_offset = 0;
-    sq_header(check)->field_exceptions_count = 0;
     if (!sq_build_presence(check, error)) {
       sq_tree_delete(check);
       sq_tree_delete(tree);

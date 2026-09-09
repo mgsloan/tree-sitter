@@ -63,11 +63,11 @@ bases use specialized loads on little-endian hosts. Variable-width IDs use the
 non-straddling lane decoder. Big-endian hosts retain native-word extraction.
 This does not change the serialized layout.
 
-The version-2 serialized header is 40 bytes. Every section and column starts on an
+The version-3 serialized header is 32 bytes; earlier versions are rejected. Every section and column starts on an
 eight-byte boundary. Slabs are native-endian and need the exact matching grammar;
 there is no grammar fingerprint in this version. `sq_tree_from_bytes` copies and
 validates layout, topology, coordinate arithmetic, symbols, fields, dictionaries,
-presence entries, and sparse field-lookup exceptions. `sq_tree_repack` returns an independent compact copy, so
+presence entries. `sq_tree_repack` returns an independent compact copy, so
 existing nodes stay valid. Slab data contains no pointers. The small owning
 `SQTree` handle retains the grammar and derived layout metadata outside the slab.
 
@@ -81,14 +81,17 @@ unexpected-character S-expressions, and preservation of included-range metadata.
 Included ranges still affect the packed node coordinates. Allocation, layout
 overflow, and more than 256 distinct supertype masks report errors.
 
-Some grammars inherit field lookups through nodes made visible by aliasing. The
-lookup can return a grandchild, which differs from the nearest field assigned to
-a node during cursor traversal. A sparse section after the supertype dictionary
-stores these exceptions as `(parent slot, field ID, result slot)` u32 triples,
-sorted by parent and field. `UINT32_MAX` represents a null result. The two final
-header words locate/count this section; both are zero when it is absent.
-The [comparison with ../main](experiments/field-lookup-review.md) reproduces the
-case its packed engine misses and explains the storage tradeoff.
+Field lookup returns the first visible child carrying the requested field;
+ERROR parents have no lookup fields. Mainline's API can disagree with its own
+visible-child cursor, notably when inheritance crosses an alias-visible wrapper.
+Tests count that as an expected field mismatch only if squat agrees with the
+mainline cursor's direct-child result. Other field mismatches still fail. No
+exception table or conversion bookkeeping is retained for these cases.
+Negated-field queries consequently follow visible-child fields too. The C query
+test counts attributable differences for its simple `(_ !field) @parent` probes;
+other query comparisons remain strict.
+The [comparison with ../main](experiments/field-lookup-review.md) documents the
+upstream inconsistency and the removed version-2 compatibility mechanism.
 
 Known mainline seek differences are counted but ignored by default, as requested
 by the human. Use `--strict-seeks` for the container runner or `SQ_STRICT_SEEKS=1`

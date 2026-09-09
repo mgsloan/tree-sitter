@@ -1,6 +1,7 @@
 #define _POSIX_C_SOURCE 200809L
 #include <tree_sitter/squat.h>
 #include "../internal.h"
+#include "field_lookup.h"
 #include "../../src/tree_cursor.h"
 #include <assert.h>
 #include <dlfcn.h>
@@ -9,6 +10,7 @@
 static const char *input_name;
 static uint32_t current_ordinal;
 static uint32_t seek_mismatches;
+static uint32_t expected_field_mismatches;
 #define CHECK(condition)                                                                           \
   do {                                                                                             \
     if (!(condition)) {                                                                            \
@@ -90,6 +92,23 @@ static void compare_seek(Nodes *nodes, TSNode expected, SQNode actual, const cha
 }
 #define SAME_SEEK(main, squat) compare_seek(nodes, (main), (squat), #main)
 
+static void compare_field(Nodes *nodes, TSNode parent, SQNode packed_parent, TSFieldId field) {
+  TSNode expected = ts_node_child_by_field_id(parent, field);
+  SQNode actual = sq_node_child_by_field_id(packed_parent, field);
+  if (ordinal_mainline(nodes, expected) == ordinal_packed(nodes, actual)) {
+    return;
+  }
+  TSNode ordinary = visible_child_by_field(parent, field);
+  SAME_NODE(ordinary, actual);
+  if (!expected_field_mismatches) {
+    fprintf(stderr, "%s: expected field mismatch at %s [%u,%u), field %u: "
+                    "lookup ordinal %u, visible-child ordinal %u\n",
+            input_name, ts_node_type(parent), ts_node_start_byte(parent), ts_node_end_byte(parent),
+            field, ordinal_mainline(nodes, expected), ordinal_mainline(nodes, ordinary));
+  }
+  expected_field_mismatches++;
+}
+
 static void compare_node(Nodes *nodes, uint32_t i) {
   current_ordinal = i;
   TSNode a = nodes->mainline[i];
@@ -128,8 +147,7 @@ static void compare_node(Nodes *nodes, uint32_t i) {
   }
   const TSLanguage *language = sq_tree_language(b.tree);
   for (uint32_t f = 0; f <= ts_language_field_count(language) + 1; f++) {
-    SAME_NODE(ts_node_child_by_field_id(a, (TSFieldId)f),
-              sq_node_child_by_field_id(b, (TSFieldId)f));
+    compare_field(nodes, a, b, (TSFieldId)f);
   }
   CHECK(sq_tree_group_has_symbol(b.tree, b.slot / SQ_GROUP_SIZE, sq_node_symbol(b)));
 }
@@ -352,7 +370,14 @@ static void exercise(const TSLanguage *language, const char *source, uint32_t le
   CHECK(loaded);
   compare_tree(tree, loaded, false);
   CHECK(!sq_tree_from_bytes(language, bytes, size - 1, &error) && error == SQ_ERROR_INVALID_SLAB);
-  unaligned[1] ^= 0x80;
+  // Reject the removed 40-byte format and the earlier version-1 format even
+  // when the rest of this buffer describes a valid current tree.
+  for (unsigned version = 1; version <= 2; version++) {
+    unaligned[1] = (uint8_t)((((const uint8_t *)bytes)[0] & 0x0f) | (version << 4));
+    CHECK(!sq_tree_from_bytes(language, unaligned + 1, size, &error) &&
+          error == SQ_ERROR_INVALID_SLAB);
+  }
+  unaligned[1] = ((const uint8_t *)bytes)[0] ^ 0x80;
   CHECK(!sq_tree_from_bytes(language, unaligned + 1, size, &error) &&
         error == SQ_ERROR_INVALID_SLAB);
   if (length < 40) {
@@ -451,5 +476,6 @@ int main(int argc, char **argv) {
   printf("ok: %s (%d files plus edge cases)\n", argv[2], argc - 3);
   dlclose(library);
   printf("seek mismatches: %u\n", seek_mismatches);
+  printf("expected field mismatches: %u\n", expected_field_mismatches);
   return seek_mismatches && getenv("SQ_STRICT_SEEKS") ? 1 : 0;
 }

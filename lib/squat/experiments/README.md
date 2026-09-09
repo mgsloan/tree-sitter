@@ -1,5 +1,10 @@
 # Layout and equality experiments
 
+The historical layout, query, and cursor measurements below used version 2,
+including its field-lookup exception section. Version 3 removes that section and
+returns to a 32-byte header; those recorded measurements have not been rewritten.
+See the current [field-lookup policy](field-lookup-review.md).
+
 The [recorded run](results-2026-09-09.json) includes every source hash, grammar
 identity, input-level result, and tool snapshot hash. It covers 27 files in eleven
 grammars, totaling 2,809,297 visible nodes. These are convenience samples, with

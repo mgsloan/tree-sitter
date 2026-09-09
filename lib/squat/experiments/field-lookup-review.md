@@ -1,5 +1,13 @@
 # Inherited field lookup: comparison with ../main
 
+**Current policy:** version 3 removes the sparse exception mechanism at the
+human's request. Squat now returns null for both fields in the example below.
+Tests and benchmarks count a difference only when Squat agrees with mainline's
+visible-child cursor and its field-lookup API disagrees. Other mismatches fail.
+The measurements and exception-table description below record the earlier
+version-2 compatibility experiment. Current validation is recorded in
+[field-policy-validation-2026-09-09.json](field-policy-validation-2026-09-09.json).
+
 The packed engine in `../main` does **not** handle this particular case. Fresh
 builds of its packed engine and its upstream Tree-sitter engine disagree on:
 
@@ -57,9 +65,10 @@ comparison above does not establish that upstream's behavior is intended; the
 packed engine's null results may better match the visible-tree contract.
 See entry 7 in [the upstream bug list](../../../../potential-upstream-bugs.md).
 
-## Assessment of the sparse section
+## Historical assessment of the version-2 sparse section
 
-Keep the extension while exact compatibility with current upstream is required.
+The extension was retained while exact field-lookup compatibility was required.
+That requirement has now been relaxed for these expected mismatches.
 A cursor field and a field-lookup target express different
 relationships here. Some additional information is needed to reproduce both;
 the **specific 40-byte header and 12-byte triples are a design choice**, not the
@@ -67,11 +76,11 @@ only possible encoding. Preserving enough grammar-production and hidden-child
 structure to replay lookup would be an alternative, with broader storage and
 navigation consequences for this visible-node layout.
 
-[`pack.c`](../pack.c) computes the grammar lookup and the ordinary visible-child
-lookup separately, bottom-up, and records only disagreements. It uses temporary
+Version 2 of [`pack.c`](../pack.c) computed the grammar lookup and the ordinary
+visible-child lookup separately, bottom-up, and recorded only disagreements. It used temporary
 field-target lists in open traversal frames, rather than a full-tree pointer
-map. [`index.c`](../index.c) stores sorted exceptions, checks their field IDs,
-ordering, and descendant targets on load, and binary-searches them at lookup.
+map. Its [`index.c`](../index.c) stored sorted exceptions, checked their field IDs,
+ordering, and descendant targets on load, and binary-searched them at lookup.
 A null target suppresses an ordinary child match when grammar lookup has none.
 
 For this exact input the section contains two records, **24 bytes**:
@@ -85,7 +94,7 @@ The default layout additionally pays **8 header bytes per tree**, even when
 there are no exceptions. The earlier 27-file layout sample had 48 bytes of
 exception records in total; that figure excludes the per-tree header increase.
 The control input needs no exceptions. This is independent of seek differences.
-The format is unchanged by this review.
+The format was unchanged by that review; the later removal uses version 3.
 
 ## Reproduction
 

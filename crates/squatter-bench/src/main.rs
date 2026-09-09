@@ -109,6 +109,7 @@ struct FileResult {
     ratios: BTreeMap<&'static str, Option<f64>>,
     failures: usize,
     ignored_differences: usize,
+    expected_field_differences: usize,
 }
 struct Accumulated {
     result: FileResult,
@@ -283,6 +284,7 @@ fn accumulate(
                 ratios: BTreeMap::new(),
                 failures: 0,
                 ignored_differences: 0,
+                expected_field_differences: 0,
             },
             mainline: Vec::new(),
             squat: Vec::new(),
@@ -495,6 +497,7 @@ fn main() -> Result<()> {
         "machine": {"architecture": std::env::consts::ARCH, "os": std::env::consts::OS,
                     "cpuinfo": fs::read_to_string("/proc/cpuinfo").ok().and_then(|text| text.lines().find(|line| line.starts_with("model name")).map(str::to_owned))},
         "build": {"debug_assertions": cfg!(debug_assertions), "package_version": env!("CARGO_PKG_VERSION")},
+        "field_contract": "field API differences expected only when squat agrees with mainline visible-child fields; ERROR parents have no fields",
         "cursor_contract": "walk-forward uses bulk cursor attributes; cursor-forward measures native navigation",
         "query_engine": "slab NFA and structural plans adapted from ../main", "seek_contract": if arguments.strict_seeks { "strict" } else { "known differences counted but ignored by user request" },
     });
@@ -510,6 +513,7 @@ fn main() -> Result<()> {
     let mut completed = BTreeSet::new();
     let mut failed_files = BTreeSet::new();
     let mut ignored_seek_differences = 0usize;
+    let mut expected_field_differences = 0usize;
     'batches: for (batch_index, batch) in inputs.chunks(arguments.batch_size).enumerate() {
         let mut sources = Vec::new();
         for input in batch {
@@ -609,6 +613,7 @@ fn main() -> Result<()> {
                             }
                         };
                         let mut cold_failed = false;
+                        let mut expected_fields = 0;
                         if benchmarks.iter().any(|name| name == "cold-parse") {
                             let check = (|| -> Result<()> {
                                 let expected = Observation::Walk(compare::walk(
@@ -628,6 +633,7 @@ fn main() -> Result<()> {
                                     &mainline_ids,
                                     &squat_ids,
                                     language,
+                                    &mut expected_fields,
                                 )
                             })();
                             if let Err(error) = check {
@@ -645,6 +651,12 @@ fn main() -> Result<()> {
                             &squat,
                             cold_failed,
                         );
+                        expected_field_differences += expected_fields;
+                        results
+                            .get_mut(&(source.input.path.clone(), "cold-parse".to_owned()))
+                            .unwrap()
+                            .result
+                            .expected_field_differences += expected_fields;
                         if cold_failed && arguments.short_circuit {
                             break 'batches;
                         }
@@ -816,6 +828,7 @@ fn main() -> Result<()> {
     manifest["completed"] = completed.len().into();
     manifest["failed"] = failed_files.len().into();
     manifest["ignored_seek_differences"] = ignored_seek_differences.into();
+    manifest["expected_field_differences"] = expected_field_differences.into();
     manifest["failures"] = serde_json::to_value(&failures)?;
     manifest["partial"] = partial.into();
     manifest["queries"] = serde_json::to_value(

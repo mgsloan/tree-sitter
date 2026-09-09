@@ -108,6 +108,35 @@ pub fn seek_points<'tree, N: NodeLike<'tree>>(
         .collect()
 }
 
+/// Mainline's field lookup can cross an alias-visible boundary even though its
+/// cursor assigns no field there. Require the packed result to match mainline's
+/// visible children before classifying such a difference as expected.
+fn visible_child_by_field<'tree, N: NodeLike<'tree>>(parent: N, field: u16) -> Result<Option<N>> {
+    if field == 0 || parent.attributes().is_error {
+        return Ok(None);
+    }
+    let mut cursor = parent.cursor()?;
+    if cursor.goto_first_child() {
+        loop {
+            if cursor.field_id() == Some(field) {
+                return Ok(Some(cursor.node()));
+            }
+            if !cursor.goto_next_sibling() {
+                break;
+            }
+        }
+    }
+    Ok(None)
+}
+
+fn expected_field_mismatch(
+    lookup: Option<usize>,
+    visible_child: Option<usize>,
+    packed: Option<usize>,
+) -> bool {
+    lookup != visible_child && packed == visible_child
+}
+
 /// Untimed relationship checks complement the timed attribute walks. Full checks
 /// on small trees and evenly spaced checks on large trees avoid quadratic test
 /// setup from repeatedly finding mainline parents from the root.
@@ -117,6 +146,7 @@ pub fn relationships<'tree, A: NodeLike<'tree>, B: NodeLike<'tree>>(
     mainline_ids: &Identities,
     squat_ids: &Identities,
     language: &Language,
+    expected_fields: &mut usize,
 ) -> Result<()> {
     let mut first = mainline.cursor()?;
     let mut second = squat.cursor()?;
@@ -173,11 +203,17 @@ pub fn relationships<'tree, A: NodeLike<'tree>, B: NodeLike<'tree>>(
                 );
             }
             for field in 1..=language.field_count() {
-                ensure!(
-                    identity_a(a.child_by_field_id(field as u16))
-                        == identity_b(b.child_by_field_id(field as u16)),
-                    "field {field} differs at ordinal {ordinal}"
-                );
+                let lookup = identity_a(a.child_by_field_id(field as u16));
+                let packed = identity_b(b.child_by_field_id(field as u16));
+                if lookup != packed {
+                    let visible_child = identity_a(visible_child_by_field(a, field as u16)?);
+                    ensure!(
+                        expected_field_mismatch(lookup, visible_child, packed),
+                        "unexpected field {field} mismatch at ordinal {ordinal}: \
+                         lookup {lookup:?}, visible child {visible_child:?}, packed {packed:?}"
+                    );
+                    *expected_fields += 1;
+                }
             }
         }
         let down = first.goto_first_child();
@@ -206,5 +242,25 @@ pub fn relationships<'tree, A: NodeLike<'tree>, B: NodeLike<'tree>>(
                 return Ok(());
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::expected_field_mismatch;
+
+    #[test]
+    fn field_policy_requires_independent_visible_child_agreement() {
+        // A transitive lookup can return a grandchild with no direct field.
+        assert!(expected_field_mismatch(Some(12), None, None));
+        // The API can also suppress or redirect a visible child's field.
+        assert!(expected_field_mismatch(None, Some(7), Some(7)));
+        assert!(expected_field_mismatch(Some(12), Some(7), Some(7)));
+        // A packed error remains an error, including on an exceptional parent.
+        assert!(!expected_field_mismatch(Some(12), None, Some(13)));
+        assert!(!expected_field_mismatch(Some(12), Some(7), None));
+        assert!(!expected_field_mismatch(Some(7), Some(7), None));
+        assert!(!expected_field_mismatch(None, None, Some(7)));
+        assert!(!expected_field_mismatch(Some(7), Some(7), Some(7)));
     }
 }

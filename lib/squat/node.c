@@ -249,10 +249,6 @@ uint32_t sq_node_named_child_count(SQNode node) {
   return child_count(node, true);
 }
 SQNode sq_node_child_by_field_id(SQNode node, TSFieldId field) {
-  SQNode exceptional;
-  if (node.tree && sq_lookup_field_exception(node, field, &exceptional)) {
-    return exceptional;
-  }
   // ERROR productions have no field map. Hidden children can still contribute
   // field names to enumeration, but mainline's field lookup stops at ERROR.
   if (sq_node_is_error(node)) {

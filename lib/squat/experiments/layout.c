@@ -35,7 +35,7 @@ int main(int argc, char **argv) {
     return 2;
   }
   puts("file_index,group_size,alignment,source_bytes,nodes,groups,slots,slab_bytes,presence_bytes,"
-       "dictionary_bytes,field_exception_bytes,aliases,sparse_grammar_bytes,grammar_bytes,var_"
+       "dictionary_bytes,aliases,sparse_grammar_bytes,grammar_bytes,var_"
        "super_bytes,super_bytes,"
        "interleaved_symbol_field_bytes,separate_symbol_field_bytes,median_pack_ms");
   for (int file_index = 3; file_index < argc; file_index++) {
@@ -79,17 +79,14 @@ int main(int argc, char **argv) {
     }
     SQHeader *header = sq_header(tree);
     uint32_t slots = sq_tree_slot_count(tree);
-    uint32_t auxiliary_end =
-        header->field_exceptions_byte_offset ? header->field_exceptions_byte_offset : tree->size;
-    uint32_t exception_bytes = tree->size - auxiliary_end;
     uint32_t presence_bytes =
         header->symbol_presence_byte_offset
             ? (header->supertype_dictionary_byte_offset ? header->supertype_dictionary_byte_offset
-                                                        : auxiliary_end) -
+                                                        : tree->size) -
                   header->symbol_presence_byte_offset
             : 0;
     uint32_t dictionary_bytes = header->supertype_dictionary_byte_offset
-                                    ? auxiliary_end - header->supertype_dictionary_byte_offset
+                                    ? tree->size - header->supertype_dictionary_byte_offset
                                     : 0;
     uint64_t grammar_bytes = sq_column_size(slots, tree->layout.symbol_bits);
     // Sparse aliases require a bitmap, packed exceptional values and rank
@@ -111,10 +108,10 @@ int main(int argc, char **argv) {
         sq_column_size(slots, tree->layout.symbol_bits + tree->layout.field_bits);
     uint64_t separate = sq_column_size(slots, tree->layout.symbol_bits) +
                         sq_column_size(slots, tree->layout.field_bits);
-    printf("%d,%u,%u,%ld,%u,%u,%u,%u,%u,%u,%u,%u,%llu,%llu,%llu,%llu,%llu,%llu,%.6f\n",
+    printf("%d,%u,%u,%ld,%u,%u,%u,%u,%u,%u,%u,%llu,%llu,%llu,%llu,%llu,%llu,%.6f\n",
            file_index - 3, SQ_GROUP_SIZE, SQ_COLUMN_ALIGNMENT, length,
            sq_node_descendant_count(sq_tree_root_node(tree)), header->group_count, slots,
-           tree->size, presence_bytes, dictionary_bytes, exception_bytes, aliases,
+           tree->size, presence_bytes, dictionary_bytes, aliases,
            (unsigned long long)sparse_bytes, (unsigned long long)grammar_bytes,
            (unsigned long long)super_bytes, (unsigned long long)sq_column_size(slots, 8),
            (unsigned long long)interleaved, (unsigned long long)separate, timings[3]);

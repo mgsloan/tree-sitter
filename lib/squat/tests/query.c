@@ -1,5 +1,6 @@
 #define _POSIX_C_SOURCE 200809L
 #include <tree_sitter/squat_query.h>
+#include "field_lookup.h"
 #include <assert.h>
 #include <dlfcn.h>
 #include <stdio.h>
@@ -9,6 +10,7 @@
 static const char *query_source;
 static unsigned mode, optimized, event;
 static const char *input_source;
+static unsigned expected_field_query_mismatches;
 #define CHECK(value)                                                                               \
   do {                                                                                             \
     if (!(value)) {                                                                                \
@@ -53,6 +55,10 @@ done:
   return result;
 }
 static void compare_node(const Identities *ids, TSNode node, SQNode packed) {
+  if (ts_node_is_null(node)) {
+    CHECK(sq_node_is_null(packed));
+    return;
+  }
   for (uint32_t index = 0; index < ids->count; index++) {
     if (ts_node_eq(node, ids->nodes[index])) {
       CHECK(sq_node_eq(packed, ids->packed[index]));
@@ -61,6 +67,70 @@ static void compare_node(const Identities *ids, TSNode node, SQNode packed) {
   }
   CHECK(false);
 }
+/* This allowance applies only to the generated single-capture wildcard query
+ * below. A more complex query difference must still fail: a field discrepancy
+ * somewhere in a captured subtree is not sufficient evidence to excuse it. */
+static TSFieldId simple_negated_field(const TSLanguage *language, const char *source) {
+  if (strncmp(source, "(_ !", 4)) {
+    return 0;
+  }
+  const char *end = strchr(source + 4, ')');
+  if (!end || strcmp(end, ") @parent")) {
+    return 0;
+  }
+  return ts_language_field_id_for_name(language, source + 4, (uint32_t)(end - source - 4));
+}
+
+static bool expected_negated_field_difference(const Identities *ids, uint32_t ordinal,
+                                               TSFieldId field) {
+  TSNode parent = ids->nodes[ordinal];
+  TSNode lookup = ts_node_child_by_field_id(parent, field);
+  TSNode visible = visible_child_by_field(parent, field);
+  if (ts_node_is_null(lookup) == ts_node_is_null(visible)) {
+    return false;
+  }
+  compare_node(ids, visible, sq_node_child_by_field_id(ids->packed[ordinal], field));
+  return true;
+}
+
+static bool expected_mainline_field_match(const Identities *ids, const TSQueryMatch *match,
+                                           TSFieldId field) {
+  if (!field) {
+    return false;
+  }
+  CHECK(match->pattern_index == 0 && match->capture_count == 1 && match->captures[0].index == 0);
+  for (uint32_t index = 0; index < ids->count; index++) {
+    if (ts_node_eq(match->captures[0].node, ids->nodes[index])) {
+      bool expected = expected_negated_field_difference(ids, index, field);
+      if (expected) {
+        CHECK(ts_node_is_null(ts_node_child_by_field_id(ids->nodes[index], field)));
+      }
+      return expected;
+    }
+  }
+  CHECK(false);
+  return false;
+}
+
+static bool expected_packed_field_match(const Identities *ids, const SQQueryMatch *match,
+                                        TSFieldId field) {
+  if (!field) {
+    return false;
+  }
+  CHECK(match->pattern_index == 0 && match->capture_count == 1 && match->captures[0].index == 0);
+  for (uint32_t index = 0; index < ids->count; index++) {
+    if (sq_node_eq(match->captures[0].node, ids->packed[index])) {
+      bool expected = expected_negated_field_difference(ids, index, field);
+      if (expected) {
+        CHECK(sq_node_is_null(sq_node_child_by_field_id(ids->packed[index], field)));
+      }
+      return expected;
+    }
+  }
+  CHECK(false);
+  return false;
+}
+
 static bool cancel(TSQueryCursorState *state) {
   (void)state;
   return true;
@@ -68,6 +138,7 @@ static bool cancel(TSQueryCursorState *state) {
 static void run_query(const TSLanguage *language, TSTree *tree, SQTree *packed,
                       const Identities *ids, const char *source) {
   query_source = source;
+  TSFieldId negated_field = simple_negated_field(language, source);
   uint32_t offset_a = 0, offset_b = 0;
   TSQueryError error_a = 0, error_b = 0;
   TSQuery *mainline = ts_query_new(language, source, (uint32_t)strlen(source), &offset_a, &error_a);
@@ -110,10 +181,25 @@ static void run_query(const TSLanguage *language, TSTree *tree, SQTree *packed,
         TSQueryMatch expected;
         SQQueryMatch actual;
         uint32_t capture_a = 0, capture_b = 0;
-        bool found_a = mode == 0 ? ts_query_cursor_next_match(a, &expected)
-                                 : ts_query_cursor_next_capture(a, &expected, &capture_a);
-        bool found_b = mode == 0 ? sq_query_cursor_next_match(b, &actual)
-                                 : sq_query_cursor_next_capture(b, &actual, &capture_b);
+        bool found_a, found_b;
+        for (;;) {
+          found_a = mode == 0 ? ts_query_cursor_next_match(a, &expected)
+                              : ts_query_cursor_next_capture(a, &expected, &capture_a);
+          if (!found_a || !expected_mainline_field_match(ids, &expected, negated_field)) {
+            break;
+          }
+          CHECK(capture_a == 0);
+          expected_field_query_mismatches++;
+        }
+        for (;;) {
+          found_b = mode == 0 ? sq_query_cursor_next_match(b, &actual)
+                              : sq_query_cursor_next_capture(b, &actual, &capture_b);
+          if (!found_b || !expected_packed_field_match(ids, &actual, negated_field)) {
+            break;
+          }
+          CHECK(capture_b == 0);
+          expected_field_query_mismatches++;
+        }
         if ((mode == 2 || mode == 5) && sq_query_cursor_error(b) == SQ_QUERY_UNSUPPORTED_RANGE) {
           CHECK(!found_b && event == 0);
           break;
@@ -307,5 +393,6 @@ int main(int argc, char **argv) {
   printf("ok: query matches, full capture snapshots, ranges, limits, removal, and optimization "
          "modes: %s\n",
          argv[2]);
+  printf("expected negated-field query mismatches: %u\n", expected_field_query_mismatches);
   dlclose(library);
 }

@@ -156,10 +156,6 @@ bool sq_resize(SQTree *tree, uint32_t capacity, SQError *error) {
     header->supertype_dictionary_byte_offset =
         next.end + old.supertype_dictionary_byte_offset - tree->layout.end;
   }
-  if (header->field_exceptions_byte_offset) {
-    header->field_exceptions_byte_offset =
-        next.end + old.field_exceptions_byte_offset - tree->layout.end;
-  }
   for (unsigned region = 0; region < 2; region++) {
     unsigned columns = region ? N_COLUMNS : G_COLUMNS;
     uint32_t scale = region ? SQ_GROUP_SIZE : 1;

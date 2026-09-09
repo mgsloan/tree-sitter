@@ -10,21 +10,11 @@ typedef struct {
   uint8_t flags, super;
 } Pending;
 typedef struct {
-  TSFieldId field;
-  uint32_t target;
-} FieldTarget;
-typedef struct {
-  FieldTarget *entries;
-  uint32_t count, capacity;
-} FieldTargets;
-typedef struct {
   SQTree *tree;
   Pending pending[SQ_GROUP_SIZE];
   uint32_t count, min[7], max[7];
   uint64_t *dictionary;
   uint32_t dictionary_count, words;
-  SQFieldException *exceptions;
-  uint32_t exception_count, exception_capacity;
   SQError *error;
 } Builder;
 typedef struct {
@@ -36,154 +26,8 @@ typedef struct {
    * This stays valid when groups grow or padding is inserted to the left. */
   uint32_t boundary;
   TSFieldId field;
-  FieldTargets lookup_fields, visible_fields;
-  uint32_t first_visible_distance;
   bool visible, later, child_later;
 } Frame;
-
-static uint32_t field_target(const FieldTargets *targets, TSFieldId field) {
-  for (uint32_t i = 0; i < targets->count; i++) {
-    if (targets->entries[i].field == field) {
-      return targets->entries[i].target;
-    }
-  }
-  return 0;
-}
-
-static bool set_field_target(Builder *builder, FieldTargets *targets, TSFieldId field,
-                             uint32_t target) {
-  if (!field || !target) {
-    return true;
-  }
-  for (uint32_t i = 0; i < targets->count; i++) {
-    if (targets->entries[i].field == field) {
-      targets->entries[i].target = target;
-      return true;
-    }
-  }
-  if (targets->count == targets->capacity) {
-    uint64_t capacity = targets->capacity ? (uint64_t)targets->capacity * 2 : 4;
-    if (capacity > UINT32_MAX || capacity * sizeof(FieldTarget) > SIZE_MAX) {
-      sq_fail(builder->error, SQ_ERROR_OVERFLOW);
-      return false;
-    }
-    FieldTarget *entries = realloc(targets->entries, (size_t)capacity * sizeof(FieldTarget));
-    if (!entries) {
-      sq_fail(builder->error, SQ_ERROR_ALLOCATION);
-      return false;
-    }
-    targets->entries = entries;
-    targets->capacity = (uint32_t)capacity;
-  }
-  targets->entries[targets->count++] = (FieldTarget){field, target};
-  return true;
-}
-
-/* Mainline's field lookup can inherit through a node made visible by aliasing,
- * returning a grandchild. Its cursor field is still just the nearest assignment.
- * Compute both meanings bottom-up and persist only their disagreements. */
-static bool update_parent_fields(Builder *builder, Frame *parent, const Frame *child) {
-  if (child->first_visible_distance) {
-    parent->first_visible_distance = child->first_visible_distance;
-  }
-  if (child->visible) {
-    if (!set_field_target(builder, &parent->visible_fields, child->field,
-                          child->first_visible_distance)) {
-      return false;
-    }
-  } else {
-    for (uint32_t i = 0; i < child->visible_fields.count; i++) {
-      FieldTarget target = child->visible_fields.entries[i];
-      if (!set_field_target(builder, &parent->visible_fields, target.field, target.target)) {
-        return false;
-      }
-    }
-  }
-  if (ts_node_is_extra(child->node)) {
-    return true;
-  }
-  Subtree subtree = *(const Subtree *)parent->node.id;
-  const TSFieldMapEntry *entry, *end;
-  ts_language_field_map(builder->tree->language, subtree.ptr->production_id, &entry, &end);
-  for (; entry < end; entry++) {
-    if (entry->child_index != parent->structural) {
-      continue;
-    }
-    uint32_t target = entry->inherited ? field_target(&child->lookup_fields, entry->field_id)
-                                       : child->first_visible_distance;
-    if (!set_field_target(builder, &parent->lookup_fields, entry->field_id, target)) {
-      return false;
-    }
-  }
-  return true;
-}
-
-static bool save_field_exception(Builder *builder, uint32_t parent, TSFieldId field,
-                                 uint32_t target) {
-  if (builder->exception_count == builder->exception_capacity) {
-    uint64_t capacity =
-        builder->exception_capacity ? (uint64_t)builder->exception_capacity * 2 : 16;
-    if (capacity > UINT32_MAX || capacity * sizeof(SQFieldException) > SIZE_MAX) {
-      sq_fail(builder->error, SQ_ERROR_OVERFLOW);
-      return false;
-    }
-    SQFieldException *entries =
-        realloc(builder->exceptions, (size_t)capacity * sizeof(SQFieldException));
-    if (!entries) {
-      sq_fail(builder->error, SQ_ERROR_ALLOCATION);
-      return false;
-    }
-    builder->exceptions = entries;
-    builder->exception_capacity = (uint32_t)capacity;
-  }
-  builder->exceptions[builder->exception_count++] = (SQFieldException){parent, field, target};
-  return true;
-}
-
-static bool save_field_exceptions(Builder *builder, const Frame *frame, uint32_t parent_distance) {
-  bool error = ts_node_is_error(frame->node);
-  for (uint32_t i = 0; i < frame->lookup_fields.count; i++) {
-    FieldTarget lookup = frame->lookup_fields.entries[i];
-    uint32_t ordinary = error ? 0 : field_target(&frame->visible_fields, lookup.field);
-    if (lookup.target != ordinary &&
-        !save_field_exception(builder, parent_distance, lookup.field, lookup.target)) {
-      return false;
-    }
-  }
-  if (!error) {
-    for (uint32_t i = 0; i < frame->visible_fields.count; i++) {
-      FieldTarget ordinary = frame->visible_fields.entries[i];
-      if (!field_target(&frame->lookup_fields, ordinary.field) &&
-          !save_field_exception(builder, parent_distance, ordinary.field, 0)) {
-        return false;
-      }
-    }
-  }
-  return true;
-}
-
-static int compare_field_exceptions(const void *a, const void *b) {
-  const SQFieldException *left = a, *right = b;
-  if (left->parent != right->parent) {
-    return left->parent < right->parent ? -1 : 1;
-  }
-  return (left->field > right->field) - (left->field < right->field);
-}
-
-static bool finish_field_exceptions(Builder *builder) {
-  uint32_t slots = sq_tree_slot_count(builder->tree);
-  for (uint32_t i = 0; i < builder->exception_count; i++) {
-    SQFieldException *entry = &builder->exceptions[i];
-    entry->parent = slots - entry->parent;
-    entry->target = entry->target ? slots - entry->target : SQ_NONE;
-  }
-  if (builder->exception_count) {
-    qsort(builder->exceptions, builder->exception_count, sizeof(SQFieldException),
-          compare_field_exceptions);
-  }
-  return sq_append_field_exceptions(builder->tree, builder->exceptions, builder->exception_count,
-                                    builder->error);
-}
 
 static uint32_t distance(const Builder *builder) {
   return sq_header(builder->tree)->group_count * SQ_GROUP_SIZE + builder->count;
@@ -459,19 +303,8 @@ SQTree *sq_tree_pack(const TSTree *tree, SQPackOptions options, SQError *error) 
       if (frame->visible && !emit(&builder, frame)) {
         goto failure;
       }
-      if (frame->visible) {
-        frame->first_visible_distance = distance(&builder);
-        if (!save_field_exceptions(&builder, frame, distance(&builder))) {
-          goto failure;
-        }
-      }
-      if (depth > 1 && !update_parent_fields(&builder, &stack[depth - 2], frame)) {
-        goto failure;
-      }
       free(frame->positions);
       free(frame->mask);
-      free(frame->lookup_fields.entries);
-      free(frame->visible_fields.entries);
       depth--;
     }
   }
@@ -488,25 +321,18 @@ SQTree *sq_tree_pack(const TSTree *tree, SQPackOptions options, SQError *error) 
       !sq_append_dictionary(result, builder.dictionary, builder.dictionary_count, error)) {
     goto failure;
   }
-  if (!finish_field_exceptions(&builder)) {
-    goto failure;
-  }
   free(stack);
   free(child_mask);
   free(builder.dictionary);
-  free(builder.exceptions);
   return result;
 failure:
   for (size_t i = 0; i < depth; i++) {
     free(stack[i].positions);
     free(stack[i].mask);
-    free(stack[i].lookup_fields.entries);
-    free(stack[i].visible_fields.entries);
   }
   free(stack);
   free(child_mask);
   free(builder.dictionary);
-  free(builder.exceptions);
   sq_tree_delete(result);
   return NULL;
 }

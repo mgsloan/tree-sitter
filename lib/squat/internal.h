@@ -18,7 +18,7 @@ _Static_assert(SQ_GROUP_SIZE == 16 || SQ_GROUP_SIZE == 32 || SQ_GROUP_SIZE == 64
 _Static_assert(SQ_COLUMN_ALIGNMENT == 8 || SQ_COLUMN_ALIGNMENT == 64,
                "supported experimental column alignments");
 #define SQ_VERSION                                                                                 \
-  (0x20u |                                                                                         \
+  (0x30u |                                                                                         \
    (SQ_GROUP_SIZE == 32   ? 2u                                                                     \
     : SQ_GROUP_SIZE == 64 ? 4u                                                                     \
                           : 0u) |                                                                  \
@@ -33,9 +33,8 @@ typedef struct {
   uint32_t groups_byte_offset, nodes_byte_offset;
   uint32_t symbol_presence_byte_offset;
   uint32_t supertype_dictionary_byte_offset, supertype_dictionary_count;
-  uint32_t field_exceptions_byte_offset, field_exceptions_count;
 } SQHeader;
-_Static_assert(sizeof(SQHeader) == 40, "slab header size");
+_Static_assert(sizeof(SQHeader) == 32, "slab header size");
 
 enum { G_WASTE, G_SPAN, G_BYTE, G_END_BYTE, G_ROW, G_END_ROW, G_COL, G_END_COL, G_COLUMNS };
 enum {
@@ -56,11 +55,6 @@ enum {
   N_FIELD,
   N_COLUMNS
 };
-
-typedef struct {
-  uint32_t parent, field, target;
-} SQFieldException;
-_Static_assert(sizeof(SQFieldException) == 12, "field exception size");
 
 typedef struct {
   uint32_t groups[G_COLUMNS], nodes[N_COLUMNS], end;
@@ -92,8 +86,6 @@ static inline TSSymbol sq_decode_symbol(const SQTree *tree, uint32_t symbol) {
          : symbol == sq_symbols(tree) - 1 ? ts_builtin_sym_error_repeat
                                           : (TSSymbol)symbol;
 }
-bool sq_append_field_exceptions(SQTree *, const SQFieldException *, uint32_t, SQError *);
-bool sq_lookup_field_exception(SQNode, TSFieldId, SQNode *);
 uint8_t *sq_allocate_data(size_t size);
 uint8_t *sq_reallocate_data(uint8_t *data, size_t old_size, size_t new_size);
 uint64_t sq_lane_starts(uint8_t bits);

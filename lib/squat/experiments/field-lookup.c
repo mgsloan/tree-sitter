@@ -72,17 +72,6 @@ int main(int argc, char **argv) {
       }
     }
   }
-  const SQHeader *header = sq_header(packed);
-  printf("EXCEPTIONS: %u records, %zu bytes before section alignment; header %zu bytes\n",
-         header->field_exceptions_count, header->field_exceptions_count * sizeof(SQFieldException),
-         sizeof(SQHeader));
-  for (uint32_t i = 0; i < header->field_exceptions_count; i++) {
-    SQFieldException entry;
-    memcpy(&entry, packed->data + header->field_exceptions_byte_offset + i * sizeof(entry),
-           sizeof(entry));
-    printf("  parent slot %u, field %s, target slot %u\n", entry.parent,
-           ts_language_field_name_for_id(language, entry.field), entry.target);
-  }
   sq_tree_delete(packed);
 #endif
   ts_tree_delete(tree);

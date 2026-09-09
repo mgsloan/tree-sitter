@@ -23,8 +23,8 @@ $(BUILD)/libtree-sitter-squat.a: $(SOURCES:%.c=$(BUILD)/%.o)
 $(BUILD)/runtime.o: $(ROOT)/lib/src/lib.c | $(BUILD)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -std=c11 -D_DEFAULT_SOURCE -c $< -o $@
 
-$(BUILD)/compare: tests/compare.c $(BUILD)/libtree-sitter-squat.a $(BUILD)/runtime.o
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) $^ -ldl -o $@
+$(BUILD)/compare: tests/compare.c tests/field_lookup.h $(BUILD)/libtree-sitter-squat.a $(BUILD)/runtime.o
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) $(filter %.c %.a %.o,$^) -ldl -o $@
 
 test: $(BUILD)/compare
 	$(BUILD)/compare $(GRAMMAR_LIBRARY) $(GRAMMAR_SYMBOL) $(SOURCES_TO_TEST)
@@ -45,5 +45,5 @@ $(BUILD)/scan-bench: experiments/scan.c $(BUILD)/libtree-sitter-squat.a $(BUILD)
 $(BUILD)/layout-bench: experiments/layout.c $(BUILD)/libtree-sitter-squat.a $(BUILD)/runtime.o
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) $^ -ldl -o $@
 
-$(BUILD)/query-check: tests/query.c $(BUILD)/libtree-sitter-squat.a $(BUILD)/runtime.o
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) $^ -ldl -o $@
+$(BUILD)/query-check: tests/query.c tests/field_lookup.h $(BUILD)/libtree-sitter-squat.a $(BUILD)/runtime.o
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) $(filter %.c %.a %.o,$^) -ldl -o $@
