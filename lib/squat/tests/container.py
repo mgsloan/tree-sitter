@@ -22,6 +22,7 @@ def main():
     parser.add_argument("--grammar", action="append", help="selected-grammars.toml entry; repeatable")
     parser.add_argument("--image", help="defaults to the corpus lock's build image ID")
     parser.add_argument("--sanitize", action="store_true")
+    parser.add_argument("--queries", action="store_true", help="also compare query execution")
     parser.add_argument("--strict-seeks", action="store_true", help="treat known seek differences as failures")
     parser.add_argument("--timeout", type=int, default=300)
     args = parser.parse_args()
@@ -39,6 +40,7 @@ def main():
         "tool_dirty": bool(run(["git", "-C", str(ROOT), "status", "--porcelain"], capture_output=True, text=True).stdout),
         "image": image,
         "sanitize": args.sanitize,
+        "queries": args.queries,
         "strict_seeks": args.strict_seeks,
         "grammars": [],
     }
@@ -47,8 +49,11 @@ def main():
               "--entrypoint", "sh", "-v", f"{ROOT}:/work:ro", "-v", f"{output}:/out:rw"]
     if args.strict_seeks:
         common += ["-e", "SQ_STRICT_SEEKS=1"]
+    if args.queries:
+        common += ["-e", "SQ_CHECK_QUERIES=1"]
     flags = "-O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer" if args.sanitize else "-O2 -g"
-    run(common + [image, "-c", f"make -C /work/lib/squat -j4 BUILD=/out CFLAGS='{flags}' all check"], timeout=args.timeout)
+    query_target = " /out/query-check" if args.queries else ""
+    run(common + [image, "-c", f"make -C /work/lib/squat -j4 BUILD=/out CFLAGS='{flags}' all check{query_target}"], timeout=args.timeout)
     failures = 0
     for name in grammars:
         started = time.monotonic()
@@ -84,6 +89,9 @@ case "$name" in
   css) set -- "$@" /work/lib/squat/tests/fixtures/hidden-seek.css ;;
 esac
 ASAN_OPTIONS=detect_leaks=1 /out/compare "/out/$name.so" "$symbol" "$@"
+if test "${SQ_CHECK_QUERIES:-0}" = 1; then
+  ASAN_OPTIONS=detect_leaks=1 /out/query-check "/out/$name.so" "$symbol"
+fi
 '''
             try:
                 with (output / f"{name}.log").open("w") as log:

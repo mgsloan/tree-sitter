@@ -81,3 +81,15 @@ Updated alongside implementation commits below.
 - Added a permanent CLI-control integration script that verifies absolute paths, ignored/strict seek policy, partial-output flushing, and byte-identical sampling lists. It passed against the source-snapshotted tool build.
 - Parent lookup now searches backward for the nearest enclosing subtree. Group span bases plus the maximum u8 delta reject distant groups without reading their nodes. This adds no index and avoids restarting from the root for nearby ancestors.
 - The convenience runner now samples training and holdout repositories separately, so one split cannot crowd the other out.
+
+### Query engine adaptation
+
+- After the non-query checkpoint, adapted the optimized compiler, NFA, shared capture histories, deduplication filters, local shortcuts, and whole-query structural plans from `../main` at `c1ce0f4f166dad57cd18aa684ded2f701ec02299`. Slab access and SWAR root/presence filtering are new adapters. No mainline runtime files are changed.
+- Completed both the 40-file training stress run (three repeats, original and mutated) and 20-file holdout run (two repeats, original and mutated) with zero comparison failures.
+- Query cancellation callback cadence is representation-dependent because mainline visits hidden nodes; cancellation must terminate both engines, but identical stopping captures are not promised.
+- Bounded queries with branching or rootless patterns can depend on hidden traversal barriers: malformed CSS with `(_ (_)+ @children) @parent` and byte range 1..12 changes ordered partial captures. Such executions explicitly report `SQ_QUERY_UNSUPPORTED_RANGE` rather than silently returning different results. Unrestricted queries and simple rooted range queries remain supported. This is distinct from the human's instruction to ignore seek differences.
+- Question: should a future slab extension preserve hidden traversal barriers for full range-query compatibility, or should that optional API continue to report unsupported combinations?
+
+- The first real-query matrix passed 44 files across eleven grammars, original and mutated, with two repeats. It uses the actual grammar/Zed sources and compares complete ordered capture snapshots after identical built-in text predicates.
+- Two large generated TypeScript/JavaScript files exceeded mainline's 30-second query timeout or the harness's four-million captured-node snapshot budget. These remain explicit failed stress cases, not ignored comparisons. The runner now accepts `--max-file-bytes` for bounded correctness runs.
+- Timeout callbacks now poll within column scans as well as NFA/plan events. Timeouts therefore do not silently disable SWAR root or mandatory symbol/field filtering. Callback cancellation ends a scan; callers should start a new execution to restart it.

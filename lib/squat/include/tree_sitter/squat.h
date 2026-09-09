@@ -123,6 +123,7 @@ SQNode sq_node_prev_preorder(SQNode);
 SQCursor *sq_cursor_new(SQNode);
 void sq_cursor_delete(SQCursor *);
 SQNode sq_cursor_node(const SQCursor *);
+SQNode sq_cursor_parent_node(const SQCursor *);
 uint32_t sq_cursor_depth(const SQCursor *);
 bool sq_cursor_goto_first_child(SQCursor *);
 bool sq_cursor_goto_last_child(SQCursor *);

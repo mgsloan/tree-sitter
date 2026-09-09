@@ -399,6 +399,10 @@ SQNode sq_cursor_node(const SQCursor *cursor) {
   return cursor ? cursor->node : sq_null();
 }
 
+SQNode sq_cursor_parent_node(const SQCursor *cursor) {
+  return cursor && cursor->depth ? cursor->parents[cursor->depth - 1].parent : sq_null();
+}
+
 uint32_t sq_cursor_depth(const SQCursor *cursor) {
   return cursor ? cursor->depth : 0;
 }
