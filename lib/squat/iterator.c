@@ -131,7 +131,8 @@ static uint16_t cached_value(SQNodeIterator *iterator, unsigned column) {
   unsigned index = column - N_SYMBOL;
 #endif
   UnpackCache *cache = cache_columns(iterator, 1u << index);
-  return cache->values[index][iterator->current.slot % SQ_ITERATOR_UNPACK_SLOTS];
+  uint32_t lane = iterator->current.slot & (SQ_ITERATOR_UNPACK_SLOTS - 1u);
+  return cache->values[index][lane];
 }
 TSFieldId sq_node_iterator_field_id(SQNodeIterator *iterator) {
   if (!iterator || !iterator->current.tree) {
@@ -158,7 +159,7 @@ void sq_node_iterator_attributes(SQNodeIterator *iterator, SQCursorAttributes *o
     const UnpackCache *cache = cache_columns(iterator, needed);
     const uint32_t *base = cache->bases;
     const uint16_t (*value)[SQ_ITERATOR_UNPACK_SLOTS] = cache->values;
-    uint32_t lane = node.slot % SQ_ITERATOR_UNPACK_SLOTS;
+    uint32_t lane = node.slot & (SQ_ITERATOR_UNPACK_SLOTS - 1u);
     out->start_byte = base[G_BYTE] + value[N_BYTE][lane];
     out->end_byte = base[G_END_BYTE] - value[N_END_BYTE][lane];
     out->start_point = (TSPoint){base[G_ROW] + value[N_ROW][lane],
@@ -172,7 +173,7 @@ void sq_node_iterator_attributes(SQNodeIterator *iterator, SQCursorAttributes *o
                           value[N_FIELD][lane], out);
 #else
     const UnpackCache *cache = cache_columns(iterator, (1u << 3) - 1);
-    uint32_t lane = node.slot % SQ_ITERATOR_UNPACK_SLOTS;
+    uint32_t lane = node.slot & (SQ_ITERATOR_UNPACK_SLOTS - 1u);
     sq_attributes_with_ids(node, cache->values[0][lane],
                             cache->values[N_GRAMMAR - N_SYMBOL][lane],
                             cache->values[N_FIELD - N_SYMBOL][lane], out);
