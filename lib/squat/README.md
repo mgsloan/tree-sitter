@@ -117,3 +117,32 @@ Bounded byte/point ranges with branching or rootless patterns report
 rooted ranges are supported. This limitation is independent of ignored seek
 comparisons. Cancellation callbacks terminate execution, but their exact cadence
 depends on the representation.
+
+## Preorder node iterator
+
+`SQNodeIterator` walks a root and its descendants in preorder, including empty
+nodes. Construct it with `sq_node_iterator_new(root, unpack_cache)`, consume nodes
+with `sq_node_iterator_next`, and release it with `sq_node_iterator_delete`.
+The iterator owns no tree and keeps no ancestor stack. It advances consecutive
+physical slots and reads leading waste only at group boundaries. Exhaustion is
+permanent. The tree must outlive both the iterator and returned ordinary nodes.
+
+`sq_node_iterator_attributes` and `sq_node_iterator_field_id` read the last yielded
+node; they return zeroed attributes / field zero before the first yield and after
+exhaustion. Rust exposes `Node::node_iterator(bool)` and a fused `NodeIterator`;
+its corresponding accessors return `None` outside a yielded position. The older
+allocation-free `Node::preorder()` remains available.
+
+The optional lazy cache stores one group's display symbols, grammar symbols, and
+fields as u16 lanes. Fixed-width coordinate/flag columns keep their narrow reads.
+A field-only consumer unpacks only fields; a navigation-only consumer never
+unpacks anything. Repeated attribute reads reuse the same group. Both modes use
+the same attribute construction code as the cursor.
+
+Portable unpacking expands four packed fields into u16 lanes with masks and
+shifts. Explicit SSE2 widens 8-bit columns on x86-64; 16-bit columns copy directly
+on little-endian machines. Automatic variable-width decoding uses BMI2 PDEP on
+supported Intel CPUs, the vendor measured here, and portable SWAR elsewhere.
+AVX2 variable shifts and byte shuffles remain available for experiments.
+`SQ_UNPACK_KERNEL=1/2/3/4` selects scalar/SWAR/BMI2/AVX2 at build time; unavailable
+hardware selections fall back to SWAR. No slab format or cursor API changes.

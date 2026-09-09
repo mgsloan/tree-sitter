@@ -20,11 +20,15 @@ use std::{
 use tree_sitter::Point;
 use tree_sitter_squatter::{PackOptions, Tree};
 
-const BENCHMARKS: [&str; 7] = [
+const BENCHMARKS: [&str; 11] = [
     "query-matches",
     "query-captures",
     "walk-forward",
     "cursor-forward",
+    "iterator-forward",
+    "iterator-forward-cached",
+    "walk-iterator",
+    "walk-iterator-cached",
     "seek-byte",
     "seek-point",
     "cold-parse",
@@ -309,11 +313,12 @@ fn observe<'tree, N: tree_sitter_squatter::traits::NodeLike<'tree>>(
     points: &[Point],
 ) -> Result<Observation<'tree>> {
     match benchmark {
-        "cursor-forward" => Ok(Observation::Navigation(compare::navigate(
-            root.cursor()?,
-            ids,
-        ))),
-        "walk-forward" => Ok(Observation::Walk(compare::walk(root, ids)?)),
+        "cursor-forward" | "iterator-forward" | "iterator-forward-cached" => Ok(
+            Observation::Navigation(compare::navigate(root.cursor()?, ids)),
+        ),
+        "walk-forward" | "walk-iterator" | "walk-iterator-cached" => {
+            Ok(Observation::Walk(compare::walk(root, ids)?))
+        }
         "seek-byte" => Ok(Observation::Seek(compare::seek_bytes(root, ids, bytes))),
         "seek-point" => Ok(Observation::Seek(compare::seek_points(root, ids, points))),
         _ => unreachable!(),
@@ -332,6 +337,20 @@ fn difference(expected: &Observation<'_>, actual: &Observation<'_>) -> Option<St
                 .unwrap_or(a.len().min(b.len()));
             Some(format!(
                 "walk item {index}: expected {:?}, actual {:?}; lengths {}/{}",
+                a.get(index),
+                b.get(index),
+                a.len(),
+                b.len()
+            ))
+        }
+        (Observation::Navigation(a), Observation::Navigation(b)) => {
+            let index = a
+                .iter()
+                .zip(b)
+                .position(|(a, b)| a != b)
+                .unwrap_or(a.len().min(b.len()));
+            Some(format!(
+                "navigation item {index}: expected {:?}, actual {:?}; lengths {}/{}",
                 a.get(index),
                 b.get(index),
                 a.len(),
@@ -498,6 +517,7 @@ fn main() -> Result<()> {
                     "cpuinfo": fs::read_to_string("/proc/cpuinfo").ok().and_then(|text| text.lines().find(|line| line.starts_with("model name")).map(str::to_owned))},
         "build": {"debug_assertions": cfg!(debug_assertions), "package_version": env!("CARGO_PKG_VERSION")},
         "field_contract": "field API differences expected only when squat agrees with mainline visible-child fields; ERROR parents have no fields",
+        "iterator_contract": "native preorder; cached variants lazily unpack IDs; attribute walks derive depth from descendant counts; mainline uses its forward cursor",
         "cursor_contract": "walk-forward uses bulk cursor attributes; cursor-forward measures native navigation",
         "query_engine": "slab NFA and structural plans adapted from ../main", "seek_contract": if arguments.strict_seeks { "strict" } else { "known differences counted but ignored by user request" },
     });
@@ -728,6 +748,22 @@ fn main() -> Result<()> {
                                             !arguments.unoptimized_query,
                                         )
                                         .map(Observation::Query);
+                                }
+                                if benchmark.starts_with("walk-iterator") {
+                                    return compare::walk_iterator(
+                                        pair.squat.root_node(),
+                                        &pair.squat_ids,
+                                        benchmark.ends_with("-cached"),
+                                    )
+                                    .map(Observation::Walk);
+                                }
+                                if benchmark.starts_with("iterator-forward") {
+                                    return compare::navigate_iterator(
+                                        pair.squat.root_node(),
+                                        &pair.squat_ids,
+                                        benchmark.ends_with("-cached"),
+                                    )
+                                    .map(Observation::Navigation);
                                 }
                                 observe(
                                     pair.squat.root_node(),

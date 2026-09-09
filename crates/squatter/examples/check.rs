@@ -6,12 +6,39 @@ use tree_sitter_squatter::{
     traits::{NodeLike, TreeLike},
 };
 
+fn check_iterators(tree: &Tree) -> Result<(), Box<dyn Error>> {
+    for root in tree.root_node().preorder().take(32) {
+        let expected: Vec<_> = root.preorder().collect();
+        for cached in [false, true] {
+            let mut iterator = root.node_iterator(cached)?;
+            assert!(iterator.attributes().is_none());
+            for &node in &expected {
+                assert_eq!(iterator.next(), Some(node));
+                assert_eq!(iterator.node(), Some(node));
+                assert_eq!(iterator.attributes().unwrap(), node.attributes());
+                assert_eq!(
+                    iterator.field_id(),
+                    (node.field_id() != 0).then_some(node.field_id())
+                );
+            }
+            assert_eq!(iterator.next(), None);
+            assert_eq!(iterator.next(), None);
+            assert!(iterator.attributes().is_none());
+            assert!(iterator.field_id().is_none());
+            drop(iterator);
+            assert_eq!(expected[0], root);
+        }
+    }
+    Ok(())
+}
+
 fn check_queries(
     language: &tree_sitter::Language,
     source: &[u8],
     mainline: &tree_sitter::Tree,
     packed: &Tree,
 ) -> Result<(), Box<dyn Error>> {
+    check_iterators(packed)?;
     for source_query in [
         "(_) @node",
         "(_) @a (_) @b",

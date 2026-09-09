@@ -173,3 +173,19 @@ python3 tools/squatter/run.py --output build/squat-cursors \
 Use `--image IMAGE_ID` if the corpus's pinned image is not cached locally.
 To include larger files, use `--max-file-bytes 4194304 --per-bucket 1` and a fresh
 output directory.
+
+## Iterator comparisons
+
+`walk-iterator` and `walk-iterator-cached` record the same attributes, field IDs,
+and preorder depths as `walk-forward`. The native iterator needs no depth stack;
+these benchmark adapters recover depth from the descendant counts already in
+each snapshot. `iterator-forward` and `iterator-forward-cached` measure node
+identity traversal alone, alongside `cursor-forward`. Mainline uses its ordinary
+forward cursor for all corresponding workloads. All four new selectors are in
+the default benchmark set. Iterator creation and destruction are timed.
+
+Compare the cached/uncached Squat rows directly to isolate the optional cache.
+The three variable-width ID columns are the only columns cached, and no unpacking
+occurs in navigation-only workloads. Source identities and the selected build
+flags must accompany kernel or group-size ablations. Group size changes the slab
+layout too, so those comparisons are not isolated unpack-kernel comparisons.

@@ -152,6 +152,19 @@ static inline uint32_t sq_node_get(SQNode node, unsigned column) {
                 (header->group_capacity - header->group_count) * SQ_GROUP_SIZE + node.slot,
                 sq_node_width(&node.tree->layout, column));
 }
+/* Unpack native-endian, non-straddling fields of 1..16 bits. The caller
+ * provides count u16 outputs and enough complete packed words for the range.
+ * Kernels: 0 automatic, 1 scalar, 2 portable SWAR, 3 BMI2, 4 AVX2. */
+typedef void (*SQUnpack)(const uint8_t *, uint32_t first, uint32_t count,
+                         uint8_t bits, uint16_t *out);
+void sq_unpack_u16_scalar(const uint8_t *, uint32_t, uint32_t, uint8_t, uint16_t *);
+void sq_unpack_u16_swar(const uint8_t *, uint32_t, uint32_t, uint8_t, uint16_t *);
+bool sq_unpack_supported(unsigned kernel);
+SQUnpack sq_unpack_select(unsigned kernel);
+#ifndef SQ_UNPACK_KERNEL
+#define SQ_UNPACK_KERNEL 0
+#endif
+
 uint32_t sq_next_slot(const SQTree *, uint32_t);
 uint32_t sq_node_end_slot(SQNode);
 SQNode sq_null(void);

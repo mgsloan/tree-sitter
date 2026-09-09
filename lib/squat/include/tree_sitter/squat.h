@@ -15,6 +15,7 @@ typedef struct {
   uint32_t slot;
 } SQNode;
 typedef struct SQCursor SQCursor;
+typedef struct SQNodeIterator SQNodeIterator;
 /* A copied snapshot. Strings borrow the tree's retained language. Counts include
  * visible nodes only; descendant_count includes the current node. */
 typedef struct {
@@ -143,6 +144,18 @@ bool sq_cursor_goto_parent(SQCursor *);
 
 /* Trees must outlive cursors. Each cursor owns its ancestor stack. */
 void sq_cursor_attributes(SQCursor *, SQCursorAttributes *);
+
+/* Iterates root and its descendants in visible preorder, including empty nodes.
+ * The tree must outlive the iterator and returned SQNodes. Cache storage belongs
+ * to the iterator; returned nodes remain ordinary independent handles.
+ * next returns null permanently after exhaustion. Attributes/field_id refer to
+ * the last returned node and are zero before iteration and after exhaustion. */
+SQNodeIterator *sq_node_iterator_new(SQNode root, bool unpack_cache);
+void sq_node_iterator_delete(SQNodeIterator *);
+SQNode sq_node_iterator_next(SQNodeIterator *);
+SQNode sq_node_iterator_node(const SQNodeIterator *);
+void sq_node_iterator_attributes(SQNodeIterator *, SQCursorAttributes *);
+TSFieldId sq_node_iterator_field_id(SQNodeIterator *);
 
 #ifdef __cplusplus
 }

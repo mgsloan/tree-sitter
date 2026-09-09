@@ -41,9 +41,49 @@ static void read_tests(void) {
   }
 }
 
+static void unpack_tests(void) {
+  for (uint8_t bits = 1; bits <= 16; bits++) {
+    uint32_t lanes = 64 / bits;
+    uint32_t slots = 4 * SQ_GROUP_SIZE + lanes;
+    size_t bytes = (size_t)sq_column_size(slots, bits);
+    uint8_t *data = malloc(bytes);
+    assert(data);
+    // Deliberately dirty unused tail bits: no decoder may treat them as lanes.
+    memset(data, 0xff, bytes);
+    for (uint32_t index = 0; index < slots; index++) {
+      sq_set(data, 0, index, bits, (index * 7919u) & ((1u << bits) - 1));
+    }
+    for (unsigned kernel = 1; kernel <= 4; kernel++) {
+      if (!sq_unpack_supported(kernel)) {
+        continue;
+      }
+      SQUnpack unpack = sq_unpack_select(kernel);
+      for (uint32_t first = 0; first < lanes; first++) {
+        for (uint32_t count = 0; count <= SQ_GROUP_SIZE; count++) {
+          uint16_t values[SQ_GROUP_SIZE + 2];
+          for (unsigned index = 0; index < SQ_GROUP_SIZE + 2; index++) values[index] = 0xbeef;
+          unpack(data, first, count, bits, values + 1);
+          assert(values[0] == 0xbeef && values[count + 1] == 0xbeef);
+          for (uint32_t index = 0; index < count; index++) {
+            assert(values[index + 1] == sq_get(data, 0, first + index, bits));
+          }
+        }
+      }
+      // The last group ends at the last allocated word, with no overread slack.
+      uint16_t values[SQ_GROUP_SIZE];
+      unpack(data, slots - SQ_GROUP_SIZE, SQ_GROUP_SIZE, bits, values);
+      for (uint32_t index = 0; index < SQ_GROUP_SIZE; index++) {
+        assert(values[index] == sq_get(data, 0, slots - SQ_GROUP_SIZE + index, bits));
+      }
+    }
+    free(data);
+  }
+}
+
 int main(void) {
   equality_tests();
   read_tests();
+  unpack_tests();
   for (uint32_t symbols = 2; symbols <= 32768; symbols *= 2) {
     TSSymbolMetadata *metadata = calloc(symbols, sizeof(TSSymbolMetadata));
     assert(metadata);

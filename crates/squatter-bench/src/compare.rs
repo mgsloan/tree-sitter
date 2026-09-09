@@ -61,6 +61,49 @@ pub fn walk<'tree, N: NodeLike<'tree>>(root: N, ids: &Identities) -> Result<Vec<
     }
 }
 
+/// The iterator is stackless. Recover relative depth from the descendant counts
+/// already required by the walk contract, using logical preorder ordinals so
+/// physical padding never enters the depth calculation.
+pub fn walk_iterator<'tree>(
+    root: tree_sitter_squatter::Node<'tree>,
+    ids: &Identities,
+    cached: bool,
+) -> Result<Vec<Record<'tree>>> {
+    let mut iterator = root.node_iterator(cached)?;
+    let mut records = Vec::with_capacity(ids.len());
+    let mut ends = Vec::new();
+    while let Some(node) = iterator.next() {
+        let ordinal = ids[&node.identity()];
+        while ends.last().is_some_and(|&end| end <= ordinal) {
+            ends.pop();
+        }
+        let attributes = iterator.attributes().unwrap();
+        let depth = ends.len() as u32;
+        if attributes.descendant_count > 1 {
+            ends.push(ordinal + attributes.descendant_count);
+        }
+        records.push(Record {
+            ordinal,
+            attributes,
+            field: iterator.field_id(),
+            depth,
+        });
+    }
+    Ok(records)
+}
+
+pub fn navigate_iterator(
+    root: tree_sitter_squatter::Node<'_>,
+    ids: &Identities,
+    cached: bool,
+) -> Result<Vec<usize>> {
+    let mut nodes = Vec::with_capacity(ids.len());
+    for node in root.node_iterator(cached)? {
+        nodes.push(ids[&node.identity()]);
+    }
+    Ok(nodes)
+}
+
 /// Native cursor movement without attribute decoding.
 /// Recording every identity keeps correctness checks stronger than a checksum.
 pub fn navigate<'tree, C: CursorLike<'tree>>(mut cursor: C, ids: &Identities) -> Vec<usize> {

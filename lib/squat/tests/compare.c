@@ -217,6 +217,45 @@ static void compare_group_equality(const SQTree *tree) {
   }
 }
 
+static void compare_iterator(const Nodes *nodes, SQNode root) {
+  uint32_t end = sq_node_end_slot(root);
+  for (unsigned cached = 0; cached < 2; cached++) {
+    SQNodeIterator *iterator = sq_node_iterator_new(root, cached);
+    CHECK(iterator && sq_node_is_null(sq_node_iterator_node(iterator)));
+    CHECK(sq_node_iterator_field_id(iterator) == 0);
+    SQCursor *cursor = sq_cursor_new(root);
+    CHECK(cursor);
+    uint32_t ordinal = 0;
+    while (!sq_node_eq(nodes->packed[ordinal], root)) ordinal++;
+    for (; ordinal < nodes->count && nodes->packed[ordinal].slot < end; ordinal++) {
+      SQNode node = sq_node_iterator_next(iterator);
+      CHECK(sq_node_eq(node, nodes->packed[ordinal]));
+      CHECK(sq_node_eq(node, sq_node_iterator_node(iterator)));
+      SQCursorAttributes actual, expected;
+      // Exercise lazy field-only fills before full snapshots, then repeat reads.
+      CHECK(sq_node_iterator_field_id(iterator) == sq_node_field_id(node));
+      sq_node_iterator_attributes(iterator, &actual);
+      sq_cursor_attributes(cursor, &expected);
+      CHECK(!memcmp(&actual, &expected, sizeof(actual)));
+      sq_node_iterator_attributes(iterator, &actual);
+      CHECK(!memcmp(&actual, &expected, sizeof(actual)));
+      if (!sq_cursor_goto_first_child(cursor)) {
+        while (!sq_cursor_goto_next_sibling(cursor) && sq_cursor_goto_parent(cursor)) {}
+      }
+    }
+    CHECK(sq_node_is_null(sq_node_iterator_next(iterator)));
+    CHECK(sq_node_is_null(sq_node_iterator_next(iterator)));
+    CHECK(sq_node_is_null(sq_node_iterator_node(iterator)));
+    CHECK(sq_node_iterator_field_id(iterator) == 0);
+    SQCursorAttributes empty, actual;
+    memset(&empty, 0, sizeof(empty));
+    sq_node_iterator_attributes(iterator, &actual);
+    CHECK(!memcmp(&actual, &empty, sizeof(actual)));
+    sq_cursor_delete(cursor);
+    sq_node_iterator_delete(iterator);
+  }
+}
+
 static void compare_tree(const TSTree *tree, const SQTree *packed, bool exhaustive) {
   compare_group_equality(packed);
   uint32_t count = ts_node_descendant_count(ts_tree_root_node(tree));
@@ -295,6 +334,11 @@ static void compare_tree(const TSTree *tree, const SQTree *packed, bool exhausti
       SAME_NODE(ts_node_child_with_descendant(root, nodes->mainline[i]),
                 sq_node_child_with_descendant(flat, nodes->packed[i]));
     }
+  }
+  compare_iterator(nodes, flat);
+  // Sample interior roots, including leaves and starts inside a physical group.
+  for (uint32_t index = 1; index < count; index += count / 8 + 1) {
+    compare_iterator(nodes, nodes->packed[index]);
   }
   SQCursor *packed_cursor = sq_cursor_new(flat);
   CHECK(packed_cursor);

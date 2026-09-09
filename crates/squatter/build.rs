@@ -6,12 +6,21 @@ fn main() {
         .include("../../lib/include")
         .include("../../lib/src");
     for file in [
-        "slab.c", "pack.c", "node.c", "cursor.c", "index.c", "scan.c", "query.c",
+        "slab.c",
+        "pack.c",
+        "node.c",
+        "cursor.c",
+        "iterator.c",
+        "unpack.c",
+        "index.c",
+        "scan.c",
+        "query.c",
     ] {
         build.file(root.join(file));
         println!("cargo:rerun-if-changed={}", root.join(file).display());
     }
     for file in [
+        "attributes.h",
         "query_plan.c",
         "query_internal.h",
         "include/tree_sitter/squat_query.h",

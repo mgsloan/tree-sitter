@@ -3,7 +3,7 @@ CC ?= cc
 CFLAGS ?= -O2 -g
 CPPFLAGS += -I$(ROOT)/lib/include -I$(ROOT)/lib/src -Iinclude
 WARNINGS := -std=c11 -Wall -Wextra -Werror
-SOURCES := slab.c pack.c node.c cursor.c index.c scan.c query.c
+SOURCES := slab.c pack.c node.c cursor.c iterator.c unpack.c index.c scan.c query.c
 BUILD ?= $(ROOT)/build/squat
 
 .PHONY: all clean test
@@ -12,7 +12,7 @@ all: $(BUILD)/libtree-sitter-squat.a $(BUILD)/compare
 $(BUILD):
 	mkdir -p $@
 
-$(BUILD)/%.o: %.c internal.h include/tree_sitter/squat.h | $(BUILD)
+$(BUILD)/%.o: %.c internal.h attributes.h include/tree_sitter/squat.h | $(BUILD)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) -c $< -o $@
 
 $(BUILD)/query.o: query_plan.c query_internal.h include/tree_sitter/squat_query.h
@@ -47,3 +47,6 @@ $(BUILD)/layout-bench: experiments/layout.c $(BUILD)/libtree-sitter-squat.a $(BU
 
 $(BUILD)/query-check: tests/query.c tests/field_lookup.h $(BUILD)/libtree-sitter-squat.a $(BUILD)/runtime.o
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) $(filter %.c %.a %.o,$^) -ldl -o $@
+
+$(BUILD)/unpack-bench: experiments/unpack.c $(BUILD)/libtree-sitter-squat.a $(BUILD)/runtime.o
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) $^ -o $@

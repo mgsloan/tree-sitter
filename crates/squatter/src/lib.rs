@@ -259,6 +259,19 @@ impl<'tree> Node<'tree> {
         }
     }
 
+    /// Native preorder iterator with an optional lazy symbol/field unpack cache.
+    /// Returned nodes borrow the tree, independently of the iterator.
+    pub fn node_iterator(self, unpack_cache: bool) -> Result<NodeIterator<'tree>, Error> {
+        let raw = unsafe { ffi::sq_node_iterator_new(self.raw, unpack_cache) };
+        NonNull::new(raw)
+            .map(|raw| NodeIterator {
+                raw,
+                current: None,
+                lifetime: PhantomData,
+            })
+            .ok_or(Error::Allocation)
+    }
+
     pub fn children(self) -> Children<'tree> {
         Children {
             next: self.child(0),
@@ -470,6 +483,48 @@ impl<'tree> Iterator for Children<'tree> {
 }
 impl std::iter::FusedIterator for Children<'_> {}
 
+/// Stackless native iteration over a node and its descendants.
+/// Attribute access refers to the most recently yielded node; before the first
+/// next() and after exhaustion it returns None.
+pub struct NodeIterator<'tree> {
+    raw: NonNull<c_void>,
+    current: Option<Node<'tree>>,
+    lifetime: PhantomData<&'tree Tree>,
+}
+impl<'tree> Iterator for NodeIterator<'tree> {
+    type Item = Node<'tree>;
+    fn next(&mut self) -> Option<Self::Item> {
+        self.current = Node::from_raw(unsafe { ffi::sq_node_iterator_next(self.raw.as_ptr()) });
+        self.current
+    }
+}
+impl std::iter::FusedIterator for NodeIterator<'_> {}
+impl<'tree> NodeIterator<'tree> {
+    pub fn node(&self) -> Option<Node<'tree>> {
+        self.current
+    }
+    pub fn attributes(&mut self) -> Option<traits::Attributes<'tree>> {
+        self.current?;
+        let mut raw = std::mem::MaybeUninit::uninit();
+        Some(unsafe {
+            ffi::sq_node_iterator_attributes(self.raw.as_ptr(), raw.as_mut_ptr());
+            raw.assume_init().into_attributes()
+        })
+    }
+    pub fn field_id(&mut self) -> Option<u16> {
+        self.current?;
+        let field = unsafe { ffi::sq_node_iterator_field_id(self.raw.as_ptr()) };
+        (field != 0).then_some(field)
+    }
+}
+impl Drop for NodeIterator<'_> {
+    fn drop(&mut self) {
+        unsafe {
+            ffi::sq_node_iterator_delete(self.raw.as_ptr());
+        }
+    }
+}
+
 pub struct Cursor<'tree> {
     raw: NonNull<c_void>,
     lifetime: PhantomData<&'tree Tree>,
@@ -588,6 +643,11 @@ mod ffi {
         ) -> RawNode;
         pub fn sq_node_child_with_descendant(node: RawNode, descendant: RawNode) -> RawNode;
         pub fn sq_node_has_supertype(node: RawNode, symbol: u16) -> bool;
+        pub fn sq_node_iterator_new(node: RawNode, cache: bool) -> *mut c_void;
+        pub fn sq_node_iterator_delete(iterator: *mut c_void);
+        pub fn sq_node_iterator_next(iterator: *mut c_void) -> RawNode;
+        pub fn sq_node_iterator_attributes(iterator: *mut c_void, out: *mut RawCursorAttributes);
+        pub fn sq_node_iterator_field_id(iterator: *mut c_void) -> u16;
         pub fn sq_cursor_attributes(cursor: *mut c_void, out: *mut RawCursorAttributes);
         pub fn sq_cursor_new(node: RawNode) -> *mut c_void;
         pub fn sq_cursor_delete(cursor: *mut c_void);
