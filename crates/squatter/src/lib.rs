@@ -227,7 +227,7 @@ impl<'tree> Node<'tree> {
     pub fn byte_range(self) -> Range<usize> {
         self.start_byte()..self.end_byte()
     }
-    pub fn utf8_text<'text>(self, source: &'text [u8]) -> Result<&'text str, std::str::Utf8Error> {
+    pub fn utf8_text(self, source: &[u8]) -> Result<&str, std::str::Utf8Error> {
         std::str::from_utf8(&source[self.byte_range()])
     }
     pub fn preorder(self) -> Preorder<'tree> {

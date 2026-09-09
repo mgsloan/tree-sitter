@@ -164,7 +164,10 @@ fn choose(
         selections = vec!["train-tiny".into(), "train-small".into()];
     }
     for selection in selections {
-        if arguments.samplings.join(&selection).is_file() {
+        if !Path::new(&selection).is_absolute()
+            && !Path::new(&selection).is_file()
+            && arguments.samplings.join(&selection).is_file()
+        {
             inputs.extend(select(
                 read_sampling(
                     &arguments.code_corpora,
@@ -461,7 +464,11 @@ fn main() -> Result<()> {
         "inputs": inputs, "planned": inputs.len(), "completed": 0, "failed": 0, "partial": true,
         "coverage": coverage, "registry": registry, "counter_status": meter.counter_status,
         "tool": {"checkout": git_identity(Path::new(".")), "container_revision": std::env::var("SQUAT_TOOL_SHA").ok(), "source_sha256": std::env::var("SQUAT_SOURCE_SHA256").ok(),
-                 "binary_sha256": std::env::current_exe().ok().and_then(|path| fs::read(path).ok()).map(|bytes| digest(&bytes))}, "code_corpora": git_identity(&arguments.code_corpora),
+                 // When explicitly invoked through ld-linux, current_exe points
+                 // at the loader. argv[0] still names the benchmark executable.
+                 "binary_sha256": std::env::args_os().next().and_then(|path| fs::read(path).ok())
+                    .or_else(|| std::env::current_exe().ok().and_then(|path| fs::read(path).ok()))
+                    .map(|bytes| digest(&bytes))}, "code_corpora": git_identity(&arguments.code_corpora),
         "machine": {"architecture": std::env::consts::ARCH, "os": std::env::consts::OS,
                     "cpuinfo": fs::read_to_string("/proc/cpuinfo").ok().and_then(|text| text.lines().find(|line| line.starts_with("model name")).map(str::to_owned))},
         "build": {"debug_assertions": cfg!(debug_assertions), "package_version": env!("CARGO_PKG_VERSION")},

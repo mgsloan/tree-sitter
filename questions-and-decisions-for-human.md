@@ -64,3 +64,13 @@ Updated alongside implementation commits below.
 - A source-snapshotted offline run passed all 40 selected original files with three repeats; mutated inputs and layout checks are being completed. See `tools/squatter/README.md` for commands and measurement boundaries.
 - Cache-line layout experiments align the allocation itself as well as column offsets. They use an aligned allocate/copy path because ordinary realloc does not preserve 64-byte alignment.
 - Sparse grammar symbols, variable-width supertypes, and interleaved field/symbol representations currently have byte estimates only. Their access-speed tradeoffs are not represented as measured results.
+
+### Measured experiment results
+
+- The 27-file, eleven-grammar layout run covered 2.81 million visible nodes. Compact slabs used 16.20, 15.24, and 17.10 bytes/node for 16/32/64 slots respectively. Keep 16 as the default: larger groups regress several grammars, especially TypeScript, and this bounded sample does not supersede the design's wider Pareto data. Full inputs, hashes, numbers, and caveats are in `lib/squat/experiments/`.
+- Explicit AVX2 bulk equality counts were about 1.5 times faster than the hardware-popcount SWAR baseline at widths 8, 9, and 12. The explicit implementation is retained. Production group scans still use exact SWAR masks; bulk counting does not establish a query speedup.
+- Field exceptions cost only 48 bytes over this experiment sample. Sparse grammar IDs and variable-width supertypes show modeled savings worth revisiting, but access/packing costs have not been measured. Interleaving symbol and field lanes increased their modeled column size by 2.5%.
+- All four layout variants passed unit and small-input grammar comparisons, including mutated inputs and serialization. Six grammars passed ASan/UBSan after the field/cursor changes.
+- Strict CSS repro verified short-circuit output: one recorded failure, zero completed files, and flushed partial summaries. This also caught and fixed absolute file paths being treated as sampling lists.
+- Indexed child-accessor comparisons now sample very wide parents; full cursor traversal still checks every transition. Repeated indexed access was making the test harness quadratic on malformed large arrays.
+- Benchmark identity accounts for explicit ELF-loader invocation: argv[0] identifies the benchmark executable, while `/proc/self/exe` can identify the loader instead.

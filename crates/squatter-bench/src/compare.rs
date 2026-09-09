@@ -161,7 +161,7 @@ pub fn relationships<'tree, A: NodeLike<'tree>, B: NodeLike<'tree>>(
         let a = first.node();
         let b = second.node();
         let ordinal = mainline_ids[&a.identity()];
-        if ordinal % stride == 0 {
+        if ordinal.is_multiple_of(stride) {
             let a_relations = [
                 a.parent(),
                 a.next_sibling(),
@@ -183,13 +183,24 @@ pub fn relationships<'tree, A: NodeLike<'tree>, B: NodeLike<'tree>>(
                 );
             }
             let attributes = a.attributes();
-            for index in 0..=attributes.child_count {
+            // Indexed child access scans siblings. A wide array must not turn
+            // the validation harness into quadratic work; cursor transitions
+            // below still check every child, and small parents are exhaustive.
+            let child_stride = (attributes.child_count / 100).max(1);
+            for index in (0..attributes.child_count)
+                .step_by(child_stride)
+                .chain(std::iter::once(attributes.child_count))
+            {
                 ensure!(
                     identity_a(a.child(index)) == identity_b(b.child(index)),
                     "child {index} differs at ordinal {ordinal}"
                 );
             }
-            for index in 0..=attributes.named_child_count {
+            let named_stride = (attributes.named_child_count / 100).max(1);
+            for index in (0..attributes.named_child_count)
+                .step_by(named_stride)
+                .chain(std::iter::once(attributes.named_child_count))
+            {
                 ensure!(
                     identity_a(a.named_child(index)) == identity_b(b.named_child(index)),
                     "named child {index} differs at ordinal {ordinal}"
