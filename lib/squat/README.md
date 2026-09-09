@@ -99,6 +99,8 @@ a node during cursor traversal. A sparse section after the supertype dictionary
 stores these exceptions as `(parent slot, field ID, result slot)` u32 triples,
 sorted by parent and field. `UINT32_MAX` represents a null result. The two final
 header words locate/count this section; both are zero when it is absent.
+The [comparison with ../main](experiments/field-lookup-review.md) reproduces the
+case its packed engine misses and explains the storage tradeoff.
 
 Known mainline seek differences are counted but ignored by default, as requested
 by the human. Use `--strict-seeks` for the container runner or `SQ_STRICT_SEEKS=1`
