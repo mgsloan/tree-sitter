@@ -36,17 +36,24 @@ pub struct Record<'tree> {
     pub depth: u32,
 }
 
-fn reverse_walk<'tree, N: NodeLike<'tree>>(
+fn reverse_walk<'tree, N: NodeLike<'tree>, C: CursorLike<'tree, Node = N>>(
     root: N,
     ids: &Identities,
+    make_cursor: &impl Fn(N) -> Result<C, tree_sitter_squatter::Error>,
 ) -> Result<Vec<Record<'tree>>> {
-    struct Frame<N> {
+    struct Frame<'tree, N> {
+        attributes: Attributes<'tree>,
         node: N,
         field: Option<u16>,
         children: Vec<(N, Option<u16>)>,
     }
-    fn frame<'tree, N: NodeLike<'tree>>(node: N, field: Option<u16>) -> Result<Frame<N>> {
-        let mut cursor = node.cursor()?;
+    fn frame<'tree, N: NodeLike<'tree>, C: CursorLike<'tree, Node = N>>(
+        node: N,
+        field: Option<u16>,
+        make_cursor: &impl Fn(N) -> Result<C, tree_sitter_squatter::Error>,
+    ) -> Result<Frame<'tree, N>> {
+        let mut cursor = make_cursor(node)?;
+        let attributes = cursor.attributes();
         let mut children = Vec::new();
         if cursor.goto_first_child() {
             loop {
@@ -57,6 +64,7 @@ fn reverse_walk<'tree, N: NodeLike<'tree>>(
             }
         }
         Ok(Frame {
+            attributes,
             node,
             field,
             children,
@@ -65,16 +73,16 @@ fn reverse_walk<'tree, N: NodeLike<'tree>>(
     // Mainline's reverse cursor can lose structural child indexes (and thus
     // fields/aliases). Enumerate siblings forward once, then consume them in
     // reverse. Both backends use this same adapter and pay the same cache cost.
-    let mut stack = vec![frame(root, None)?];
+    let mut stack = vec![frame(root, None, make_cursor)?];
     let mut records = Vec::with_capacity(ids.len());
     while let Some(current) = stack.last_mut() {
         if let Some((child, field)) = current.children.pop() {
-            stack.push(frame(child, field)?);
+            stack.push(frame(child, field, make_cursor)?);
         } else {
             let current = stack.pop().unwrap();
             records.push(Record {
                 ordinal: ids[&current.node.identity()],
-                attributes: current.node.attributes(),
+                attributes: current.attributes,
                 field: current.field,
                 depth: stack.len() as u32,
             });
@@ -83,21 +91,22 @@ fn reverse_walk<'tree, N: NodeLike<'tree>>(
     Ok(records)
 }
 
-pub fn walk<'tree, N: NodeLike<'tree>>(
+pub fn walk_with<'tree, N: NodeLike<'tree>, C: CursorLike<'tree, Node = N>>(
     root: N,
     ids: &Identities,
     backward: bool,
+    make_cursor: impl Fn(N) -> Result<C, tree_sitter_squatter::Error>,
 ) -> Result<Vec<Record<'tree>>> {
     if backward {
-        return reverse_walk(root, ids);
+        return reverse_walk(root, ids, &make_cursor);
     }
-    let mut cursor = root.cursor()?;
+    let mut cursor = make_cursor(root)?;
     let mut records = Vec::with_capacity(ids.len());
     loop {
         let node = cursor.node();
         records.push(Record {
             ordinal: ids[&node.identity()],
-            attributes: node.attributes(),
+            attributes: cursor.attributes(),
             field: cursor.field_id(),
             depth: cursor.depth(),
         });
@@ -110,6 +119,49 @@ pub fn walk<'tree, N: NodeLike<'tree>>(
             }
             if !cursor.goto_parent() {
                 return Ok(records);
+            }
+        }
+    }
+}
+
+pub fn walk<'tree, N: NodeLike<'tree>>(
+    root: N,
+    ids: &Identities,
+    backward: bool,
+) -> Result<Vec<Record<'tree>>> {
+    walk_with(root, ids, backward, |node| node.cursor())
+}
+
+/// Native cursor movement without attribute decoding or the reverse adapter.
+/// Recording every identity keeps correctness checks stronger than a checksum.
+pub fn navigate<'tree, C: CursorLike<'tree>>(
+    mut cursor: C,
+    ids: &Identities,
+    backward: bool,
+) -> Vec<usize> {
+    let mut nodes = Vec::with_capacity(ids.len());
+    if backward {
+        while cursor.goto_last_child() {}
+        loop {
+            nodes.push(ids[&cursor.node().identity()]);
+            if cursor.goto_previous_sibling() {
+                while cursor.goto_last_child() {}
+            } else if !cursor.goto_parent() {
+                return nodes;
+            }
+        }
+    }
+    loop {
+        nodes.push(ids[&cursor.node().identity()]);
+        if cursor.goto_first_child() {
+            continue;
+        }
+        loop {
+            if cursor.goto_next_sibling() {
+                break;
+            }
+            if !cursor.goto_parent() {
+                return nodes;
             }
         }
     }

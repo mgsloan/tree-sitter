@@ -143,3 +143,45 @@ individual pass/fail status. Existing matrix manifests are never overwritten.
 The summary checks query and input identities and requires complete passing runs.
 Its cross-variant ratios compare separate per-file medians; the mainline/squat
 ratios within each run retain the paired-repeat contract.
+
+## Cursor comparisons
+
+Both cursor types are exercised by default. The following selectors isolate
+navigation from attribute decoding:
+
+| Selector | Squat cursor | Work timed |
+|---|---|---|
+| `cursor-forward`, `cursor-backward` | `Cursor` | Native traversal and node identities |
+| `cursor-forward-cached`, `cursor-backward-cached` | `CachedCursor` | Same native traversal and identities |
+| `walk-forward`, `walk-backward` | `Cursor` | Traversal and all supported attributes |
+| `walk-forward-cached`, `walk-backward-cached` | `CachedCursor` | Same traversal and attributes |
+
+Every selector compares against mainline on identical bytes. The `-cached` suffix
+selects only squat's cursor; mainline uses its normal cursor. Cursor creation and
+destruction are timed. Both squat variants use a single bulk attribute FFI call,
+so their relative timings isolate caching rather than different FFI call counts.
+These walk timings should not be directly compared to the older per-node-accessor
+walk results. Queries and node-based seeking continue to use their existing paths.
+
+`walk-backward` still uses the compatibility adapter described above, which
+creates a fresh cursor at each node. That limits reuse and exposes cache setup
+cost. `cursor-backward` measures native last-child/previous-sibling/parent
+movement without that adapter or mainline's inconsistent reverse fields.
+
+```sh
+python3 tools/squatter/run.py --output build/squat-cursors \
+  --max-file-bytes 102400 --per-bucket 2 --repeat 5 --skip-layouts --skip-sampling \
+  --benchmark cursor-forward --benchmark cursor-backward \
+  --benchmark cursor-forward-cached --benchmark cursor-backward-cached \
+  --benchmark walk-forward --benchmark walk-backward \
+  --benchmark walk-forward-cached --benchmark walk-backward-cached
+python3 tools/squatter/summarize-cursors.py build/squat-cursors \
+  --output cursor-results.json
+```
+
+Use `--image IMAGE_ID` if the corpus's current pinned image is not cached locally.
+The summary verifies completed comparisons, input hashes, repeat counts, and
+source/binary identity. It retains per-file measurements and per-language
+quantiles. Cached/uncached ratios divide per-file timing medians for the two
+selectors; each selector's mainline comparison separately retains paired-repeat
+ratios. Result files are created exclusively and never overwritten.
