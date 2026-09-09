@@ -519,6 +519,7 @@ fn main() -> Result<()> {
         "field_contract": "field API differences expected only when squat agrees with mainline visible-child fields; ERROR parents have no fields",
         "iterator_contract": "native preorder; cached variants lazily unpack IDs; attribute walks derive depth from descendant counts; mainline uses its forward cursor",
         "cursor_contract": "walk-forward uses bulk cursor attributes; cursor-forward measures native navigation",
+        "workload_order": "rotate by batch and every two repeats, retaining both backend orders for each rotation",
         "query_engine": "slab NFA and structural plans adapted from ../main", "seek_contract": if arguments.strict_seeks { "strict" } else { "known differences counted but ignored by user request" },
     });
     fs::write(
@@ -704,9 +705,19 @@ fn main() -> Result<()> {
                     }
                 }
             }
+            let workload_count = benchmarks
+                .iter()
+                .filter(|name| *name != "cold-parse")
+                .count();
+            // Balance first/last workload positions, which can bias small traversals.
+            // Rotate only after both backend orders have been used.
+            let first_workload = (batch_index + repeat / 2) % workload_count.max(1);
             for benchmark in benchmarks
                 .iter()
                 .filter(|name| name.as_str() != "cold-parse")
+                .cycle()
+                .skip(first_workload)
+                .take(workload_count)
             {
                 let mut mainline_observations = Vec::new();
                 let mut squat_observations = Vec::new();

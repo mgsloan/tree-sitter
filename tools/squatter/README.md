@@ -189,3 +189,66 @@ The three variable-width ID columns are the only columns cached, and no unpackin
 occurs in navigation-only workloads. Source identities and the selected build
 flags must accompany kernel or group-size ablations. Group size changes the slab
 layout too, so those comparisons are not isolated unpack-kernel comparisons.
+
+## Running uploaded binaries on a benchmark VM
+
+`benchmark-upload.py` runs a prepared bundle without a remote build. The bundle
+contains `binaries/{ids,all,scalar,swar,avx2,group32,group64}/squatter-bench`,
+`unpack-{16,32,64}`, `local-build-manifest.json`, and
+`{bounded,large}/{corpus,registry.json}`. Grammar/query paths in each registry
+must resolve on the target machine; the saved grammar hashes are still checked.
+
+```sh
+python3 benchmark-upload.py ~/squatter-benchmark --cpu 0 --repeat 9
+```
+
+The runner invokes the guest's ELF loader explicitly, allowing binaries with a
+build-host Nix interpreter path to run against compatible guest libraries. It
+pins one CPU, runs variants sequentially, reverses variant order for the second
+sample, and alternates original/mutated order. It records binary hashes, CPU and
+libc details, exact commands, and `/proc/stat` snapshots around each operation.
+It requires a new `cloud-results` directory and stops on any failed comparison.
+No credentials or cloud provisioning are part of this runner.
+
+`--large-variants ids all` narrows the large-file matrix. Large runs select the
+six traversal workloads; the harness still records prerequisite parse timings,
+but does not run the additional cold-parse relationship checks. The bounded
+matrix includes those checks. `--resume` skips completed operations only when
+their commands and binary hashes match, and refuses to overwrite unfinished
+operations; preserve interrupted artifacts separately first.
+
+After downloading `cloud-results`, validate and preserve the complete matrix:
+
+```sh
+python3 tools/squatter/summarize-iterators.py build/squat-iterator/cloud-results \
+  build/squat-iterator/iterator-run.json --output iterator-results.json
+```
+
+The summary checks uploaded/measured binary identities, completed repeats, and
+matching input hashes, node counts, and workload coverage. Cache/iterator ratios
+compare separate per-file medians; mainline timings provide a drift control.
+Files originally at least 1 MiB also receive their own summaries so small inputs
+do not obscure large-tree behavior. Group-size variants change the slab layout
+and must be interpreted separately from unpack-kernel-only variants.
+
+For independent unpack windows, build four binaries with
+`SQ_GROUP_SIZE=16` and `SQ_ITERATOR_UNPACK_SLOTS=16/32/64/128`. Keep the input
+sample and remaining compiler flags identical. A focused matrix can use:
+
+```sh
+python3 benchmark-upload.py ~/squatter-benchmark --output-name window-results \
+  --repeat 5 --variants window16 window32 window64 window128 \
+  --benchmarks walk-iterator walk-iterator-cached --unpack-sizes 128
+python3 tools/squatter/summarize-iterators.py build/squat-iterator/window-results \
+  build/squat-iterator/iterator-run.json --baseline window16 --output window-results.json
+```
+
+The summarizer also requires equal slab sizes and group counts for variants with
+identical group sizes. `--unpack-sizes` selects uploaded `unpack-N` microbenchmark
+binaries; the microbenchmark CSV records both group size and unpack-window size.
+
+The main harness rotates workload order by batch and after every two repeats,
+so each rotation sees both backend orders. For a fully balanced single-file
+measurement, use twice as many repeats as selected non-parse workloads (or a
+multiple thereof). Earlier saved iterator matrices used fixed workload order;
+their mainline controls expose a warming effect in small navigation workloads.
