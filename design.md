@@ -6,13 +6,13 @@ To make the representation compact without much access overhead, a statistical
 fact about preorder nodes is exploited. In the space of possible values for a
 field, their values are often clustered.
 
-So, the idea is to split the nodes into groups. Each squat group stores the absolute base value for each field. This allows most fields to be `u8`. Groups are filled from right to left. If a node has a value that doesn't fit, the remaining leading slots are wasted and the node becomes the rightmost node of a new group to the left.
+So, the idea is to split the nodes into groups. Each squat group stores the absolute base value for each field. This allows most fields to be `u8`. If a node is encountered that has a field that is not representable, it gets put in a different group.
 
 ## Slab layout
 
 * `SlabHeader`
-* Struct-of-arrays `Group` with capacity `group_capacity` per column
-* Struct-of-arrays `Node` with capacity `slot_capacity` per column
+* Struct-of-arrays `Group` with `group_capacity`
+* Struct-of-arrays `Node` with `slot_capacity`
 * Symbol presence bitmaps
 * Supertype dictionary
 * Sparse field-lookup exceptions (version 2 amendment; see below)
