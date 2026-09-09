@@ -276,6 +276,16 @@ impl<'tree> Node<'tree> {
             })
             .ok_or(Error::Allocation)
     }
+    /// Walk with a private, lazy cache of unpacked column groups.
+    pub fn walk_cached(self) -> Result<CachedCursor<'tree>, Error> {
+        let raw = unsafe { ffi::sq_cached_cursor_new(self.raw) };
+        NonNull::new(raw)
+            .map(|raw| CachedCursor {
+                raw,
+                lifetime: PhantomData,
+            })
+            .ok_or(Error::Allocation)
+    }
     pub fn kind_id(self) -> u16 {
         unsafe { ffi::sq_node_symbol(self.raw) }
     }
@@ -474,6 +484,15 @@ pub struct Cursor<'tree> {
     lifetime: PhantomData<&'tree Tree>,
 }
 impl<'tree> Cursor<'tree> {
+    /// Read a snapshot of the current node's attributes in one native call.
+    pub fn attributes(&mut self) -> traits::Attributes<'tree> {
+        let mut raw = std::mem::MaybeUninit::uninit();
+        unsafe {
+            ffi::sq_cursor_attributes(self.raw.as_ptr(), raw.as_mut_ptr());
+            raw.assume_init().into_attributes()
+        }
+    }
+
     pub fn node(&self) -> Node<'tree> {
         Node::from_raw(unsafe { ffi::sq_cursor_node(self.raw.as_ptr()) }).unwrap()
     }
@@ -499,6 +518,98 @@ impl<'tree> Cursor<'tree> {
 impl Drop for Cursor<'_> {
     fn drop(&mut self) {
         unsafe { ffi::sq_cursor_delete(self.raw.as_ptr()) };
+    }
+}
+/// A cursor with private unpacked-column caches. Navigation is identical to
+/// [`Cursor`]. Use [`Self::attributes`] to read through the cache; [`Self::node`]
+/// returns an ordinary node that remains valid after the cursor moves or drops.
+pub struct CachedCursor<'tree> {
+    raw: NonNull<c_void>,
+    lifetime: PhantomData<&'tree Tree>,
+}
+impl<'tree> CachedCursor<'tree> {
+    /// Read a snapshot of the current node's attributes in one native call.
+    pub fn attributes(&mut self) -> traits::Attributes<'tree> {
+        let mut raw = std::mem::MaybeUninit::uninit();
+        unsafe {
+            ffi::sq_cached_cursor_attributes(self.raw.as_ptr(), raw.as_mut_ptr());
+            raw.assume_init().into_attributes()
+        }
+    }
+
+    pub fn node(&self) -> Node<'tree> {
+        Node::from_raw(unsafe { ffi::sq_cached_cursor_node(self.raw.as_ptr()) }).unwrap()
+    }
+    pub fn depth(&self) -> u32 {
+        unsafe { ffi::sq_cached_cursor_depth(self.raw.as_ptr()) }
+    }
+    pub fn goto_first_child(&mut self) -> bool {
+        unsafe { ffi::sq_cached_cursor_goto_first_child(self.raw.as_ptr()) }
+    }
+    pub fn goto_last_child(&mut self) -> bool {
+        unsafe { ffi::sq_cached_cursor_goto_last_child(self.raw.as_ptr()) }
+    }
+    pub fn goto_next_sibling(&mut self) -> bool {
+        unsafe { ffi::sq_cached_cursor_goto_next_sibling(self.raw.as_ptr()) }
+    }
+    pub fn goto_previous_sibling(&mut self) -> bool {
+        unsafe { ffi::sq_cached_cursor_goto_previous_sibling(self.raw.as_ptr()) }
+    }
+    pub fn goto_parent(&mut self) -> bool {
+        unsafe { ffi::sq_cached_cursor_goto_parent(self.raw.as_ptr()) }
+    }
+}
+impl Drop for CachedCursor<'_> {
+    fn drop(&mut self) {
+        unsafe { ffi::sq_cached_cursor_delete(self.raw.as_ptr()) };
+    }
+}
+
+#[repr(C)]
+struct RawCursorAttributes {
+    kind: *const std::ffi::c_char,
+    grammar_name: *const std::ffi::c_char,
+    start_byte: u32,
+    end_byte: u32,
+    start_point: RawPoint,
+    end_point: RawPoint,
+    child_count: u32,
+    named_child_count: u32,
+    descendant_count: u32,
+    symbol: u16,
+    grammar_symbol: u16,
+    field_id: u16,
+    is_named: bool,
+    is_extra: bool,
+    is_missing: bool,
+    is_error: bool,
+    has_error: bool,
+}
+impl RawCursorAttributes {
+    // Only called with an initialized snapshot from a live cursor. Its language
+    // strings are retained by the tree, so they may outlive the cursor itself.
+    unsafe fn into_attributes<'tree>(self) -> traits::Attributes<'tree> {
+        traits::Attributes {
+            kind: unsafe { CStr::from_ptr(self.kind) }.to_str().unwrap(),
+            grammar_name: unsafe { CStr::from_ptr(self.grammar_name) }
+                .to_str()
+                .unwrap(),
+            kind_id: self.symbol,
+            grammar_id: self.grammar_symbol,
+            start_byte: self.start_byte as usize,
+            end_byte: self.end_byte as usize,
+            start_position: self.start_point.into(),
+            end_position: self.end_point.into(),
+            is_named: self.is_named,
+            is_extra: self.is_extra,
+            is_missing: self.is_missing,
+            is_error: self.is_error,
+            has_error: self.has_error,
+            has_changes: false,
+            child_count: self.child_count as usize,
+            named_child_count: self.named_child_count as usize,
+            descendant_count: self.descendant_count as usize,
+        }
     }
 }
 
@@ -534,6 +645,17 @@ mod ffi {
         ) -> RawNode;
         pub fn sq_node_child_with_descendant(node: RawNode, descendant: RawNode) -> RawNode;
         pub fn sq_node_has_supertype(node: RawNode, symbol: u16) -> bool;
+        pub fn sq_cached_cursor_new(node: RawNode) -> *mut c_void;
+        pub fn sq_cached_cursor_delete(cursor: *mut c_void);
+        pub fn sq_cached_cursor_node(cursor: *const c_void) -> RawNode;
+        pub fn sq_cached_cursor_depth(cursor: *const c_void) -> u32;
+        pub fn sq_cached_cursor_goto_first_child(cursor: *mut c_void) -> bool;
+        pub fn sq_cached_cursor_goto_last_child(cursor: *mut c_void) -> bool;
+        pub fn sq_cached_cursor_goto_next_sibling(cursor: *mut c_void) -> bool;
+        pub fn sq_cached_cursor_goto_previous_sibling(cursor: *mut c_void) -> bool;
+        pub fn sq_cached_cursor_goto_parent(cursor: *mut c_void) -> bool;
+        pub fn sq_cursor_attributes(cursor: *mut c_void, out: *mut RawCursorAttributes);
+        pub fn sq_cached_cursor_attributes(cursor: *mut c_void, out: *mut RawCursorAttributes);
         pub fn sq_cursor_new(node: RawNode) -> *mut c_void;
         pub fn sq_cursor_delete(cursor: *mut c_void);
         pub fn sq_cursor_node(cursor: *const c_void) -> RawNode;

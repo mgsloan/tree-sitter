@@ -107,6 +107,8 @@ uint32_t sq_get(const uint8_t *, uint32_t offset, uint32_t index, uint8_t bits);
 void sq_set(uint8_t *, uint32_t offset, uint32_t index, uint8_t bits, uint32_t);
 uint32_t sq_group_get(const SQTree *, unsigned, uint32_t);
 uint32_t sq_node_get(SQNode, unsigned);
+void sq_decode_group(const SQTree *, uint32_t group, unsigned column,
+                     uint32_t values[SQ_GROUP_SIZE]);
 uint32_t sq_next_slot(const SQTree *, uint32_t);
 uint32_t sq_node_end_slot(SQNode);
 SQNode sq_null(void);

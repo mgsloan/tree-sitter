@@ -31,6 +31,7 @@ int main(void) {
     assert(metadata);
     TSLanguage language = {.abi_version = TREE_SITTER_LANGUAGE_VERSION,
                            .symbol_count = symbols,
+                           .field_count = symbols - 1,
                            .symbol_metadata = metadata};
     SQError error;
     SQTree *tree = sq_allocate(&language, 3, &error);
@@ -61,6 +62,15 @@ int main(void) {
             assert(sq_get(tree->data, offset, (capacities[k] - 2) * scale + i, bits) ==
                    ((i * UINT64_C(31337) + c) & ((UINT64_C(1) << bits) - 1)));
           }
+          if (region) {
+            for (uint32_t group = 0; group < 2; group++) {
+              uint32_t values[SQ_GROUP_SIZE];
+              sq_decode_group(tree, group, c, values);
+              for (uint32_t i = 0; i < SQ_GROUP_SIZE; i++) {
+                assert(values[i] == sq_node_get((SQNode){tree, group * SQ_GROUP_SIZE + i}, c));
+              }
+            }
+          }
           for (uint32_t i = 0; i < (capacities[k] - 2) * scale; i++) {
             assert(sq_get(tree->data, offset, i, bits) == 0);
           }
@@ -71,6 +81,6 @@ int main(void) {
     sq_tree_delete(tree);
     free(metadata);
   }
-  puts("ok: lane relocation for symbol widths 3 through 16, growth, compaction, overflow");
+  puts("ok: packed-column decoding, lane relocation, growth, compaction, overflow");
   return 0;
 }

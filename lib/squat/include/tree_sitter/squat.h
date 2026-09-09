@@ -15,6 +15,18 @@ typedef struct {
   uint32_t slot;
 } SQNode;
 typedef struct SQCursor SQCursor;
+typedef struct SQCachedCursor SQCachedCursor;
+/* A copied snapshot. Strings borrow the tree's retained language. Counts include
+ * visible nodes only; descendant_count includes the current node. */
+typedef struct {
+  const char *type, *grammar_type;
+  uint32_t start_byte, end_byte;
+  TSPoint start_point, end_point;
+  uint32_t child_count, named_child_count, descendant_count;
+  TSSymbol symbol, grammar_symbol;
+  TSFieldId field_id;
+  bool is_named, is_extra, is_missing, is_error, has_error;
+} SQCursorAttributes;
 /* Encoded node columns: coordinate values are deltas from their group bases;
  * symbols are raw IDs with builtin errors remapped after the grammar range. */
 typedef enum {
@@ -130,6 +142,23 @@ bool sq_cursor_goto_last_child(SQCursor *);
 bool sq_cursor_goto_next_sibling(SQCursor *);
 bool sq_cursor_goto_previous_sibling(SQCursor *);
 bool sq_cursor_goto_parent(SQCursor *);
+/* Both variants share navigation and the bulk attribute interface. The cached
+ * variant lazily unpacks one group per accessed column. Ordinary SQNodes returned
+ * by either cursor remain independent handles and do not borrow cursor storage.
+ * Trees must outlive cursors; each cursor owns its cache and traversal stack. */
+void sq_cursor_attributes(SQCursor *, SQCursorAttributes *);
+
+SQCachedCursor *sq_cached_cursor_new(SQNode);
+void sq_cached_cursor_delete(SQCachedCursor *);
+SQNode sq_cached_cursor_node(const SQCachedCursor *);
+SQNode sq_cached_cursor_parent_node(const SQCachedCursor *);
+uint32_t sq_cached_cursor_depth(const SQCachedCursor *);
+bool sq_cached_cursor_goto_first_child(SQCachedCursor *);
+bool sq_cached_cursor_goto_last_child(SQCachedCursor *);
+bool sq_cached_cursor_goto_next_sibling(SQCachedCursor *);
+bool sq_cached_cursor_goto_previous_sibling(SQCachedCursor *);
+bool sq_cached_cursor_goto_parent(SQCachedCursor *);
+void sq_cached_cursor_attributes(SQCachedCursor *, SQCursorAttributes *);
 
 #ifdef __cplusplus
 }

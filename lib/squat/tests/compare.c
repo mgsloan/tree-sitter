@@ -133,6 +133,76 @@ static void compare_node(Nodes *nodes, uint32_t i) {
   }
   CHECK(sq_tree_group_has_symbol(b.tree, b.slot / SQ_GROUP_SIZE, sq_node_symbol(b)));
 }
+static bool check_move(bool plain, bool cached) {
+  CHECK(plain == cached);
+  return plain;
+}
+
+static void compare_cursor_state(SQCursor *plain, SQCachedCursor *cached) {
+  SQNode node = sq_cursor_node(plain);
+  CHECK(sq_node_eq(node, sq_cached_cursor_node(cached)));
+  CHECK(sq_node_eq(sq_cursor_parent_node(plain), sq_cached_cursor_parent_node(cached)));
+  CHECK(sq_cursor_depth(plain) == sq_cached_cursor_depth(cached));
+  SQCursorAttributes expected, actual;
+  sq_cursor_attributes(plain, &expected);
+  sq_cached_cursor_attributes(cached, &actual);
+  CHECK(memcmp(&expected, &actual, sizeof(expected)) == 0);
+  CHECK(actual.symbol == sq_node_symbol(node));
+  CHECK(actual.grammar_symbol == sq_node_grammar_symbol(node));
+  CHECK(strcmp(actual.type, sq_node_type(node)) == 0);
+  CHECK(strcmp(actual.grammar_type, sq_node_grammar_type(node)) == 0);
+  CHECK(actual.start_byte == sq_node_start_byte(node));
+  CHECK(actual.end_byte == sq_node_end_byte(node));
+  TSPoint start = sq_node_start_point(node), end = sq_node_end_point(node);
+  CHECK(actual.start_point.row == start.row && actual.start_point.column == start.column);
+  CHECK(actual.end_point.row == end.row && actual.end_point.column == end.column);
+  CHECK(actual.field_id == sq_node_field_id(node));
+  CHECK(actual.is_named == sq_node_is_named(node));
+  CHECK(actual.is_extra == sq_node_is_extra(node));
+  CHECK(actual.is_missing == sq_node_is_missing(node));
+  CHECK(actual.is_error == sq_node_is_error(node));
+  CHECK(actual.has_error == sq_node_has_error(node));
+  CHECK(actual.child_count == sq_node_child_count(node));
+  CHECK(actual.named_child_count == sq_node_named_child_count(node));
+  CHECK(actual.descendant_count == sq_node_descendant_count(node));
+  // Repeated reads must be identical after the first lazy decode.
+  sq_cached_cursor_attributes(cached, &actual);
+  CHECK(memcmp(&expected, &actual, sizeof(expected)) == 0);
+}
+
+static void compare_cursor_mixed(SQNode root) {
+  SQCursor *plain = sq_cursor_new(root);
+  SQCachedCursor *cached = sq_cached_cursor_new(root);
+  CHECK(plain && cached);
+  uint32_t random = 42;
+  for (unsigned i = 0; i < 512; i++) {
+    compare_cursor_state(plain, cached);
+    random = random * 1664525u + 1013904223u;
+    // Both successful and failed moves retain the same logical position/cache.
+    switch (random % 5) {
+    case 0:
+      CHECK(sq_cursor_goto_first_child(plain) == sq_cached_cursor_goto_first_child(cached));
+      break;
+    case 1:
+      CHECK(sq_cursor_goto_last_child(plain) == sq_cached_cursor_goto_last_child(cached));
+      break;
+    case 2:
+      CHECK(sq_cursor_goto_next_sibling(plain) == sq_cached_cursor_goto_next_sibling(cached));
+      break;
+    case 3:
+      CHECK(sq_cursor_goto_previous_sibling(plain) ==
+            sq_cached_cursor_goto_previous_sibling(cached));
+      break;
+    case 4:
+      CHECK(sq_cursor_goto_parent(plain) == sq_cached_cursor_goto_parent(cached));
+      break;
+    }
+  }
+  compare_cursor_state(plain, cached);
+  sq_cursor_delete(plain);
+  sq_cached_cursor_delete(cached);
+}
+
 static void compare_supertypes(const TSTreeCursor *cursor, SQNode node) {
   const TreeCursor *raw = (const TreeCursor *)cursor;
   const SQTree *tree = node.tree;
@@ -255,39 +325,54 @@ static void compare_tree(const TSTree *tree, const SQTree *packed, bool exhausti
     }
   }
   SQCursor *c = sq_cursor_new(flat);
-  CHECK(c);
+  SQCachedCursor *cached = sq_cached_cursor_new(flat);
+  CHECK(c && cached);
+#define MOVE(name)                                                                                 \
+  (moved_plain = sq_cursor_##name(c), check_move(moved_plain, sq_cached_cursor_##name(cached)))
+  bool moved_plain;
   i = 0;
   for (;;) {
+    compare_cursor_state(c, cached);
     CHECK(sq_node_eq(sq_cursor_node(c), nodes->packed[i++]));
-    if (sq_cursor_goto_first_child(c)) {
+    if (MOVE(goto_first_child)) {
       continue;
     }
     bool moved = false;
     do {
-      if (sq_cursor_goto_next_sibling(c)) {
+      if (MOVE(goto_next_sibling)) {
         moved = true;
         break;
       }
-    } while (sq_cursor_goto_parent(c));
+    } while (MOVE(goto_parent));
     if (!moved) {
       break;
     }
   }
   CHECK(i == count && sq_cursor_depth(c) == 0);
-  while (sq_cursor_goto_last_child(c)) {
+  while (MOVE(goto_last_child)) {
   }
   i = count;
   for (;;) {
+    compare_cursor_state(c, cached);
     CHECK(i > 0 && sq_node_eq(sq_cursor_node(c), nodes->packed[--i]));
-    if (sq_cursor_goto_previous_sibling(c)) {
-      while (sq_cursor_goto_last_child(c)) {
+    if (MOVE(goto_previous_sibling)) {
+      while (MOVE(goto_last_child)) {
       }
-    } else if (!sq_cursor_goto_parent(c)) {
+    } else if (!MOVE(goto_parent)) {
       break;
     }
   }
   CHECK(i == 0 && sq_cursor_depth(c) == 0);
+  compare_cursor_state(c, cached);
   sq_cursor_delete(c);
+  sq_cached_cursor_delete(cached);
+#undef MOVE
+  compare_cursor_mixed(flat);
+  // Rooting at an interior node must not escape to its tree-level siblings.
+  SQNode child = sq_node_child(flat, 0);
+  if (!sq_node_is_null(child)) {
+    compare_cursor_mixed(child);
+  }
   free(nodes->mainline);
   free(nodes->packed);
 }
