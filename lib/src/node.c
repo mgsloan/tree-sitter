@@ -384,6 +384,10 @@ static inline TSNode ts_node__descendant_for_byte_range(
       // touch the start of the range.
       if (range_start < ts_node_start_byte(child)) break;
 
+      // Skip empty subtrees with no visible nodes to allow finding a later sibling.
+      if (is_empty && !ts_node__is_relevant(child, true) &&
+          ts_node_child_count(child) == 0) continue;
+
       node = child;
       if (ts_node__is_relevant(node, include_anonymous)) {
         last_visible_node = node;
@@ -431,6 +435,10 @@ static inline TSNode ts_node__descendant_for_point_range(
       // The start of this node must extend far enough backward to
       // touch the start of the range.
       if (point_lt(range_start, ts_node_start_point(child))) break;
+
+      // Skip empty subtrees with no visible nodes to allow finding a later sibling.
+      if (is_empty && !ts_node__is_relevant(child, true) &&
+          ts_node_child_count(child) == 0) continue;
 
       node = child;
       if (ts_node__is_relevant(node, include_anonymous)) {
