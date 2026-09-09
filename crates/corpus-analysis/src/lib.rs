@@ -194,8 +194,13 @@ pub struct LoadedGrammar {
     _library: libloading::Library,
 }
 impl LoadedGrammar {
-    /// Native grammar code must be executed in the caller's grammar container.
-    pub fn open(grammar: &Grammar) -> Result<Self> {
+    /// Load native grammar code in the caller's grammar container.
+    ///
+    /// # Safety
+    /// The library must export the requested Tree-sitter language function.
+    /// Keep this owner alive until every derived language, parser, tree, and
+    /// query has been dropped: cloning Language does not retain a native DSO.
+    pub unsafe fn open(grammar: &Grammar) -> Result<Self> {
         let sha256 = digest(&fs::read(&grammar.library)?);
         ensure!(
             grammar.library_sha256.is_empty() || sha256 == grammar.library_sha256,

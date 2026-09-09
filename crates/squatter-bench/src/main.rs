@@ -512,7 +512,9 @@ fn main() -> Result<()> {
                 if !grammars.contains_key(&input.grammar) {
                     grammars.insert(
                         input.grammar.clone(),
-                        LoadedGrammar::open(&registry.grammars[&input.grammar])?,
+                        // The registry identifies trusted grammar exports. This map
+                        // outlives every parser/tree/query created below.
+                        unsafe { LoadedGrammar::open(&registry.grammars[&input.grammar])? },
                     );
                 }
                 if wants_queries && !queries.contains_key(&input.grammar) {

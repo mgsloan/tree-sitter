@@ -172,7 +172,9 @@ fn sample(arguments: Sample) -> Result<()> {
             if !loaded.contains_key(&input.grammar) {
                 loaded.insert(
                     input.grammar.clone(),
-                    LoadedGrammar::open(&registry.grammars[&input.grammar])?,
+                    // The registry identifies trusted grammar exports. This map
+                    // outlives every parser/tree/query created below.
+                    unsafe { LoadedGrammar::open(&registry.grammars[&input.grammar])? },
                 );
             }
             let bytes = fs::read(arguments.code_corpora.join(&input.path))?;
