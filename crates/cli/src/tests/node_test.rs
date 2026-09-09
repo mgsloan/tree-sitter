@@ -1,4 +1,4 @@
-use tree_sitter::{InputEdit, Node, Parser, Point, Tree};
+use tree_sitter::{InputEdit, Node, Parser, Point, Range, Tree};
 use tree_sitter_generate::load_grammar_file;
 
 use super::{
@@ -1222,6 +1222,68 @@ private:
         field_decl.child_with_descendant(field_ident).unwrap(),
         field_ident
     );
+}
+
+#[test]
+fn test_node_descendant_for_range_after_hidden_zero_width_token() {
+    let language = get_test_fixture_language("external_unicode_column_alignment");
+    let mut parser = Parser::new();
+    parser.set_language(&language).unwrap();
+    // The scanner emits a hidden, zero-width _start_list before list_item.
+    let tree = parser.parse("-", None).unwrap();
+    let root = tree.root_node();
+    assert!(!root.has_error());
+    let item = root.named_child(0).unwrap().named_child(0).unwrap();
+    assert_eq!(item.kind(), "list_item");
+
+    let point = Point::new(0, 0);
+    for node in [
+        root.descendant_for_byte_range(0, 0),
+        root.named_descendant_for_byte_range(0, 0),
+        root.descendant_for_point_range(point, point),
+        root.named_descendant_for_point_range(point, point),
+    ] {
+        assert_eq!(node, Some(item));
+    }
+}
+
+#[test]
+fn test_node_descendant_for_range_after_hidden_zero_width_subtree() {
+    let mut parser = Parser::new();
+    parser.set_language(&get_language("ruby")).unwrap();
+    let code = "class A b end";
+    // At the included-range boundary, Ruby emits a zero-width _line_break
+    // inside a hidden _terminator, immediately before the identifier `b`.
+    parser
+        .set_included_ranges(&[0..8, 8..code.len()].map(|range| Range {
+            start_byte: range.start,
+            end_byte: range.end,
+            start_point: Point::new(0, range.start),
+            end_point: Point::new(0, range.end),
+        }))
+        .unwrap();
+    let tree = parser.parse(code, None).unwrap();
+    let root = tree.root_node();
+    assert!(!root.has_error());
+    let identifier = root
+        .named_child(0)
+        .unwrap()
+        .child_by_field_name("body")
+        .unwrap()
+        .named_child(0)
+        .unwrap();
+    assert_eq!(identifier.kind(), "identifier");
+    assert_eq!(identifier.byte_range(), 8..9);
+
+    let point = Point::new(0, 8);
+    for node in [
+        root.descendant_for_byte_range(8, 8),
+        root.named_descendant_for_byte_range(8, 8),
+        root.descendant_for_point_range(point, point),
+        root.named_descendant_for_point_range(point, point),
+    ] {
+        assert_eq!(node, Some(identifier));
+    }
 }
 
 fn get_all_nodes(tree: &Tree) -> Vec<Node> {
