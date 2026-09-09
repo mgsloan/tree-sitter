@@ -42,11 +42,14 @@ def main():
     parser.add_argument("--per-bucket", type=int, default=4)
     parser.add_argument("--repeat", type=int, default=3)
     parser.add_argument("--count", type=int)
+    parser.add_argument("--max-file-bytes", type=int, default=4 * 1048576)
     parser.add_argument("--timeout", type=int, default=1200)
     parser.add_argument("--skip-layouts", action="store_true")
     parser.add_argument("--skip-mutated", action="store_true")
     parser.add_argument("--skip-sampling", action="store_true")
     parser.add_argument("--skip-benchmarks", action="store_true")
+    parser.add_argument("--unoptimized-query", action="store_true")
+    parser.add_argument("--benchmark", action="append", help="benchmark selector; repeatable")
     args = parser.parse_args()
     corpus = args.code_corpora.resolve()
     output = args.output.resolve()
@@ -101,6 +104,9 @@ def main():
                         coverage["unclassified_or_unselected_grammar"] += 1
                         continue
                     size = path.stat().st_size
+                    if size > args.max_file_bytes:
+                        coverage["oversized"] += 1
+                        continue
                     bucket = "small" if size < 4096 else "normal" if size <= 102400 else "large" if 1048576 < size <= 4 * 1048576 else None
                     if bucket is None:
                         coverage["intentional_size_gap_or_above_4mib"] += 1
@@ -135,6 +141,19 @@ def main():
               "--memory=8g", "--cpus=4", "--pids-limit=256", "--entrypoint", "sh",
               "-v", f"{snapshot}:/work:ro", "-v", f"{output}:/out:rw", "-e", f"SQUAT_TOOL_SHA={provenance['tool_sha']}", "-e", f"SQUAT_SOURCE_SHA256={provenance['source_sha256']}"]
     registry = dict(code_corpora_sha=provenance["code_corpora_sha"], suffixes=suffixes, grammars={})
+    query_sources = collections.defaultdict(set)
+    for reference in [corpus / "zed", corpus / "zed-extensions"]:
+        for parent, directories, files in os.walk(reference, followlinks=False):
+            directories[:] = [name for name in directories if name not in [".git", "node_modules", "target"]
+                              and not (Path(parent) / name).is_symlink()]
+            if "config.toml" not in files:
+                continue
+            config = tomllib.loads((Path(parent) / "config.toml").read_text())
+            grammar = config.get("grammar")
+            if grammar in grammar_names:
+                query_sources[grammar].update(Path(parent) / name for name in files if name.endswith(".scm"))
+    query_outputs = output / "queries"
+    query_outputs.mkdir()
     for name in sorted({entry["grammar"] for entry in staged}):
         entry = selected[name]
         checkout = corpus / "grammars" / name
@@ -151,6 +170,16 @@ cc -shared -fPIC -O2 -I"$source" "$@" -o "/out/grammars/$name.so"
         registry["grammars"][name] = dict(library=f"/out/grammars/{name}.so",
             symbol="tree_sitter_" + entry.get("grammar", name).replace("-", "_"),
             library_sha256=sha256(grammar_outputs / f"{name}.so"), sha=entry["sha"])
+        for directory in {checkout / "queries", checkout / entry.get("directory", "") / "queries"}:
+            if directory.is_dir():
+                query_sources[name].update(directory.rglob("*.scm"))
+        specs = []
+        for index, path in enumerate(sorted(query_sources[name])):
+            destination = query_outputs / f"{name}-{index}.scm"
+            shutil.copyfile(path, destination)
+            specs.append(dict(name=path.relative_to(corpus).as_posix(),
+                              path=f"/out/queries/{destination.name}", sha256=sha256(destination)))
+        registry["grammars"][name]["queries"] = specs
         provenance.setdefault("grammars", {})[name] = dict(
             pin=entry["sha"], checkout_sha=revision(checkout),
             parser_sha256=sha256(checkout / entry.get("directory", "") / "src/parser.c"),
@@ -181,6 +210,9 @@ cc -shared -fPIC -O2 -I"$source" "$@" -o "/out/grammars/$name.so"
     # POSIX sh has no array slice: shift before forwarding remaining arguments.
     command = f'''repeat=$1; seed=$2; name=$3; shift 3; {loader} /out/target/release/squatter-bench --code-corpora /out/corpus --registry /out/registry.json --all --repeat "$repeat" --seed "$seed" --output-directory /out/bench-outputs --output "$name" "$@"'''
     extra = ["--count", str(args.count)] if args.count is not None else []
+    extra += args.benchmark or []
+    if args.unoptimized_query:
+        extra += ["--unoptimized-query"]
     if not args.skip_benchmarks:
         execute("benchmark", command, str(args.repeat), str(args.seed), "baseline", *extra)
         if not args.skip_mutated:

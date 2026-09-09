@@ -1,5 +1,6 @@
 mod compare;
 mod measure;
+mod queries;
 
 use anyhow::{Context, Result, bail, ensure};
 use clap::Parser;
@@ -19,7 +20,9 @@ use std::{
 use tree_sitter::Point;
 use tree_sitter_squatter::{PackOptions, Tree};
 
-const BENCHMARKS: [&str; 5] = [
+const BENCHMARKS: [&str; 7] = [
+    "query-matches",
+    "query-captures",
     "walk-forward",
     "walk-backward",
     "seek-byte",
@@ -29,9 +32,7 @@ const BENCHMARKS: [&str; 5] = [
 const PERCENTILES: [f64; 6] = [0.0, 50.0, 90.0, 95.0, 99.0, 100.0];
 
 #[derive(Parser, Serialize)]
-#[command(
-    about = "Paired mainline/squat comparisons and benchmarks; query execution is not implemented"
-)]
+#[command(about = "Paired mainline/squat query and traversal comparisons and benchmarks")]
 struct Arguments {
     /// Benchmark names, sampling names, or source paths.
     selectors: Vec<String>,
@@ -70,6 +71,9 @@ struct Arguments {
     /// Investigate known mainline seek differences; otherwise count and ignore them.
     #[arg(long)]
     strict_seeks: bool,
+    /// Disable squat query scan/plan shortcuts for an ablation run.
+    #[arg(long)]
+    unoptimized_query: bool,
 }
 
 struct Source {
@@ -138,7 +142,7 @@ fn choose(
         if BENCHMARKS.contains(&selector.as_str()) {
             benchmarks.push(selector.clone());
         } else if selector.starts_with("query-") {
-            bail!("query benchmarks are not implemented");
+            bail!("unknown query benchmark: {selector}");
         } else {
             selections.push(selector.clone());
         }
@@ -292,6 +296,7 @@ fn accumulate(
 enum Observation<'tree> {
     Walk(Vec<compare::Record<'tree>>),
     Seek(Vec<Option<usize>>),
+    Query(Vec<queries::Record>),
 }
 fn observe<'tree, N: tree_sitter_squatter::traits::NodeLike<'tree>>(
     root: N,
@@ -337,6 +342,20 @@ fn difference(expected: &Observation<'_>, actual: &Observation<'_>) -> Option<St
                 "seek sample {index}: expected ordinal {:?}, actual {:?}",
                 a.get(index),
                 b.get(index)
+            ))
+        }
+        (Observation::Query(a), Observation::Query(b)) => {
+            let index = a
+                .iter()
+                .zip(b)
+                .position(|(a, b)| a != b)
+                .unwrap_or(a.len().min(b.len()));
+            Some(format!(
+                "query event {index}: expected {:?}, actual {:?}; lengths {}/{}",
+                a.get(index),
+                b.get(index),
+                a.len(),
+                b.len()
             ))
         }
         _ => unreachable!(),
@@ -472,13 +491,15 @@ fn main() -> Result<()> {
         "machine": {"architecture": std::env::consts::ARCH, "os": std::env::consts::OS,
                     "cpuinfo": fs::read_to_string("/proc/cpuinfo").ok().and_then(|text| text.lines().find(|line| line.starts_with("model name")).map(str::to_owned))},
         "build": {"debug_assertions": cfg!(debug_assertions), "package_version": env!("CARGO_PKG_VERSION")},
-        "query_engine": "not implemented", "seek_contract": if arguments.strict_seeks { "strict" } else { "known differences counted but ignored by user request" },
+        "query_engine": "slab NFA and structural plans adapted from ../main", "seek_contract": if arguments.strict_seeks { "strict" } else { "known differences counted but ignored by user request" },
     });
     fs::write(
         output_path("run.json"),
         serde_json::to_vec_pretty(&manifest)?,
     )?;
     let mut grammars = BTreeMap::new();
+    let mut queries = BTreeMap::new();
+    let wants_queries = benchmarks.iter().any(|name| name.starts_with("query-"));
     let mut failures = Failures::default();
     let mut results = BTreeMap::new();
     let mut completed = BTreeSet::new();
@@ -492,6 +513,15 @@ fn main() -> Result<()> {
                     grammars.insert(
                         input.grammar.clone(),
                         LoadedGrammar::open(&registry.grammars[&input.grammar])?,
+                    );
+                }
+                if wants_queries && !queries.contains_key(&input.grammar) {
+                    queries.insert(
+                        input.grammar.clone(),
+                        queries::Queries::load(
+                            &grammars[&input.grammar].language,
+                            &registry.grammars[&input.grammar].queries,
+                        )?,
                     );
                 }
                 let original = fs::read(arguments.code_corpora.join(&input.path))?;
@@ -651,6 +681,16 @@ fn main() -> Result<()> {
                     for pair in &pairs {
                         if run_mainline {
                             mainline_observations.push(meter.measure(|| {
+                                if benchmark.starts_with("query-") {
+                                    return queries[&pair.source.input.grammar]
+                                        .mainline(
+                                            pair.mainline.root_node(),
+                                            &pair.mainline_ids,
+                                            &pair.source.bytes,
+                                            benchmark == "query-captures",
+                                        )
+                                        .map(Observation::Query);
+                                }
                                 observe(
                                     pair.mainline.root_node(),
                                     &pair.mainline_ids,
@@ -661,6 +701,17 @@ fn main() -> Result<()> {
                             }));
                         } else {
                             squat_observations.push(meter.measure(|| {
+                                if benchmark.starts_with("query-") {
+                                    return queries[&pair.source.input.grammar]
+                                        .squat(
+                                            pair.squat.root_node(),
+                                            &pair.squat_ids,
+                                            &pair.source.bytes,
+                                            benchmark == "query-captures",
+                                            !arguments.unoptimized_query,
+                                        )
+                                        .map(Observation::Query);
+                                }
                                 observe(
                                     pair.squat.root_node(),
                                     &pair.squat_ids,
@@ -762,6 +813,12 @@ fn main() -> Result<()> {
     manifest["ignored_seek_differences"] = ignored_seek_differences.into();
     manifest["failures"] = serde_json::to_value(&failures)?;
     manifest["partial"] = partial.into();
+    manifest["queries"] = serde_json::to_value(
+        queries
+            .iter()
+            .map(|(name, queries)| (name, &queries.reports))
+            .collect::<BTreeMap<_, _>>(),
+    )?;
     manifest["grammar_sha256"] = serde_json::to_value(
         grammars
             .iter()

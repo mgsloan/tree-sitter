@@ -15,7 +15,8 @@ in `container-run.json`. Output directories must be new. No checkout is modified
 
 The convenience runner selects eleven available grammars and a bounded selection
 of training and holdout repositories. `--repo` and `--grammar` are repeatable; `--per-bucket` applies
-per split, grammar, and size bucket. Files over 4 MiB are excluded from this quick run.
+per split, grammar, and size bucket. Files over `--max-file-bytes` (default 4 MiB) are excluded.
+Use repeatable `--benchmark` selectors to run a subset.
 Coverage counts and missing repositories are recorded. The underlying tools can
 operate on the full corpus, with a configurable default limit of 16 MiB per file.
 The runner currently requires x86-64 Linux, Podman, Cargo, and the cached corpus
@@ -37,12 +38,13 @@ Alternatively, `--registry registry.json` supplies grammar metadata:
 ```json
 {
   "grammars": {
-    "json": {"library": "json.so", "symbol": "tree_sitter_json", "sha": "grammar revision"}
+    "json": {"library": "json.so", "symbol": "tree_sitter_json", "sha": "grammar revision",
+      "queries": [{"name": "highlights", "path": "highlights.scm", "sha256": "query hash"}]}
   }
 }
 ```
 
-Library paths are relative to the registry file. Optional `library_sha256` is
+Library and query paths are relative to the registry file. Optional `library_sha256` is
 verified before loading. The built-in suffix map can be replaced by `suffixes`.
 Artifact catalogs, when present, restrict loading to entries marked `built`.
 
@@ -99,3 +101,30 @@ python3 tools/squatter/test-controls.py build/squat-corpus
 It checks absolute paths, default/strict seek behavior, partial-result flushing,
 and repeatable sampling. It needs fresh `controls` and `control-samplings`
 subdirectories and the pinned CSS grammar's known seek discrepancy.
+
+## Query comparisons
+
+The runner stages query files from each grammar and matching language definitions
+in the corpus's Zed and extension checkouts. The registry records their original
+paths and SHA-256 hashes. Query compilation and regex compilation are outside the
+timed region. Both compilers must agree on acceptance; jointly rejected queries
+are recorded with both errors, and a grammar with no accepted queries fails.
+A custom registry must provide query sources when running query benchmarks.
+
+Both engines evaluate built-in equality, regex, and membership predicates against
+identical source bytes. Other host predicates are metadata, as in mainline's Rust
+bindings. `query-captures` compares full partial-match snapshots, capture indexes,
+pattern IDs, and visible node identities in emission order. Collection is timed
+for both backends. No query-result differences are ignored. `--unoptimized-query` disables squat
+scan/plan shortcuts while retaining the capture coordinator, for ablation runs.
+
+Each query has a 30-second execution timeout. Each file/operation allows four
+million captured-node entries in recorded snapshots. Exceeding either budget is
+a failed comparison, never a successful truncated result. Generated large files
+can require quadratic snapshot storage; start broad query checks with:
+
+```sh
+python3 tools/squatter/run.py --output build/squat-queries \
+  --max-file-bytes 102400 --per-bucket 2 --repeat 3 --skip-layouts \
+  --benchmark query-matches --benchmark query-captures
+```

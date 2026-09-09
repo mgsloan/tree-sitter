@@ -1,4 +1,4 @@
-//! Immutable, contiguous Tree-sitter trees. No query engine or incremental edits.
+//! Immutable, contiguous Tree-sitter trees and streaming queries.
 //!
 //! ```no_run
 //! # fn example(tree: &tree_sitter::Tree) -> Result<(), tree_sitter_squatter::Error> {
@@ -10,6 +10,22 @@
 //! let bytes = compact.as_bytes();
 //! # Ok(()) }
 //! ```
+//! Queries compile once and stream captures borrowed from their cursor:
+//!
+//! ```no_run
+//! # fn query_example(language: &tree_sitter::Language, tree: &tree_sitter::Tree,
+//! # source: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
+//! use tree_sitter_squatter::{Tree, Query, QueryCursor};
+//! let packed = Tree::pack(tree)?;
+//! let query = Query::new(language, "(_) @node")?;
+//! let mut cursor = QueryCursor::new();
+//! let mut execution = cursor.execute(&query, packed.root_node(), source);
+//! while let Some((result, index)) = execution.next_capture() {
+//!     println!("{:?}", result.captures[index].node.byte_range());
+//! }
+//! if let Some(error) = execution.error() { return Err(error.into()); }
+//! # Ok(()) }
+//! ```
 use std::{
     ffi::{CStr, c_char, c_void},
     marker::PhantomData,
@@ -17,6 +33,11 @@ use std::{
     ptr::NonNull,
 };
 use tree_sitter::{Language, Point};
+
+pub mod query;
+pub use query::{
+    Query, QueryCapture, QueryCursor, QueryError, QueryExecution, QueryExecutionError, QueryMatch,
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(i32)]
@@ -187,6 +208,7 @@ impl TryFrom<Point> for RawPoint {
 }
 
 #[derive(Clone, Copy)]
+#[repr(transparent)]
 pub struct Node<'tree> {
     raw: RawNode,
     lifetime: PhantomData<&'tree Tree>,

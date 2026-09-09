@@ -80,6 +80,15 @@ pub struct Grammar {
     pub library_sha256: String,
     #[serde(default)]
     pub sha: String,
+    #[serde(default)]
+    pub queries: Vec<QuerySource>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct QuerySource {
+    pub name: String,
+    pub path: PathBuf,
+    pub sha256: String,
 }
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Registry {
@@ -99,6 +108,11 @@ impl Registry {
         for grammar in registry.grammars.values_mut() {
             if grammar.library.is_relative() {
                 grammar.library = parent.join(&grammar.library);
+            }
+            for query in &mut grammar.queries {
+                if query.path.is_relative() {
+                    query.path = parent.join(&query.path);
+                }
             }
         }
         Ok(registry)
@@ -146,6 +160,7 @@ impl Registry {
                     symbol: symbol.to_owned(),
                     library_sha256: value["sha256"].as_str().unwrap_or_default().to_owned(),
                     sha: value["sha"].as_str().unwrap_or_default().to_owned(),
+                    queries: Vec::new(),
                 },
             );
         }
