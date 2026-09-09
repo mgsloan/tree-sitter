@@ -79,6 +79,8 @@ def main():
     grammar_outputs.mkdir()
     lock = tomllib.loads((corpus / "containers/images.lock.toml").read_text())
     image = args.image or lock["build"]["local_image_id"]
+    if subprocess.run(["podman", "image", "exists", image]).returncode:
+        raise SystemExit(f"build image is not cached: {image}; select an installed image with --image")
     selected = {entry["name"]: entry for entry in tomllib.loads((corpus / "selected-grammars.toml").read_text())["repo"]}
     grammar_names = args.grammar or DEFAULT_GRAMMARS
     repositories = args.repo or DEFAULT_REPOS
@@ -107,9 +109,9 @@ def main():
                     if size > args.max_file_bytes:
                         coverage["oversized"] += 1
                         continue
-                    bucket = "small" if size < 4096 else "normal" if size <= 102400 else "large" if 1048576 < size <= 4 * 1048576 else None
+                    bucket = "small" if size < 4096 else "normal" if size <= 102400 else "large" if 1048576 < size else None
                     if bucket is None:
-                        coverage["intentional_size_gap_or_above_4mib"] += 1
+                        coverage["intentional_size_gap"] += 1
                         continue
                     relative = path.relative_to(corpus).as_posix()
                     if "\n" in relative or "\r" in relative:

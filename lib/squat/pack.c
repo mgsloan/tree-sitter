@@ -372,7 +372,9 @@ SQTree *sq_tree_pack(const TSTree *tree, SQPackOptions options, SQError *error) 
   TSNode root = ts_tree_root_node(tree);
   uint32_t capacity = options.initial_group_capacity;
   if (!capacity) {
-    capacity = ts_node_descendant_count(root) / 12 + 1;
+    // Reserve for 75% occupancy; scale the estimate with experimental groups.
+    uint32_t expected_nodes_per_group = SQ_GROUP_SIZE * 3 / 4;
+    capacity = ts_node_descendant_count(root) / expected_nodes_per_group + 1;
   }
   SQTree *result = sq_allocate(ts_tree_language(tree), capacity, error);
   if (!result) {

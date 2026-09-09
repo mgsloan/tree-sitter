@@ -15,6 +15,10 @@ large JSON and Python files contributing heavily to the node-weighted totals.
 These are actual compact slabs, including indexes, dictionaries, and field
 exceptions. The cache-line variant aligns allocations and column offsets.
 Packing repeats seven times; scheduling and thermal noise limit timing claims.
+This initial run used a fixed 12-nodes/group capacity estimate in all variants.
+That over-reserved the larger builds before compaction; their compact byte counts
+remain valid, but the packing timings include that allocation choice. The later
+query matrix scales the estimate with group size.
 Every variant passed unit checks and grammar comparisons on small inputs and
 mutations. The differential checks include serialization and all encoded-column
 SWAR masks, including 64-slot mask boundaries.
@@ -73,3 +77,45 @@ python3 tools/squatter/run.py --output build/layouts --per-bucket 1 \
   --skip-benchmarks --skip-sampling
 python3 tools/squatter/summarize.py build/layouts --output layout-results.json
 ```
+
+## Query workloads
+
+[The query results](query-results-2026-09-09.json) record a separate 88-file
+training/holdout sample, bounded to 100 KiB per file, across eleven grammars.
+All 120 grammar/Zed query sources compiled in both engines: 1,407 patterns.
+Each configuration passed three repeats on original and mutated inputs, including
+complete ordered partial-match capture snapshots and built-in text predicates.
+The ten configurations cover 16/32/64 slots, unoptimized 16-slot execution, and
+repacked 16-slot slabs. This matrix uses the corrected group-capacity estimate.
+
+Per-file paired elapsed-time ratios, squat divided by mainline (lower is better):
+
+| Input | Operation | Median | 90th percentile | Maximum |
+|---|---|---:|---:|---:|
+| Original | query-captures | 0.625 | 0.759 | 0.853 |
+| Original | query-matches | 0.557 | 0.683 | 0.790 |
+| Mutated | query-captures | 0.593 | 0.796 | 0.879 |
+| Mutated | query-matches | 0.544 | 0.709 | 0.869 |
+
+On original inputs, disabling scan/plan shortcuts increased median per-file
+query time by 28.4% for matches and 22.3% for captures. The unoptimized executor
+still uses the shared capture coordinator, so this ablation measures the
+shortcuts collectively; it does not isolate SWAR from structural plans or field
+presence filtering. These cross-run comparisons use per-file medians, unlike
+the paired-repeat ratios against mainline within each run.
+
+32-slot groups had no clear query-speed advantage (about 0.5% higher median time
+in this sample), and 64-slot groups were about 1–2% higher. Keep 16 as the default.
+Repacking reduced the original sample from 21.66 to 18.03 bytes/node, with almost
+unchanged median query time. The unrepacked 32/64 variants used 21.39/31.59
+bytes/node here; do not compare these allocation-inclusive figures directly with
+the earlier compact-layout table's different input sample.
+
+These timings include equal snapshot collection and host predicate evaluation,
+and exclude query/regex compilation. Hardware counters were unavailable. Earlier
+multi-megabyte generated TypeScript/JavaScript stress cases exceeded the 30-second
+mainline timeout or the four-million captured-node snapshot budget. They remain
+failed stress cases and are not included in this passing bounded sample.
+
+Reproduce the matrix and validated summary with the commands in
+[the corpus tool documentation](../../../tools/squatter/README.md#query-comparisons).

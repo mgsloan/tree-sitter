@@ -128,3 +128,18 @@ python3 tools/squatter/run.py --output build/squat-queries \
   --max-file-bytes 102400 --per-bucket 2 --repeat 3 --skip-layouts \
   --benchmark query-matches --benchmark query-captures
 ```
+
+The query layout/ablation matrix reuses a completed source snapshot and its exact
+staged bytes. It builds 16/32/64-slot variants and compares each against mainline,
+including mutations, the unoptimized 16-slot executor, and repacked slabs:
+
+```sh
+python3 tools/squatter/query-variants.py build/squat-queries --repeat 3
+python3 tools/squatter/summarize-queries.py build/squat-queries --output query-results.json
+```
+
+`query-variants.json` records compiler flags, executable hashes, commands, and
+individual pass/fail status. Existing matrix manifests are never overwritten.
+The summary checks query and input identities and requires complete passing runs.
+Its cross-variant ratios compare separate per-file medians; the mainline/squat
+ratios within each run retain the paired-repeat contract.
