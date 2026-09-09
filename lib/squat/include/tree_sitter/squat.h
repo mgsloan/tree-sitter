@@ -90,6 +90,8 @@ bool sq_node_has_changes(SQNode);
 bool sq_node_has_supertype(SQNode, TSSymbol);
 TSFieldId sq_node_field_id(SQNode);
 const char *sq_node_field_name(SQNode);
+/* First physical slot outside this subtree; may equal the tree's slot count. */
+uint32_t sq_node_end_slot(SQNode);
 uint32_t sq_node_descendant_count(SQNode);
 uint32_t sq_node_child_count(SQNode);
 uint32_t sq_node_named_child_count(SQNode);

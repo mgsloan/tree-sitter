@@ -44,13 +44,13 @@ Conversion walks raw subtrees iteratively in reverse preorder. Each frame stages
 child positions because multiline point offsets cannot be subtracted. Only the
 current group's absolute node attributes are buffered; no full-tree node array
 is needed. Parent navigation scans the tree; cursors retain an ancestor stack.
-Backward sibling cursor movement currently scans the parent's children.
+Backward sibling cursor movement caches u32 sibling slots in open cursor frames.
 
-The serialized header is 32 bytes. Every section and column starts on an
+The version-2 serialized header is 40 bytes. Every section and column starts on an
 eight-byte boundary. Slabs are native-endian and need the exact matching grammar;
 there is no grammar fingerprint in this version. `sq_tree_from_bytes` copies and
 validates layout, topology, coordinate arithmetic, symbols, fields, dictionaries,
-and presence entries. `sq_tree_repack` returns an independent compact copy, so
+presence entries, and sparse field-lookup exceptions. `sq_tree_repack` returns an independent compact copy, so
 existing nodes stay valid. Slab data contains no pointers. The small owning
 `SQTree` handle retains the grammar and derived layout metadata outside the slab.
 
@@ -63,3 +63,15 @@ Excluded APIs: queries, incremental editing/reparsing, parse states, exact
 unexpected-character S-expressions, and preservation of included-range metadata.
 Included ranges still affect the packed node coordinates. Allocation, layout
 overflow, and more than 256 distinct supertype masks report errors.
+
+Some grammars inherit field lookups through nodes made visible by aliasing. The
+lookup can return a grandchild, which differs from the nearest field assigned to
+a node during cursor traversal. A sparse section after the supertype dictionary
+stores these exceptions as `(parent slot, field ID, result slot)` u32 triples,
+sorted by parent and field. `UINT32_MAX` represents a null result. The two final
+header words locate/count this section; both are zero when it is absent.
+
+Known mainline seek differences are counted but ignored by default, as requested
+by the human. Use `--strict-seeks` for the container runner or `SQ_STRICT_SEEKS=1`
+for the C executable to investigate them. The fixture `tests/fixtures/hidden-seek.css`
+is a minimal valid-input repro. No hidden-node or seek-barrier index is stored.

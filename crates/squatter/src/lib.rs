@@ -227,20 +227,16 @@ impl<'tree> Node<'tree> {
     pub fn byte_range(self) -> Range<usize> {
         self.start_byte()..self.end_byte()
     }
-    pub fn utf8_text(self, source: &'tree [u8]) -> Result<&'tree str, std::str::Utf8Error> {
+    pub fn utf8_text<'text>(self, source: &'text [u8]) -> Result<&'text str, std::str::Utf8Error> {
         std::str::from_utf8(&source[self.byte_range()])
     }
     pub fn preorder(self) -> Preorder<'tree> {
-        let mut boundary = self;
-        // The last descendant determines the iterator's inclusive boundary.
-        while let Some(child) = boundary.child(boundary.child_count().saturating_sub(1)) {
-            boundary = child;
-        }
         Preorder {
             next: Some(self),
-            last_slot: boundary.slot(),
+            end_slot: unsafe { ffi::sq_node_end_slot(self.raw) },
         }
     }
+
     pub fn children(self) -> Children<'tree> {
         Children {
             next: self.child(0),
@@ -425,17 +421,15 @@ impl<'tree> Node<'tree> {
 
 pub struct Preorder<'tree> {
     next: Option<Node<'tree>>,
-    last_slot: u32,
+    end_slot: u32,
 }
 impl<'tree> Iterator for Preorder<'tree> {
     type Item = Node<'tree>;
     fn next(&mut self) -> Option<Self::Item> {
         let node = self.next?;
-        self.next = if node.slot() == self.last_slot {
-            None
-        } else {
-            node.next_preorder()
-        };
+        self.next = node
+            .next_preorder()
+            .filter(|next| next.slot() < self.end_slot);
         Some(node)
     }
 }
@@ -536,6 +530,7 @@ mod ffi {
         pub fn sq_node_is_error(node: RawNode) -> bool;
         pub fn sq_node_has_error(node: RawNode) -> bool;
         pub fn sq_node_has_changes(node: RawNode) -> bool;
+        pub fn sq_node_end_slot(node: RawNode) -> u32;
         pub fn sq_node_descendant_count(node: RawNode) -> u32;
         pub fn sq_node_child_count(node: RawNode) -> u32;
         pub fn sq_node_named_child_count(node: RawNode) -> u32;

@@ -240,6 +240,10 @@ uint32_t sq_node_named_child_count(SQNode node) {
   return child_count(node, true);
 }
 SQNode sq_node_child_by_field_id(SQNode node, TSFieldId field) {
+  SQNode exceptional;
+  if (node.tree && sq_lookup_field_exception(node, field, &exceptional)) {
+    return exceptional;
+  }
   // ERROR productions have no field map. Hidden children can still contribute
   // field names to enumeration, but mainline's field lookup stops at ERROR.
   if (sq_node_is_error(node)) {
@@ -345,11 +349,21 @@ SQNode sq_node_named_descendant_for_point_range(SQNode node, TSPoint left, TSPoi
   return seek(node, left, right, true, false);
 }
 
+typedef struct {
+  SQNode parent;
+  uint32_t *children;
+  uint32_t count;
+  uint32_t capacity;
+  uint32_t index;
+} CursorFrame;
+
 struct SQCursor {
   SQNode node;
-  SQNode *parents;
-  uint32_t depth, capacity;
+  CursorFrame *parents;
+  uint32_t depth;
+  uint32_t capacity;
 };
+
 SQCursor *sq_cursor_new(SQNode node) {
   if (!node.tree) {
     return NULL;
@@ -360,18 +374,43 @@ SQCursor *sq_cursor_new(SQNode node) {
   }
   return cursor;
 }
+
 void sq_cursor_delete(SQCursor *cursor) {
-  if (cursor) {
-    free(cursor->parents);
-    free(cursor);
+  if (!cursor) {
+    return;
   }
+  for (uint32_t i = 0; i < cursor->depth; i++) {
+    free(cursor->parents[i].children);
+  }
+  free(cursor->parents);
+  free(cursor);
 }
+
 SQNode sq_cursor_node(const SQCursor *cursor) {
   return cursor ? cursor->node : sq_null();
 }
+
 uint32_t sq_cursor_depth(const SQCursor *cursor) {
   return cursor ? cursor->depth : 0;
 }
+
+static bool remember_child(CursorFrame *frame, uint32_t slot) {
+  if (frame->count == frame->capacity) {
+    uint64_t capacity = frame->capacity ? (uint64_t)frame->capacity * 2 : 8;
+    if (capacity > UINT32_MAX || capacity * sizeof(uint32_t) > SIZE_MAX) {
+      return false;
+    }
+    uint32_t *children = realloc(frame->children, (size_t)capacity * sizeof(uint32_t));
+    if (!children) {
+      return false;
+    }
+    frame->children = children;
+    frame->capacity = (uint32_t)capacity;
+  }
+  frame->children[frame->count++] = slot;
+  return true;
+}
+
 static bool cursor_down(SQCursor *cursor, bool last) {
   if (!cursor) {
     return false;
@@ -380,63 +419,78 @@ static bool cursor_down(SQCursor *cursor, bool last) {
   if (!child.tree) {
     return false;
   }
-  if (last) {
-    while (!sq_node_get(child, N_LAST)) {
-      child = sq_node_next_sibling_including_empty(child);
-    }
-  }
   if (cursor->depth == cursor->capacity) {
     uint64_t capacity = cursor->capacity ? (uint64_t)cursor->capacity * 2 : 16;
-    if (capacity > UINT32_MAX || capacity * sizeof(SQNode) > SIZE_MAX) {
+    if (capacity > UINT32_MAX || capacity * sizeof(CursorFrame) > SIZE_MAX) {
       return false;
     }
-    SQNode *next = realloc(cursor->parents, (size_t)capacity * sizeof(SQNode));
-    if (!next) {
+    CursorFrame *parents = realloc(cursor->parents, (size_t)capacity * sizeof(CursorFrame));
+    if (!parents) {
       return false;
     }
-    cursor->parents = next;
+    cursor->parents = parents;
     cursor->capacity = (uint32_t)capacity;
   }
-  cursor->parents[cursor->depth++] = cursor->node;
+  CursorFrame frame = {.parent = cursor->node};
+  for (;;) {
+    if (!remember_child(&frame, child.slot)) {
+      free(frame.children);
+      return false;
+    }
+    if (!last || sq_node_get(child, N_LAST)) {
+      break;
+    }
+    child = sq_node_next_sibling_including_empty(child);
+  }
+  frame.index = frame.count - 1;
+  cursor->parents[cursor->depth++] = frame;
   cursor->node = child;
   return true;
 }
+
 bool sq_cursor_goto_first_child(SQCursor *cursor) {
   return cursor_down(cursor, false);
 }
+
 bool sq_cursor_goto_last_child(SQCursor *cursor) {
   return cursor_down(cursor, true);
 }
+
 bool sq_cursor_goto_next_sibling(SQCursor *cursor) {
   if (!cursor || !cursor->depth) {
     return false;
   }
-  SQNode node = sq_node_next_sibling_including_empty(cursor->node);
-  if (!node.tree) {
-    return false;
+  CursorFrame *frame = &cursor->parents[cursor->depth - 1];
+  if (frame->index + 1 == frame->count) {
+    SQNode next = sq_node_next_sibling_including_empty(cursor->node);
+    if (!next.tree || !remember_child(frame, next.slot)) {
+      return false;
+    }
   }
-  cursor->node = node;
+  cursor->node.slot = frame->children[++frame->index];
   return true;
 }
+
 bool sq_cursor_goto_previous_sibling(SQCursor *cursor) {
   if (!cursor || !cursor->depth) {
     return false;
   }
-  SQNode node = first_child(cursor->parents[cursor->depth - 1]), previous = sq_null();
-  while (node.tree && node.slot != cursor->node.slot) {
-    previous = node;
-    node = sq_node_next_sibling_including_empty(node);
-  }
-  if (!previous.tree) {
+  CursorFrame *frame = &cursor->parents[cursor->depth - 1];
+  if (!frame->index) {
     return false;
   }
-  cursor->node = previous;
+  // The format has no backward subtree span. Cache only sibling slots in the
+  // open cursor frames so reverse walks do not rescan a wide parent quadratically.
+  cursor->node.slot = frame->children[--frame->index];
   return true;
 }
+
 bool sq_cursor_goto_parent(SQCursor *cursor) {
   if (!cursor || !cursor->depth) {
     return false;
   }
-  cursor->node = cursor->parents[--cursor->depth];
+  CursorFrame *frame = &cursor->parents[--cursor->depth];
+  cursor->node = frame->parent;
+  free(frame->children);
   return true;
 }

@@ -2,7 +2,7 @@
 
 ## Scope
 
-- Implement the non-query portions of `design.md`. Query compilation and execution are explicitly out of scope for this work.
+- Implement `design.md`, completing the non-query work first. The human subsequently authorized the query engine and reuse of `../main` (see the scope updates below).
 - Keep the mainline runtime and its bindings unchanged. The C implementation lives in `lib/squat/`; a separate Rust crate builds and wraps it.
 - The existing untracked `todo.md` belongs to the human and is left untouched.
 
@@ -48,3 +48,11 @@ Updated alongside implementation commits below.
 - Added scalar, portable SWAR, hardware-popcount SWAR, compiler-targeted AVX2, explicit SSE2, and explicit AVX2 microbenchmarks. Hardware-popcount and compiler-targeted baselines prevent attributing compiler flag differences to SIMD alone.
 - Experimental builds can use 32 or 64 slots per group; leading-waste width and magic flags change with the group size. The default public format remains 16 slots. These builds are for measurement, not an unversioned change to persisted data.
 - Rust bindings retain the grammar, borrow nodes/cursors from the owning slab, and expose shared statically dispatched tree/node/cursor traits. A container integration executable verifies FFI layout, independence from the mainline tree, traversal, and serialization.
+
+### Corpus-driven navigation fixes
+
+- Backward packed cursors now cache u32 sibling slots within open frames. The initial implementation rescanned a wide parent on every previous-sibling step, which was quadratic on a multi-megabyte JSON corpus file. The cache is cursor-owned and is freed on ascent; it adds no persistent per-node storage.
+- Valid TypeScript `type Example = typeof object.property;` exposes a distinct field-lookup case: mainline can inherit a field through a hidden grammar node made visible by aliasing, returning a grandchild. A single cursor field ID cannot reconstruct that API result.
+- Added a sparse field-lookup exception section, computed bottom-up without a full-tree pointer map. Each entry is `(parent slot, field ID, result slot)` in three u32s; a null result uses `UINT32_MAX`. The header grows from 32 to 40 bytes and the format version changes. This is a necessary amendment to preserve field lookup, independent of the ignored seek differences. Most nodes need no entry. Please review this extension to the original layout.
+- Mainline's reverse cursor also sometimes reports different fields than its forward cursor for the same node: the implementation updates a structural child index only when an alias sequence exists. The benchmark now uses the same forward-enumerate/reverse-consume sibling adapter for both backends during `walk-backward`. Every attribute is still read in reverse preorder, and both sides pay the same adapter cost. Mainline source files remain unchanged.
+- Corpus inventory must avoid `training -> train`, an alias present in this corpus checkout. Directory symlinks are skipped, preventing duplicate train/training inputs and preserving path-based seeds.

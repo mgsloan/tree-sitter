@@ -39,3 +39,6 @@ check: $(BUILD)/unit
 
 $(BUILD)/scan-bench: experiments/scan.c $(BUILD)/libtree-sitter-squat.a $(BUILD)/runtime.o
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) $^ -o $@
+
+$(BUILD)/layout-bench: experiments/layout.c $(BUILD)/libtree-sitter-squat.a $(BUILD)/runtime.o
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) $^ -ldl -o $@

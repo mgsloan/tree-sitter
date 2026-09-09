@@ -15,6 +15,7 @@ So, the idea is to split the nodes into groups. Each squat group stores the abso
 * Struct-of-arrays `Node` with capacity `slot_capacity` per column
 * Symbol presence bitmaps
 * Supertype dictionary
+* Sparse field-lookup exceptions (version 2 amendment; see below)
 
 The slab can be directly written during conversion by somewhat overestimating `group_capacity` from node count. This version uses 16 slots per group, so `slot_capacity = 16 * group_capacity` and `slot_count = 16 * group_count`. Counts include partially occupied groups and their wasted slots; capacities also include unused allocation space.
 
@@ -47,6 +48,10 @@ struct SlabHeader {
     /// Both zero in direct supertype-mask mode.
     supertype_dictionary_byte_offset: u32,
     supertype_dictionary_count: u32,
+
+    /// Sparse (parent slot, field ID, result slot) u32 triples. Both zero if absent.
+    field_exceptions_byte_offset: u32,
+    field_exceptions_count: u32,
 }
 
 struct Node {
@@ -121,6 +126,12 @@ Builtin error symbols are remapped to the two values immediately after the
 grammar's real symbol range, then decoded at the API boundary.
 
 Tree-sitter's hidden nodes are omitted entirely since they are not helpful for the flat representation without incremental reparse. Their effects are recorded in `supertypes`, `is_last_child`, and `field`.
+
+Field lookup can traverse an aliased wrapper and return a grandchild even though
+the cursor assigns the field to the wrapper. Version 2 adds a sparse exception
+section for these cases, sorted by parent slot then field ID. A result slot of
+`u32::MAX` means null. Ordinary lookups still use the node's field column. These
+exceptions are computed bottom-up during conversion; the header is now 40 bytes.
 
 Public symbol is mapped from raw display symbol at read time.
 

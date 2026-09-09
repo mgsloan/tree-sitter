@@ -274,6 +274,19 @@ static void compare_tree(const TSTree *tree, const SQTree *packed, bool exhausti
     }
   }
   CHECK(i == count && sq_cursor_depth(c) == 0);
+  while (sq_cursor_goto_last_child(c)) {
+  }
+  i = count;
+  for (;;) {
+    CHECK(i > 0 && sq_node_eq(sq_cursor_node(c), nodes->packed[--i]));
+    if (sq_cursor_goto_previous_sibling(c)) {
+      while (sq_cursor_goto_last_child(c)) {
+      }
+    } else if (!sq_cursor_goto_parent(c)) {
+      break;
+    }
+  }
+  CHECK(i == 0 && sq_cursor_depth(c) == 0);
   sq_cursor_delete(c);
   free(nodes->mainline);
   free(nodes->packed);
@@ -309,6 +322,25 @@ static void exercise(const TSLanguage *language, const char *source, uint32_t le
   unaligned[1] ^= 0x80;
   CHECK(!sq_tree_from_bytes(language, unaligned + 1, size, &error) &&
         error == SQ_ERROR_INVALID_SLAB);
+  if (length < 40) {
+    // A changed bit can describe another valid tree. The requirement is safe
+    // validation and ownership, not rejection of every possible mutation.
+    uint32_t state = 42;
+    for (unsigned trial = 0; trial < 64; trial++) {
+      memcpy(unaligned + 1, bytes, size);
+      state = state * 1664525 + 1013904223;
+      unaligned[1 + state % size] ^= (uint8_t)(1u << (trial % 8));
+      SQTree *changed = sq_tree_from_bytes(language, unaligned + 1, size, &error);
+      CHECK(changed ? error == SQ_OK : error == SQ_ERROR_INVALID_SLAB);
+      sq_tree_delete(changed);
+    }
+    options.symbol_presence = false;
+    options.repack = true;
+    SQTree *without_index = sq_tree_pack(tree, options, &error);
+    CHECK(without_index && error == SQ_OK);
+    compare_tree(tree, without_index, true);
+    sq_tree_delete(without_index);
+  }
   free(unaligned);
   sq_tree_delete(loaded);
   sq_tree_delete(compact);

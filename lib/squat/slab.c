@@ -1,5 +1,36 @@
 #include "internal.h"
 
+uint8_t *sq_allocate_data(size_t size) {
+#if SQ_COLUMN_ALIGNMENT == 64
+  if (size > SIZE_MAX - 63) {
+    return NULL;
+  }
+  uint8_t *data = aligned_alloc(64, (size + 63) & ~(size_t)63);
+  if (data) {
+    memset(data, 0, size);
+  }
+  return data;
+#else
+  return calloc(1, size);
+#endif
+}
+
+uint8_t *sq_reallocate_data(uint8_t *data, size_t old_size, size_t new_size) {
+#if SQ_COLUMN_ALIGNMENT == 64
+  // realloc need not retain an over-aligned address. The experimental layout
+  // needs both an aligned base and aligned offsets to test cache-line starts.
+  uint8_t *next = sq_allocate_data(new_size);
+  if (next) {
+    memcpy(next, data, old_size < new_size ? old_size : new_size);
+    free(data);
+  }
+  return next;
+#else
+  (void)old_size;
+  return realloc(data, new_size);
+#endif
+}
+
 uint8_t sq_width(uint32_t max) {
   uint8_t bits = 2;
   while ((max >>= 1) > 1) {
@@ -35,13 +66,15 @@ bool sq_layout(const TSLanguage *language, uint32_t capacity, SQLayout *layout) 
   }
   layout->symbol_bits = sq_width(language->symbol_count + language->alias_count + 1);
   layout->field_bits = sq_width(language->field_count);
-  uint64_t offset = sizeof(SQHeader);
+  uint64_t offset =
+      (sizeof(SQHeader) + SQ_COLUMN_ALIGNMENT - 1) & ~(uint64_t)(SQ_COLUMN_ALIGNMENT - 1);
   for (unsigned c = 0; c < G_COLUMNS; c++) {
     if (offset > UINT32_MAX) {
       return false;
     }
     layout->groups[c] = (uint32_t)offset;
     offset += sq_column_size(capacity, sq_group_width(c));
+    offset = (offset + SQ_COLUMN_ALIGNMENT - 1) & ~(uint64_t)(SQ_COLUMN_ALIGNMENT - 1);
   }
   for (unsigned c = 0; c < N_COLUMNS; c++) {
     if (offset > UINT32_MAX) {
@@ -49,6 +82,7 @@ bool sq_layout(const TSLanguage *language, uint32_t capacity, SQLayout *layout) 
     }
     layout->nodes[c] = (uint32_t)offset;
     offset += sq_column_size(capacity * SQ_GROUP_SIZE, sq_node_width(layout, c));
+    offset = (offset + SQ_COLUMN_ALIGNMENT - 1) & ~(uint64_t)(SQ_COLUMN_ALIGNMENT - 1);
   }
   if (offset > UINT32_MAX) {
     return false;
@@ -99,7 +133,7 @@ SQTree *sq_allocate(const TSLanguage *language, uint32_t capacity, SQError *erro
     sq_fail(error, SQ_ERROR_ALLOCATION);
     return NULL;
   }
-  tree->data = calloc(1, layout.end);
+  tree->data = sq_allocate_data(layout.end);
   tree->supertypes =
       malloc((size_t)(language->symbol_count + language->alias_count) * sizeof(TSSymbol));
   if (!tree->data || !tree->supertypes) {
@@ -139,7 +173,7 @@ bool sq_resize(SQTree *tree, uint32_t capacity, SQError *error) {
     sq_fail(error, SQ_ERROR_OVERFLOW);
     return false;
   }
-  uint8_t *data = calloc(1, (size_t)total);
+  uint8_t *data = sq_allocate_data((size_t)total);
   if (!data) {
     sq_fail(error, SQ_ERROR_ALLOCATION);
     return false;
@@ -156,6 +190,10 @@ bool sq_resize(SQTree *tree, uint32_t capacity, SQError *error) {
   if (header->supertype_dictionary_byte_offset) {
     header->supertype_dictionary_byte_offset =
         next.end + old.supertype_dictionary_byte_offset - tree->layout.end;
+  }
+  if (header->field_exceptions_byte_offset) {
+    header->field_exceptions_byte_offset =
+        next.end + old.field_exceptions_byte_offset - tree->layout.end;
   }
   for (unsigned region = 0; region < 2; region++) {
     unsigned columns = region ? N_COLUMNS : G_COLUMNS;

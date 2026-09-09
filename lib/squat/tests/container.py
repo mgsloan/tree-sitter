@@ -79,6 +79,10 @@ set --
 for sample in /grammar/setup.py /grammar/grammar.js /grammar/examples/*; do
   if test -f "$sample"; then set -- "$@" "$sample"; fi
 done
+case "$name" in
+  typescript|tsx) set -- "$@" /work/lib/squat/tests/fixtures/inherited-field.ts ;;
+  css) set -- "$@" /work/lib/squat/tests/fixtures/hidden-seek.css ;;
+esac
 ASAN_OPTIONS=detect_leaks=1 /out/compare "/out/$name.so" "$symbol" "$@"
 '''
             try:
