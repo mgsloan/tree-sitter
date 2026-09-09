@@ -4697,6 +4697,23 @@ fn test_query_disable_pattern() {
 }
 
 #[test]
+fn test_query_disable_wildcard_pattern() {
+    allocations::record(|| {
+        let language = get_language("json");
+        let mut query = Query::new(&language, "(_) @any").unwrap();
+        query.disable_pattern(0);
+
+        let source = "1";
+        let mut parser = Parser::new();
+        parser.set_language(&language).unwrap();
+        let tree = parser.parse(source, None).unwrap();
+        let mut cursor = QueryCursor::new();
+        let mut matches = cursor.matches(&query, tree.root_node(), source.as_bytes());
+        assert!(matches.next().is_none());
+    });
+}
+
+#[test]
 fn test_query_deep_clone() {
     allocations::record(|| {
         let language = get_language("javascript");
