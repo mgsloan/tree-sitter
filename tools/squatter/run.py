@@ -12,7 +12,8 @@ import time
 import tomllib
 
 ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_REPOS = ["ripgrep", "black", "fastapi", "esbuild", "caddy", "nodebb", "vue-core", "redis", "zstd", "jq", "catch2"]
+DEFAULT_REPOS = ["ripgrep", "black", "fastapi", "esbuild", "caddy", "nodebb", "vue-core", "redis", "zstd", "jq", "catch2",
+                 "act", "hypothesis", "jinja", "c-ares", "entt", "Chart.js", "less.js", "helm"]
 DEFAULT_GRAMMARS = ["json", "python", "c", "cpp", "tsx", "typescript", "html", "css", "yaml", "go", "bash"]
 
 
@@ -109,18 +110,18 @@ def main():
                         coverage["newline_path"] += 1
                         continue
                     rank = hashlib.sha256(f"{args.seed}\0{relative}".encode()).hexdigest()
-                    entries = buckets[(grammar, bucket)]
+                    entries = buckets[(split, grammar, bucket)]
                     entries.append((rank, relative, size))
                     entries.sort()
                     del entries[args.per_bucket:]
                     coverage["candidates"] += 1
     staged = []
-    for (grammar, bucket), entries in sorted(buckets.items()):
+    for (split, grammar, bucket), entries in sorted(buckets.items()):
         for _, relative, size in entries:
             destination = inputs / relative
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(corpus / relative, destination)
-            staged.append(dict(path=relative, grammar=grammar, bucket=bucket, bytes=size, sha256=sha256(destination)))
+            staged.append(dict(path=relative, split=split, grammar=grammar, bucket=bucket, bytes=size, sha256=sha256(destination)))
     if not staged:
         raise SystemExit("no files staged; inspect repository selection")
     provenance = dict(code_corpora_sha=revision(corpus), tool_sha=revision(ROOT), source_sha256=source_hash.hexdigest(), image=image,

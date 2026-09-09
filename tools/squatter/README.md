@@ -14,8 +14,8 @@ tool snapshot hash, grammar pins and binary hashes, and image identity are kept
 in `container-run.json`. Output directories must be new. No checkout is modified.
 
 The convenience runner selects eleven available grammars and a bounded selection
-of repositories. `--repo` and `--grammar` are repeatable; `--per-bucket` applies
-per grammar and size bucket. Files over 4 MiB are excluded from this quick run.
+of training and holdout repositories. `--repo` and `--grammar` are repeatable; `--per-bucket` applies
+per split, grammar, and size bucket. Files over 4 MiB are excluded from this quick run.
 Coverage counts and missing repositories are recorded. The underlying tools can
 operate on the full corpus, with a configurable default limit of 16 MiB per file.
 The runner currently requires x86-64 Linux, Podman, Cargo, and the cached corpus
@@ -89,3 +89,13 @@ column alignment. Sparse grammar IDs, variable-width supertypes, and interleaved
 symbol/field storage are explicitly byte estimates, not implemented access paths.
 The scan microbenchmark compares scalar, portable SWAR, popcount SWAR, compiler
 AVX2, explicit SSE2, and explicit AVX2 with correctness checks and tail handling.
+
+The CLI-control regression uses an existing completed run with a CSS grammar:
+
+```sh
+python3 tools/squatter/test-controls.py build/squat-corpus
+```
+
+It checks absolute paths, default/strict seek behavior, partial-result flushing,
+and repeatable sampling. It needs fresh `controls` and `control-samplings`
+subdirectories and the pinned CSS grammar's known seek discrepancy.

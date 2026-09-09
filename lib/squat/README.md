@@ -43,7 +43,7 @@ grammars and failed comparisons cause a nonzero exit.
 Conversion walks raw subtrees iteratively in reverse preorder. Each frame stages
 child positions because multiline point offsets cannot be subtracted. Only the
 current group's absolute node attributes are buffered; no full-tree node array
-is needed. Parent navigation scans the tree; cursors retain an ancestor stack.
+is needed. Parent navigation scans backward, using group span bounds to skip groups; cursors retain an ancestor stack.
 Backward sibling cursor movement caches u32 sibling slots in open cursor frames.
 
 The version-2 serialized header is 40 bytes. Every section and column starts on an

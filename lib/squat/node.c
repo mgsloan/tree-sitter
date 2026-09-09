@@ -153,25 +153,34 @@ SQNode sq_node_next_sibling_including_empty(SQNode node) {
   return sq_tree_node_at_slot(node.tree, sq_node_end_slot(node));
 }
 SQNode sq_node_parent(SQNode node) {
-  if (!node.tree) {
+  if (!node.tree || node.slot == sq_tree_root_node(node.tree).slot) {
     return sq_null();
   }
-  SQNode parent = sq_tree_root_node(node.tree);
-  if (parent.slot == node.slot) {
-    return sq_null();
-  }
+  // In preorder, the nearest earlier node whose subtree reaches us is our
+  // parent. Starting nearby avoids rescanning every preceding root sibling.
+  // A group's shared span base plus the u8 maximum bounds all its subtree ends,
+  // so distant groups of small subtrees can be rejected with one header read.
+  uint32_t slot = node.slot - 1;
   for (;;) {
-    SQNode child = first_child(parent);
-    while (child.tree && sq_node_end_slot(child) <= node.slot) {
-      child = sq_node_next_sibling_including_empty(child);
+    uint32_t group = slot / SQ_GROUP_SIZE;
+    uint32_t base = sq_group_get(node.tree, G_SPAN, group);
+    if ((uint64_t)slot + 1 + base + UINT8_MAX > node.slot) {
+      uint32_t first = group * SQ_GROUP_SIZE + sq_group_get(node.tree, G_WASTE, group);
+      while (slot >= first) {
+        SQNode candidate = {node.tree, slot};
+        if ((uint64_t)slot + 1 + base + sq_node_get(candidate, N_SPAN) > node.slot) {
+          return candidate;
+        }
+        if (slot == first) {
+          break;
+        }
+        slot--;
+      }
     }
-    if (!child.tree) {
+    if (!group) {
       return sq_null();
     }
-    if (child.slot == node.slot) {
-      return parent;
-    }
-    parent = child;
+    slot = group * SQ_GROUP_SIZE - 1;
   }
 }
 SQNode sq_node_prev_sibling(SQNode node) {

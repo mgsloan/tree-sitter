@@ -74,3 +74,10 @@ Updated alongside implementation commits below.
 - Strict CSS repro verified short-circuit output: one recorded failure, zero completed files, and flushed partial summaries. This also caught and fixed absolute file paths being treated as sampling lists.
 - Indexed child-accessor comparisons now sample very wide parents; full cursor traversal still checks every transition. Repeated indexed access was making the test harness quadratic on malformed large arrays.
 - Benchmark identity accounts for explicit ELF-loader invocation: argv[0] identifies the benchmark executable, while `/proc/self/exe` can identify the loader instead.
+
+### Non-query completion checkpoint
+
+- All non-query implementation is complete before starting the query engine. The holdout run passed 20 files, original and mutated, with two repeats. The wider 40-file run continues as an additional stress check.
+- Added a permanent CLI-control integration script that verifies absolute paths, ignored/strict seek policy, partial-output flushing, and byte-identical sampling lists. It passed against the source-snapshotted tool build.
+- Parent lookup now searches backward for the nearest enclosing subtree. Group span bases plus the maximum u8 delta reject distant groups without reading their nodes. This adds no index and avoids restarting from the root for nearby ancestors.
+- The convenience runner now samples training and holdout repositories separately, so one split cannot crowd the other out.
