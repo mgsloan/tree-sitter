@@ -152,3 +152,33 @@ node scans in both variants. Hardware counters were unavailable.
 The new shared bulk attribute API reduces FFI calls for the uncached cursor too;
 these walk measurements should not be compared directly with the earlier walk
 numbers. See [reproduction instructions](../../../tools/squatter/README.md#cursor-comparisons).
+
+The [larger-file run](cursor-large-results-2026-09-09.json) passed the same eight
+workloads on 53 originals and their mutations, with five repeats. It includes
+nine inputs over 1 MiB, up to a 4 MiB cap, and totals 4,741,921 original nodes
+(4,426,809 mutated). Across all 53 files, forward attribute-walk ratios were
+0.860 for both original and mutated inputs; native forward navigation was near
+parity overall (0.978 / 0.994).
+
+For the **nine inputs over 1 MiB**, grouped by original input size:
+
+| Workload | Original cached/uncached | Mutated cached/uncached |
+|---|---:|---:|
+| Native forward navigation | **0.900** | **0.898** |
+| Native backward navigation | 0.963 | 0.951 |
+| Forward walk with attributes | **0.855** | **0.865** |
+| Backward attribute compatibility adapter | 1.450 | 1.396 |
+
+All nine large inputs benefited from caching in native forward navigation and
+forward attribute walks; seven benefited in native backward navigation. More
+reuse on larger inputs can amortize cache setup, but the reverse compatibility
+adapter remained slower with caching. Both recorded reports include size-band
+and per-language statistics, source/binary identities, and per-file measurements.
+Reproduce this sample using the cursor command above with `--per-bucket 1` and
+`--max-file-bytes 4194304`, in a new output directory.
+
+Mainline's native previous-sibling movement may rescan preceding siblings to
+restore columns after crossing a line break (`lib/src/tree_cursor.c`). Its
+large-file reverse timings therefore include a cost absent from the sibling
+adapter. Cached/uncached ratios compare the two squat cursors directly and are
+kept separate from each variant's paired comparison against mainline.

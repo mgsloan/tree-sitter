@@ -24,6 +24,15 @@ def percentiles(values):
     return result
 
 
+def summarize(files):
+    result = dict(files=len(files), metrics={})
+    for metric in ["wall_ms", "cpu_ms"]:
+        ratios = [entry["metrics"][metric]["cached_over_uncached"] for entry in files]
+        result["metrics"][metric] = dict(cached_over_uncached=percentiles(ratios),
+                                        cached_wins=sum(value < 1 for value in ratios))
+    return result
+
+
 def require(condition, message):
     if not condition:
         raise SystemExit(message)
@@ -76,17 +85,18 @@ def main():
                                            uncached_over_mainline=plain["ratios"][metric],
                                            cached_over_mainline=cached["ratios"][metric])
                 files.append(dict(path=path, grammar=plain["grammar"], tested_sha256=plain["tested_sha256"],
-                                  nodes=plain["nodes"], metrics=metrics))
+                                  nodes=plain["nodes"], original_bytes=source_input["bytes"],
+                                  tested_bytes=plain["source_bytes"], metrics=metrics))
             summaries = {}
             for language in ["all", *sorted({entry["grammar"] for entry in files})]:
                 selected = [entry for entry in files if language == "all" or entry["grammar"] == language]
-                summaries[language] = dict(files=len(selected), metrics={})
-                for metric in ["wall_ms", "cpu_ms"]:
-                    ratios = [entry["metrics"][metric]["cached_over_uncached"] for entry in selected]
-                    summaries[language]["metrics"][metric] = dict(
-                        cached_over_uncached=percentiles(ratios),
-                        cached_wins=sum(value < 1 for value in ratios))
-            comparisons[workload] = dict(summaries=summaries, files=files)
+                summaries[language] = summarize(selected)
+            size_summaries = {}
+            for label, large in [("under_1_mib", False), ("at_least_1_mib", True)]:
+                selected = [entry for entry in files if (entry["original_bytes"] >= 1048576) == large]
+                if selected:
+                    size_summaries[label] = summarize(selected)
+            comparisons[workload] = dict(summaries=summaries, size_summaries=size_summaries, files=files)
         variants[name] = dict(mutated=mutated, repeat=manifest["arguments"]["repeat"],
                               machine=manifest["machine"], counter_status=manifest["counter_status"],
                               comparisons=comparisons)

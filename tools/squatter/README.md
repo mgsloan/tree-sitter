@@ -182,6 +182,8 @@ python3 tools/squatter/summarize-cursors.py build/squat-cursors \
 Use `--image IMAGE_ID` if the corpus's current pinned image is not cached locally.
 The summary verifies completed comparisons, input hashes, repeat counts, and
 source/binary identity. It retains per-file measurements and per-language
-quantiles. Cached/uncached ratios divide per-file timing medians for the two
+quantiles, with size bands based on original input size. To include larger files,
+use `--max-file-bytes 4194304 --per-bucket 1` and a fresh output directory.
+Cached/uncached ratios divide per-file timing medians for the two
 selectors; each selector's mainline comparison separately retains paired-repeat
 ratios. Result files are created exclusively and never overwritten.
