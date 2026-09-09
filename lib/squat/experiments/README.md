@@ -182,3 +182,12 @@ restore columns after crossing a line break (`lib/src/tree_cursor.c`). Its
 large-file reverse timings therefore include a cost absent from the sibling
 adapter. Cached/uncached ratios compare the two squat cursors directly and are
 kept separate from each variant's paired comparison against mainline.
+
+## Cursor and packed-read refresh
+
+[The latest comparison](cursor-refresh-2026-09-09.md) benchmarks the simplified
+ordinary cursor and inlined packed reads against the previous ordinary cursor,
+using the same current harness for both. Five repeats cover original and mutated
+inputs in an 88-file bounded sample and a 53-file mixed sample, with the nine files
+over 1 MiB reported separately. The report links per-file results and reproduction
+commands; all eight runs passed under the existing seek-difference policy.
