@@ -1,0 +1,26 @@
+--- a/lib/src/node.c
++++ b/lib/src/node.c
+@@ -384,6 +384,11 @@
+       // touch the start of the range.
+       if (range_start < ts_node_start_byte(child)) break;
+ 
++      // A hidden empty leaf cannot be returned and must not hide a later
++      // visible sibling spanning the same position.
++      if (is_empty && !ts_node__is_relevant(child, true) &&
++          ts_subtree_child_count(ts_node__subtree(child)) == 0) continue;
++
+       node = child;
+       if (ts_node__is_relevant(node, include_anonymous)) {
+         last_visible_node = node;
+@@ -431,6 +436,11 @@
+       // The start of this node must extend far enough backward to
+       // touch the start of the range.
+       if (point_lt(range_start, ts_node_start_point(child))) break;
++
++      // A hidden empty leaf cannot be returned and must not hide a later
++      // visible sibling spanning the same position.
++      if (is_empty && !ts_node__is_relevant(child, true) &&
++          ts_subtree_child_count(ts_node__subtree(child)) == 0) continue;
+ 
+       node = child;
+       if (ts_node__is_relevant(node, include_anonymous)) {

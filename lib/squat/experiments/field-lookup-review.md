@@ -47,9 +47,20 @@ Simply searching all descendants would also be wrong. The control input
 but looking up either field on the statement correctly returns null. Grammar
 inheritance determines which visible boundaries lookup may cross.
 
+## Potential upstream inconsistency
+
+A subsequent contract review checked the same grammar pin's generated
+`typescript/src/node-types.json`: `type_query` declares `"fields": {}`. Its
+runtime nevertheless exposes `object` and `property` through the visible alias.
+That is a potential upstream field-map/alias/API inconsistency. The compatibility
+comparison above does not establish that upstream's behavior is intended; the
+packed engine's null results may better match the visible-tree contract.
+See entry 7 in [the upstream bug list](../../../../potential-upstream-bugs.md).
+
 ## Assessment of the sparse section
 
-Keep the extension. A cursor field and a field-lookup target express different
+Keep the extension while exact compatibility with current upstream is required.
+A cursor field and a field-lookup target express different
 relationships here. Some additional information is needed to reproduce both;
 the **specific 40-byte header and 12-byte triples are a design choice**, not the
 only possible encoding. Preserving enough grammar-production and hidden-child
