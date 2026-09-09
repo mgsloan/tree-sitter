@@ -45,35 +45,23 @@ Conversion walks raw subtrees iteratively in reverse preorder. Each frame stages
 child positions because multiline point offsets cannot be subtracted. Only the
 current group's absolute node attributes are buffered; no full-tree node array
 is needed. Parent navigation scans backward, using group span bounds to skip groups; cursors retain an ancestor stack.
-Backward sibling cursor movement caches u32 sibling slots in open cursor frames.
+The cursor supports first/last child, next sibling, and parent movement. It
+retains only an ancestor stack, with no sibling history or decoded-column cache.
 
-`SQCursor` remains the default. `SQCachedCursor` has the same navigation methods
-under the `sq_cached_cursor_*` prefix and lazily decodes whole groups of accessed
-columns. It follows the batched size/extent cache in `../main`'s
-`lib/src/squatter/api_packed.c`, adapted to this slab's fixed-width columns.
-Each column retains one group; there is no shared mutable tree cache. On x86-64
-with 16-slot groups, cursor handles occupy 32 and 1,088 bytes respectively,
-excluding the identical ancestor/sibling storage. Allocation is per cursor;
-column decoding happens on first access, not at allocation.
-
-Both types offer a bulk attribute snapshot (`sq_cursor_attributes` /
-`sq_cached_cursor_attributes`). Returned `SQNode` handles are ordinary nodes:
-accessing their attributes directly bypasses the cursor cache. Child and
-descendant counts still use ordinary node scans to avoid evicting cached columns.
-The serialized format and query engine's default cursor are unchanged.
-
-Rust exposes `Node::walk()` and `Node::walk_cached()`, returning `Cursor` and
-`CachedCursor`. Both implement `CursorLike`, including `attributes()`:
+`sq_cursor_attributes` reads a bulk attribute snapshot. Rust exposes it through
+`Node::walk()` and `Cursor::attributes()`:
 
 ```rust,ignore
-let mut cursor = packed.root_node().walk_cached()?;
+let mut cursor = packed.root_node().walk()?;
 let attributes = cursor.attributes();
 println!("{}: {}..{}", attributes.kind, attributes.start_byte, attributes.end_byte);
 cursor.goto_first_child();
 ```
 
-See [cursor measurements](experiments/README.md#cursor-caching) for workloads
-where decoding reuse helps and where its overhead outweighs the savings.
+Packed reads are inline: flags, 8-bit and 16-bit node columns, and 32-bit group
+bases use specialized loads on little-endian hosts. Variable-width IDs use the
+non-straddling lane decoder. Big-endian hosts retain native-word extraction.
+This does not change the serialized layout.
 
 The version-2 serialized header is 40 bytes. Every section and column starts on an
 eight-byte boundary. Slabs are native-endian and need the exact matching grammar;

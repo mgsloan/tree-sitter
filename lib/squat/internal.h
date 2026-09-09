@@ -99,16 +99,67 @@ uint8_t *sq_reallocate_data(uint8_t *data, size_t old_size, size_t new_size);
 uint64_t sq_lane_starts(uint8_t bits);
 uint64_t sq_equal_lanes(uint64_t word, uint32_t value, uint8_t bits);
 uint8_t sq_width(uint32_t max);
-uint8_t sq_group_width(unsigned col);
-uint8_t sq_node_width(const SQLayout *, unsigned col);
+static inline uint8_t sq_group_width(unsigned column) {
+  return column == G_WASTE ? (SQ_GROUP_SIZE == 16 ? 4 : SQ_GROUP_SIZE == 32 ? 5 : 6) : 32;
+}
+static inline uint8_t sq_node_width(const SQLayout *layout, unsigned column) {
+  if (column < N_SPAN) {
+    return 1;
+  }
+  if (column == N_END_BYTE) {
+    return 16;
+  }
+  if (column == N_SYMBOL || column == N_GRAMMAR) {
+    return layout->symbol_bits;
+  }
+  if (column == N_FIELD) {
+    return layout->field_bits;
+  }
+  return 8;
+}
 uint64_t sq_column_size(uint32_t count, uint8_t bits);
 bool sq_layout(const TSLanguage *, uint32_t capacity, SQLayout *);
-uint32_t sq_get(const uint8_t *, uint32_t offset, uint32_t index, uint8_t bits);
+static inline uint32_t sq_get(const uint8_t *data, uint32_t offset, uint32_t index,
+                              uint8_t bits) {
+  const uint8_t *column = data + offset;
+  // Lanes occupy the low bits first in native-endian words. Narrow loads use
+  // consecutive addresses only on little-endian hosts; the compiler folds this test.
+  const uint16_t native_endian = 1;
+  if (*(const uint8_t *)&native_endian) {
+    switch (bits) {
+    case 1:
+      return (column[index / 8] >> (index % 8)) & 1;
+    case 8:
+      return column[index];
+    case 16: {
+      uint16_t value;
+      memcpy(&value, column + (uint64_t)index * 2, sizeof(value));
+      return value;
+    }
+    case 32: {
+      uint32_t value;
+      memcpy(&value, column + (uint64_t)index * 4, sizeof(value));
+      return value;
+    }
+    }
+  }
+  uint32_t lanes = 64 / bits;
+  uint64_t word;
+  memcpy(&word, column + (uint64_t)(index / lanes) * 8, sizeof(word));
+  return (uint32_t)((word >> (index % lanes * bits)) & ((UINT64_C(1) << bits) - 1));
+}
 void sq_set(uint8_t *, uint32_t offset, uint32_t index, uint8_t bits, uint32_t);
-uint32_t sq_group_get(const SQTree *, unsigned, uint32_t);
-uint32_t sq_node_get(SQNode, unsigned);
-void sq_decode_group(const SQTree *, uint32_t group, unsigned column,
-                     uint32_t values[SQ_GROUP_SIZE]);
+static inline uint32_t sq_group_get(const SQTree *tree, unsigned column, uint32_t group) {
+  SQHeader *header = sq_header(tree);
+  return sq_get(tree->data, tree->layout.groups[column],
+                header->group_capacity - header->group_count + group, sq_group_width(column));
+}
+static inline uint32_t sq_node_get(SQNode node, unsigned column) {
+  SQHeader *header = sq_header(node.tree);
+  return sq_get(node.tree->data, node.tree->layout.nodes[column],
+                (header->group_capacity - header->group_count) * SQ_GROUP_SIZE + node.slot,
+                sq_node_width(&node.tree->layout, column));
+}
 uint32_t sq_next_slot(const SQTree *, uint32_t);
 uint32_t sq_node_end_slot(SQNode);
 SQNode sq_null(void);

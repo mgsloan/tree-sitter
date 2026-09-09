@@ -1,5 +1,5 @@
 //! Shared, statically dispatched navigation for mainline and packed trees.
-use crate::{CachedCursor, Cursor, Error, Node, Tree};
+use crate::{Cursor, Error, Node, Tree};
 use tree_sitter::Point;
 
 /// Attributes supported by both representations on freshly parsed trees.
@@ -52,7 +52,7 @@ pub trait NodeLike<'tree>: Copy + Eq {
 pub trait CursorLike<'tree> {
     type Node: NodeLike<'tree>;
     fn node(&self) -> Self::Node;
-    /// Current attributes; cached cursors override this to reuse decoded columns.
+    /// Current node attributes.
     fn attributes(&mut self) -> Attributes<'tree> {
         self.node().attributes()
     }
@@ -61,7 +61,6 @@ pub trait CursorLike<'tree> {
     fn goto_first_child(&mut self) -> bool;
     fn goto_last_child(&mut self) -> bool;
     fn goto_next_sibling(&mut self) -> bool;
-    fn goto_previous_sibling(&mut self) -> bool;
     fn goto_parent(&mut self) -> bool;
 }
 
@@ -209,9 +208,6 @@ macro_rules! cursor_navigation {
         fn goto_next_sibling(&mut self) -> bool {
             <$cursor>::goto_next_sibling(self)
         }
-        fn goto_previous_sibling(&mut self) -> bool {
-            <$cursor>::goto_previous_sibling(self)
-        }
         fn goto_parent(&mut self) -> bool {
             <$cursor>::goto_parent(self)
         }
@@ -234,15 +230,4 @@ impl<'tree> CursorLike<'tree> for Cursor<'tree> {
         (field != 0).then_some(field)
     }
     cursor_navigation!(Cursor<'tree>);
-}
-impl<'tree> CursorLike<'tree> for CachedCursor<'tree> {
-    type Node = Node<'tree>;
-    fn attributes(&mut self) -> Attributes<'tree> {
-        CachedCursor::attributes(self)
-    }
-    fn field_id(&self) -> Option<u16> {
-        let field = self.node().field_id();
-        (field != 0).then_some(field)
-    }
-    cursor_navigation!(CachedCursor<'tree>);
 }

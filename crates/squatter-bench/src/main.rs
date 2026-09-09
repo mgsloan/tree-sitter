@@ -20,17 +20,11 @@ use std::{
 use tree_sitter::Point;
 use tree_sitter_squatter::{PackOptions, Tree};
 
-const BENCHMARKS: [&str; 13] = [
+const BENCHMARKS: [&str; 7] = [
     "query-matches",
     "query-captures",
     "walk-forward",
-    "walk-backward",
-    "walk-forward-cached",
-    "walk-backward-cached",
     "cursor-forward",
-    "cursor-backward",
-    "cursor-forward-cached",
-    "cursor-backward-cached",
     "seek-byte",
     "seek-point",
     "cold-parse",
@@ -312,19 +306,12 @@ fn observe<'tree, N: tree_sitter_squatter::traits::NodeLike<'tree>>(
     bytes: &[usize],
     points: &[Point],
 ) -> Result<Observation<'tree>> {
-    match benchmark.strip_suffix("-cached").unwrap_or(benchmark) {
+    match benchmark {
         "cursor-forward" => Ok(Observation::Navigation(compare::navigate(
             root.cursor()?,
             ids,
-            false,
         ))),
-        "cursor-backward" => Ok(Observation::Navigation(compare::navigate(
-            root.cursor()?,
-            ids,
-            true,
-        ))),
-        "walk-forward" => Ok(Observation::Walk(compare::walk(root, ids, false)?)),
-        "walk-backward" => Ok(Observation::Walk(compare::walk(root, ids, true)?)),
+        "walk-forward" => Ok(Observation::Walk(compare::walk(root, ids)?)),
         "seek-byte" => Ok(Observation::Seek(compare::seek_bytes(root, ids, bytes))),
         "seek-point" => Ok(Observation::Seek(compare::seek_points(root, ids, points))),
         _ => unreachable!(),
@@ -508,7 +495,7 @@ fn main() -> Result<()> {
         "machine": {"architecture": std::env::consts::ARCH, "os": std::env::consts::OS,
                     "cpuinfo": fs::read_to_string("/proc/cpuinfo").ok().and_then(|text| text.lines().find(|line| line.starts_with("model name")).map(str::to_owned))},
         "build": {"debug_assertions": cfg!(debug_assertions), "package_version": env!("CARGO_PKG_VERSION")},
-        "cursor_contract": "walks use bulk cursor attributes; cursor-* measures native navigation; -cached selects squat CachedCursor only",
+        "cursor_contract": "walk-forward uses bulk cursor attributes; cursor-forward measures native navigation",
         "query_engine": "slab NFA and structural plans adapted from ../main", "seek_contract": if arguments.strict_seeks { "strict" } else { "known differences counted but ignored by user request" },
     });
     fs::write(
@@ -627,12 +614,10 @@ fn main() -> Result<()> {
                                 let expected = Observation::Walk(compare::walk(
                                     mainline.root_node(),
                                     &mainline_ids,
-                                    false,
                                 )?);
                                 let actual = Observation::Walk(compare::walk(
                                     squat.root_node(),
                                     &squat_ids,
-                                    false,
                                 )?);
                                 if let Some(message) = difference(&expected, &actual) {
                                     bail!("{message}");
@@ -731,25 +716,6 @@ fn main() -> Result<()> {
                                             !arguments.unoptimized_query,
                                         )
                                         .map(Observation::Query);
-                                }
-                                if benchmark.ends_with("-cached") {
-                                    let root = pair.squat.root_node();
-                                    let backward = benchmark.contains("backward");
-                                    return if benchmark.starts_with("cursor-") {
-                                        Ok(Observation::Navigation(compare::navigate(
-                                            root.walk_cached()?,
-                                            &pair.squat_ids,
-                                            backward,
-                                        )))
-                                    } else {
-                                        compare::walk_with(
-                                            root,
-                                            &pair.squat_ids,
-                                            backward,
-                                            |node| node.walk_cached(),
-                                        )
-                                        .map(Observation::Walk)
-                                    };
                                 }
                                 observe(
                                     pair.squat.root_node(),

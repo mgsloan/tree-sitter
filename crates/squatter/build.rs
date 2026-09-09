@@ -13,7 +13,6 @@ fn main() {
     }
     for file in [
         "query_plan.c",
-        "cursor_impl.h",
         "query_internal.h",
         "include/tree_sitter/squat_query.h",
     ] {

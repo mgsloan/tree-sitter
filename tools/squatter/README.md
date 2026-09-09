@@ -29,7 +29,7 @@ Inside a compatible grammar container, use its artifact directory directly:
 ```sh
 corpus-analysis sample --code-corpora /corpus --output /out/samplings
 squatter-bench --code-corpora /corpus --samplings /out/samplings \
-  walk-forward walk-backward cold-parse train-small --repeat 5 --output example
+  walk-forward cursor-forward cold-parse train-small --repeat 5 --output example
 corpus-analysis memory-pareto --help
 ```
 
@@ -68,11 +68,8 @@ the first backend alternates by batch and repeat. Visible preorder ordinals
 identify nodes across representations. Comparison and identity-map setup are
 outside timed regions. Walk timings include recording the supported attributes.
 
-Reverse walks enumerate siblings forward and consume them in reverse for both
-backends. This avoids inconsistent fields in mainline's reverse cursor while
-charging the same adapter cost to both. Native packed reverse cursors are tested
-separately. Seek differences are counted but ignored by default at the human's
-request; `--strict-seeks` makes them fail again.
+Seek differences are counted but ignored by default at the human's request;
+`--strict-seeks` makes them fail again.
 
 Outputs are `NAME-files.jsonl`, `NAME-languages.jsonl`, `NAME-aggregate.jsonl`, and
 `NAME-run.json`. File metrics are medians of repeats; ratios are medians of paired
@@ -146,44 +143,25 @@ ratios within each run retain the paired-repeat contract.
 
 ## Cursor comparisons
 
-Both cursor types are exercised by default. The following selectors isolate
-navigation from attribute decoding:
+The forward workloads separate navigation from attribute decoding:
 
-| Selector | Squat cursor | Work timed |
-|---|---|---|
-| `cursor-forward`, `cursor-backward` | `Cursor` | Native traversal and node identities |
-| `cursor-forward-cached`, `cursor-backward-cached` | `CachedCursor` | Same native traversal and identities |
-| `walk-forward`, `walk-backward` | `Cursor` | Traversal and all supported attributes |
-| `walk-forward-cached`, `walk-backward-cached` | `CachedCursor` | Same traversal and attributes |
+| Selector | Work timed |
+|---|---|
+| `cursor-forward` | Native traversal and node identities |
+| `walk-forward` | Traversal and all supported attributes |
 
-Every selector compares against mainline on identical bytes. The `-cached` suffix
-selects only squat's cursor; mainline uses its normal cursor. Cursor creation and
-destruction are timed. Both squat variants use a single bulk attribute FFI call,
-so their relative timings isolate caching rather than different FFI call counts.
-These walk timings should not be directly compared to the older per-node-accessor
-walk results. Queries and node-based seeking continue to use their existing paths.
-
-`walk-backward` still uses the compatibility adapter described above, which
-creates a fresh cursor at each node. That limits reuse and exposes cache setup
-cost. `cursor-backward` measures native last-child/previous-sibling/parent
-movement without that adapter or mainline's inconsistent reverse fields.
+Both use the ordinary `Cursor` and compare against mainline on identical bytes.
+Cursor creation, destruction, and result collection are timed. The attribute
+walk uses one bulk FFI call per node; it should not be compared directly with
+older measurements using separate node accessor calls. Cached cursors and
+reverse traversal workloads have been removed.
 
 ```sh
 python3 tools/squatter/run.py --output build/squat-cursors \
   --max-file-bytes 102400 --per-bucket 2 --repeat 5 --skip-layouts --skip-sampling \
-  --benchmark cursor-forward --benchmark cursor-backward \
-  --benchmark cursor-forward-cached --benchmark cursor-backward-cached \
-  --benchmark walk-forward --benchmark walk-backward \
-  --benchmark walk-forward-cached --benchmark walk-backward-cached
-python3 tools/squatter/summarize-cursors.py build/squat-cursors \
-  --output cursor-results.json
+  --benchmark cursor-forward --benchmark walk-forward
 ```
 
-Use `--image IMAGE_ID` if the corpus's current pinned image is not cached locally.
-The summary verifies completed comparisons, input hashes, repeat counts, and
-source/binary identity. It retains per-file measurements and per-language
-quantiles, with size bands based on original input size. To include larger files,
-use `--max-file-bytes 4194304 --per-bucket 1` and a fresh output directory.
-Cached/uncached ratios divide per-file timing medians for the two
-selectors; each selector's mainline comparison separately retains paired-repeat
-ratios. Result files are created exclusively and never overwritten.
+Use `--image IMAGE_ID` if the corpus's pinned image is not cached locally.
+To include larger files, use `--max-file-bytes 4194304 --per-bucket 1` and a fresh
+output directory.

@@ -252,7 +252,7 @@ Omission of files 100kb to 1mb is intentional. The theory is that these files ju
 
 * `walk-forward`: Walks every visible node in preorder and queries every supported attribute listed below
 
-* `walk-backward`: Walks every visible node in reverse preorder and queries every supported attribute listed below
+* `cursor-forward`: Walks every visible node using the ordinary cursor and records node identity without reading attributes
 
 * `seek-byte`: Finds the deepest node for a byte. Does this 100 times.
 

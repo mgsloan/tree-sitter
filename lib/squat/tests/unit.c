@@ -24,8 +24,26 @@ static void equality_tests(void) {
   }
 }
 
+static void read_tests(void) {
+  uint64_t words[17];
+  uint64_t state = 42;
+  for (unsigned index = 0; index < 17; index++) {
+    state = state * UINT64_C(6364136223846793005) + 1;
+    words[index] = state;
+  }
+  for (uint8_t bits = 1; bits <= 32; bits++) {
+    uint32_t lanes = 64 / bits;
+    uint64_t mask = (UINT64_C(1) << bits) - 1;
+    for (uint32_t index = 0; index < 16 * lanes; index++) {
+      uint32_t expected = (uint32_t)((words[1 + index / lanes] >> (index % lanes * bits)) & mask);
+      assert(sq_get((const uint8_t *)words, 8, index, bits) == expected);
+    }
+  }
+}
+
 int main(void) {
   equality_tests();
+  read_tests();
   for (uint32_t symbols = 2; symbols <= 32768; symbols *= 2) {
     TSSymbolMetadata *metadata = calloc(symbols, sizeof(TSSymbolMetadata));
     assert(metadata);
@@ -62,14 +80,9 @@ int main(void) {
             assert(sq_get(tree->data, offset, (capacities[k] - 2) * scale + i, bits) ==
                    ((i * UINT64_C(31337) + c) & ((UINT64_C(1) << bits) - 1)));
           }
-          if (region) {
-            for (uint32_t group = 0; group < 2; group++) {
-              uint32_t values[SQ_GROUP_SIZE];
-              sq_decode_group(tree, group, c, values);
-              for (uint32_t i = 0; i < SQ_GROUP_SIZE; i++) {
-                assert(values[i] == sq_node_get((SQNode){tree, group * SQ_GROUP_SIZE + i}, c));
-              }
-            }
+          for (uint32_t i = 0; i < 2 * scale; i++) {
+            uint32_t actual = region ? sq_node_get((SQNode){tree, i}, c) : sq_group_get(tree, c, i);
+            assert(actual == ((i * UINT64_C(31337) + c) & ((UINT64_C(1) << bits) - 1)));
           }
           for (uint32_t i = 0; i < (capacities[k] - 2) * scale; i++) {
             assert(sq_get(tree->data, offset, i, bits) == 0);

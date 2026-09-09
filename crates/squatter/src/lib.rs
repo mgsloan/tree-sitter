@@ -276,16 +276,7 @@ impl<'tree> Node<'tree> {
             })
             .ok_or(Error::Allocation)
     }
-    /// Walk with a private, lazy cache of unpacked column groups.
-    pub fn walk_cached(self) -> Result<CachedCursor<'tree>, Error> {
-        let raw = unsafe { ffi::sq_cached_cursor_new(self.raw) };
-        NonNull::new(raw)
-            .map(|raw| CachedCursor {
-                raw,
-                lifetime: PhantomData,
-            })
-            .ok_or(Error::Allocation)
-    }
+
     pub fn kind_id(self) -> u16 {
         unsafe { ffi::sq_node_symbol(self.raw) }
     }
@@ -508,9 +499,6 @@ impl<'tree> Cursor<'tree> {
     pub fn goto_next_sibling(&mut self) -> bool {
         unsafe { ffi::sq_cursor_goto_next_sibling(self.raw.as_ptr()) }
     }
-    pub fn goto_previous_sibling(&mut self) -> bool {
-        unsafe { ffi::sq_cursor_goto_previous_sibling(self.raw.as_ptr()) }
-    }
     pub fn goto_parent(&mut self) -> bool {
         unsafe { ffi::sq_cursor_goto_parent(self.raw.as_ptr()) }
     }
@@ -520,51 +508,6 @@ impl Drop for Cursor<'_> {
         unsafe { ffi::sq_cursor_delete(self.raw.as_ptr()) };
     }
 }
-/// A cursor with private unpacked-column caches. Navigation is identical to
-/// [`Cursor`]. Use [`Self::attributes`] to read through the cache; [`Self::node`]
-/// returns an ordinary node that remains valid after the cursor moves or drops.
-pub struct CachedCursor<'tree> {
-    raw: NonNull<c_void>,
-    lifetime: PhantomData<&'tree Tree>,
-}
-impl<'tree> CachedCursor<'tree> {
-    /// Read a snapshot of the current node's attributes in one native call.
-    pub fn attributes(&mut self) -> traits::Attributes<'tree> {
-        let mut raw = std::mem::MaybeUninit::uninit();
-        unsafe {
-            ffi::sq_cached_cursor_attributes(self.raw.as_ptr(), raw.as_mut_ptr());
-            raw.assume_init().into_attributes()
-        }
-    }
-
-    pub fn node(&self) -> Node<'tree> {
-        Node::from_raw(unsafe { ffi::sq_cached_cursor_node(self.raw.as_ptr()) }).unwrap()
-    }
-    pub fn depth(&self) -> u32 {
-        unsafe { ffi::sq_cached_cursor_depth(self.raw.as_ptr()) }
-    }
-    pub fn goto_first_child(&mut self) -> bool {
-        unsafe { ffi::sq_cached_cursor_goto_first_child(self.raw.as_ptr()) }
-    }
-    pub fn goto_last_child(&mut self) -> bool {
-        unsafe { ffi::sq_cached_cursor_goto_last_child(self.raw.as_ptr()) }
-    }
-    pub fn goto_next_sibling(&mut self) -> bool {
-        unsafe { ffi::sq_cached_cursor_goto_next_sibling(self.raw.as_ptr()) }
-    }
-    pub fn goto_previous_sibling(&mut self) -> bool {
-        unsafe { ffi::sq_cached_cursor_goto_previous_sibling(self.raw.as_ptr()) }
-    }
-    pub fn goto_parent(&mut self) -> bool {
-        unsafe { ffi::sq_cached_cursor_goto_parent(self.raw.as_ptr()) }
-    }
-}
-impl Drop for CachedCursor<'_> {
-    fn drop(&mut self) {
-        unsafe { ffi::sq_cached_cursor_delete(self.raw.as_ptr()) };
-    }
-}
-
 #[repr(C)]
 struct RawCursorAttributes {
     kind: *const std::ffi::c_char,
@@ -645,17 +588,7 @@ mod ffi {
         ) -> RawNode;
         pub fn sq_node_child_with_descendant(node: RawNode, descendant: RawNode) -> RawNode;
         pub fn sq_node_has_supertype(node: RawNode, symbol: u16) -> bool;
-        pub fn sq_cached_cursor_new(node: RawNode) -> *mut c_void;
-        pub fn sq_cached_cursor_delete(cursor: *mut c_void);
-        pub fn sq_cached_cursor_node(cursor: *const c_void) -> RawNode;
-        pub fn sq_cached_cursor_depth(cursor: *const c_void) -> u32;
-        pub fn sq_cached_cursor_goto_first_child(cursor: *mut c_void) -> bool;
-        pub fn sq_cached_cursor_goto_last_child(cursor: *mut c_void) -> bool;
-        pub fn sq_cached_cursor_goto_next_sibling(cursor: *mut c_void) -> bool;
-        pub fn sq_cached_cursor_goto_previous_sibling(cursor: *mut c_void) -> bool;
-        pub fn sq_cached_cursor_goto_parent(cursor: *mut c_void) -> bool;
         pub fn sq_cursor_attributes(cursor: *mut c_void, out: *mut RawCursorAttributes);
-        pub fn sq_cached_cursor_attributes(cursor: *mut c_void, out: *mut RawCursorAttributes);
         pub fn sq_cursor_new(node: RawNode) -> *mut c_void;
         pub fn sq_cursor_delete(cursor: *mut c_void);
         pub fn sq_cursor_node(cursor: *const c_void) -> RawNode;
@@ -711,7 +644,6 @@ mod ffi {
         pub fn sq_cursor_goto_first_child(cursor: *mut c_void) -> bool;
         pub fn sq_cursor_goto_last_child(cursor: *mut c_void) -> bool;
         pub fn sq_cursor_goto_next_sibling(cursor: *mut c_void) -> bool;
-        pub fn sq_cursor_goto_previous_sibling(cursor: *mut c_void) -> bool;
         pub fn sq_cursor_goto_parent(cursor: *mut c_void) -> bool;
     }
 }

@@ -15,8 +15,6 @@ $(BUILD):
 $(BUILD)/%.o: %.c internal.h include/tree_sitter/squat.h | $(BUILD)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) -c $< -o $@
 
-$(BUILD)/cursor.o: cursor_impl.h
-
 $(BUILD)/query.o: query_plan.c query_internal.h include/tree_sitter/squat_query.h
 
 $(BUILD)/libtree-sitter-squat.a: $(SOURCES:%.c=$(BUILD)/%.o)

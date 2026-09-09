@@ -186,35 +186,18 @@ fn kinds<T: TreeLike>(tree: &T) -> Vec<u16> {
     output
 }
 
-fn check_cached_cursor(tree: &Tree) -> Result<(), Box<dyn Error>> {
-    use tree_sitter_squatter::traits::CursorLike;
-    fn check<'tree>(cursor: &mut impl CursorLike<'tree>) {
-        assert_eq!(cursor.attributes(), cursor.node().attributes());
-    }
-    let mut plain = tree.root_node().walk()?;
-    let mut cached = tree.root_node().walk_cached()?;
-    let saved_node = cached.node();
-    let saved_attributes = cached.attributes();
+fn check_cursor(tree: &Tree) -> Result<(), Box<dyn Error>> {
+    let mut cursor = tree.root_node().walk()?;
     loop {
-        check(&mut plain);
-        check(&mut cached);
-        assert_eq!(plain.node(), cached.node());
-        let down = plain.goto_first_child();
-        assert_eq!(down, cached.goto_first_child());
-        if down {
+        assert_eq!(cursor.attributes(), cursor.node().attributes());
+        if cursor.goto_first_child() {
             continue;
         }
         loop {
-            let next = plain.goto_next_sibling();
-            assert_eq!(next, cached.goto_next_sibling());
-            if next {
+            if cursor.goto_next_sibling() {
                 break;
             }
-            let parent = plain.goto_parent();
-            assert_eq!(parent, cached.goto_parent());
-            if !parent {
-                drop(cached);
-                assert_eq!(saved_attributes, saved_node.attributes());
+            if !cursor.goto_parent() {
                 return Ok(());
             }
         }
@@ -257,14 +240,14 @@ fn main() -> Result<(), Box<dyn Error>> {
         assert_eq!(node.named_children().count(), node.named_child_count());
         assert_eq!(node.preorder().count(), node.descendant_count());
     }
-    check_cached_cursor(&packed)?;
+    check_cursor(&packed)?;
     check_queries(&language, source, &mainline, &packed)?;
     check_cursor_reuse(&language, &mainline)?;
     drop(mainline);
     let compact = packed.repack()?;
     let decoded = Tree::from_bytes(&language, compact.as_bytes())?;
     assert_eq!(kinds(&packed), kinds(&decoded));
-    check_cached_cursor(&decoded)?;
+    check_cursor(&decoded)?;
     assert_eq!(compact.group_count(), compact.group_capacity());
     let mut corrupted = compact.as_bytes().to_vec();
     corrupted[0] ^= 0x80;

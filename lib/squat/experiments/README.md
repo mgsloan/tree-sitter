@@ -120,68 +120,12 @@ failed stress cases and are not included in this passing bounded sample.
 Reproduce the matrix and validated summary with the commands in
 [the corpus tool documentation](../../../tools/squatter/README.md#query-comparisons).
 
-## Cursor caching
+## Cursor experiment withdrawn
 
-[Recorded cursor results](cursor-results-2026-09-09.json) cover 88 files across
-all eleven grammars, original and mutated, with five repeats and a 100 KiB input
-cap. Every cursor workload passed full ordered identity/attribute comparisons.
-Both variants use the same navigation implementation and bulk attribute API.
-
-Median cached time divided by uncached time (lower is better):
-
-| Workload | Original | Mutated | Original files faster |
-|---|---:|---:|---:|
-| Native forward navigation | 1.040 | 1.028 | 22 / 88 |
-| Native backward navigation | 1.064 | 1.080 | 25 / 88 |
-| Forward walk with attributes | **0.865** | **0.863** | **81 / 88** |
-| Backward walk with attributes, compatibility adapter | 1.578 | 1.611 | 0 / 88 |
-
-Caching saved about 14% of forward attribute-walk time at the median. Navigation
-alone generally did not amortize decoding whole groups. The reverse attribute
-adapter creates a new cursor per node to preserve mainline's forward field/alias
-semantics; the cache's allocation and decoding costs therefore have little reuse.
-Its result is not a measurement of a long-lived native reverse cursor reading
-attributes. Keep both types and leave `Cursor` as the default.
-
-These are ratios of separate per-file medians within the same run, rather than
-paired-repeat ratios between the two cursor variants. Both selectors also report
-paired-repeat ratios against mainline in the raw results. Allocation, snapshot
-collection, and destruction are timed. Child/descendant counts remain ordinary
-node scans in both variants. Hardware counters were unavailable.
-
-The new shared bulk attribute API reduces FFI calls for the uncached cursor too;
-these walk measurements should not be compared directly with the earlier walk
-numbers. See [reproduction instructions](../../../tools/squatter/README.md#cursor-comparisons).
-
-The [larger-file run](cursor-large-results-2026-09-09.json) passed the same eight
-workloads on 53 originals and their mutations, with five repeats. It includes
-nine inputs over 1 MiB, up to a 4 MiB cap, and totals 4,741,921 original nodes
-(4,426,809 mutated). Across all 53 files, forward attribute-walk ratios were
-0.860 for both original and mutated inputs; native forward navigation was near
-parity overall (0.978 / 0.994).
-
-For the **nine inputs over 1 MiB**, grouped by original input size:
-
-| Workload | Original cached/uncached | Mutated cached/uncached |
-|---|---:|---:|
-| Native forward navigation | **0.900** | **0.898** |
-| Native backward navigation | 0.963 | 0.951 |
-| Forward walk with attributes | **0.855** | **0.865** |
-| Backward attribute compatibility adapter | 1.450 | 1.396 |
-
-All nine large inputs benefited from caching in native forward navigation and
-forward attribute walks; seven benefited in native backward navigation. More
-reuse on larger inputs can amortize cache setup, but the reverse compatibility
-adapter remained slower with caching. Both recorded reports include size-band
-and per-language statistics, source/binary identities, and per-file measurements.
-Reproduce this sample using the cursor command above with `--per-bucket 1` and
-`--max-file-bytes 4194304`, in a new output directory.
-
-Mainline's native previous-sibling movement may rescan preceding siblings to
-restore columns after crossing a line break (`lib/src/tree_cursor.c`). Its
-large-file reverse timings therefore include a cost absent from the sibling
-adapter. Cached/uncached ratios compare the two squat cursors directly and are
-kept separate from each variant's paired comparison against mainline.
+The optional decoded-column cursor and reverse cursor workloads were removed at
+the user's request. Their measurements and implementation remain in git history
+through `0f734e1b9`. The ordinary cursor and forward navigation/attribute
+benchmarks remain; see [the benchmark documentation](../../../tools/squatter/README.md#cursor-comparisons).
 
 ## Cursor and packed-read refresh
 

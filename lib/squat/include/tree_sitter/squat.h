@@ -15,7 +15,6 @@ typedef struct {
   uint32_t slot;
 } SQNode;
 typedef struct SQCursor SQCursor;
-typedef struct SQCachedCursor SQCachedCursor;
 /* A copied snapshot. Strings borrow the tree's retained language. Counts include
  * visible nodes only; descendant_count includes the current node. */
 typedef struct {
@@ -140,25 +139,10 @@ uint32_t sq_cursor_depth(const SQCursor *);
 bool sq_cursor_goto_first_child(SQCursor *);
 bool sq_cursor_goto_last_child(SQCursor *);
 bool sq_cursor_goto_next_sibling(SQCursor *);
-bool sq_cursor_goto_previous_sibling(SQCursor *);
 bool sq_cursor_goto_parent(SQCursor *);
-/* Both variants share navigation and the bulk attribute interface. The cached
- * variant lazily unpacks one group per accessed column. Ordinary SQNodes returned
- * by either cursor remain independent handles and do not borrow cursor storage.
- * Trees must outlive cursors; each cursor owns its cache and traversal stack. */
-void sq_cursor_attributes(SQCursor *, SQCursorAttributes *);
 
-SQCachedCursor *sq_cached_cursor_new(SQNode);
-void sq_cached_cursor_delete(SQCachedCursor *);
-SQNode sq_cached_cursor_node(const SQCachedCursor *);
-SQNode sq_cached_cursor_parent_node(const SQCachedCursor *);
-uint32_t sq_cached_cursor_depth(const SQCachedCursor *);
-bool sq_cached_cursor_goto_first_child(SQCachedCursor *);
-bool sq_cached_cursor_goto_last_child(SQCachedCursor *);
-bool sq_cached_cursor_goto_next_sibling(SQCachedCursor *);
-bool sq_cached_cursor_goto_previous_sibling(SQCachedCursor *);
-bool sq_cached_cursor_goto_parent(SQCachedCursor *);
-void sq_cached_cursor_attributes(SQCachedCursor *, SQCursorAttributes *);
+/* Trees must outlive cursors. Each cursor owns its ancestor stack. */
+void sq_cursor_attributes(SQCursor *, SQCursorAttributes *);
 
 #ifdef __cplusplus
 }

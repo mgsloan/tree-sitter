@@ -38,24 +38,6 @@ uint8_t sq_width(uint32_t max) {
   }
   return bits;
 }
-uint8_t sq_group_width(unsigned column) {
-  return column == G_WASTE ? sq_width(SQ_GROUP_SIZE - 1) : 32;
-}
-uint8_t sq_node_width(const SQLayout *layout, unsigned column) {
-  if (column < N_SPAN) {
-    return 1;
-  }
-  if (column == N_END_BYTE) {
-    return 16;
-  }
-  if (column == N_SYMBOL || column == N_GRAMMAR) {
-    return layout->symbol_bits;
-  }
-  if (column == N_FIELD) {
-    return layout->field_bits;
-  }
-  return 8;
-}
 uint64_t sq_column_size(uint32_t count, uint8_t bits) {
   uint32_t lanes = 64 / bits;
   return ((uint64_t)count + lanes - 1) / lanes * 8;
@@ -90,12 +72,6 @@ bool sq_layout(const TSLanguage *language, uint32_t capacity, SQLayout *layout) 
   layout->end = (uint32_t)offset;
   return true;
 }
-uint32_t sq_get(const uint8_t *data, uint32_t offset, uint32_t index, uint8_t bits) {
-  uint32_t lanes = 64 / bits;
-  uint64_t word;
-  memcpy(&word, data + offset + (uint64_t)(index / lanes) * 8, 8);
-  return (uint32_t)((word >> (index % lanes * bits)) & ((UINT64_C(1) << bits) - 1));
-}
 void sq_set(uint8_t *data, uint32_t offset, uint32_t index, uint8_t bits, uint32_t value) {
   uint32_t lanes = 64 / bits, shift = index % lanes * bits;
   uint8_t *address = data + offset + (uint64_t)(index / lanes) * 8;
@@ -103,17 +79,6 @@ void sq_set(uint8_t *data, uint32_t offset, uint32_t index, uint8_t bits, uint32
   memcpy(&word, address, 8);
   word = (word & ~mask) | ((uint64_t)value << shift);
   memcpy(address, &word, 8);
-}
-uint32_t sq_group_get(const SQTree *tree, unsigned column, uint32_t group) {
-  SQHeader *header = sq_header(tree);
-  return sq_get(tree->data, tree->layout.groups[column],
-                header->group_capacity - header->group_count + group, sq_group_width(column));
-}
-uint32_t sq_node_get(SQNode node, unsigned column) {
-  SQHeader *header = sq_header(node.tree);
-  return sq_get(node.tree->data, node.tree->layout.nodes[column],
-                (header->group_capacity - header->group_count) * SQ_GROUP_SIZE + node.slot,
-                sq_node_width(&node.tree->layout, column));
 }
 SQTree *sq_allocate(const TSLanguage *language, uint32_t capacity, SQError *error) {
   sq_fail(error, SQ_OK);
