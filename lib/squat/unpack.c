@@ -1,5 +1,5 @@
 #include "internal.h"
-#if defined(__x86_64__) || defined(__i386__)
+#if defined(__x86_64__)
 #include <immintrin.h>
 #define SQ_X86_UNPACK 1
 #else

@@ -1,10 +1,19 @@
 #include "attributes.h"
 
+#ifndef SQ_ITERATOR_CACHE_ALL
+#define SQ_ITERATOR_CACHE_ALL 0
+#endif
+
 typedef struct {
   uint32_t group;
   unsigned filled;
   SQUnpack unpack;
+#if SQ_ITERATOR_CACHE_ALL
+  uint32_t bases[G_COLUMNS];
+  uint16_t values[N_COLUMNS][SQ_GROUP_SIZE];
+#else
   uint16_t values[3][SQ_GROUP_SIZE];
+#endif
 } UnpackCache;
 
 struct SQNodeIterator {
@@ -61,15 +70,24 @@ SQNode sq_node_iterator_next(SQNodeIterator *iterator) {
   return iterator->current;
 }
 
-static uint16_t cached_id(SQNodeIterator *iterator, unsigned column) {
+static uint16_t cached_value(SQNodeIterator *iterator, unsigned column) {
   SQNode node = iterator->current;
   UnpackCache *cache = iterator->cache;
   uint32_t group = node.slot / SQ_GROUP_SIZE;
   if (cache->group != group) {
     cache->group = group;
     cache->filled = 0;
+#if SQ_ITERATOR_CACHE_ALL
+    for (unsigned base = G_BYTE; base < G_COLUMNS; base++) {
+      cache->bases[base] = sq_group_get(node.tree, base, group);
+    }
+#endif
   }
+#if SQ_ITERATOR_CACHE_ALL
+  unsigned index = column;
+#else
   unsigned index = column - N_SYMBOL;
+#endif
   if (!(cache->filled & (1u << index))) {
     const SQHeader *header = sq_header(node.tree);
     uint32_t first = (header->group_capacity - header->group_count + group) * SQ_GROUP_SIZE;
@@ -83,7 +101,7 @@ TSFieldId sq_node_iterator_field_id(SQNodeIterator *iterator) {
   if (!iterator || !iterator->current.tree) {
     return 0;
   }
-  return iterator->cache ? cached_id(iterator, N_FIELD)
+  return iterator->cache ? cached_value(iterator, N_FIELD)
                          : (TSFieldId)sq_node_get(iterator->current, N_FIELD);
 }
 void sq_node_iterator_attributes(SQNodeIterator *iterator, SQCursorAttributes *out) {
@@ -96,8 +114,38 @@ void sq_node_iterator_attributes(SQNodeIterator *iterator, SQCursorAttributes *o
   }
   SQNode node = iterator->current;
   if (iterator->cache) {
-    sq_attributes_with_ids(node, cached_id(iterator, N_SYMBOL), cached_id(iterator, N_GRAMMAR),
-                            cached_id(iterator, N_FIELD), out);
+#if SQ_ITERATOR_CACHE_ALL
+    // Experimental full cache: coordinates/flags use the same bounded unpacker.
+    // Counts still use ordinary tree scans and never evict the iterator's group.
+    // One group check per snapshot; fill missing columns only on first use.
+    (void)cached_value(iterator, N_SYMBOL);
+    const unsigned needed = ((1u << N_COLUMNS) - 1) &
+                            ~((1u << N_LAST) | (1u << N_SPAN) | (1u << N_SUPER));
+    if ((iterator->cache->filled & needed) != needed) {
+      for (unsigned column = N_EXTRA; column < N_COLUMNS; column++) {
+        if (needed & (1u << column)) {
+          (void)cached_value(iterator, column);
+        }
+      }
+    }
+    const uint32_t *base = iterator->cache->bases;
+    const uint16_t (*value)[SQ_GROUP_SIZE] = iterator->cache->values;
+    uint32_t lane = node.slot % SQ_GROUP_SIZE;
+    out->start_byte = base[G_BYTE] + value[N_BYTE][lane];
+    out->end_byte = base[G_END_BYTE] - value[N_END_BYTE][lane];
+    out->start_point = (TSPoint){base[G_ROW] + value[N_ROW][lane],
+                                 base[G_COL] + value[N_COL][lane]};
+    out->end_point = (TSPoint){base[G_END_ROW] - value[N_END_ROW][lane],
+                               base[G_END_COL] - value[N_END_COL][lane]};
+    out->is_extra = value[N_EXTRA][lane];
+    out->is_missing = value[N_MISSING][lane];
+    out->has_error = value[N_ERROR][lane];
+    sq_attributes_finish(node, value[N_SYMBOL][lane], value[N_GRAMMAR][lane],
+                          value[N_FIELD][lane], out);
+#else
+    sq_attributes_with_ids(node, cached_value(iterator, N_SYMBOL), cached_value(iterator, N_GRAMMAR),
+                            cached_value(iterator, N_FIELD), out);
+#endif
   } else {
     sq_attributes_with_ids(node, sq_node_get(node, N_SYMBOL), sq_node_get(node, N_GRAMMAR),
                             (TSFieldId)sq_node_get(node, N_FIELD), out);

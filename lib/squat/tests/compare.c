@@ -451,6 +451,12 @@ static void exercise(const TSLanguage *language, const char *source, uint32_t le
   ts_parser_delete(parser);
 }
 static void packing_tests(void) {
+  CHECK(!sq_node_iterator_new(sq_null(), false));
+  CHECK(!sq_node_iterator_new(sq_null(), true));
+  CHECK(sq_node_is_null(sq_node_iterator_next(NULL)));
+  CHECK(sq_node_is_null(sq_node_iterator_node(NULL)));
+  CHECK(sq_node_iterator_field_id(NULL) == 0);
+  sq_node_iterator_delete(NULL);
   uint8_t data[256];
   for (uint8_t bits = 1; bits <= 32; bits++) {
     memset(data, 0, sizeof(data));

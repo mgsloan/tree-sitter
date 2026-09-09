@@ -146,3 +146,9 @@ supported Intel CPUs, the vendor measured here, and portable SWAR elsewhere.
 AVX2 variable shifts and byte shuffles remain available for experiments.
 `SQ_UNPACK_KERNEL=1/2/3/4` selects scalar/SWAR/BMI2/AVX2 at build time; unavailable
 hardware selections fall back to SWAR. No slab format or cursor API changes.
+
+For the cache experiment, `SQ_ITERATOR_CACHE_ALL=1` also caches coordinate and
+flag columns and their group bases. This is an alternative build of the cached
+mode, not an additional public API. Counts still use ordinary tree scans. The
+default (`0`) caches only IDs; compare both builds before choosing the larger
+cache for a workload.
