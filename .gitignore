@@ -38,3 +38,7 @@ build
 zig-*
 
 /result
+
+__pycache__/
+/bench-outputs/
+/samplings/

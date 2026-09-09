@@ -56,3 +56,11 @@ Updated alongside implementation commits below.
 - Added a sparse field-lookup exception section, computed bottom-up without a full-tree pointer map. Each entry is `(parent slot, field ID, result slot)` in three u32s; a null result uses `UINT32_MAX`. The header grows from 32 to 40 bytes and the format version changes. This is a necessary amendment to preserve field lookup, independent of the ignored seek differences. Most nodes need no entry. Please review this extension to the original layout.
 - Mainline's reverse cursor also sometimes reports different fields than its forward cursor for the same node: the implementation updates a structural child index only when an alias sequence exists. The benchmark now uses the same forward-enumerate/reverse-consume sibling adapter for both backends during `walk-backward`. Every attribute is still read in reverse preorder, and both sides pay the same adapter cost. Mainline source files remain unchanged.
 - Corpus inventory must avoid `training -> train`, an alias present in this corpus checkout. Directory symlinks are skipped, preventing duplicate train/training inputs and preserving path-based seeds.
+
+### Corpus and benchmark tooling
+
+- Implemented deterministic inventory, mutation, per-domain selection, ten sample lists, novelty selection, and the existing memory Pareto model as a `corpus-analysis` subcommand.
+- Implemented paired non-query benchmarks with batch order alternation, repeat medians, paired-ratio percentiles, Linux counters when available, provenance, and partial-output handling. The current container denies performance counters; they are reported as null with the kernel error.
+- A source-snapshotted offline run passed all 40 selected original files with three repeats; mutated inputs and layout checks are being completed. See `tools/squatter/README.md` for commands and measurement boundaries.
+- Cache-line layout experiments align the allocation itself as well as column offsets. They use an aligned allocate/copy path because ordinary realloc does not preserve 64-byte alignment.
+- Sparse grammar symbols, variable-width supertypes, and interleaved field/symbol representations currently have byte estimates only. Their access-speed tradeoffs are not represented as measured results.

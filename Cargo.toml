@@ -10,6 +10,8 @@ members = [
   "crates/xtask",
   "crates/language",
   "crates/squatter",
+  "crates/corpus-analysis",
+  "crates/squatter-bench",
   "lib",
 ]
 resolver = "2"
