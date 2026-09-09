@@ -8,30 +8,36 @@ field, their values are often clustered.
 
 So, the idea is to split the nodes into groups. Each squat group stores the absolute base value for each field. This allows most fields to be `u8`. If a node has a value that doesn't fit, the rest of the block's slots are wasted and it becomes the first node of the next group.
 
+## Slab layout
+
+* `SlabHeader`
+* Struct-of-arrays `Group` where each has arity `group_count`
+* Struct-of-arrays `Node` where each ahs arity `slot_count`.
+* Symbol presence bitmaps
+* Supertype dictionary
+
+The slab can be directly written during conversion by somewhat overestimating `slot_count` and `group_count` from node count.
+
+If it runs out of space, then everything needs to be copied for the move, since the representation uses struct-of-arrays. There is an option to repack it to save space or for persistence, or if the estimates were off enough that it's worth it.
+
+## Slab data
+
 Despite the code below being Rust, this will be implemented in C in `lib/squat/`. Mainline Tree-sitter code will be unmodified.
 
 ```rs
-struct SquatHeader {
-    /// Identifies tree-squatter serialization version.
+struct SlabHeader {
+    /// Identifies tree-squatter serialization version and flags.
     magic_bits: u8,
-    symbol_bits: u8,
-    field_bits: u8,
+
     group_count: u32,
+
+    /// Offset in the slab where `Group` data starts.
+    groups_byte_offset: u32,
+
+    symbol_presence_byte_offset: u32,
 }
 
-struct SquatGroup {
-    /// The other fields in this actually make semantic sense for the group, but not this one. This
-    /// is just the min absolute value of subtree_size for all nodes in the group.
-    subtree_size: u32,
-    start_byte: u32,
-    end_byte: u32,
-    start_row: u32,
-    end_row: u32,
-    start_col: u32,
-    end_col: u32,
-}
-
-struct SquatNode {
+struct Node {
   /// Whether there is no later visible sibling.
   is_last_child: bool,
   /// "extra" grammar nodes like comments. Unfortunately not inferrable from symbol.
@@ -41,34 +47,55 @@ struct SquatNode {
   /// Whether this symbol was inserted as part of error recovery (and this indicates an error).
   is_missing: bool,
 
-  /// Count of slots used for descendants of this tree (add group subtree_size). Adding this plus one to the current slot index jumps to the next preorder node outside of this subtree.
+  /// Count of slots used for descendants of this tree (add min_subtree_size). Adding this plus one to the current slot index jumps to the next preorder node outside of this subtree.
   subtree_size: u8,
-  /// Start byte offset in the input text (add group start_byte).
+  /// Start byte offset in the input text (add min_byte).
   start_byte: u8,
-  /// End byte offset in the input text (subtract from group end_byte).
+  /// End byte offset in the input text (subtract from max_byte).
   end_byte_sub: u16,
-  /// Start row in the input text (add group start_row).
+  /// Start row in the input text (add min_row).
   start_row: u8,
-  /// Start row in the input text (add group end_row).
+  /// Start row in the input text (subtract from max_row).
   end_row_sub: u8,
-  /// Start col in the input text, in bytes (add group start_col).
+  /// Start col in the input text, in bytes (add min_col).
   start_col: u8,
-  /// End col in the input text, in bytes (subtract from group end_col).
+  /// End col in the input text, in bytes (subtract from max_col).
   end_col_sub: u8,
 
-  symbol: VarBits,
+  /// Supertypes mask or dictionary index.
+  supertypes: u8,
+
+  display_symbol: VarBits,
+
+  grammar_symbol: VarBits,
 
   field: VarBits,
 }
+
+struct Group {
+  /// Number of wasted slots.  Could be a u8.
+  leading_waste: u4,
+
+  min_subtree_size: u32,
+  min_byte: u32,
+  max_byte: u32,
+  min_row: u32,
+  max_row: u32,
+  min_col: u32,
+  max_col: u32,
+}
 ```
 
-`SquatHeader` is a real struct but `SquatGroup` and `SquatNode` are not. Instead the values for each field are stored contiguously (struct-of-arrays style). However, no layout info needs to be stored. It's all implied by the fields of `SquatHeader`.
+`SlabHeader` is a real struct but `Group` and `Node` are not. Instead the values for each field are stored contiguously (struct-of-arrays style). However, no layout info needs to be stored. It's all implied by the fields of `SlabHeader`.
 
-`tools/memory-pareto` was used to determine that `u16` should be used for `end_byte_sub`. This results in `~13.6B/node` whereas `u8` was `15.6B/node`. After that choice, it also determined that `16` slots per group is better than `32`, which was `14.3B/node`.
+`corpus-analysis memory-pareto` was used to determine that `u16` should be used
+for `end_byte_sub`. This results in `~13.6B/node` whereas `u8` was `15.6B/node`.
+After that choice, it also determined that `16` slots per group is better than
+`32`, which was `14.3B/node`.
 
-While all that's needed to know the whole layout is `group_count` / `symbol_bits` / `field_bits`, numbers that make calculating the position of data quickly are also stored in the `SquatHeader` (`nodes_start` / `node_stride`).
+FIXME: include up-to-date memory-pareto info here
 
-Note that the fields for `SquatNode` are not actually grouped. There is one contiguous interval of bytes that has all `symbol` data.
+Note that the fields for `Node` are not actually grouped. There is one contiguous interval of bytes that has all `display_symbol` data.
 
 Symbol and field ids use the grammar's required width, with a minimum of two
 bits so that SWAR tricks can be used. A nine-bit column holds seven values per
@@ -77,18 +104,59 @@ word, wasting one bit per word. Not spanning multiple words allows bitwise trick
 Builtin error symbols are remapped to the two values immediately after the
 grammar's real symbol range, then decoded at the API boundary.
 
+Tree-sitter's hidden nodes are omitted entirely since they are not helpful for the flat representation without incremental reparse. Their effects are recorded in `supertypes`, `is_last_child`, and `field`.
+
+Public symbol is mapped from raw display symbol at read time.
+
+`is_named` is looked up based on the raw symbol.
+
+EXPERIMENT: store grammar_symbol in a sparse index (only used for aliases). Fast to know from grammar if a display symbol might have a different grammar symbol.
+
+EXPERIMENT: try field interspersal
+
+EXPERIMENT: Make things align on cache lines etc
+
+EXPERIMENT: Try different node counts.
+
+## Supertypes
+
+Since hidden nodes are omitted, supertype information is needed.  There are two modes for this, distinguished by a flag in the SlabHeader:
+
+1. Stored directly in the `supertypes: u8`, when there are 8 or less potential supertypes.
+
+2. An index into a dictionary of bitmaps where each bitmap has N bits where N is the supertypes count. This requires building up the dictionary as it goes.
+
+FIXME: For now if there are more than 256 dictionary entries it will crash.
+
+EXPERIMENT: Make supertypes a VarBits representation. Allows omitting it when there are none.
 
 ## Symbol presence bitmaps
 
-After the `SquatNode`s comes an index of which symbols are present in a given group. This is only present if there are more than 32 groups.
+After the `Node`s comes an index of which display symbols are present in a given group. This is only present if there are more than 32 groups.
 
-First is a bitmap with `symbol` arity. 0 bit indicates the symbol is rare and so can have an occurrence list. 1 bit indicates that a per-group bitmap is used.
+First is a bitmap with `display_symbol` arity. 0 bit indicates the symbol is rare and so can have an occurrence list. 1 bit indicates that a per-group bitmap is used.
 
 `group_count` is rounded up to the nearest multiple of 32, and this is how many bits is in each bitmap.
 
 When the symbol has a `0` bit, it is a sequence of `u32` slot indexes where the symbol appears. This takes up the same amount of space as the bitmaps. 0xFFFFFFFF is filled in for unused parts of the sequence.
 
 When the symbol has a `1` then it is a bitmap where a `1` indicates that the corresponding group has a node with that symbol.
+
+EXPERIMENT: try different thresholds for symbol bitmaps
+
+## Conversion algorithm
+
+The mainline tree is walked in reverse preorder.  It walks nodes until one has a field that doesn't work or until the group is full.  It writes down node pointers as it goes.
+
+`min_subtree_size`, `end_byte`, `end_row`, `min_col`, `max_col` are computed as it scans. `leading_waste`, `start_byte`, and `start_row` are known on the last inserted node.
+
+`has_error` state is also maintained bottom up via this walk order.
+
+`supertypes` state is managed by the traversal stack.
+
+EXPERIMENT: try buffering the absolute values instead of writing down pointers
+
+EXPERIMENT: try eagerly filling without checking if the fields fit to reduce branching.  Optimistically figure out the full group values, and then see if the nodes fit.
 
 
 # C API
@@ -196,35 +264,13 @@ The benchmark does the following:
 The failure count is accumulated, but only the details of the first failure are reported in the output, along with the timings.  It exits with failure if there are any.
 
 
-# FIXME
-
-* “Every attribute” and full query comparison expose unresolved representation
-  requirements. Lines 148–158 (design.md:148) promise broader equivalence than
-  the layout currently specifies. Tree-sitter distinguishes public symbols from
-  underlying grammar symbols; aliases can make them differ. Query execution also
-  consults hidden supertype ancestry. A public-node tree containing one symbol
-  per node does not establish that this information survives packing.
-
-  Explicitly list supported attributes and query semantics, then identify their
-  stored or reconstructible information. This is an architectural decision to
-  settle before implementing the benchmark suite.
-
-
 # Future work
 
 * Representation of which char in unexpected char nodes
 
-* Evaluate whether storing `byte_len` is better than `end_byte`. Similar for row / col
-
-* Revisit node count
-
 * ABI compatible drop-in
 
 * Make persistence work across BE vs LE?
-
-* Select the threshold for having symbol bitmaps
-
-* Should padding / spacing etc be used to make things align on cache lines etc?
 
 * How to compute magic value - is it a hash of representation version + grammar metadata?
 
