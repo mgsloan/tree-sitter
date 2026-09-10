@@ -185,8 +185,9 @@ forward cursor for all corresponding workloads. All four new selectors are in
 the default benchmark set. Iterator creation and destruction are timed.
 
 Compare the cached/uncached Squat rows directly to isolate the optional cache.
-The three variable-width ID columns are the only columns cached, and no unpacking
-occurs in navigation-only workloads. Source identities and the selected build
+The default cache stores three variable-width IDs as u16 and reconstructs six
+absolute coordinate columns as u32 with SIMD broadcast-base arithmetic. No
+unpacking occurs in navigation-only workloads. Source identities and the selected build
 flags must accompany kernel or group-size ablations. Group size changes the slab
 layout too, so those comparisons are not isolated unpack-kernel comparisons.
 
@@ -252,3 +253,20 @@ so each rotation sees both backend orders. For a fully balanced single-file
 measurement, use twice as many repeats as selected non-parse workloads (or a
 multiple thereof). Earlier saved iterator matrices used fixed workload order;
 their mainline controls expose a warming effect in small navigation workloads.
+
+
+For absolute u32 coordinate-cache windows, build the same source four times with
+`SQ_GROUP_SIZE=16`, `SQ_ITERATOR_CACHE_ALL=2`, and
+`SQ_ITERATOR_UNPACK_SLOTS=16/32/64/128`. Compare each cached walk with its own
+uncached walk; the old delta cache is not part of this experiment. For example:
+
+```sh
+python3 benchmark-upload.py ~/squatter-benchmark --repeat 8 \
+  --variants absolute16 absolute32 absolute64 absolute128 \
+  --output-name absolute-results --unpack-sizes \
+  --benchmarks walk-iterator walk-iterator-cached
+```
+
+An empty `--unpack-sizes` skips standalone ID-unpack microbenchmarks. Eight repeats
+balance the two attribute workloads across both workload positions and backend
+orders. The full results retain mainline timing controls and per-file medians.

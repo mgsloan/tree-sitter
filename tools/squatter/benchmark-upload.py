@@ -25,7 +25,7 @@ def main():
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--output-name", default="cloud-results")
     parser.add_argument("--benchmarks", nargs="+")
-    parser.add_argument("--unpack-sizes", type=int, nargs="+", default=[16, 32, 64])
+    parser.add_argument("--unpack-sizes", type=int, nargs="*", default=[16, 32, 64])
     args = parser.parse_args()
     bundle = args.bundle.resolve()
     output = bundle / args.output_name
