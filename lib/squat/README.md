@@ -58,10 +58,11 @@ println!("{}: {}..{}", attributes.kind, attributes.start_byte, attributes.end_by
 cursor.goto_first_child();
 ```
 
-Packed reads are inline: flags, 8-bit and 16-bit node columns, and 32-bit group
-bases use specialized loads on little-endian hosts. Variable-width IDs use the
-non-straddling lane decoder. Big-endian hosts retain native-word extraction.
-This does not change the serialized layout.
+The runtime layout has named slab offsets, with no column enum or offset table.
+Flags, u8/u16 deltas, and u32 bases have explicit typed reads and writes; byte
+positions within native packed words are adjusted on big-endian hosts. Only
+variable-width IDs and group waste use the non-straddling bit decoder. The
+serialized column order and version-4 bytes are unchanged.
 
 The version-4 serialized header is 16 bytes: a format/flags word, live group
 count, allocated group capacity, and supertype-dictionary count. Column and
@@ -244,7 +245,7 @@ make -C lib/squat BUILD=../../build/squat-byte-only \
 ```
 
 Compile callers with the same `SQ_INCLUDE_POINTS` value. With points disabled,
-point getters, point-range seeks, query point-range setters, point column IDs,
+point getters, point-range seeks, query point-range setters, point column equality functions,
 and point snapshot members are **absent** from the C API. Byte getters, seeks,
 and query ranges retain their existing behavior. The SIMD cache reconstructs
 only the two byte-coordinate columns.
@@ -269,3 +270,22 @@ and slabs from another point mode; they are incompatible with this format.
 
 [Validation and compiled allocation sizes](experiments/optional-points-validation-2026-09-10.json)
 cover both modes, API omission, sanitizers, and original/mutated corpus checks.
+
+
+## Named columns and bulk equality
+
+Named equality functions replace the old `SQColumn` selector. For example,
+`sq_tree_group_field_equal(tree, group, value)` replaces
+`sq_tree_group_equal(tree, group, SQ_COLUMN_FIELD, value)`. Each previously
+exposed encoded column has its own function, including byte/point deltas,
+supertypes, raw display symbols, and grammar symbols. Point functions remain
+absent from byte-only builds. These are exact physical-lane masks, with the same
+SWAR kernel and encoded-value semantics.
+
+Iterator caches likewise use named lane arrays. A field-only request fills only
+fields; a snapshot fills the remaining named attributes once per unpack window.
+Two booleans track those states. There is no column-bitmask/ctz dispatch, and the
+absolute u32 SIMD reconstruction and uncached iterator remain available.
+
+The [named-column comparison](experiments/named-columns-results-2026-09-10.md)
+records cloud timings and byte-for-byte compatibility with the storage commit.

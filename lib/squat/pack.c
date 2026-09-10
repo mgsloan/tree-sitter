@@ -5,14 +5,27 @@
  * computed once left-to-right, then consumed right-to-left (columns cannot be
  * recovered by subtracting a multiline child's extent). No recursive C calls. */
 typedef struct {
-  uint32_t values[SQ_PACK_VALUES];
+  uint32_t span;
+  uint32_t start_byte;
+  uint32_t end_byte;
+#if SQ_INCLUDE_POINTS
+  uint32_t start_row;
+  uint32_t end_row;
+  uint32_t start_column;
+  uint32_t end_column;
+#endif
+} PackValues;
+
+typedef struct {
+  PackValues values;
   uint32_t symbol, grammar, field;
   uint8_t flags, super;
 } Pending;
 typedef struct {
   SQTree *tree;
   Pending pending[SQ_GROUP_SIZE];
-  uint32_t count, min[SQ_PACK_VALUES], max[SQ_PACK_VALUES];
+  uint32_t count;
+  PackValues min, max;
   uint64_t *dictionary;
   uint32_t dictionary_count, words;
   SQError *error;
@@ -52,45 +65,43 @@ static bool close_group(Builder *builder) {
     header = sq_header(tree);
   }
   uint32_t group = header->group_count++;
-  uint32_t bases[] = {SQ_GROUP_SIZE - builder->count,
-                      builder->min[0],
-                      builder->min[1],
-                      builder->max[2],
+  sq_set_packed(tree->data, tree->layout.waste, group, SQ_WASTE_BITS, SQ_GROUP_SIZE - builder->count);
+  sq_set_u32(tree->data, tree->layout.span_base, group, builder->min.span);
+  sq_set_u32(tree->data, tree->layout.start_byte_base, group, builder->min.start_byte);
+  sq_set_u32(tree->data, tree->layout.end_byte_base, group, builder->max.end_byte);
 #if SQ_INCLUDE_POINTS
-                      builder->min[3],
-                      builder->max[4],
-                      builder->min[5],
-                      builder->max[6],
+  sq_set_u32(tree->data, tree->layout.start_row_base, group, builder->min.start_row);
+  sq_set_u32(tree->data, tree->layout.end_row_base, group, builder->max.end_row);
+  sq_set_u32(tree->data, tree->layout.start_column_base, group, builder->min.start_column);
+  sq_set_u32(tree->data, tree->layout.end_column_base, group, builder->max.end_column);
 #endif
-  };
-  for (unsigned c = 0; c < G_COLUMNS; c++) {
-    sq_set(tree->data, tree->layout.groups[c], group, sq_group_width(c), bases[c]);
-  }
   for (uint32_t i = 0; i < builder->count; i++) {
-    Pending *pending = &builder->pending[i];
+    const Pending *pending = &builder->pending[i];
     uint32_t slot = group * SQ_GROUP_SIZE + i;
-    uint32_t values[] = {
-        !!(pending->flags & 1),
-        !!(pending->flags & 2),
-        !!(pending->flags & 4),
-        !!(pending->flags & 8),
-        pending->values[0] - builder->min[0],
-        pending->values[1] - builder->min[1],
-        builder->max[2] - pending->values[2],
+    sq_set_bit(tree->data, tree->layout.last, slot, pending->flags & 1);
+    sq_set_bit(tree->data, tree->layout.extra, slot, pending->flags & 2);
+    sq_set_bit(tree->data, tree->layout.error, slot, pending->flags & 4);
+    sq_set_bit(tree->data, tree->layout.missing, slot, pending->flags & 8);
+    sq_set_u8(tree->data, tree->layout.span_delta, slot, pending->values.span - builder->min.span);
+    sq_set_u8(tree->data, tree->layout.start_byte_delta, slot,
+               pending->values.start_byte - builder->min.start_byte);
+    sq_set_u16(tree->data, tree->layout.end_byte_delta, slot,
+               builder->max.end_byte - pending->values.end_byte);
 #if SQ_INCLUDE_POINTS
-        pending->values[3] - builder->min[3],
-        builder->max[4] - pending->values[4],
-        pending->values[5] - builder->min[5],
-        builder->max[6] - pending->values[6],
+    sq_set_u8(tree->data, tree->layout.start_row_delta, slot,
+               pending->values.start_row - builder->min.start_row);
+    sq_set_u8(tree->data, tree->layout.end_row_delta, slot,
+               builder->max.end_row - pending->values.end_row);
+    sq_set_u8(tree->data, tree->layout.start_column_delta, slot,
+               pending->values.start_column - builder->min.start_column);
+    sq_set_u8(tree->data, tree->layout.end_column_delta, slot,
+               builder->max.end_column - pending->values.end_column);
 #endif
-        pending->super,
-        pending->symbol,
-        pending->grammar,
-        pending->field,
-    };
-    for (unsigned c = 0; c < N_COLUMNS; c++) {
-      sq_set(tree->data, tree->layout.nodes[c], slot, sq_node_width(&tree->layout, c), values[c]);
-    }
+    sq_set_u8(tree->data, tree->layout.supertype, slot, pending->super);
+    sq_set_packed(tree->data, tree->layout.symbol, slot, tree->layout.symbol_bits, pending->symbol);
+    sq_set_packed(tree->data, tree->layout.grammar_symbol, slot,
+               tree->layout.symbol_bits, pending->grammar);
+    sq_set_packed(tree->data, tree->layout.field, slot, tree->layout.field_bits, pending->field);
   }
   builder->count = 0;
   return true;
@@ -121,15 +132,50 @@ static bool intern_mask(Builder *builder, const uint64_t *mask, uint8_t *result)
   *result = (uint8_t)builder->dictionary_count++;
   return true;
 }
+/* Stage candidate extrema separately: a rejected node must not change the
+ * accepted group's bases. Only end-byte deltas have a wider, u16 range. */
+static bool extend_range(uint32_t value, uint32_t previous_min, uint32_t previous_max,
+                          uint32_t limit, uint32_t *min, uint32_t *max) {
+  *min = value < previous_min ? value : previous_min;
+  *max = value > previous_max ? value : previous_max;
+  return *max - *min <= limit;
+}
+static bool group_fits(const Builder *builder, const PackValues *value,
+                        PackValues *min, PackValues *max) {
+  if (builder->count == SQ_GROUP_SIZE) return false;
+  if (!builder->count) {
+    *min = *max = *value;
+    return true;
+  }
+  if (!extend_range(value->span, builder->min.span, builder->max.span,
+                    UINT8_MAX, &min->span, &max->span)) return false;
+  if (!extend_range(value->start_byte, builder->min.start_byte, builder->max.start_byte,
+                    UINT8_MAX, &min->start_byte, &max->start_byte)) return false;
+  if (!extend_range(value->end_byte, builder->min.end_byte, builder->max.end_byte,
+                    UINT16_MAX, &min->end_byte, &max->end_byte)) return false;
+#if SQ_INCLUDE_POINTS
+  if (!extend_range(value->start_row, builder->min.start_row, builder->max.start_row,
+                    UINT8_MAX, &min->start_row, &max->start_row)) return false;
+  if (!extend_range(value->end_row, builder->min.end_row, builder->max.end_row,
+                    UINT8_MAX, &min->end_row, &max->end_row)) return false;
+  if (!extend_range(value->start_column, builder->min.start_column, builder->max.start_column,
+                    UINT8_MAX, &min->start_column, &max->start_column)) return false;
+  if (!extend_range(value->end_column, builder->min.end_column, builder->max.end_column,
+                    UINT8_MAX, &min->end_column, &max->end_column)) return false;
+#endif
+  return true;
+}
+
 static bool emit(Builder *builder, Frame *frame) {
   TSNode node = frame->node;
 #if SQ_INCLUDE_POINTS
   TSPoint start = ts_node_start_point(node), end = ts_node_end_point(node);
 #endif
   Pending pending = {
-      .values = {0, ts_node_start_byte(node), ts_node_end_byte(node),
+      .values = {.start_byte = ts_node_start_byte(node), .end_byte = ts_node_end_byte(node),
 #if SQ_INCLUDE_POINTS
-                 start.row, end.row, start.column, end.column,
+                 .start_row = start.row, .end_row = end.row,
+                 .start_column = start.column, .end_column = end.column,
 #endif
       },
       .symbol = sq_encode_symbol(builder->tree, node.context[3] ? (TSSymbol)node.context[3]
@@ -149,21 +195,11 @@ static bool emit(Builder *builder, Frame *frame) {
     }
     /* Retrying after close_group includes newly abandoned slots in the span.
      * The saved boundary still marks the same lower physical slot. */
-    pending.values[0] = distance(builder) - frame->boundary;
-    uint32_t min[SQ_PACK_VALUES], max[SQ_PACK_VALUES];
-    bool fits = builder->count < SQ_GROUP_SIZE;
-    for (unsigned c = 0; c < SQ_PACK_VALUES; c++) {
-      min[c] = !builder->count || pending.values[c] < builder->min[c] ? pending.values[c]
-                                                                      : builder->min[c];
-      max[c] = !builder->count || pending.values[c] > builder->max[c] ? pending.values[c]
-                                                                      : builder->max[c];
-      if (max[c] - min[c] > (c == 2 ? UINT16_MAX : UINT8_MAX)) {
-        fits = false;
-      }
-    }
-    if (fits) {
-      memcpy(builder->min, min, sizeof(min));
-      memcpy(builder->max, max, sizeof(max));
+    pending.values.span = distance(builder) - frame->boundary;
+    PackValues min, max;
+    if (group_fits(builder, &pending.values, &min, &max)) {
+      builder->min = min;
+      builder->max = max;
       builder->pending[builder->count++] = pending;
       return true;
     }

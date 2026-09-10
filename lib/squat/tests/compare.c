@@ -79,7 +79,7 @@ static uint32_t ordinal_packed(Nodes *nodes, SQNode n) {
         fprintf(stderr, "  %u %s [%u,%u] parent=%u endslot=%u last=%u\n", dump, ts_node_type(d),   \
                 ts_node_start_byte(d), ts_node_end_byte(d),                                        \
                 ordinal_mainline(nodes, ts_node_parent(d)), sq_node_end_slot(nodes->packed[dump]), \
-                sq_node_get(nodes->packed[dump], N_LAST));                                         \
+                sq_node_last_flag(nodes->packed[dump]));                                         \
       }                                                                                            \
     }                                                                                              \
     CHECK(ma == pa);                                                                               \
@@ -206,23 +206,36 @@ static void compare_supertypes(const TSTreeCursor *cursor, SQNode node) {
     CHECK(expected == sq_node_has_supertype(node, tree->supertypes[s]));
   }
 }
+static void compare_equal_column(const SQTree *tree, uint32_t group,
+                                   uint64_t (*equal)(const SQTree *, uint32_t, uint32_t),
+                                   uint32_t (*value)(SQNode)) {
+  SQNode first = {tree, group * SQ_GROUP_SIZE};
+  uint32_t targets[] = {0, value(first), UINT32_MAX};
+  for (unsigned target = 0; target < 3; target++) {
+    uint64_t expected = 0;
+    uint32_t used = SQ_GROUP_SIZE - sq_group_waste(tree, group);
+    for (uint32_t lane = 0; lane < used; lane++) {
+      SQNode node = {tree, group * SQ_GROUP_SIZE + lane};
+      if (value(node) == targets[target]) expected |= UINT64_C(1) << lane;
+    }
+    CHECK(equal(tree, group, targets[target]) == expected);
+  }
+}
 static void compare_group_equality(const SQTree *tree) {
   for (uint32_t group = 0; group < sq_tree_group_count(tree); group++) {
-    uint32_t waste = sq_group_get(tree, G_WASTE, group);
-    SQNode first = {tree, group * SQ_GROUP_SIZE};
-    for (unsigned column = 0; column < SQ_COLUMN_COUNT; column++) {
-      uint32_t values[] = {0, sq_node_get(first, N_SPAN + column), UINT32_MAX};
-      for (unsigned target = 0; target < 3; target++) {
-        uint64_t expected = 0;
-        for (uint32_t lane = 0; lane < SQ_GROUP_SIZE - waste; lane++) {
-          SQNode node = {tree, group * SQ_GROUP_SIZE + lane};
-          if (sq_node_get(node, N_SPAN + column) == values[target]) {
-            expected |= UINT64_C(1) << lane;
-          }
-        }
-        CHECK(sq_tree_group_equal(tree, group, (SQColumn)column, values[target]) == expected);
-      }
-    }
+    compare_equal_column(tree, group, sq_tree_group_span_delta_equal, sq_node_span_delta);
+    compare_equal_column(tree, group, sq_tree_group_start_byte_delta_equal, sq_node_start_byte_delta);
+    compare_equal_column(tree, group, sq_tree_group_end_byte_delta_equal, sq_node_end_byte_delta);
+#if SQ_INCLUDE_POINTS
+    compare_equal_column(tree, group, sq_tree_group_start_row_delta_equal, sq_node_start_row_delta);
+    compare_equal_column(tree, group, sq_tree_group_end_row_delta_equal, sq_node_end_row_delta);
+    compare_equal_column(tree, group, sq_tree_group_start_column_delta_equal, sq_node_start_column_delta);
+    compare_equal_column(tree, group, sq_tree_group_end_column_delta_equal, sq_node_end_column_delta);
+#endif
+    compare_equal_column(tree, group, sq_tree_group_supertype_equal, sq_node_supertype);
+    compare_equal_column(tree, group, sq_tree_group_symbol_equal, sq_node_symbol_id);
+    compare_equal_column(tree, group, sq_tree_group_grammar_symbol_equal, sq_node_grammar_id);
+    compare_equal_column(tree, group, sq_tree_group_field_equal, sq_node_field_value);
   }
 }
 
@@ -418,7 +431,7 @@ static void check_presence_validation(const SQTree *tree) {
   bool checked_bitmap = false, checked_occurrence = false, checked_sentinel = false;
   for (uint32_t symbol = 0; symbol < symbols; symbol++) {
     uint8_t *entry = bytes + offset + mode_bytes + (size_t)symbol * entry_bytes;
-    if (sq_get(bytes, offset, symbol, 1) && !checked_bitmap) {
+    if (sq_get_packed(bytes, offset, symbol, 1) && !checked_bitmap) {
       // Toggle both an existing bit and an absent bit. The latter tests the
       // cardinality check, not merely membership of every observed group.
       for (unsigned value = 0; value <= 1; value++) {
@@ -431,7 +444,7 @@ static void check_presence_validation(const SQTree *tree) {
         }
       }
       checked_bitmap = true;
-    } else if (!sq_get(bytes, offset, symbol, 1)) {
+    } else if (!sq_get_packed(bytes, offset, symbol, 1)) {
       // Occurrences and unused sentinels must each match exactly, including
       // the preorder position within this symbol's occurrence list.
       for (uint32_t index = 0; index < entry_bytes / 4; index++) {
@@ -446,10 +459,10 @@ static void check_presence_validation(const SQTree *tree) {
       }
     }
   }
-  sq_set(bytes, offset, 0, 1, !sq_get(bytes, offset, 0, 1));
+  sq_set_packed(bytes, offset, 0, 1, !sq_get_packed(bytes, offset, 0, 1));
   reject_index_mutation(tree, bytes);
   if (symbols % 64) {
-    sq_set(bytes, offset, symbols, 1, 1);
+    sq_set_packed(bytes, offset, symbols, 1, 1);
     reject_index_mutation(tree, bytes);
   }
   uint64_t used = mode_bytes + (uint64_t)symbols * entry_bytes;
@@ -615,10 +628,10 @@ static void packing_tests(void) {
     memset(data, 0, sizeof(data));
     uint32_t count = (uint32_t)(sizeof(data) / 8) * (64 / bits);
     for (uint32_t i = 0; i < count; i++) {
-      sq_set(data, 0, i, bits, (uint32_t)((i * UINT64_C(7919)) & ((UINT64_C(1) << bits) - 1)));
+      sq_set_packed(data, 0, i, bits, (uint32_t)((i * UINT64_C(7919)) & ((UINT64_C(1) << bits) - 1)));
     }
     for (uint32_t i = 0; i < count; i++) {
-      CHECK(sq_get(data, 0, i, bits) == ((i * UINT64_C(7919)) & ((UINT64_C(1) << bits) - 1)));
+      CHECK(sq_get_packed(data, 0, i, bits) == ((i * UINT64_C(7919)) & ((UINT64_C(1) << bits) - 1)));
     }
   }
   CHECK(sq_width(0) == 2 && sq_width(3) == 2 && sq_width(4) == 3 && sq_width(255) == 8 &&

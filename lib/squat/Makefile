@@ -57,5 +57,6 @@ $(BUILD)/memory-bench: experiments/memory.c $(BUILD)/libtree-sitter-squat.a $(BU
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) $^ -ldl \
 	  -Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc,--wrap=aligned_alloc,--wrap=free -o $@
 
-$(BUILD)/column-addressing: experiments/column-addressing.c $(BUILD)/libtree-sitter-squat.a $(BUILD)/runtime.o
+# Public-API probe for comparing persisted bytes with another build.
+$(BUILD)/slab-compatibility: tests/slab-compatibility.c $(BUILD)/libtree-sitter-squat.a $(BUILD)/runtime.o
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) $^ -ldl -o $@

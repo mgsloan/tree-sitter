@@ -37,7 +37,7 @@ bool sq_build_presence(SQTree **tree_pointer, SQError *error) {
   uint8_t *entries = next + offset + sq_column_size(symbols, 1);
   for (uint32_t symbol_index = 0; symbol_index < symbols; symbol_index++) {
     if (counts[symbol_index] > entry_bytes / 4) {
-      sq_set(next, offset, symbol_index, 1, 1);
+      sq_set_packed(next, offset, symbol_index, 1, 1);
     } else {
       memset(entries + (size_t)symbol_index * entry_bytes, 0xff, entry_bytes);
     }
@@ -46,7 +46,7 @@ bool sq_build_presence(SQTree **tree_pointer, SQError *error) {
   for (SQNode node = sq_tree_root_node(tree); node.tree; node = sq_node_next_preorder(node)) {
     uint32_t symbol_index = sq_encode_symbol(tree, sq_node_symbol(node));
     uint8_t *entry = entries + (size_t)symbol_index * entry_bytes;
-    if (sq_get(next, offset, symbol_index, 1)) {
+    if (sq_get_packed(next, offset, symbol_index, 1)) {
       uint32_t group = node.slot / SQ_GROUP_SIZE;
       entry[group / 8] |= (uint8_t)(1u << (group % 8));
     } else {
@@ -66,7 +66,7 @@ bool sq_tree_group_has_symbol(const SQTree *tree, uint32_t group, TSSymbol symbo
   }
   uint32_t offset = sq_presence_offset(tree);
   if (!offset) {
-    uint32_t end = (group + 1) * SQ_GROUP_SIZE - sq_group_get(tree, G_WASTE, group);
+    uint32_t end = (group + 1) * SQ_GROUP_SIZE - sq_group_waste(tree, group);
     for (uint32_t i = group * SQ_GROUP_SIZE; i < end; i++) {
       if (sq_node_symbol((SQNode){tree, i}) == symbol) {
         return true;
@@ -77,7 +77,7 @@ bool sq_tree_group_has_symbol(const SQTree *tree, uint32_t group, TSSymbol symbo
   uint32_t entry_bytes = (sq_tree_group_count(tree) + 31) / 32 * 4;
   const uint8_t *entry = tree->data + offset + sq_column_size(sq_symbols(tree), 1) +
                          (size_t)symbol_index * entry_bytes;
-  if (sq_get(tree->data, offset, symbol_index, 1)) {
+  if (sq_get_packed(tree->data, offset, symbol_index, 1)) {
     return (entry[group / 8] >> (group % 8)) & 1;
   }
   for (uint32_t i = 0; i < entry_bytes / 4; i++) {
@@ -125,43 +125,39 @@ static bool validate_nodes(SQTree *tree, SQError *error) {
     while (depth && ends[depth - 1] > node.slot) {
       depth--;
     }
-    uint64_t span = (uint64_t)sq_group_get(tree, G_SPAN, node.slot / SQ_GROUP_SIZE) +
-                    sq_node_get(node, N_SPAN);
+    uint64_t span = (uint64_t)sq_group_span_base(tree, node.slot / SQ_GROUP_SIZE) +
+                    sq_node_span_delta(node);
     if (span > node.slot) goto invalid;
     uint32_t end = node.slot - (uint32_t)span;
     if (end && sq_tree_node_at_slot(tree, end - 1).tree == NULL) goto invalid;
     if (node.slot == root.slot) {
-      if (end || !sq_node_get(node, N_LAST) || sq_node_field_id(node)) goto invalid;
+      if (end || !sq_node_last_flag(node) || sq_node_field_id(node)) goto invalid;
     } else if (!depth || end < ends[depth - 1] ||
-               sq_node_get(node, N_LAST) != (end == ends[depth - 1])) {
+               sq_node_last_flag(node) != (end == ends[depth - 1])) {
       goto invalid;
     }
-    for (unsigned coordinate_index = N_SYMBOL; coordinate_index <= N_GRAMMAR; coordinate_index++) {
-      if (sq_node_get(node, coordinate_index) >= sq_symbols(tree)) {
-        goto invalid;
-      }
-    }
-    if (sq_node_get(node, N_FIELD) > tree->language->field_count) {
+    if (sq_node_symbol_id(node) >= sq_symbols(tree) ||
+        sq_node_grammar_id(node) >= sq_symbols(tree)) goto invalid;
+    if (sq_node_field_value(node) > tree->language->field_count) {
       goto invalid;
     }
-    uint32_t super = sq_node_get(node, N_SUPER);
+    uint32_t super = sq_node_supertype(node);
     if (tree->supertype_count > 8 ? super >= sq_header(tree)->supertype_dictionary_count
                                   : super >= (1u << tree->supertype_count)) {
       goto invalid;
     }
-    for (unsigned coordinate_index = 0; coordinate_index < SQ_COORDINATES; coordinate_index += 2) {
-      unsigned start_g = G_BYTE + coordinate_index, start_n = N_BYTE + coordinate_index;
-      unsigned end_g = start_g + 1, end_n = start_n + 1;
-      if ((uint64_t)sq_group_get(tree, start_g, node.slot / SQ_GROUP_SIZE) +
-              sq_node_get(node, start_n) >
-          UINT32_MAX) {
-        goto invalid;
-      }
-      if (sq_group_get(tree, end_g, node.slot / SQ_GROUP_SIZE) <
-          sq_node_get(node, end_n)) {
-        goto invalid;
-      }
-    }
+    uint32_t group = node.slot / SQ_GROUP_SIZE;
+    if ((uint64_t)sq_group_start_byte_base(tree, group) + sq_node_start_byte_delta(node) >
+            UINT32_MAX ||
+        sq_group_end_byte_base(tree, group) < sq_node_end_byte_delta(node)) goto invalid;
+#if SQ_INCLUDE_POINTS
+    if ((uint64_t)sq_group_start_row_base(tree, group) + sq_node_start_row_delta(node) >
+            UINT32_MAX ||
+        sq_group_end_row_base(tree, group) < sq_node_end_row_delta(node)) goto invalid;
+    if ((uint64_t)sq_group_start_column_base(tree, group) + sq_node_start_column_delta(node) >
+            UINT32_MAX ||
+        sq_group_end_column_base(tree, group) < sq_node_end_column_delta(node)) goto invalid;
+#endif
 #if SQ_INCLUDE_POINTS
     TSPoint start = sq_node_start_point(node), finish = sq_node_end_point(node);
     if (start.row > finish.row || (start.row == finish.row && start.column > finish.column)) {
@@ -217,7 +213,7 @@ static bool validate_presence(const SQTree *tree, SQError *error) {
     uint32_t symbol = sq_encode_symbol(tree, sq_node_symbol(node));
     SymbolCount *count = &counts[symbol];
     const uint8_t *entry = entries + (size_t)symbol * entry_bytes;
-    if (sq_get(modes, 0, symbol, 1)) {
+    if (sq_get_packed(modes, 0, symbol, 1)) {
       uint32_t group = node.slot / SQ_GROUP_SIZE;
       if (!((entry[group / 8] >> (group % 8)) & 1)) goto invalid;
       if (!count->occurrences || count->last_group != group) {
@@ -235,7 +231,7 @@ static bool validate_presence(const SQTree *tree, SQError *error) {
   for (uint32_t symbol = 0; symbol < symbols; symbol++) {
     const SymbolCount *count = &counts[symbol];
     const uint8_t *entry = entries + (size_t)symbol * entry_bytes;
-    bool bitmap = sq_get(modes, 0, symbol, 1);
+    bool bitmap = sq_get_packed(modes, 0, symbol, 1);
     if (bitmap != (count->occurrences > entry_slots)) goto invalid;
     if (bitmap) {
       // Every real group bit was checked above. Equal cardinality now rules

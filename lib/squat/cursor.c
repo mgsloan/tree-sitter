@@ -103,6 +103,6 @@ void sq_cursor_attributes(SQCursor *cursor, SQCursorAttributes *out) {
     return;
   }
   SQNode node = cursor->node;
-  sq_attributes_with_ids(node, sq_node_get(node, N_SYMBOL), sq_node_get(node, N_GRAMMAR),
-                          (TSFieldId)sq_node_get(node, N_FIELD), out);
+  sq_attributes_with_ids(node, sq_node_symbol_id(node), sq_node_grammar_id(node),
+                          (TSFieldId)sq_node_field_value(node), out);
 }

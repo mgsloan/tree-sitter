@@ -4444,7 +4444,7 @@ static void sq_query_cursor__current_status(const QueryTreeCursor *cursor, const
                                             TSSymbol *symbol, bool *is_named, TSFieldId *field,
                                             TSSymbol *supertypes, unsigned *supertype_count) {
   SQNode node = query_tree_cursor_node(cursor);
-  TSSymbol raw = sq_decode_symbol(node.tree, sq_node_get(node, N_SYMBOL));
+  TSSymbol raw = sq_decode_symbol(node.tree, sq_node_symbol_id(node));
   *symbol = ts_language_public_symbol(node.tree->language, raw);
   *is_named = ts_language_symbol_metadata(node.tree->language, raw).named;
   *field = query->needs_fields && sq_cursor_depth(cursor->cursor) ? sq_node_field_id(node) : 0;
@@ -4599,7 +4599,7 @@ static bool sq_query_cursor__scan_seek(SQQueryCursor *self) {
       if (sq_query_cursor__scan_cancelled(self, node)) {
         return false;
       }
-      uint32_t symbol = sq_node_get(node, N_SYMBOL);
+      uint32_t symbol = sq_node_symbol_id(node);
       if (query->scan_symbols.contents[symbol / 64] & (UINT64_C(1) << (symbol % 64))) {
         break;
       }

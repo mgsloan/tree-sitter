@@ -24,7 +24,7 @@ int main(void) {
     assert(column);
     memset(column, 0xff, bytes);
     for (uint32_t index = 0; index < slots; index++) {
-      sq_set(column, 0, index, bits, (index * 7919u) & ((1u << bits) - 1));
+      sq_set_packed(column, 0, index, bits, (index * 7919u) & ((1u << bits) - 1));
     }
     double timings[5][9] = {{0}};
     for (unsigned kernel = 1; kernel <= 4; kernel++) {
@@ -36,7 +36,7 @@ int main(void) {
       for (uint32_t first = 0; first < slots; first += SQ_ITERATOR_UNPACK_SLOTS) {
         unpack(column, first, SQ_ITERATOR_UNPACK_SLOTS, bits, values);
         for (unsigned lane = 0; lane < SQ_ITERATOR_UNPACK_SLOTS; lane++) {
-          assert(values[lane] == sq_get(column, 0, first + lane, bits));
+          assert(values[lane] == sq_get_packed(column, 0, first + lane, bits));
         }
       }
     }

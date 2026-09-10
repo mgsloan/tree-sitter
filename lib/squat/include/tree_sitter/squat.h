@@ -38,24 +38,6 @@ typedef struct {
   TSFieldId field_id;
   bool is_named, is_extra, is_missing, is_error, has_error;
 } SQCursorAttributes;
-/* Encoded node columns: coordinate values are deltas from their group bases;
- * symbols are raw IDs with builtin errors remapped after the grammar range. */
-typedef enum {
-  SQ_COLUMN_SUBTREE_SIZE,
-  SQ_COLUMN_START_BYTE,
-  SQ_COLUMN_END_BYTE_SUB,
-#if SQ_INCLUDE_POINTS
-  SQ_COLUMN_START_ROW,
-  SQ_COLUMN_END_ROW_SUB,
-  SQ_COLUMN_START_COL,
-  SQ_COLUMN_END_COL_SUB,
-#endif
-  SQ_COLUMN_SUPERTYPES,
-  SQ_COLUMN_DISPLAY_SYMBOL,
-  SQ_COLUMN_GRAMMAR_SYMBOL,
-  SQ_COLUMN_FIELD,
-  SQ_COLUMN_COUNT
-} SQColumn;
 typedef enum {
   SQ_OK = 0,
   SQ_ERROR_ARGUMENT,
@@ -95,10 +77,23 @@ uint32_t sq_tree_slot_count(const SQTree *);
 SQNode sq_tree_root_node(const SQTree *);
 /* Invalid/wasted slots return null. Physical slots are stable across repacking. */
 SQNode sq_tree_node_at_slot(const SQTree *, uint32_t);
+/* Exact equality on encoded values: coordinates are deltas, and symbol IDs
+ * have builtin errors remapped after the grammar range. Public-symbol mapping
+ * is not applied. One bit per physical lane; trailing waste never matches. */
+uint64_t sq_tree_group_span_delta_equal(const SQTree *, uint32_t group, uint32_t value);
+uint64_t sq_tree_group_start_byte_delta_equal(const SQTree *, uint32_t group, uint32_t value);
+uint64_t sq_tree_group_end_byte_delta_equal(const SQTree *, uint32_t group, uint32_t value);
+#if SQ_INCLUDE_POINTS
+uint64_t sq_tree_group_start_row_delta_equal(const SQTree *, uint32_t group, uint32_t value);
+uint64_t sq_tree_group_end_row_delta_equal(const SQTree *, uint32_t group, uint32_t value);
+uint64_t sq_tree_group_start_column_delta_equal(const SQTree *, uint32_t group, uint32_t value);
+uint64_t sq_tree_group_end_column_delta_equal(const SQTree *, uint32_t group, uint32_t value);
+#endif
+uint64_t sq_tree_group_supertype_equal(const SQTree *, uint32_t group, uint32_t value);
+uint64_t sq_tree_group_symbol_equal(const SQTree *, uint32_t group, uint32_t value);
+uint64_t sq_tree_group_grammar_symbol_equal(const SQTree *, uint32_t group, uint32_t value);
+uint64_t sq_tree_group_field_equal(const SQTree *, uint32_t group, uint32_t value);
 /* False positives are possible for common symbols, never false negatives. */
-/* One bit per physical slot within a group; trailing waste never matches.
- * This compares encoded values and does not apply public-symbol mapping. */
-uint64_t sq_tree_group_equal(const SQTree *, uint32_t group, SQColumn, uint32_t value);
 bool sq_tree_group_has_symbol(const SQTree *, uint32_t group, TSSymbol public_symbol);
 
 bool sq_node_is_null(SQNode);

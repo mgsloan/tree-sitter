@@ -22,12 +22,11 @@ uint64_t sq_equal_lanes(uint64_t word, uint32_t value, uint8_t bits) {
   return ~(((difference & low_bits) + low_bits) | difference | low_bits) & high_bits;
 }
 
-uint64_t sq_tree_group_equal(const SQTree *tree, uint32_t group, SQColumn column, uint32_t value) {
-  if (!tree || group >= sq_tree_group_count(tree) || (unsigned)column >= SQ_COLUMN_COUNT) {
+static uint64_t group_equal(const SQTree *tree, uint32_t group, uint32_t offset,
+                              uint8_t bits, uint32_t value) {
+  if (group >= sq_tree_group_count(tree)) {
     return 0;
   }
-  unsigned node_column = N_SPAN + (unsigned)column;
-  uint8_t bits = sq_node_width(&tree->layout, node_column);
   if ((uint64_t)value >= (UINT64_C(1) << bits)) {
     return 0;
   }
@@ -39,7 +38,7 @@ uint64_t sq_tree_group_equal(const SQTree *tree, uint32_t group, SQColumn column
   for (uint32_t word_index = first_slot / lanes; word_index <= (last_slot - 1) / lanes;
        word_index++) {
     uint64_t word;
-    memcpy(&word, tree->data + tree->layout.nodes[node_column] + (size_t)word_index * 8, 8);
+    memcpy(&word, tree->data + offset + (size_t)word_index * 8, 8);
     uint64_t equal = sq_equal_lanes(word, value, bits);
     while (equal) {
       unsigned bit = (unsigned)__builtin_ctzll(equal);
@@ -50,7 +49,43 @@ uint64_t sq_tree_group_equal(const SQTree *tree, uint32_t group, SQColumn column
       equal &= equal - 1;
     }
   }
-  uint32_t waste = sq_group_get(tree, G_WASTE, group);
+  uint32_t waste = sq_group_waste(tree, group);
   uint32_t used = SQ_GROUP_SIZE - waste;
   return matches & (used == 64 ? UINT64_MAX : (UINT64_C(1) << used) - 1);
+}
+
+uint64_t sq_tree_group_span_delta_equal(const SQTree *tree, uint32_t group, uint32_t value) {
+  return tree ? group_equal(tree, group, tree->layout.span_delta, 8, value) : 0;
+}
+uint64_t sq_tree_group_start_byte_delta_equal(const SQTree *tree, uint32_t group, uint32_t value) {
+  return tree ? group_equal(tree, group, tree->layout.start_byte_delta, 8, value) : 0;
+}
+uint64_t sq_tree_group_end_byte_delta_equal(const SQTree *tree, uint32_t group, uint32_t value) {
+  return tree ? group_equal(tree, group, tree->layout.end_byte_delta, 16, value) : 0;
+}
+#if SQ_INCLUDE_POINTS
+uint64_t sq_tree_group_start_row_delta_equal(const SQTree *tree, uint32_t group, uint32_t value) {
+  return tree ? group_equal(tree, group, tree->layout.start_row_delta, 8, value) : 0;
+}
+uint64_t sq_tree_group_end_row_delta_equal(const SQTree *tree, uint32_t group, uint32_t value) {
+  return tree ? group_equal(tree, group, tree->layout.end_row_delta, 8, value) : 0;
+}
+uint64_t sq_tree_group_start_column_delta_equal(const SQTree *tree, uint32_t group, uint32_t value) {
+  return tree ? group_equal(tree, group, tree->layout.start_column_delta, 8, value) : 0;
+}
+uint64_t sq_tree_group_end_column_delta_equal(const SQTree *tree, uint32_t group, uint32_t value) {
+  return tree ? group_equal(tree, group, tree->layout.end_column_delta, 8, value) : 0;
+}
+#endif
+uint64_t sq_tree_group_supertype_equal(const SQTree *tree, uint32_t group, uint32_t value) {
+  return tree ? group_equal(tree, group, tree->layout.supertype, 8, value) : 0;
+}
+uint64_t sq_tree_group_symbol_equal(const SQTree *tree, uint32_t group, uint32_t value) {
+  return tree ? group_equal(tree, group, tree->layout.symbol, tree->layout.symbol_bits, value) : 0;
+}
+uint64_t sq_tree_group_grammar_symbol_equal(const SQTree *tree, uint32_t group, uint32_t value) {
+  return tree ? group_equal(tree, group, tree->layout.grammar_symbol, tree->layout.symbol_bits, value) : 0;
+}
+uint64_t sq_tree_group_field_equal(const SQTree *tree, uint32_t group, uint32_t value) {
+  return tree ? group_equal(tree, group, tree->layout.field, tree->layout.field_bits, value) : 0;
 }

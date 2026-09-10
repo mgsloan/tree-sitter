@@ -75,7 +75,7 @@ int main(int argc, char **argv) {
     qsort(timings, 7, sizeof(double), compare_double);
     uint32_t aliases = 0;
     for (SQNode node = sq_tree_root_node(tree); node.tree; node = sq_node_next_preorder(node)) {
-      aliases += sq_node_get(node, N_SYMBOL) != sq_node_get(node, N_GRAMMAR);
+      aliases += sq_node_symbol_id(node) != sq_node_grammar_id(node);
     }
     SQHeader *header = sq_header(tree);
     uint32_t slots = sq_tree_slot_count(tree);

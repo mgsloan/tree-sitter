@@ -12,7 +12,7 @@ bool sq_node_eq(SQNode left, SQNode right) {
 uint32_t sq_previous_slot(const SQTree *tree, uint32_t slot) {
   if (slot >= sq_tree_slot_count(tree)) return SQ_NONE;
   uint32_t group = slot / SQ_GROUP_SIZE;
-  uint32_t end = (group + 1) * SQ_GROUP_SIZE - sq_group_get(tree, G_WASTE, group);
+  uint32_t end = (group + 1) * SQ_GROUP_SIZE - sq_group_waste(tree, group);
   return slot >= end ? end - 1 : slot;
 }
 uint32_t sq_next_position(const SQTree *tree, uint32_t position) {
@@ -31,20 +31,20 @@ SQNode sq_tree_root_node(const SQTree *tree) {
       : sq_null();
 }
 uint32_t sq_node_first_slot(SQNode node) {
-  return node.slot - sq_group_get(node.tree, G_SPAN, node.slot / SQ_GROUP_SIZE) -
-         sq_node_get(node, N_SPAN);
+  return node.slot - sq_group_span_base(node.tree, node.slot / SQ_GROUP_SIZE) -
+         sq_node_span_delta(node);
 }
 uint32_t sq_node_end_slot(SQNode node) {
   return sq_tree_slot_count(node.tree) - sq_node_first_slot(node);
 }
 static TSSymbol raw_symbol(SQNode node) {
-  return sq_decode_symbol(node.tree, sq_node_get(node, N_SYMBOL));
+  return sq_decode_symbol(node.tree, sq_node_symbol_id(node));
 }
 TSSymbol sq_node_symbol(SQNode node) {
   return node.tree ? ts_language_public_symbol(node.tree->language, raw_symbol(node)) : 0;
 }
 TSSymbol sq_node_grammar_symbol(SQNode node) {
-  return node.tree ? sq_decode_symbol(node.tree, sq_node_get(node, N_GRAMMAR)) : 0;
+  return node.tree ? sq_decode_symbol(node.tree, sq_node_grammar_id(node)) : 0;
 }
 const char *sq_node_type(SQNode node) {
   return node.tree ? ts_language_symbol_name(node.tree->language, raw_symbol(node)) : NULL;
@@ -53,50 +53,49 @@ const char *sq_node_grammar_type(SQNode node) {
   return node.tree ? ts_language_symbol_name(node.tree->language, sq_node_grammar_symbol(node))
                    : NULL;
 }
-static uint32_t coordinate(SQNode node, unsigned group_col, unsigned node_col, bool subtract) {
-  if (!node.tree) {
-    return 0;
-  }
-  uint32_t base = sq_group_get(node.tree, group_col, node.slot / SQ_GROUP_SIZE),
-           delta = sq_node_get(node, node_col);
-  return subtract ? base - delta : base + delta;
-}
 uint32_t sq_node_start_byte(SQNode node) {
-  return coordinate(node, G_BYTE, N_BYTE, false);
+  return node.tree ? sq_group_start_byte_base(node.tree, node.slot / SQ_GROUP_SIZE) +
+                     sq_node_start_byte_delta(node) : 0;
 }
 uint32_t sq_node_end_byte(SQNode node) {
-  return coordinate(node, G_END_BYTE, N_END_BYTE, true);
+  return node.tree ? sq_group_end_byte_base(node.tree, node.slot / SQ_GROUP_SIZE) -
+                     sq_node_end_byte_delta(node) : 0;
 }
 #if SQ_INCLUDE_POINTS
 TSPoint sq_node_start_point(SQNode node) {
-  return (TSPoint){coordinate(node, G_ROW, N_ROW, false), coordinate(node, G_COL, N_COL, false)};
+  if (!node.tree) return (TSPoint){0, 0};
+  uint32_t group = node.slot / SQ_GROUP_SIZE;
+  return (TSPoint){sq_group_start_row_base(node.tree, group) + sq_node_start_row_delta(node),
+                   sq_group_start_column_base(node.tree, group) + sq_node_start_column_delta(node)};
 }
 TSPoint sq_node_end_point(SQNode node) {
-  return (TSPoint){coordinate(node, G_END_ROW, N_END_ROW, true),
-                   coordinate(node, G_END_COL, N_END_COL, true)};
+  if (!node.tree) return (TSPoint){0, 0};
+  uint32_t group = node.slot / SQ_GROUP_SIZE;
+  return (TSPoint){sq_group_end_row_base(node.tree, group) - sq_node_end_row_delta(node),
+                   sq_group_end_column_base(node.tree, group) - sq_node_end_column_delta(node)};
 }
 #endif
 bool sq_node_is_named(SQNode node) {
   return node.tree && ts_language_symbol_metadata(node.tree->language, raw_symbol(node)).named;
 }
 bool sq_node_is_extra(SQNode node) {
-  return node.tree && sq_node_get(node, N_EXTRA);
+  return node.tree && sq_node_extra_flag(node);
 }
 bool sq_node_is_missing(SQNode node) {
-  return node.tree && sq_node_get(node, N_MISSING);
+  return node.tree && sq_node_missing_flag(node);
 }
 bool sq_node_is_error(SQNode node) {
   return node.tree && sq_node_symbol(node) == ts_builtin_sym_error;
 }
 bool sq_node_has_error(SQNode node) {
-  return node.tree && sq_node_get(node, N_ERROR);
+  return node.tree && sq_node_error_flag(node);
 }
 bool sq_node_has_changes(SQNode node) {
   (void)node;
   return false;
 }
 TSFieldId sq_node_field_id(SQNode node) {
-  return node.tree ? (TSFieldId)sq_node_get(node, N_FIELD) : 0;
+  return node.tree ? (TSFieldId)sq_node_field_value(node) : 0;
 }
 const char *sq_node_field_name(SQNode node) {
   return node.tree ? ts_language_field_name_for_id(node.tree->language, sq_node_field_id(node))
@@ -111,7 +110,7 @@ bool sq_node_has_supertype(SQNode node, TSSymbol symbol) {
     if (tree->supertypes[i] != symbol) {
       continue;
     }
-    uint32_t value = sq_node_get(node, N_SUPER);
+    uint32_t value = sq_node_supertype(node);
     if (tree->supertype_count <= 8) {
       return (value >> i) & 1;
     }
@@ -129,7 +128,7 @@ uint32_t sq_node_descendant_count(SQNode node) {
   if (!node.tree) return 0;
   uint32_t first = sq_node_first_slot(node), count = node.slot - first + 1;
   for (uint32_t group = first / SQ_GROUP_SIZE; group < node.slot / SQ_GROUP_SIZE; group++) {
-    count -= sq_group_get(node.tree, G_WASTE, group);
+    count -= sq_group_waste(node.tree, group);
   }
   return count;
 }
@@ -140,7 +139,7 @@ SQNode sq_node_next_preorder(SQNode node) {
 SQNode sq_node_prev_preorder(SQNode node) {
   if (!node.tree || node.slot == sq_tree_root_node(node.tree).slot) return sq_null();
   uint32_t slot = node.slot + 1, group = slot / SQ_GROUP_SIZE;
-  uint32_t end = (group + 1) * SQ_GROUP_SIZE - sq_group_get(node.tree, G_WASTE, group);
+  uint32_t end = (group + 1) * SQ_GROUP_SIZE - sq_group_waste(node.tree, group);
   if (slot >= end) slot = (group + 1) * SQ_GROUP_SIZE;
   return sq_tree_node_at_slot(node.tree, slot);
 }
@@ -153,7 +152,7 @@ static SQNode first_child(SQNode node) {
       ? (SQNode){node.tree, slot} : sq_null();
 }
 SQNode sq_node_next_sibling_including_empty(SQNode node) {
-  return node.tree && !sq_node_get(node, N_LAST)
+  return node.tree && !sq_node_last_flag(node)
       ? sq_tree_node_at_slot(node.tree, sq_node_first_slot(node) - 1) : sq_null();
 }
 SQNode sq_node_parent(SQNode node) {
@@ -163,12 +162,12 @@ SQNode sq_node_parent(SQNode node) {
   // largest possible span cannot reach this node, then inspect nearby parents.
   while (slot < slots) {
     uint32_t group = slot / SQ_GROUP_SIZE;
-    uint32_t end = (group + 1) * SQ_GROUP_SIZE - sq_group_get(node.tree, G_WASTE, group);
-    uint32_t base = sq_group_get(node.tree, G_SPAN, group);
+    uint32_t end = (group + 1) * SQ_GROUP_SIZE - sq_group_waste(node.tree, group);
+    uint32_t base = sq_group_span_base(node.tree, group);
     if ((uint64_t)slot <= (uint64_t)node.slot + base + UINT8_MAX) {
       for (; slot < end; slot++) {
         SQNode candidate = {node.tree, slot};
-        if ((uint64_t)slot <= (uint64_t)node.slot + base + sq_node_get(candidate, N_SPAN)) {
+        if ((uint64_t)slot <= (uint64_t)node.slot + base + sq_node_span_delta(candidate)) {
           return candidate;
         }
       }

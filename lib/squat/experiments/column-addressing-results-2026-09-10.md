@@ -54,7 +54,7 @@ One packed-field trap: pointers cannot generally point directly to the first act
 
 ## Addressing experiment
 
-[`column-addressing.c`](column-addressing.c) compares four read-only views of the same actual packed trees. The common view embeds a copy of `SQTree`, so the offset baseline has the same direct descriptor access as production; it does not pay an extra tree-pointer indirection. The pointer arrays are appended to that descriptor. The four variants are:
+`column-addressing.c` (available at commit `98967f593`) compares four read-only views of the same actual packed trees. The common view embeds a copy of `SQTree`, so the offset baseline has the same direct descriptor access as production; it does not pay an extra tree-pointer indirection. The pointer arrays are appended to that descriptor. The four variants are:
 
 1. Existing column offsets and header-derived index bias.
 2. Column pointers, retaining the same header-derived bias.
@@ -112,5 +112,8 @@ make -C lib/squat BUILD=../../build/squat-memory/bytes \
   ../../build/squat-memory/bytes/column-addressing
 python3 lib/squat/experiments/column-addressing.py
 ```
+
+The driver was retired when named fields replaced the column tables. Run these
+commands from a checkout of `98967f593` to reproduce the historical experiment.
 
 Raw output is under `build/squat-addressing/`. The committed JSON preserves all timings grouped by case, medians, source/binary hashes, commands, and runtime/table sizes. Baseline implementation: `96436c793`; experiment: `d4a97f1d9`. `objdump -d -M intel build/squat-memory/points/column-addressing` exposes the named getter and bulk kernels.

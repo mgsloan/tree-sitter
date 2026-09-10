@@ -91,7 +91,7 @@ static inline void unpack_words(const uint8_t *column, uint32_t first, uint32_t 
 void sq_unpack_u16_scalar(const uint8_t *column, uint32_t first, uint32_t count,
                           uint8_t bits, uint16_t *out) {
   for (uint32_t index = 0; index < count; index++) {
-    out[index] = (uint16_t)sq_get(column, 0, first + index, bits);
+    out[index] = (uint16_t)sq_get_packed(column, 0, first + index, bits);
   }
 }
 void sq_unpack_u16_swar(const uint8_t *column, uint32_t first, uint32_t count,
@@ -178,7 +178,8 @@ static void coordinates_scalar(const uint8_t *column, uint32_t first, uint32_t c
                                 uint8_t bits, uint32_t base, bool subtract,
                                 uint32_t *out) {
   for (uint32_t index = 0; index < count; index++) {
-    uint32_t delta = sq_get(column, 0, first + index, bits);
+    uint32_t delta = bits == 8 ? sq_get_u8(column, 0, first + index)
+                               : sq_get_u16(column, 0, first + index);
     out[index] = subtract ? base - delta : base + delta;
   }
 }

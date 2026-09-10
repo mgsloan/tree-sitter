@@ -23,18 +23,18 @@ static inline void sq_attributes_finish(SQNode node, uint32_t symbol, uint32_t g
 static inline void sq_attributes_with_ids(SQNode node, uint32_t symbol, uint32_t grammar,
                                           TSFieldId field, SQCursorAttributes *out) {
   uint32_t group = node.slot / SQ_GROUP_SIZE;
-  out->start_byte = sq_group_get(node.tree, G_BYTE, group) + sq_node_get(node, N_BYTE);
-  out->end_byte = sq_group_get(node.tree, G_END_BYTE, group) - sq_node_get(node, N_END_BYTE);
+  out->start_byte = sq_group_start_byte_base(node.tree, group) + sq_node_start_byte_delta(node);
+  out->end_byte = sq_group_end_byte_base(node.tree, group) - sq_node_end_byte_delta(node);
 #if SQ_INCLUDE_POINTS
-  out->start_point = (TSPoint){sq_group_get(node.tree, G_ROW, group) + sq_node_get(node, N_ROW),
-                             sq_group_get(node.tree, G_COL, group) + sq_node_get(node, N_COL)};
+  out->start_point = (TSPoint){sq_group_start_row_base(node.tree, group) + sq_node_start_row_delta(node),
+                             sq_group_start_column_base(node.tree, group) + sq_node_start_column_delta(node)};
   out->end_point =
-      (TSPoint){sq_group_get(node.tree, G_END_ROW, group) - sq_node_get(node, N_END_ROW),
-                sq_group_get(node.tree, G_END_COL, group) - sq_node_get(node, N_END_COL)};
+      (TSPoint){sq_group_end_row_base(node.tree, group) - sq_node_end_row_delta(node),
+                sq_group_end_column_base(node.tree, group) - sq_node_end_column_delta(node)};
 #endif
-  out->is_extra = sq_node_get(node, N_EXTRA);
-  out->is_missing = sq_node_get(node, N_MISSING);
-  out->has_error = sq_node_get(node, N_ERROR);
+  out->is_extra = sq_node_extra_flag(node);
+  out->is_missing = sq_node_missing_flag(node);
+  out->has_error = sq_node_error_flag(node);
   sq_attributes_finish(node, symbol, grammar, field, out);
 }
 
