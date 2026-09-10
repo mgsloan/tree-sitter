@@ -199,6 +199,11 @@ allocations inside prebuilt grammar scanners are not intercepted; these scanners
 are destroyed with the parser before retained tree measurements. Reported peaks
 therefore cover runtime/Squatter allocations, not every construction allocation.
 
+The [column-addressing investigation](experiments/column-addressing-results-2026-09-10.md)
+considers cached column pointers, cached active-group bias, and a proposed smaller
+persisted header. It includes an isolated addressing experiment and keeps these
+proposals separate from the current format.
+
 
 ## Optional row/column positions
 
