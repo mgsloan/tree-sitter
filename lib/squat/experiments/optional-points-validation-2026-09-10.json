@@ -1,0 +1,219 @@
+{
+  "implementation_commit": "dbb93872dab00d808dc508983b7f99707f4b7f03",
+  "default_points": true,
+  "c_option": "-DSQ_INCLUDE_POINTS=0",
+  "rust_option": "--no-default-features",
+  "c_validation": {
+    "status": "passed",
+    "points_enabled_windows": [
+      16
+    ],
+    "byte_only_windows": [
+      16,
+      128
+    ],
+    "byte_only_cache_modes": [
+      0,
+      1,
+      2
+    ],
+    "grammars": [
+      "json",
+      "typescript",
+      "css",
+      "yaml"
+    ],
+    "tests": [
+      "packed column unit checks",
+      "node/cursor/iterator comparisons",
+      "growth/repack/load and malformed-layout rejection",
+      "query matches/captures with byte ranges and optimization modes"
+    ],
+    "sanitizers": "ASan/UBSan, byte-only, 128-slot cache"
+  },
+  "rust_validation": {
+    "both_modes": [
+      "unit tests",
+      "doctests",
+      "strict Clippy, all targets"
+    ],
+    "byte_only_example": "FFI, ownership, traits, iterators, persistence and streaming queries"
+  },
+  "api_validation": {
+    "0": {
+      "point_api_compiles": false,
+      "exported_point_symbols": []
+    },
+    "1": {
+      "point_api_compiles": true,
+      "exported_point_symbols": [
+        "sq_node_descendant_for_point_range",
+        "sq_node_end_point",
+        "sq_node_named_descendant_for_point_range",
+        "sq_node_start_point",
+        "sq_query_cursor_set_containing_point_range",
+        "sq_query_cursor_set_point_range"
+      ]
+    },
+    "rust_rejects_inconsistent_flags": true
+  },
+  "explicit_seek_point_rejected": true,
+  "sizes_x86_64": [
+    {
+      "points": 0,
+      "window": 16,
+      "snapshot_bytes": 48,
+      "cached_iterator_bytes": 296,
+      "layout_bytes_128_groups": 18360
+    },
+    {
+      "points": 0,
+      "window": 32,
+      "snapshot_bytes": 48,
+      "cached_iterator_bytes": 520,
+      "layout_bytes_128_groups": 18360
+    },
+    {
+      "points": 0,
+      "window": 64,
+      "snapshot_bytes": 48,
+      "cached_iterator_bytes": 968,
+      "layout_bytes_128_groups": 18360
+    },
+    {
+      "points": 0,
+      "window": 128,
+      "snapshot_bytes": 48,
+      "cached_iterator_bytes": 1864,
+      "layout_bytes_128_groups": 18360
+    },
+    {
+      "points": 1,
+      "window": 16,
+      "snapshot_bytes": 64,
+      "cached_iterator_bytes": 552,
+      "layout_bytes_128_groups": 28600
+    },
+    {
+      "points": 1,
+      "window": 32,
+      "snapshot_bytes": 64,
+      "cached_iterator_bytes": 1032,
+      "layout_bytes_128_groups": 28600
+    },
+    {
+      "points": 1,
+      "window": 64,
+      "snapshot_bytes": 64,
+      "cached_iterator_bytes": 1992,
+      "layout_bytes_128_groups": 28600
+    },
+    {
+      "points": 1,
+      "window": 128,
+      "snapshot_bytes": 64,
+      "cached_iterator_bytes": 3912,
+      "layout_bytes_128_groups": 28600
+    }
+  ],
+  "size_contract": "Snapshot/iterator sizes are compiled sizeof results. Layout bytes use capacity 128, 16-slot groups, 128 grammar symbols, 16 fields, and default alignment; this is a layout probe, not a parsed corpus tree.",
+  "corpus_validation": [
+    {
+      "mutated": false,
+      "command": [
+        "podman",
+        "run",
+        "--rm",
+        "--network=none",
+        "--cap-drop=all",
+        "--memory=8g",
+        "-v",
+        "/home/mgsloan/cozy/tree-squatter/pareto/build/squat-cursors:/out:ro",
+        "-v",
+        "/home/mgsloan/cozy/tree-squatter/pareto/build/squat-optional-points:/results:rw",
+        "--entrypoint",
+        "/lib64/ld-linux-x86-64.so.2",
+        "sha256:5ff72f3e7f62492123f122a0ecc46a880adc7a71f2566231aee99b7009104fb5",
+        "/results/squatter-bench-no-points",
+        "--code-corpora",
+        "/out/corpus",
+        "--registry",
+        "/out/registry.json",
+        "--all",
+        "--repeat",
+        "2",
+        "--output-directory",
+        "/results",
+        "--output",
+        "original"
+      ],
+      "binary_sha256": "44ff7533611cf3639c720a611cec31df933d757061ddb5239edf8773e14ace85",
+      "files": 88,
+      "rows": 880,
+      "benchmarks": [
+        "cold-parse",
+        "cursor-forward",
+        "iterator-forward",
+        "iterator-forward-cached",
+        "query-captures",
+        "query-matches",
+        "seek-byte",
+        "walk-forward",
+        "walk-iterator",
+        "walk-iterator-cached"
+      ],
+      "failures": 0,
+      "point_positions": false
+    },
+    {
+      "mutated": true,
+      "command": [
+        "podman",
+        "run",
+        "--rm",
+        "--network=none",
+        "--cap-drop=all",
+        "--memory=8g",
+        "-v",
+        "/home/mgsloan/cozy/tree-squatter/pareto/build/squat-cursors:/out:ro",
+        "-v",
+        "/home/mgsloan/cozy/tree-squatter/pareto/build/squat-optional-points:/results:rw",
+        "--entrypoint",
+        "/lib64/ld-linux-x86-64.so.2",
+        "sha256:5ff72f3e7f62492123f122a0ecc46a880adc7a71f2566231aee99b7009104fb5",
+        "/results/squatter-bench-no-points",
+        "--code-corpora",
+        "/out/corpus",
+        "--registry",
+        "/out/registry.json",
+        "--all",
+        "--repeat",
+        "2",
+        "--output-directory",
+        "/results",
+        "--output",
+        "mutated",
+        "--mutate"
+      ],
+      "binary_sha256": "44ff7533611cf3639c720a611cec31df933d757061ddb5239edf8773e14ace85",
+      "files": 88,
+      "rows": 880,
+      "benchmarks": [
+        "cold-parse",
+        "cursor-forward",
+        "iterator-forward",
+        "iterator-forward-cached",
+        "query-captures",
+        "query-matches",
+        "seek-byte",
+        "walk-forward",
+        "walk-iterator",
+        "walk-iterator-cached"
+      ],
+      "failures": 0,
+      "point_positions": false
+    }
+  ],
+  "raw_artifacts": "build/squat-optional-points",
+  "timing_contract": "Corpus runs are correctness validation; no performance comparison is claimed."
+}

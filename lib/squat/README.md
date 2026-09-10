@@ -203,3 +203,6 @@ now `layout_flags`: 0 includes points, 1 omits them. Other flag values are inval
 Version-3 slabs with points retain their original layout and bytes. Each build
 rejects slabs from the other mode before interpreting column offsets; regenerate
 slabs when changing this setting.
+
+[Validation and compiled allocation sizes](experiments/optional-points-validation-2026-09-10.json)
+cover both modes, API omission, sanitizers, and original/mutated corpus checks.
