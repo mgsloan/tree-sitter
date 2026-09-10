@@ -1,5 +1,9 @@
 # Preorder iterator and unpack windows — 2026-09-09
 
+These are the earlier ID/delta-cache experiments. The follow-up
+[absolute u32 coordinate-cache results](iterator-absolute-results-2026-09-09.md)
+cover the current cached iterator and compare it with no cache.
+
 A 128-slot unpack window reduces cached attribute-walk time by about 1–2% on
 bounded inputs and 1.8–2.4% on large files on the Broadwell VM. The gains are
 modest; keep the 16-slot default and keep caching optional.

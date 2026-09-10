@@ -162,3 +162,6 @@ cached or uncached operation. No slab format or cursor API changes.
 across 2/4/8 groups without changing serialization or node addresses. Every group
 uses its own bases during reconstruction, and the final window stops at the last
 live group. The default unpack window remains one group.
+
+See the [absolute-coordinate cache benchmark](experiments/iterator-absolute-results-2026-09-09.md)
+for cached/uncached comparisons at all four window sizes.
