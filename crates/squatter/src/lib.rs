@@ -259,7 +259,7 @@ impl<'tree> Node<'tree> {
         }
     }
 
-    /// Native preorder iterator with an optional lazy symbol/field unpack cache.
+    /// Native preorder iterator with an optional lazy ID and absolute-coordinate cache.
     /// Returned nodes borrow the tree, independently of the iterator.
     pub fn node_iterator(self, unpack_cache: bool) -> Result<NodeIterator<'tree>, Error> {
         let raw = unsafe { ffi::sq_node_iterator_new(self.raw, unpack_cache) };

@@ -172,6 +172,17 @@ SQUnpack sq_unpack_select(unsigned kernel);
 #define SQ_UNPACK_KERNEL 0
 #endif
 
+/* Reconstruct one group's 8- or 16-bit coordinate deltas into absolute u32s.
+ * Kernels: 0 automatic, 1 scalar, 2 SSE2, 4 AVX2 (portable fallback elsewhere).
+ * Base arithmetic is unsigned, matching the ordinary node accessors. */
+typedef void (*SQUnpackCoordinates)(const uint8_t *, uint32_t first, uint32_t count,
+                                    uint8_t bits, uint32_t base, bool subtract,
+                                    uint32_t *out);
+SQUnpackCoordinates sq_unpack_coordinates_select(unsigned kernel);
+#ifndef SQ_COORDINATE_KERNEL
+#define SQ_COORDINATE_KERNEL 0
+#endif
+
 uint32_t sq_next_slot(const SQTree *, uint32_t);
 uint32_t sq_node_end_slot(SQNode);
 SQNode sq_null(void);

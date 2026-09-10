@@ -133,28 +133,32 @@ exhaustion. Rust exposes `Node::node_iterator(bool)` and a fused `NodeIterator`;
 its corresponding accessors return `None` outside a yielded position. The older
 allocation-free `Node::preorder()` remains available.
 
-The optional lazy cache stores one group's display symbols, grammar symbols, and
-fields as u16 lanes. Fixed-width coordinate/flag columns keep their narrow reads.
+The optional lazy cache stores display symbols, grammar symbols, and fields as
+u16 lanes, plus six absolute coordinate columns as u32 lanes. Coordinate decoding
+widens unsigned byte/u16 deltas directly from the slab and adds or subtracts a
+broadcast group base with AVX2 (eight lanes) or SSE2 (four lanes) on x86-64.
+Other platforms use a portable scalar implementation. Single-bit flags remain
+packed; child and descendant counts still use ordinary tree scans.
+
 A field-only consumer unpacks only fields; a navigation-only consumer never
-unpacks anything. Repeated attribute reads reuse the same group. Both modes use
-the same attribute construction code as the cursor.
+unpacks anything. Repeated attribute reads reuse the same window. Returned
+ordinary node handles do not use the iterator's cache.
 
-Portable unpacking expands four packed fields into u16 lanes with masks and
-shifts. Explicit SSE2 widens 8-bit columns on x86-64; 16-bit columns copy directly
-on little-endian machines. Automatic variable-width decoding uses BMI2 PDEP on
-supported Intel CPUs, the vendor measured here, and portable SWAR elsewhere.
-AVX2 variable shifts and byte shuffles remain available for experiments.
-`SQ_UNPACK_KERNEL=1/2/3/4` selects scalar/SWAR/BMI2/AVX2 at build time; unavailable
-hardware selections fall back to SWAR. No slab format or cursor API changes.
+Portable ID unpacking expands four packed fields into u16 lanes with masks and
+shifts. Automatic variable-width decoding uses BMI2 PDEP on supported Intel
+CPUs, the vendor measured here, and portable SWAR elsewhere. AVX2 variable shifts
+and byte shuffles remain available for experiments. `SQ_UNPACK_KERNEL=1/2/3/4`
+selects scalar/SWAR/BMI2/AVX2 at build time; unavailable hardware selections fall
+back to SWAR. `SQ_COORDINATE_KERNEL=0/1/2/4` independently selects automatic,
+scalar, SSE2, or AVX2 coordinate reconstruction, with a supported fallback.
 
-For the cache experiment, `SQ_ITERATOR_CACHE_ALL=1` also caches coordinate and
-flag columns and their group bases. This is an alternative build of the cached
-mode, not an additional public API. Counts still use ordinary tree scans. The
-default (`0`) caches only IDs; compare both builds before choosing the larger
-cache for a workload.
+`SQ_ITERATOR_CACHE_ALL=2` is the default absolute-coordinate cache. Historical
+build modes `0` (IDs only) and `1` (u16 deltas and flags) remain available for
+reproducing earlier experiments. The public boolean constructor still selects
+cached or uncached operation. No slab format or cursor API changes.
 
 `SQ_ITERATOR_UNPACK_SLOTS=32/64/128` widens the iterator cache independently of
 `SQ_GROUP_SIZE`. With the default 16-slot slab groups, these windows decode ahead
-across 2/4/8 groups without changing serialization or node addresses. The final
-window stops at the last live group. Full-cache builds still update coordinate
-bases on each group transition. The default unpack window remains one group.
+across 2/4/8 groups without changing serialization or node addresses. Every group
+uses its own bases during reconstruction, and the final window stops at the last
+live group. The default unpack window remains one group.

@@ -1,14 +1,22 @@
 #include "attributes.h"
 
+/* Cache modes: 0 IDs only, 1 u16 deltas, 2 absolute u32 coordinates. */
 #ifndef SQ_ITERATOR_CACHE_ALL
-#define SQ_ITERATOR_CACHE_ALL 0
+#define SQ_ITERATOR_CACHE_ALL 2
 #endif
+_Static_assert(SQ_ITERATOR_CACHE_ALL >= 0 && SQ_ITERATOR_CACHE_ALL <= 2,
+               "unknown iterator cache mode");
 
 typedef struct {
   uint32_t group;
   unsigned filled;
   SQUnpack unpack;
-#if SQ_ITERATOR_CACHE_ALL
+#if SQ_ITERATOR_CACHE_ALL == 2
+  SQUnpackCoordinates coordinates;
+  // Coordinate order follows N_BYTE..N_END_COL and G_BYTE..G_END_COL.
+  uint32_t absolute[6][SQ_ITERATOR_UNPACK_SLOTS];
+  uint16_t values[3][SQ_ITERATOR_UNPACK_SLOTS];
+#elif SQ_ITERATOR_CACHE_ALL == 1
   uint32_t base_group;
   uint32_t bases[G_COLUMNS];
   uint16_t values[N_COLUMNS][SQ_ITERATOR_UNPACK_SLOTS];
@@ -40,7 +48,9 @@ SQNodeIterator *sq_node_iterator_new(SQNode root, bool unpack_cache) {
   if (unpack_cache) {
     iterator->cache = (UnpackCache *)(iterator + 1);
     iterator->cache->group = SQ_NONE;
-#if SQ_ITERATOR_CACHE_ALL
+#if SQ_ITERATOR_CACHE_ALL == 2
+    iterator->cache->coordinates = sq_unpack_coordinates_select(SQ_COORDINATE_KERNEL);
+#elif SQ_ITERATOR_CACHE_ALL == 1
     iterator->cache->base_group = SQ_NONE;
 #endif
     iterator->cache->unpack = sq_unpack_select(SQ_UNPACK_KERNEL);
@@ -86,7 +96,7 @@ static UnpackCache *cache_columns(SQNodeIterator *iterator, unsigned needed) {
     cache->group = first_group;
     cache->filled = 0;
   }
-#if SQ_ITERATOR_CACHE_ALL
+#if SQ_ITERATOR_CACHE_ALL == 1
   // Coordinates use the current group's bases even when decoded lanes span
   // several groups. Advancing bases must not discard the wider unpack window.
   if (cache->base_group != group) {
@@ -110,13 +120,32 @@ static UnpackCache *cache_columns(SQNodeIterator *iterator, unsigned needed) {
     do {
       // Enumerate only missing columns; field-only callers preserve lazy filling.
       unsigned index = (unsigned)__builtin_ctz(missing);
-#if SQ_ITERATOR_CACHE_ALL
+#if SQ_ITERATOR_CACHE_ALL == 1
       unsigned column = index;
 #else
       unsigned column = N_SYMBOL + index;
 #endif
-      cache->unpack(node.tree->data + node.tree->layout.nodes[column], first, count,
-                    sq_node_width(&node.tree->layout, column), cache->values[index]);
+#if SQ_ITERATOR_CACHE_ALL == 2
+      if (index >= 3) {
+        unsigned coordinate = index - 3;
+        column = N_BYTE + coordinate;
+        bool subtract = coordinate & 1u;
+        // A wide window shares decoded storage, but bases change every group.
+        // Reconstruct each group's lanes with that group's broadcast base.
+        for (uint32_t offset = 0; offset < count; offset += SQ_GROUP_SIZE) {
+          uint32_t base = sq_group_get(node.tree, G_BYTE + coordinate,
+                                      first_group + offset / SQ_GROUP_SIZE);
+          cache->coordinates(node.tree->data + node.tree->layout.nodes[column],
+                             first + offset, SQ_GROUP_SIZE,
+                             sq_node_width(&node.tree->layout, column), base, subtract,
+                             cache->absolute[coordinate] + offset);
+        }
+      } else
+#endif
+      {
+        cache->unpack(node.tree->data + node.tree->layout.nodes[column], first, count,
+                      sq_node_width(&node.tree->layout, column), cache->values[index]);
+      }
       missing &= missing - 1;
     } while (missing);
     cache->filled |= needed;
@@ -125,7 +154,7 @@ static UnpackCache *cache_columns(SQNodeIterator *iterator, unsigned needed) {
 }
 
 static uint16_t cached_value(SQNodeIterator *iterator, unsigned column) {
-#if SQ_ITERATOR_CACHE_ALL
+#if SQ_ITERATOR_CACHE_ALL == 1
   unsigned index = column;
 #else
   unsigned index = column - N_SYMBOL;
@@ -151,7 +180,21 @@ void sq_node_iterator_attributes(SQNodeIterator *iterator, SQCursorAttributes *o
   }
   SQNode node = iterator->current;
   if (iterator->cache) {
-#if SQ_ITERATOR_CACHE_ALL
+#if SQ_ITERATOR_CACHE_ALL == 2
+    // Filled bits 0..2 are IDs; bits 3..8 are the six coordinate columns.
+    const UnpackCache *cache = cache_columns(iterator, (1u << 9) - 1);
+    uint32_t lane = node.slot & (SQ_ITERATOR_UNPACK_SLOTS - 1u);
+    out->start_byte = cache->absolute[0][lane];
+    out->end_byte = cache->absolute[1][lane];
+    out->start_point = (TSPoint){cache->absolute[2][lane], cache->absolute[4][lane]};
+    out->end_point = (TSPoint){cache->absolute[3][lane], cache->absolute[5][lane]};
+    // Single-bit flags remain packed; they need no widening or base arithmetic.
+    out->is_extra = sq_node_get(node, N_EXTRA);
+    out->is_missing = sq_node_get(node, N_MISSING);
+    out->has_error = sq_node_get(node, N_ERROR);
+    sq_attributes_finish(node, cache->values[0][lane], cache->values[1][lane],
+                         cache->values[2][lane], out);
+#elif SQ_ITERATOR_CACHE_ALL == 1
     // Experimental full cache: coordinates/flags use the same bounded unpacker.
     // Counts still use ordinary tree scans and never evict the iterator's group.
     const unsigned needed = ((1u << N_COLUMNS) - 1) &
