@@ -32,7 +32,12 @@ use std::{
     ops::Range,
     ptr::NonNull,
 };
-use tree_sitter::{Language, Point};
+use tree_sitter::Language;
+#[cfg(feature = "points")]
+use tree_sitter::Point;
+
+/// Whether this library includes row/column storage and point APIs.
+pub const HAS_POINT_POSITIONS: bool = cfg!(feature = "points");
 
 pub mod query;
 pub use query::{
@@ -188,15 +193,18 @@ struct RawNode {
 }
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
+#[cfg(feature = "points")]
 struct RawPoint {
     row: u32,
     column: u32,
 }
+#[cfg(feature = "points")]
 impl From<RawPoint> for Point {
     fn from(p: RawPoint) -> Self {
         Point::new(p.row as usize, p.column as usize)
     }
 }
+#[cfg(feature = "points")]
 impl TryFrom<Point> for RawPoint {
     type Error = std::num::TryFromIntError;
     fn try_from(p: Point) -> Result<Self, Self::Error> {
@@ -316,9 +324,11 @@ impl<'tree> Node<'tree> {
     pub fn end_byte(self) -> usize {
         (unsafe { ffi::sq_node_end_byte(self.raw) }) as usize
     }
+    #[cfg(feature = "points")]
     pub fn start_position(self) -> Point {
         unsafe { ffi::sq_node_start_point(self.raw) }.into()
     }
+    #[cfg(feature = "points")]
     pub fn end_position(self) -> Point {
         unsafe { ffi::sq_node_end_point(self.raw) }.into()
     }
@@ -417,6 +427,7 @@ impl<'tree> Node<'tree> {
             )
         })
     }
+    #[cfg(feature = "points")]
     pub fn descendant_for_point_range(self, start: Point, end: Point) -> Option<Self> {
         Self::from_raw(unsafe {
             ffi::sq_node_descendant_for_point_range(
@@ -426,6 +437,7 @@ impl<'tree> Node<'tree> {
             )
         })
     }
+    #[cfg(feature = "points")]
     pub fn named_descendant_for_point_range(self, start: Point, end: Point) -> Option<Self> {
         Self::from_raw(unsafe {
             ffi::sq_node_named_descendant_for_point_range(
@@ -569,7 +581,9 @@ struct RawCursorAttributes {
     grammar_name: *const std::ffi::c_char,
     start_byte: u32,
     end_byte: u32,
+    #[cfg(feature = "points")]
     start_point: RawPoint,
+    #[cfg(feature = "points")]
     end_point: RawPoint,
     child_count: u32,
     named_child_count: u32,
@@ -596,7 +610,9 @@ impl RawCursorAttributes {
             grammar_id: self.grammar_symbol,
             start_byte: self.start_byte as usize,
             end_byte: self.end_byte as usize,
+            #[cfg(feature = "points")]
             start_position: self.start_point.into(),
+            #[cfg(feature = "points")]
             end_position: self.end_point.into(),
             is_named: self.is_named,
             is_extra: self.is_extra,
@@ -659,7 +675,9 @@ mod ffi {
         pub fn sq_node_grammar_type(node: RawNode) -> *const c_char;
         pub fn sq_node_start_byte(node: RawNode) -> u32;
         pub fn sq_node_end_byte(node: RawNode) -> u32;
+        #[cfg(feature = "points")]
         pub fn sq_node_start_point(node: RawNode) -> RawPoint;
+        #[cfg(feature = "points")]
         pub fn sq_node_end_point(node: RawNode) -> RawPoint;
         pub fn sq_node_is_named(node: RawNode) -> bool;
         pub fn sq_node_is_extra(node: RawNode) -> bool;
@@ -691,11 +709,13 @@ mod ffi {
             start: u32,
             end: u32,
         ) -> RawNode;
+        #[cfg(feature = "points")]
         pub fn sq_node_descendant_for_point_range(
             node: RawNode,
             start: RawPoint,
             end: RawPoint,
         ) -> RawNode;
+        #[cfg(feature = "points")]
         pub fn sq_node_named_descendant_for_point_range(
             node: RawNode,
             start: RawPoint,

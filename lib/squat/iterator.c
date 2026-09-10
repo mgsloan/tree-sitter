@@ -13,8 +13,8 @@ typedef struct {
   SQUnpack unpack;
 #if SQ_ITERATOR_CACHE_ALL == 2
   SQUnpackCoordinates coordinates;
-  // Coordinate order follows N_BYTE..N_END_COL and G_BYTE..G_END_COL.
-  uint32_t absolute[6][SQ_ITERATOR_UNPACK_SLOTS];
+  // Coordinate order follows the stored node and group coordinate columns.
+  uint32_t absolute[SQ_COORDINATES][SQ_ITERATOR_UNPACK_SLOTS];
   uint16_t values[3][SQ_ITERATOR_UNPACK_SLOTS];
 #elif SQ_ITERATOR_CACHE_ALL == 1
   uint32_t base_group;
@@ -181,13 +181,15 @@ void sq_node_iterator_attributes(SQNodeIterator *iterator, SQCursorAttributes *o
   SQNode node = iterator->current;
   if (iterator->cache) {
 #if SQ_ITERATOR_CACHE_ALL == 2
-    // Filled bits 0..2 are IDs; bits 3..8 are the six coordinate columns.
-    const UnpackCache *cache = cache_columns(iterator, (1u << 9) - 1);
+    // Filled bits 0..2 are IDs; subsequent bits are stored coordinates.
+    const UnpackCache *cache = cache_columns(iterator, (1u << (3 + SQ_COORDINATES)) - 1);
     uint32_t lane = node.slot & (SQ_ITERATOR_UNPACK_SLOTS - 1u);
     out->start_byte = cache->absolute[0][lane];
     out->end_byte = cache->absolute[1][lane];
+#if SQ_INCLUDE_POINTS
     out->start_point = (TSPoint){cache->absolute[2][lane], cache->absolute[4][lane]};
     out->end_point = (TSPoint){cache->absolute[3][lane], cache->absolute[5][lane]};
+#endif
     // Single-bit flags remain packed; they need no widening or base arithmetic.
     out->is_extra = sq_node_get(node, N_EXTRA);
     out->is_missing = sq_node_get(node, N_MISSING);
@@ -205,10 +207,12 @@ void sq_node_iterator_attributes(SQNodeIterator *iterator, SQCursorAttributes *o
     uint32_t lane = node.slot & (SQ_ITERATOR_UNPACK_SLOTS - 1u);
     out->start_byte = base[G_BYTE] + value[N_BYTE][lane];
     out->end_byte = base[G_END_BYTE] - value[N_END_BYTE][lane];
+#if SQ_INCLUDE_POINTS
     out->start_point = (TSPoint){base[G_ROW] + value[N_ROW][lane],
                                  base[G_COL] + value[N_COL][lane]};
     out->end_point = (TSPoint){base[G_END_ROW] - value[N_END_ROW][lane],
                                base[G_END_COL] - value[N_END_COL][lane]};
+#endif
     out->is_extra = value[N_EXTRA][lane];
     out->is_missing = value[N_MISSING][lane];
     out->has_error = value[N_ERROR][lane];

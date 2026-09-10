@@ -6,6 +6,10 @@ license.workspace = true
 publish = false
 build = "build.rs"
 
+[features]
+default = ["points"]
+points = []
+
 [dependencies]
 tree-sitter.workspace = true
 regex.workspace = true

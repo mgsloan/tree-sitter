@@ -1,6 +1,8 @@
 use anyhow::{Result, ensure};
 use std::collections::HashMap;
-use tree_sitter::{Language, Point};
+use tree_sitter::Language;
+#[cfg(feature = "points")]
+use tree_sitter::Point;
 use tree_sitter_squatter::traits::{Attributes, CursorLike, NodeLike};
 
 pub type Identities = HashMap<usize, usize>;
@@ -137,6 +139,7 @@ pub fn seek_bytes<'tree, N: NodeLike<'tree>>(
         })
         .collect()
 }
+#[cfg(feature = "points")]
 pub fn seek_points<'tree, N: NodeLike<'tree>>(
     root: N,
     ids: &Identities,

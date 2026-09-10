@@ -25,11 +25,13 @@ static inline void sq_attributes_with_ids(SQNode node, uint32_t symbol, uint32_t
   uint32_t group = node.slot / SQ_GROUP_SIZE;
   out->start_byte = sq_group_get(node.tree, G_BYTE, group) + sq_node_get(node, N_BYTE);
   out->end_byte = sq_group_get(node.tree, G_END_BYTE, group) - sq_node_get(node, N_END_BYTE);
+#if SQ_INCLUDE_POINTS
   out->start_point = (TSPoint){sq_group_get(node.tree, G_ROW, group) + sq_node_get(node, N_ROW),
                              sq_group_get(node.tree, G_COL, group) + sq_node_get(node, N_COL)};
   out->end_point =
       (TSPoint){sq_group_get(node.tree, G_END_ROW, group) - sq_node_get(node, N_END_ROW),
                 sq_group_get(node.tree, G_END_COL, group) - sq_node_get(node, N_END_COL)};
+#endif
   out->is_extra = sq_node_get(node, N_EXTRA);
   out->is_missing = sq_node_get(node, N_MISSING);
   out->has_error = sq_node_get(node, N_ERROR);

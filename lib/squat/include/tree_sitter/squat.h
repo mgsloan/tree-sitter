@@ -3,6 +3,13 @@
 
 #include <tree_sitter/api.h>
 
+#ifndef SQ_INCLUDE_POINTS
+#define SQ_INCLUDE_POINTS 1
+#endif
+#if SQ_INCLUDE_POINTS != 0 && SQ_INCLUDE_POINTS != 1
+#error "SQ_INCLUDE_POINTS must be 0 or 1"
+#endif
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -16,12 +23,16 @@ typedef struct {
 } SQNode;
 typedef struct SQCursor SQCursor;
 typedef struct SQNodeIterator SQNodeIterator;
-/* A copied snapshot. Strings borrow the tree's retained language. Counts include
+/* Compile callers and this library with the same SQ_INCLUDE_POINTS setting.
+ * Point APIs and snapshot members are absent in byte-only builds.
+ * A copied snapshot. Strings borrow the tree's retained language. Counts include
  * visible nodes only; descendant_count includes the current node. */
 typedef struct {
   const char *type, *grammar_type;
   uint32_t start_byte, end_byte;
+#if SQ_INCLUDE_POINTS
   TSPoint start_point, end_point;
+#endif
   uint32_t child_count, named_child_count, descendant_count;
   TSSymbol symbol, grammar_symbol;
   TSFieldId field_id;
@@ -33,10 +44,12 @@ typedef enum {
   SQ_COLUMN_SUBTREE_SIZE,
   SQ_COLUMN_START_BYTE,
   SQ_COLUMN_END_BYTE_SUB,
+#if SQ_INCLUDE_POINTS
   SQ_COLUMN_START_ROW,
   SQ_COLUMN_END_ROW_SUB,
   SQ_COLUMN_START_COL,
   SQ_COLUMN_END_COL_SUB,
+#endif
   SQ_COLUMN_SUPERTYPES,
   SQ_COLUMN_DISPLAY_SYMBOL,
   SQ_COLUMN_GRAMMAR_SYMBOL,
@@ -91,8 +104,10 @@ const char *sq_node_type(SQNode);
 const char *sq_node_grammar_type(SQNode);
 uint32_t sq_node_start_byte(SQNode);
 uint32_t sq_node_end_byte(SQNode);
+#if SQ_INCLUDE_POINTS
 TSPoint sq_node_start_point(SQNode);
 TSPoint sq_node_end_point(SQNode);
+#endif
 bool sq_node_is_named(SQNode);
 bool sq_node_is_extra(SQNode);
 bool sq_node_is_missing(SQNode);
@@ -126,8 +141,10 @@ SQNode sq_node_first_child_for_byte(SQNode, uint32_t);
 SQNode sq_node_first_named_child_for_byte(SQNode, uint32_t);
 SQNode sq_node_descendant_for_byte_range(SQNode, uint32_t, uint32_t);
 SQNode sq_node_named_descendant_for_byte_range(SQNode, uint32_t, uint32_t);
+#if SQ_INCLUDE_POINTS
 SQNode sq_node_descendant_for_point_range(SQNode, TSPoint, TSPoint);
 SQNode sq_node_named_descendant_for_point_range(SQNode, TSPoint, TSPoint);
+#endif
 /* Preorder traversal stays within this node's tree, and returns null at ends. */
 SQNode sq_node_next_preorder(SQNode);
 SQNode sq_node_prev_preorder(SQNode);

@@ -61,6 +61,7 @@ uint32_t sq_node_start_byte(SQNode node) {
 uint32_t sq_node_end_byte(SQNode node) {
   return coordinate(node, G_END_BYTE, N_END_BYTE, true);
 }
+#if SQ_INCLUDE_POINTS
 TSPoint sq_node_start_point(SQNode node) {
   return (TSPoint){coordinate(node, G_ROW, N_ROW, false), coordinate(node, G_COL, N_COL, false)};
 }
@@ -68,6 +69,7 @@ TSPoint sq_node_end_point(SQNode node) {
   return (TSPoint){coordinate(node, G_END_ROW, N_END_ROW, true),
                    coordinate(node, G_END_COL, N_END_COL, true)};
 }
+#endif
 bool sq_node_is_named(SQNode node) {
   return node.tree && ts_language_symbol_metadata(node.tree->language, raw_symbol(node)).named;
 }
@@ -316,9 +318,15 @@ static SQNode seek(SQNode node, TSPoint start, TSPoint end, bool named, bool byt
     SQNode found = sq_null();
     for (SQNode child = first_child(node); child.tree;
          child = sq_node_next_sibling_including_empty(child)) {
+#if SQ_INCLUDE_POINTS
       TSPoint child_start =
           bytes ? (TSPoint){0, sq_node_start_byte(child)} : sq_node_start_point(child);
       TSPoint child_end = bytes ? (TSPoint){0, sq_node_end_byte(child)} : sq_node_end_point(child);
+#else
+      (void)bytes;
+      TSPoint child_start = {0, sq_node_start_byte(child)};
+      TSPoint child_end = {0, sq_node_end_byte(child)};
+#endif
       if (point_cmp(child_end, end) < 0) {
         continue;
       }
@@ -347,9 +355,11 @@ SQNode sq_node_descendant_for_byte_range(SQNode node, uint32_t left, uint32_t ri
 SQNode sq_node_named_descendant_for_byte_range(SQNode node, uint32_t left, uint32_t right) {
   return seek(node, (TSPoint){0, left}, (TSPoint){0, right}, true, true);
 }
+#if SQ_INCLUDE_POINTS
 SQNode sq_node_descendant_for_point_range(SQNode node, TSPoint left, TSPoint right) {
   return seek(node, left, right, false, false);
 }
 SQNode sq_node_named_descendant_for_point_range(SQNode node, TSPoint left, TSPoint right) {
   return seek(node, left, right, true, false);
 }
+#endif

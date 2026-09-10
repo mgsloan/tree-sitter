@@ -156,6 +156,9 @@ static void run_query(const TSLanguage *language, TSTree *tree, SQTree *packed,
   query = copy;
   for (optimized = 0; optimized < 2; optimized++) {
     for (mode = 0; mode < 8; mode++) {
+#if !SQ_INCLUDE_POINTS
+      if (mode == 5) continue; // Point-range APIs are absent in this build.
+#endif
       TSQueryCursor *a = ts_query_cursor_new();
       SQQueryCursor *b = sq_query_cursor_new();
       sq_query_cursor_set_optimized(b, optimized);
@@ -168,9 +171,11 @@ static void run_query(const TSLanguage *language, TSTree *tree, SQTree *packed,
       } else if (mode == 4) {
         ts_query_cursor_set_match_limit(a, 2);
         sq_query_cursor_set_match_limit(b, 2);
+#if SQ_INCLUDE_POINTS
       } else if (mode == 5) {
         ts_query_cursor_set_point_range(a, (TSPoint){0, 1}, (TSPoint){1, 0});
         sq_query_cursor_set_point_range(b, (TSPoint){0, 1}, (TSPoint){1, 0});
+#endif
       }
       TSQueryCursorOptions options = {.progress_callback = cancel};
       ts_query_cursor_exec_with_options(a, mainline, ts_tree_root_node(tree),

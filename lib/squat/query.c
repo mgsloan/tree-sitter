@@ -420,6 +420,14 @@ struct SQQuery {
 /*
  * SQQueryCursor - A stateful struct used to execute a query on a tree.
  */
+#if SQ_INCLUDE_POINTS
+typedef TSRange SQRange;
+#else
+typedef struct {
+  uint32_t start_byte, end_byte;
+} SQRange;
+#endif
+
 struct SQQueryCursor {
   SQQueryExecutionError error;
   const SQQuery *query;
@@ -443,8 +451,8 @@ struct SQQueryCursor {
   uint32_t depth;
   uint32_t states_max_depth; // conservative upper bound, refreshed during compaction
   uint32_t max_start_depth;
-  TSRange included_range;
-  TSRange containing_range;
+  SQRange included_range;
+  SQRange containing_range;
   uint32_t next_state_id;
   uint32_t next_finished_state_id;
   const TSQueryCursorOptions *query_options;
@@ -3583,15 +3591,19 @@ SQQueryCursor *sq_query_cursor_new(void) {
       .capture_list_pool = capture_list_pool_new(),
       .included_range =
           {
+#if SQ_INCLUDE_POINTS
               .start_point = {0, 0},
               .end_point = POINT_MAX,
+#endif
               .start_byte = 0,
               .end_byte = UINT32_MAX,
           },
       .containing_range =
           {
+#if SQ_INCLUDE_POINTS
               .start_point = {0, 0},
               .end_point = POINT_MAX,
+#endif
               .start_byte = 0,
               .end_byte = UINT32_MAX,
           },
@@ -3760,6 +3772,7 @@ bool sq_query_cursor_set_byte_range(SQQueryCursor *self, uint32_t start_byte, ui
   return true;
 }
 
+#if SQ_INCLUDE_POINTS
 bool sq_query_cursor_set_point_range(SQQueryCursor *self, TSPoint start_point, TSPoint end_point) {
   if (end_point.row == 0 && end_point.column == 0) {
     end_point = POINT_MAX;
@@ -3773,6 +3786,7 @@ bool sq_query_cursor_set_point_range(SQQueryCursor *self, TSPoint start_point, T
   self->first_capture.valid = false;
   return true;
 }
+#endif
 
 bool sq_query_cursor_set_containing_byte_range(SQQueryCursor *self, uint32_t start_byte,
                                                uint32_t end_byte) {
@@ -3788,6 +3802,7 @@ bool sq_query_cursor_set_containing_byte_range(SQQueryCursor *self, uint32_t sta
   return true;
 }
 
+#if SQ_INCLUDE_POINTS
 bool sq_query_cursor_set_containing_point_range(SQQueryCursor *self, TSPoint start_point,
                                                 TSPoint end_point) {
   if (end_point.row == 0 && end_point.column == 0) {
@@ -3801,11 +3816,32 @@ bool sq_query_cursor_set_containing_point_range(SQQueryCursor *self, TSPoint sta
   self->containing_range.end_point = end_point;
   return true;
 }
+#endif
 
-static inline bool sq_query__range_is_unrestricted(const TSRange *range);
+static inline bool sq_query__range_is_unrestricted(const SQRange *range);
+
+// Byte-only builds have no point APIs. Keep range rejection shared by both
+// capture paths so a missing point coordinate cannot suppress byte matches.
+static inline bool sq_query__node_precedes_range(SQNode node, const SQRange *range) {
+  if (sq_node_end_byte(node) <= range->start_byte) return true;
+#if SQ_INCLUDE_POINTS
+  return point_lte(sq_node_end_point(node), range->start_point);
+#else
+  return false;
+#endif
+}
+static inline bool sq_query__node_follows_range(SQNode node, const SQRange *range) {
+  if (sq_node_start_byte(node) >= range->end_byte) return true;
+#if SQ_INCLUDE_POINTS
+  return point_gte(sq_node_start_point(node), range->end_point);
+#else
+  return false;
+#endif
+}
+
 
 static inline bool sq_query__capture_is_inside_unrestricted_range(SQNode node,
-                                                                  const TSRange *range) {
+                                                                  const SQRange *range) {
   // Slab nodes carry no cached positions; retain the exact range checks below.
   (void)node;
   (void)range;
@@ -3835,8 +3871,7 @@ static bool sq_query_cursor__first_in_progress_capture(SQQueryCursor *self, uint
 
     SQNode node = array_get(captures, state->consumed_capture_count)->node;
     if (!sq_query__capture_is_inside_unrestricted_range(node, &self->included_range) &&
-        (sq_node_end_byte(node) <= self->included_range.start_byte ||
-         point_lte(sq_node_end_point(node), self->included_range.start_point))) {
+        sq_query__node_precedes_range(node, &self->included_range)) {
       state->consumed_capture_count++;
       i--;
       continue;
@@ -4495,23 +4530,40 @@ static inline bool sq_query_cursor__should_descend(SQQueryCursor *self,
   return false;
 }
 
-bool sq_query__range_intersects(const TSRange *a, const TSRange *b) {
+bool sq_query__range_intersects(const SQRange *a, const SQRange *b) {
   bool is_empty = a->start_byte == a->end_byte;
-  return ((a->end_byte > b->start_byte || (is_empty && a->end_byte == b->start_byte)) &&
-          (point_gt(a->end_point, b->start_point) ||
-           (is_empty && point_eq(a->end_point, b->start_point))) &&
-          a->start_byte < b->end_byte && point_lt(a->start_point, b->end_point));
+  bool bytes_intersect =
+      (a->end_byte > b->start_byte || (is_empty && a->end_byte == b->start_byte)) &&
+      a->start_byte < b->end_byte;
+#if SQ_INCLUDE_POINTS
+  return bytes_intersect &&
+         (point_gt(a->end_point, b->start_point) ||
+          (is_empty && point_eq(a->end_point, b->start_point))) &&
+         point_lt(a->start_point, b->end_point);
+#else
+  return bytes_intersect;
+#endif
 }
 
-bool sq_query__range_within(const TSRange *a, const TSRange *b) {
-  return (a->start_byte >= b->start_byte && point_gte(a->start_point, b->start_point) &&
-          a->end_byte <= b->end_byte && point_lte(a->end_point, b->end_point));
+bool sq_query__range_within(const SQRange *a, const SQRange *b) {
+  bool bytes_within = a->start_byte >= b->start_byte && a->end_byte <= b->end_byte;
+#if SQ_INCLUDE_POINTS
+  return bytes_within && point_gte(a->start_point, b->start_point) &&
+         point_lte(a->end_point, b->end_point);
+#else
+  return bytes_within;
+#endif
 }
 
 // Avoid constructing per-node ranges on the unrestricted hot path.
-static inline bool sq_query__range_is_unrestricted(const TSRange *range) {
-  return range->start_byte == 0 && range->end_byte == UINT32_MAX && range->start_point.row == 0 &&
-         range->start_point.column == 0 && point_eq(range->end_point, POINT_MAX);
+static inline bool sq_query__range_is_unrestricted(const SQRange *range) {
+  bool all_bytes = range->start_byte == 0 && range->end_byte == UINT32_MAX;
+#if SQ_INCLUDE_POINTS
+  return all_bytes && range->start_point.row == 0 && range->start_point.column == 0 &&
+         point_eq(range->end_point, POINT_MAX);
+#else
+  return all_bytes;
+#endif
 }
 
 // Scans can cross many groups without NFA events. Poll at bounded intervals
@@ -4700,7 +4752,7 @@ static inline bool sq_query_cursor__advance(SQQueryCursor *self, bool stop_on_de
       // set_containing_*_range call ever narrowed either range from its
       // exec()-time default. Every node trivially satisfies both
       // checks against an unrestricted range, so skip building either
-      // node's TSRange (and the point derivation that costs) entirely.
+      // node's SQRange (and the point derivation that costs) entirely.
       bool ranges_unrestricted = sq_query__range_is_unrestricted(&self->included_range) &&
                                  sq_query__range_is_unrestricted(&self->containing_range);
 
@@ -4717,16 +4769,20 @@ static inline bool sq_query_cursor__advance(SQQueryCursor *self, bool stop_on_de
         SQNode parent_node = query_tree_cursor_parent(&self->cursor);
         parent_intersects_range =
             sq_node_is_null(parent_node) || sq_query__range_intersects(
-                                                &(TSRange){
+                                                &(SQRange){
+#if SQ_INCLUDE_POINTS
                                                     .start_point = sq_node_start_point(parent_node),
                                                     .end_point = sq_node_end_point(parent_node),
+#endif
                                                     .start_byte = sq_node_start_byte(parent_node),
                                                     .end_byte = sq_node_end_byte(parent_node),
                                                 },
                                                 &self->included_range);
-        TSRange node_range = (TSRange){
+        SQRange node_range = (SQRange){
+#if SQ_INCLUDE_POINTS
             .start_point = sq_node_start_point(node),
             .end_point = sq_node_end_point(node),
+#endif
             .start_byte = sq_node_start_byte(node),
             .end_byte = sq_node_end_byte(node),
         };
@@ -4752,7 +4808,12 @@ static inline bool sq_query_cursor__advance(SQQueryCursor *self, bool stop_on_de
             "finished_state_count:%u\n",
             self->depth, sq_node_type(node),
             ts_language_field_name_for_id(self->query->language, field_id),
-            sq_node_start_point(node).row, self->states.size, self->finished_states.size);
+#if SQ_INCLUDE_POINTS
+            sq_node_start_point(node).row,
+#else
+            0u,
+#endif
+            self->states.size, self->finished_states.size);
 
         bool node_is_error = symbol == ts_builtin_sym_error;
         // Cursor parents stay within this execution root.
@@ -5457,12 +5518,10 @@ bool sq_query_cursor_next_capture(SQQueryCursor *self, SQQueryMatch *match,
           sq_query__capture_is_inside_unrestricted_range(node, &self->included_range);
       bool node_precedes_range =
           !inside_unrestricted_range &&
-          (sq_node_end_byte(node) <= self->included_range.start_byte ||
-           point_lte(sq_node_end_point(node), self->included_range.start_point));
+          sq_query__node_precedes_range(node, &self->included_range);
       bool node_follows_range =
           !inside_unrestricted_range &&
-          (sq_query__node_start_byte(node) >= self->included_range.end_byte ||
-           point_gte(sq_node_start_point(node), self->included_range.end_point));
+          sq_query__node_follows_range(node, &self->included_range);
       bool node_outside_of_range = node_precedes_range || node_follows_range;
 
       // Skip captures that are outside of the cursor's range.

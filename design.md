@@ -24,6 +24,18 @@ If it runs out of space, the capacities grow geometrically and each column's act
 
 During either growth or compaction, packed values must be repacked if their lane positions within words change. For example, a nine-bit column holds seven values per word, so shifting its active suffix by 16 slots changes its lane alignment. A raw byte copy is sufficient only when the source and destination packing align; otherwise, values must be placed into their new lanes, preserving the unused bits between words' value groups.
 
+## Optional point positions
+
+Row and column storage is optional at compile time (`SQ_INCLUDE_POINTS=0` in C,
+or disabling the default `points` Cargo feature). Byte-only builds omit the four
+row/column columns, their group bases, packing constraints, cache lanes, and
+point APIs and snapshot members. Byte positions and byte-range APIs remain.
+The layout below describes the default build with points enabled.
+
+The 32-byte header uses byte 1, previously reserved, as a layout flag: 0 for
+points and 1 for byte-only storage. Readers reject the other mode and unknown
+flags. Default version-3 slabs remain compatible with existing readers.
+
 ## Slab data
 
 Despite the code below being Rust, this will be implemented in C in `lib/squat/`. Mainline Tree-sitter code will be unmodified.

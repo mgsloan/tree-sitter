@@ -31,11 +31,14 @@ _Static_assert(SQ_COLUMN_ALIGNMENT == 8 || SQ_COLUMN_ALIGNMENT == 64,
                           : 0u) |                                                                  \
    (SQ_COLUMN_ALIGNMENT == 64 ? 8u : 0u))
 #define SQ_DICTIONARY 1u
+/* The first formerly reserved header byte selects the coordinate layout. */
+#define SQ_LAYOUT_FLAGS (SQ_INCLUDE_POINTS ? 0u : 1u)
 #define SQ_NONE UINT32_MAX
 
 typedef struct {
   uint8_t magic_bits;
-  uint8_t reserved[3];
+  uint8_t layout_flags;
+  uint8_t reserved[2];
   uint32_t group_count, group_capacity;
   uint32_t groups_byte_offset, nodes_byte_offset;
   uint32_t symbol_presence_byte_offset;
@@ -43,7 +46,16 @@ typedef struct {
 } SQHeader;
 _Static_assert(sizeof(SQHeader) == 32, "slab header size");
 
-enum { G_WASTE, G_SPAN, G_BYTE, G_END_BYTE, G_ROW, G_END_ROW, G_COL, G_END_COL, G_COLUMNS };
+enum {
+  G_WASTE, G_SPAN, G_BYTE, G_END_BYTE,
+#if SQ_INCLUDE_POINTS
+  G_ROW, G_END_ROW, G_COL, G_END_COL,
+#endif
+  G_COLUMNS
+};
+/* Span plus the stored coordinates: byte bounds, optionally row/column bounds. */
+#define SQ_PACK_VALUES (G_COLUMNS - 1)
+#define SQ_COORDINATES (G_COLUMNS - G_BYTE)
 enum {
   N_LAST,
   N_EXTRA,
@@ -52,10 +64,12 @@ enum {
   N_SPAN,
   N_BYTE,
   N_END_BYTE,
+#if SQ_INCLUDE_POINTS
   N_ROW,
   N_END_ROW,
   N_COL,
   N_END_COL,
+#endif
   N_SUPER,
   N_SYMBOL,
   N_GRAMMAR,

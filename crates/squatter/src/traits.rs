@@ -1,5 +1,6 @@
 //! Shared, statically dispatched navigation for mainline and packed trees.
 use crate::{Cursor, Error, Node, Tree};
+#[cfg(feature = "points")]
 use tree_sitter::Point;
 
 /// Attributes supported by both representations on freshly parsed trees.
@@ -11,7 +12,9 @@ pub struct Attributes<'tree> {
     pub grammar_id: u16,
     pub start_byte: usize,
     pub end_byte: usize,
+    #[cfg(feature = "points")]
     pub start_position: Point,
+    #[cfg(feature = "points")]
     pub end_position: Point,
     pub is_named: bool,
     pub is_extra: bool,
@@ -46,6 +49,7 @@ pub trait NodeLike<'tree>: Copy + Eq {
     fn prev_named_sibling(self) -> Option<Self>;
     fn child_by_field_id(self, field: u16) -> Option<Self>;
     fn descendant_for_byte_range(self, start: usize, end: usize) -> Option<Self>;
+    #[cfg(feature = "points")]
     fn descendant_for_point_range(self, start: Point, end: Point) -> Option<Self>;
 }
 
@@ -108,6 +112,7 @@ macro_rules! node_navigation {
         fn descendant_for_byte_range(self, start: usize, end: usize) -> Option<Self> {
             <$node>::descendant_for_byte_range(&self, start, end)
         }
+        #[cfg(feature = "points")]
         fn descendant_for_point_range(self, start: Point, end: Point) -> Option<Self> {
             <$node>::descendant_for_point_range(&self, start, end)
         }
@@ -122,7 +127,9 @@ macro_rules! attributes {
             grammar_id: $node.grammar_id(),
             start_byte: $node.start_byte(),
             end_byte: $node.end_byte(),
+            #[cfg(feature = "points")]
             start_position: $node.start_position(),
+            #[cfg(feature = "points")]
             end_position: $node.end_position(),
             is_named: $node.is_named(),
             is_extra: $node.is_extra(),
@@ -187,6 +194,7 @@ impl<'tree> NodeLike<'tree> for Node<'tree> {
     fn descendant_for_byte_range(self, start: usize, end: usize) -> Option<Self> {
         Node::descendant_for_byte_range(self, start, end)
     }
+    #[cfg(feature = "points")]
     fn descendant_for_point_range(self, start: Point, end: Point) -> Option<Self> {
         Node::descendant_for_point_range(self, start, end)
     }

@@ -165,3 +165,41 @@ live group. The default unpack window remains one group.
 
 See the [absolute-coordinate cache benchmark](experiments/iterator-absolute-results-2026-09-09.md)
 for cached/uncached comparisons at all four window sizes.
+
+
+## Optional row/column positions
+
+Points are enabled by default. A byte-only C build removes the four row/column
+node columns, their four group bases, packing constraints and temporary point
+positions, iterator cache entries, and query cursor point ranges:
+
+```sh
+make -C lib/squat BUILD=../../build/squat-byte-only \
+  CFLAGS="-O2 -DSQ_INCLUDE_POINTS=0" check all
+```
+
+Compile callers with the same `SQ_INCLUDE_POINTS` value. With points disabled,
+point getters, point-range seeks, query point-range setters, point column IDs,
+and point snapshot members are **absent** from the C API. Byte getters, seeks,
+and query ranges retain their existing behavior. The SIMD cache reconstructs
+only the two byte-coordinate columns.
+
+Rust exposes the same choice as a default-enabled `points` Cargo feature:
+
+```sh
+cargo build -p tree-sitter-squatter --no-default-features
+cargo build --release -p squatter-bench --no-default-features
+```
+
+Dependent crates can use `tree-sitter-squatter` with `default-features = false`.
+Cargo features are additive: all dependents must leave `points` disabled for a
+byte-only library. `HAS_POINT_POSITIONS` reports the linked Rust library setting.
+Point methods and attribute fields are omitted from Rust as well. Configure Rust
+through Cargo features; a generated C assertion prevents incompatible CFLAGS
+from silently changing the FFI snapshot layout.
+
+The slab header remains 32 bytes. Its byte at offset 1, formerly reserved, is
+now `layout_flags`: 0 includes points, 1 omits them. Other flag values are invalid.
+Version-3 slabs with points retain their original layout and bytes. Each build
+rejects slabs from the other mode before interpreting column offsets; regenerate
+slabs when changing this setting.

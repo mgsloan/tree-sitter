@@ -5,6 +5,10 @@ edition.workspace = true
 license.workspace = true
 publish = false
 
+[features]
+default = ["points"]
+points = ["tree-sitter-squatter/points"]
+
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
@@ -13,4 +17,4 @@ libc = "0.2.182"
 serde.workspace = true
 serde_json.workspace = true
 tree-sitter.workspace = true
-tree-sitter-squatter = { path = "../squatter" }
+tree-sitter-squatter = { path = "../squatter", default-features = false }

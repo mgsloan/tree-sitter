@@ -270,3 +270,17 @@ python3 benchmark-upload.py ~/squatter-benchmark --repeat 8 \
 An empty `--unpack-sizes` skips standalone ID-unpack microbenchmarks. Eight repeats
 balance the two attribute workloads across both workload positions and backend
 orders. The full results retain mainline timing controls and per-file medians.
+
+
+## Byte-only builds
+
+Build `squatter-bench` with `--no-default-features` to omit row/column support.
+The default workload list then excludes `seek-point`; explicitly requesting it
+returns an error. Attribute comparisons cover only fields present in that build,
+and run metadata records `point_positions: false`. Byte seeks, queries, cursor
+walks, and both iterator walks remain checked against mainline. Use Cargo's
+`points` feature to select the matching C and Rust APIs, rather than overriding
+`SQ_INCLUDE_POINTS` through CFLAGS in a Cargo build.
+
+This changes the serialized layout and may change group occupancy, so compare
+like build configurations when isolating iterator cache-window effects.

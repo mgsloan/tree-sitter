@@ -5,21 +5,26 @@
  * computed once left-to-right, then consumed right-to-left (columns cannot be
  * recovered by subtracting a multiline child's extent). No recursive C calls. */
 typedef struct {
-  uint32_t values[7];
+  uint32_t values[SQ_PACK_VALUES];
   uint32_t symbol, grammar, field;
   uint8_t flags, super;
 } Pending;
 typedef struct {
   SQTree *tree;
   Pending pending[SQ_GROUP_SIZE];
-  uint32_t count, min[7], max[7];
+  uint32_t count, min[SQ_PACK_VALUES], max[SQ_PACK_VALUES];
   uint64_t *dictionary;
   uint32_t dictionary_count, words;
   SQError *error;
 } Builder;
+#if SQ_INCLUDE_POINTS
+typedef Length PackPosition;
+#else
+typedef uint32_t PackPosition;
+#endif
 typedef struct {
   TSNode node;
-  Length *positions;
+  PackPosition *positions;
   uint64_t *mask;
   uint32_t remaining, structural;
   /* Distance to the first node outside this subtree, measured from the right.
@@ -51,10 +56,13 @@ static bool close_group(Builder *builder) {
                       builder->min[0],
                       builder->min[1],
                       builder->max[2],
+#if SQ_INCLUDE_POINTS
                       builder->min[3],
                       builder->max[4],
                       builder->min[5],
-                      builder->max[6]};
+                      builder->max[6],
+#endif
+  };
   for (unsigned c = 0; c < G_COLUMNS; c++) {
     sq_set(tree->data, tree->layout.groups[c], group, sq_group_width(c), bases[c]);
   }
@@ -69,10 +77,12 @@ static bool close_group(Builder *builder) {
         pending->values[0] - builder->min[0],
         pending->values[1] - builder->min[1],
         builder->max[2] - pending->values[2],
+#if SQ_INCLUDE_POINTS
         pending->values[3] - builder->min[3],
         builder->max[4] - pending->values[4],
         pending->values[5] - builder->min[5],
         builder->max[6] - pending->values[6],
+#endif
         pending->super,
         pending->symbol,
         pending->grammar,
@@ -113,10 +123,15 @@ static bool intern_mask(Builder *builder, const uint64_t *mask, uint8_t *result)
 }
 static bool emit(Builder *builder, Frame *frame) {
   TSNode node = frame->node;
+#if SQ_INCLUDE_POINTS
   TSPoint start = ts_node_start_point(node), end = ts_node_end_point(node);
+#endif
   Pending pending = {
-      .values = {0, ts_node_start_byte(node), ts_node_end_byte(node), start.row, end.row,
-                 start.column, end.column},
+      .values = {0, ts_node_start_byte(node), ts_node_end_byte(node),
+#if SQ_INCLUDE_POINTS
+                 start.row, end.row, start.column, end.column,
+#endif
+      },
       .symbol = sq_encode_symbol(builder->tree, node.context[3] ? (TSSymbol)node.context[3]
                                                                 : ts_node_grammar_symbol(node)),
       .grammar = sq_encode_symbol(builder->tree, ts_node_grammar_symbol(node)),
@@ -135,9 +150,9 @@ static bool emit(Builder *builder, Frame *frame) {
     /* Retrying after close_group includes newly abandoned slots in the span.
      * The saved boundary still points to the same occupied node on the right. */
     pending.values[0] = distance(builder) - frame->boundary;
-    uint32_t min[7], max[7];
+    uint32_t min[SQ_PACK_VALUES], max[SQ_PACK_VALUES];
     bool fits = builder->count < SQ_GROUP_SIZE;
-    for (unsigned c = 0; c < 7; c++) {
+    for (unsigned c = 0; c < SQ_PACK_VALUES; c++) {
       min[c] = !builder->count || pending.values[c] < builder->min[c] ? pending.values[c]
                                                                       : builder->min[c];
       max[c] = !builder->count || pending.values[c] > builder->max[c] ? pending.values[c]
@@ -177,21 +192,33 @@ static bool init_frame(Builder *builder, Frame *frame, TSNode node, TSFieldId fi
     }
   }
   if (count) {
-    if ((uint64_t)count * sizeof(Length) > SIZE_MAX) {
+    if ((uint64_t)count * sizeof(PackPosition) > SIZE_MAX) {
       goto allocation;
     }
-    frame->positions = malloc((size_t)count * sizeof(Length));
+    frame->positions = malloc((size_t)count * sizeof(PackPosition));
     if (!frame->positions) {
       goto allocation;
     }
-    Length position = {ts_node_start_byte(node), ts_node_start_point(node)};
+#if SQ_INCLUDE_POINTS
+    PackPosition position = {ts_node_start_byte(node), ts_node_start_point(node)};
+#else
+    PackPosition position = ts_node_start_byte(node);
+#endif
     const Subtree *children = ts_subtree_children(subtree);
     for (uint32_t i = 0; i < count; i++) {
       if (i) {
+#if SQ_INCLUDE_POINTS
         position = length_add(position, ts_subtree_padding(children[i]));
+#else
+        position += ts_subtree_padding(children[i]).bytes;
+#endif
       }
       frame->positions[i] = position;
+#if SQ_INCLUDE_POINTS
       position = length_add(position, ts_subtree_size(children[i]));
+#else
+      position += ts_subtree_size(children[i]).bytes;
+#endif
       frame->structural += !ts_subtree_extra(children[i]);
     }
     frame->remaining = count;
@@ -281,7 +308,12 @@ SQTree *sq_tree_pack(const TSTree *tree, SQPackOptions options, SQError *error) 
           }
         }
       }
-      TSNode node = ts_node_new(tree, child, frame->positions[index], alias);
+#if SQ_INCLUDE_POINTS
+      Length position = frame->positions[index];
+#else
+      Length position = {.bytes = frame->positions[index]};
+#endif
+      TSNode node = ts_node_new(tree, child, position, alias);
       if (depth == stack_capacity) {
         if (stack_capacity > SIZE_MAX / 2 / sizeof(Frame)) {
           sq_fail(error, SQ_ERROR_OVERFLOW);

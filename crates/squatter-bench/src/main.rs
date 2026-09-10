@@ -20,7 +20,7 @@ use std::{
 use tree_sitter::Point;
 use tree_sitter_squatter::{PackOptions, Tree};
 
-const BENCHMARKS: [&str; 11] = [
+const BENCHMARKS: &[&str] = &[
     "query-matches",
     "query-captures",
     "walk-forward",
@@ -30,6 +30,7 @@ const BENCHMARKS: [&str; 11] = [
     "walk-iterator",
     "walk-iterator-cached",
     "seek-byte",
+    #[cfg(feature = "points")]
     "seek-point",
     "cold-parse",
 ];
@@ -146,6 +147,8 @@ fn choose(
     for selector in &arguments.selectors {
         if BENCHMARKS.contains(&selector.as_str()) {
             benchmarks.push(selector.clone());
+        } else if selector == "seek-point" {
+            bail!("seek-point requires the points Cargo feature");
         } else if selector.starts_with("query-") {
             bail!("unknown query benchmark: {selector}");
         } else {
@@ -310,7 +313,7 @@ fn observe<'tree, N: tree_sitter_squatter::traits::NodeLike<'tree>>(
     ids: &compare::Identities,
     benchmark: &str,
     bytes: &[usize],
-    points: &[Point],
+    _points: &[Point],
 ) -> Result<Observation<'tree>> {
     match benchmark {
         "cursor-forward" | "iterator-forward" | "iterator-forward-cached" => Ok(
@@ -320,7 +323,8 @@ fn observe<'tree, N: tree_sitter_squatter::traits::NodeLike<'tree>>(
             Ok(Observation::Walk(compare::walk(root, ids)?))
         }
         "seek-byte" => Ok(Observation::Seek(compare::seek_bytes(root, ids, bytes))),
-        "seek-point" => Ok(Observation::Seek(compare::seek_points(root, ids, points))),
+        #[cfg(feature = "points")]
+        "seek-point" => Ok(Observation::Seek(compare::seek_points(root, ids, _points))),
         _ => unreachable!(),
     }
 }
@@ -504,7 +508,7 @@ fn main() -> Result<()> {
     );
     let mut meter = Meter::new();
     let mut manifest = serde_json::json!({
-        "schema": 1, "arguments": arguments, "benchmarks": benchmarks, "seed": arguments.seed,
+        "schema": 1, "point_positions": tree_sitter_squatter::HAS_POINT_POSITIONS, "arguments": arguments, "benchmarks": benchmarks, "seed": arguments.seed,
         "inputs": inputs, "planned": inputs.len(), "completed": 0, "failed": 0, "partial": true,
         "coverage": coverage, "registry": registry, "counter_status": meter.counter_status,
         "tool": {"checkout": git_identity(Path::new(".")), "container_revision": std::env::var("SQUAT_TOOL_SHA").ok(), "source_sha256": std::env::var("SQUAT_SOURCE_SHA256").ok(),

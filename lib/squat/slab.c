@@ -116,6 +116,7 @@ SQTree *sq_allocate(const TSLanguage *language, uint32_t capacity, SQError *erro
   }
   SQHeader *header = sq_header(tree);
   header->magic_bits = SQ_VERSION | (tree->supertype_count > 8 ? SQ_DICTIONARY : 0);
+  header->layout_flags = SQ_LAYOUT_FLAGS;
   header->group_capacity = capacity;
   header->groups_byte_offset = layout.groups[0];
   header->nodes_byte_offset = layout.nodes[0];

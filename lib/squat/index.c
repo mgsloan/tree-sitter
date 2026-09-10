@@ -154,23 +154,26 @@ static bool validate_nodes(SQTree *tree, SQError *error) {
                                   : super >= (1u << tree->supertype_count)) {
       goto invalid;
     }
-    const unsigned starts_g[] = {G_BYTE, G_ROW, G_COL}, starts_n[] = {N_BYTE, N_ROW, N_COL};
-    const unsigned ends_g[] = {G_END_BYTE, G_END_ROW, G_END_COL},
-                   ends_n[] = {N_END_BYTE, N_END_ROW, N_END_COL};
-    for (unsigned coordinate_index = 0; coordinate_index < 3; coordinate_index++) {
-      if ((uint64_t)sq_group_get(tree, starts_g[coordinate_index], node.slot / SQ_GROUP_SIZE) +
-              sq_node_get(node, starts_n[coordinate_index]) >
+    for (unsigned coordinate_index = 0; coordinate_index < SQ_COORDINATES; coordinate_index += 2) {
+      unsigned start_g = G_BYTE + coordinate_index, start_n = N_BYTE + coordinate_index;
+      unsigned end_g = start_g + 1, end_n = start_n + 1;
+      if ((uint64_t)sq_group_get(tree, start_g, node.slot / SQ_GROUP_SIZE) +
+              sq_node_get(node, start_n) >
           UINT32_MAX) {
         goto invalid;
       }
-      if (sq_group_get(tree, ends_g[coordinate_index], node.slot / SQ_GROUP_SIZE) <
-          sq_node_get(node, ends_n[coordinate_index])) {
+      if (sq_group_get(tree, end_g, node.slot / SQ_GROUP_SIZE) <
+          sq_node_get(node, end_n)) {
         goto invalid;
       }
     }
+#if SQ_INCLUDE_POINTS
     TSPoint start = sq_node_start_point(node), finish = sq_node_end_point(node);
-    if (sq_node_start_byte(node) > sq_node_end_byte(node) || start.row > finish.row ||
-        (start.row == finish.row && start.column > finish.column)) {
+    if (start.row > finish.row || (start.row == finish.row && start.column > finish.column)) {
+      goto invalid;
+    }
+#endif
+    if (sq_node_start_byte(node) > sq_node_end_byte(node)) {
       goto invalid;
     }
     if (depth == capacity) {
@@ -205,8 +208,8 @@ SQTree *sq_tree_from_bytes(const TSLanguage *language, const void *bytes, size_t
     goto invalid;
   }
   memcpy(&header, bytes, sizeof(header));
-  if (!header.group_count || header.group_count > header.group_capacity || header.reserved[0] ||
-      header.reserved[1] || header.reserved[2]) {
+  if (!header.group_count || header.group_count > header.group_capacity ||
+      header.layout_flags != SQ_LAYOUT_FLAGS || header.reserved[0] || header.reserved[1]) {
     goto invalid;
   }
   SQLayout layout;

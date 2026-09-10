@@ -22,9 +22,11 @@ static uint32_t expected_field_mismatches;
 static bool strings_equal(const char *a, const char *b) {
   return a && b ? !strcmp(a, b) : a == b;
 }
+#if SQ_INCLUDE_POINTS
 static bool points_equal(TSPoint a, TSPoint b) {
   return a.row == b.row && a.column == b.column;
 }
+#endif
 typedef struct {
   TSNode *mainline;
   SQNode *packed;
@@ -119,8 +121,10 @@ static void compare_node(Nodes *nodes, uint32_t i) {
   CHECK(strings_equal(ts_node_grammar_type(a), sq_node_grammar_type(b)));
   CHECK(ts_node_start_byte(a) == sq_node_start_byte(b));
   CHECK(ts_node_end_byte(a) == sq_node_end_byte(b));
+#if SQ_INCLUDE_POINTS
   CHECK(points_equal(ts_node_start_point(a), sq_node_start_point(b)));
   CHECK(points_equal(ts_node_end_point(a), sq_node_end_point(b)));
+#endif
   CHECK(ts_node_is_named(a) == sq_node_is_named(b));
   CHECK(ts_node_is_extra(a) == sq_node_is_extra(b));
   CHECK(ts_node_is_missing(a) == sq_node_is_missing(b));
@@ -161,9 +165,11 @@ static void compare_cursor_state(SQCursor *cursor) {
   CHECK(strcmp(actual.grammar_type, sq_node_grammar_type(node)) == 0);
   CHECK(actual.start_byte == sq_node_start_byte(node));
   CHECK(actual.end_byte == sq_node_end_byte(node));
+#if SQ_INCLUDE_POINTS
   TSPoint start = sq_node_start_point(node), end = sq_node_end_point(node);
   CHECK(actual.start_point.row == start.row && actual.start_point.column == start.column);
   CHECK(actual.end_point.row == end.row && actual.end_point.column == end.column);
+#endif
   CHECK(actual.field_id == sq_node_field_id(node));
   CHECK(actual.is_named == sq_node_is_named(node));
   CHECK(actual.is_extra == sq_node_is_extra(node));
@@ -324,12 +330,14 @@ static void compare_tree(const TSTree *tree, const SQTree *packed, bool exhausti
               sq_node_first_named_child_for_byte(flat, start));
   }
   for (i = 0; i < count; i += count / 100 + 1) {
+#if SQ_INCLUDE_POINTS
     TSPoint start = ts_node_start_point(nodes->mainline[i]),
             end = ts_node_end_point(nodes->mainline[i]);
     SAME_SEEK(ts_node_descendant_for_point_range(root, start, start),
               sq_node_descendant_for_point_range(flat, start, start));
     SAME_SEEK(ts_node_named_descendant_for_point_range(root, start, end),
               sq_node_named_descendant_for_point_range(flat, start, end));
+#endif
     if (i) {
       SAME_NODE(ts_node_child_with_descendant(root, nodes->mainline[i]),
                 sq_node_child_with_descendant(flat, nodes->packed[i]));
@@ -421,6 +429,13 @@ static void exercise(const TSLanguage *language, const char *source, uint32_t le
     CHECK(!sq_tree_from_bytes(language, unaligned + 1, size, &error) &&
           error == SQ_ERROR_INVALID_SLAB);
   }
+  // The row/column feature changes column offsets. Reject the other layout
+  // before interpreting any of its data, in both directions.
+  memcpy(unaligned + 1, bytes, size);
+  unaligned[2] ^= 1;
+  CHECK(!sq_tree_from_bytes(language, unaligned + 1, size, &error) &&
+        error == SQ_ERROR_INVALID_SLAB);
+  memcpy(unaligned + 1, bytes, size);
   unaligned[1] = ((const uint8_t *)bytes)[0] ^ 0x80;
   CHECK(!sq_tree_from_bytes(language, unaligned + 1, size, &error) &&
         error == SQ_ERROR_INVALID_SLAB);
