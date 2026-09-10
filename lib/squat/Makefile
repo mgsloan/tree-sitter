@@ -50,3 +50,9 @@ $(BUILD)/query-check: tests/query.c tests/field_lookup.h $(BUILD)/libtree-sitter
 
 $(BUILD)/unpack-bench: experiments/unpack.c $(BUILD)/libtree-sitter-squat.a $(BUILD)/runtime.o
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) $^ -o $@
+
+# GNU ld wrapping counts runtime and Squatter allocations without changing their
+# sizes. Prebuilt grammar-internal libc calls are outside this accounting.
+$(BUILD)/memory-bench: experiments/memory.c $(BUILD)/libtree-sitter-squat.a $(BUILD)/runtime.o
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) $^ -ldl \
+	  -Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc,--wrap=aligned_alloc,--wrap=free -o $@

@@ -166,6 +166,39 @@ live group. The default unpack window remains one group.
 See the [absolute-coordinate cache benchmark](experiments/iterator-absolute-results-2026-09-09.md)
 for cached/uncached comparisons at all four window sizes.
 
+## Memory benchmark
+
+The [measured memory comparison](experiments/memory-results-2026-09-10.md) covers
+mainline and Squatter, default/compact packing, and point-enabled/byte-only builds.
+It measures live allocations from the implementation, rather than estimating
+storage from public nodes. Retained sizes include the tree object and auxiliary
+allocations; the parser is released first. Construction peaks are separate.
+
+On Linux/glibc with GNU-compatible linker wrapping, build and run:
+
+```sh
+make -C lib/squat BUILD=../../build/squat-memory/points \
+  CFLAGS="-O3 -g -DSQ_INCLUDE_POINTS=1" \
+  ../../build/squat-memory/points/memory-bench
+make -C lib/squat BUILD=../../build/squat-memory/bytes \
+  CFLAGS="-O3 -g -DSQ_INCLUDE_POINTS=0" \
+  ../../build/squat-memory/bytes/memory-bench
+python3 lib/squat/experiments/memory.py --output build/squat-memory/results.json
+```
+
+The runner uses the saved iterator corpus manifest and grammar bundles. It checks
+their hashes, prepares the same seed-42 mutations, compares both point modes, and
+requires two identical measurements per input. For a single file, invoke either
+`memory-bench GRAMMAR_LIBRARY GRAMMAR_SYMBOL SOURCE` directly.
+
+Requested bytes and glibc usable bytes are both recorded. Neither is process RSS:
+allocator metadata, free arenas, source text, shared grammar mappings, and the
+out-of-band allocation tracker are excluded. Link wrapping covers runtime and
+Squatter objects, including serialized scanner states owned by trees. Direct libc
+allocations inside prebuilt grammar scanners are not intercepted; these scanners
+are destroyed with the parser before retained tree measurements. Reported peaks
+therefore cover runtime/Squatter allocations, not every construction allocation.
+
 
 ## Optional row/column positions
 
