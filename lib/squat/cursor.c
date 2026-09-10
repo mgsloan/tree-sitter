@@ -44,8 +44,8 @@ bool sq_cursor_goto_first_child(SQCursor *cursor) {
     return false;
   }
   SQNode parent = cursor->node;
-  uint32_t slot = sq_next_slot(parent.tree, parent.slot + 1);
-  if (slot >= sq_node_end_slot(parent)) {
+  uint32_t slot = sq_previous_slot(parent.tree, parent.slot - 1);
+  if (slot == SQ_NONE || slot < sq_node_first_slot(parent)) {
     return false;
   }
   if (cursor->depth == cursor->capacity) {

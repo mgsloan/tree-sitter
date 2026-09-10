@@ -1,6 +1,6 @@
 # Squat representation
 
-The idea here is to create a compact yet efficient representation for tree-sitter trees that do not require incremental reparse. It all gets allocated into a contiguous slab, and nodes are enumerated in preorder. No pointers are used, so this can also be used as a format for persistence.
+The idea here is to create a compact yet efficient representation for tree-sitter trees that do not require incremental reparse. Newly packed trees use one allocation containing runtime metadata followed by a contiguous persisted slab. Physical nodes are stored in reverse preorder; traversal APIs still enumerate preorder. The persisted portion contains no pointers.
 
 To make the representation compact without much access overhead, a statistical
 fact about preorder nodes is exploited. In the space of possible values for a
@@ -18,11 +18,30 @@ So, the idea is to split the nodes into groups. Each squat group stores the abso
 
 The slab can be directly written during conversion by somewhat overestimating `group_capacity` from node count. This version uses 16 slots per group, so `slot_capacity = 16 * group_capacity` and `slot_count = 16 * group_count`. Counts include partially occupied groups and their wasted slots; capacities also include unused allocation space.
 
-Construction fills the suffix of each column. The active groups occupy the last `group_count` entries of every group column, and active slots occupy the last `slot_count` entries of every node column. Logical group and slot indexes start at zero within these active suffixes. Readers add the corresponding capacity-minus-count offset when accessing a column. The root is at logical slot `Group[0].leading_waste`.
+Construction appends to the prefix of every column in reverse preorder. Active
+groups occupy indexes `0..group_count`, and physical node slots occupy
+`0..slot_count`. Unused lanes are at the high end of each group, followed by
+unused group capacity. The root is the highest occupied physical slot:
+`slot_count - Group[group_count - 1].trailing_waste - 1`.
 
-If it runs out of space, the capacities grow geometrically and each column's active suffix is relocated to its new position. There is an option to repack it to save space or for persistence, or if the estimates were off enough that it's worth it. Repacking sets `group_capacity = group_count` and compacts each column individually, preserving logical slot indexes and intra-group waste.
+Node handles contain direct physical slots. Preorder walks toward decreasing
+slots and skips trailing group waste. Reads use the column offset and physical
+index directly; there is no `group_capacity - group_count` cache or adjustment.
+Ordered query plans translate physical slots to ascending preorder positions at
+the scan boundary. Iterator caches unpack physical windows in ascending order,
+then consume their lanes in reverse as preorder advances.
 
-During either growth or compaction, packed values must be repacked if their lane positions within words change. For example, a nine-bit column holds seven values per word, so shifting its active suffix by 16 slots changes its lane alignment. A raw byte copy is sufficient only when the source and destination packing align; otherwise, values must be placed into their new lanes, preserving the unused bits between words' value groups.
+Growth and compaction recompute column locations but preserve physical indexes.
+Because each column starts with its first physical lane, packed-word phase is
+unchanged even for nine-bit IDs. Used words can be copied directly. Repacking
+sets capacity to count and returns an independent tree with identical slot IDs.
+
+The runtime prefix contains `SQTree`, its supertype list, and alignment padding.
+The persisted header begins immediately afterward. Internal builder operations
+update their tree pointer when growing this combined allocation; public trees
+and their node handles never move. The copying loader instead owns a separate
+runtime prefix and payload. The borrowed loader owns only its runtime prefix and
+retains the caller's immutable, aligned payload without copying or freeing it.
 
 ## Optional point positions
 
@@ -32,9 +51,9 @@ row/column columns, their group bases, packing constraints, cache lanes, and
 point APIs and snapshot members. Byte positions and byte-range APIs remain.
 The layout below describes the default build with points enabled.
 
-The 32-byte header uses byte 1, previously reserved, as a layout flag: 0 for
-points and 1 for byte-only storage. Readers reject the other mode and unknown
-flags. Default version-3 slabs remain compatible with existing readers.
+The 16-byte version-4 header has a format/flags word. Readers reject other
+versions, point modes, group sizes, alignments, and unknown flags. Old slabs
+must be regenerated.
 
 ## Slab data
 
@@ -42,22 +61,12 @@ Despite the code below being Rust, this will be implemented in C in `lib/squat/`
 
 ```rs
 struct SlabHeader {
-    /// Identifies tree-squatter serialization version and flags.
-    magic_bits: u8,
-
+    /// Native-endian format/version, point/group/alignment flags, optional index.
+    format_flags: u32,
     group_count: u32,
+    /// Actual allocated capacity, including growth beyond the initial estimate.
     group_capacity: u32,
-
-    /// Offset in the slab where `Group` data starts.
-    groups_byte_offset: u32,
-
-    nodes_byte_offset: u32,
-
-    /// Zero when the symbol presence index is absent.
-    symbol_presence_byte_offset: u32,
-
-    /// Both zero in direct supertype-mask mode.
-    supertype_dictionary_byte_offset: u32,
+    /// Zero when the grammar uses direct supertype masks instead of a dictionary.
     supertype_dictionary_count: u32,
 }
 
@@ -71,9 +80,9 @@ struct Node {
   /// Whether this symbol was inserted as part of error recovery (and this indicates an error).
   is_missing: bool,
 
-  /// Physical span after this node (add min_subtree_size), including padding
-  /// before the next node outside the subtree. Adding this plus one to the
-  /// current slot index reaches that node, or slot_count at the end of the tree.
+  /// Distance to the subtree's lower physical boundary, including group waste.
+  /// Add min_subtree_size to decode the span, then subtract it from this node's
+  /// slot. The next sibling, when present, occupies the slot below that boundary.
   subtree_size: u8,
   /// Start byte offset in the input text (add min_byte).
   start_byte: u8,
@@ -101,8 +110,8 @@ struct Node {
 }
 
 struct Group {
-  /// Number of leading wasted slots, from 0 to 15. Could be a u8.
-  leading_waste: u4,
+  /// Number of trailing wasted slots, from 0 to 15. Could be a u8.
+  trailing_waste: u4,
 
   min_subtree_size: u32,
   min_byte: u32,
@@ -114,7 +123,7 @@ struct Group {
 }
 ```
 
-`SlabHeader` is a real struct but `Group` and `Node` are not. Instead the values for each field are stored contiguously (struct-of-arrays style). The header's counts, capacities, offsets, and flags, together with the matching grammar and representation version, determine the layout. Group and node columns appear in the order above. Each column and each slab section starts at an eight-byte boundary; column lengths are computed from their capacities, with trailing alignment padding. Bools and `u4` values are packed into 64-bit words, and `VarBits` uses the word layout described below. The grammar determines symbol/field widths and the supertype count. Region offsets point to the beginnings of the allocated regions, including unused prefixes.
+`SlabHeader` is a real struct but `Group` and `Node` are not. Instead the values for each field are stored contiguously (struct-of-arrays style). The header's counts, capacity, and flags, together with the matching grammar and representation version, determine the layout. Group and node columns appear in the order above. Each column and each slab section starts at an eight-byte boundary; column lengths are computed from their capacities, with trailing alignment padding. Bools and `u4` values are packed into 64-bit words, and `VarBits` uses the word layout described below. The grammar determines symbol/field widths and the supertype count. Derived column offsets point to their first physical entry; unused capacity follows the active entries.
 
 `corpus-analysis memory-pareto` was used to determine that `u16` should be used
 for `end_byte_sub`. This results in `~13.6B/node` whereas `u8` was `15.6B/node`.
@@ -139,8 +148,8 @@ fields on ERROR parents. Mainline's lookup API can instead inherit through an
 alias-visible wrapper and return a grandchild whose field is absent from the
 parent's visible children. Tests count these as expected mismatches only when
 squat agrees with mainline's visible-child cursor. Other field mismatches fail.
-Version 3 removes version 2's sparse field-exception section and restores the
-32-byte header. The loader rejects earlier format versions.
+The sparse field-exception section remains removed. Version 4 uses a 16-byte
+header and reverse-preorder physical slots; the loader rejects earlier formats.
 
 Public symbol is mapped from raw display symbol at read time.
 
@@ -156,13 +165,13 @@ EXPERIMENT: Try different node counts.
 
 ## Supertypes
 
-Since hidden nodes are omitted, supertype information is needed.  There are two modes for this, distinguished by a flag in the SlabHeader:
+Since hidden nodes are omitted, supertype information is needed. There are two modes, determined by the matching grammar's supertype count:
 
 1. Stored directly in the `supertypes: u8`, when there are 8 or less potential supertypes.
 
-2. An index into a dictionary of bitmaps where each bitmap has N bits where N is the supertypes count. This requires building up the dictionary as it goes. Each entry occupies `ceil(N / 64)` 64-bit words, with unused high bits zeroed. Its location and entry count are stored in `SlabHeader`, so its byte length is `supertype_dictionary_count * ceil(N / 64) * 8`. The dictionary is staged separately and appended after grouping is complete.
+2. An index into a dictionary of bitmaps where each bitmap has N bits where N is the supertypes count. This requires building up the dictionary as it goes. Each entry occupies `ceil(N / 64)` 64-bit words, with unused high bits zeroed. Its entry count is stored in `SlabHeader`, so its byte length is `supertype_dictionary_count * ceil(N / 64) * 8`. Its location is derived: immediately after the columns and optional symbol-presence index. The dictionary is staged separately and appended after grouping is complete.
 
-FIXME: For now if there are more than 256 dictionary entries it will crash.
+Packing returns `SQ_ERROR_DICTIONARY_FULL` if more than 256 dictionary entries are needed.
 
 EXPERIMENT: Make supertypes a VarBits representation. Allows omitting it when there are none.
 
@@ -174,23 +183,31 @@ Let `P` be the grammar's symbol count plus alias count plus the two remapped bui
 
 Let `G` be `group_count` rounded up to the nearest multiple of 32. After the mode bitmap are `P` entries in public-ID order, each occupying `G / 8` bytes. This determines the index's total byte length from the grammar and header.
 
-When the symbol has a `0` bit, its entry is a sorted sequence of `u32` logical slot indexes where the symbol appears. This mode is used only when all occurrences fit in the entry; 0xFFFFFFFF fills unused parts of the sequence.
+When the symbol has a `0` bit, its entry is a descending sequence of `u32` physical slot indexes where the symbol appears, following preorder. This mode is used only when all occurrences fit in the entry; 0xFFFFFFFF fills unused parts of the sequence.
 
-When the symbol has a `1` then its entry is a bitmap where a `1` indicates that the corresponding logical group has a node with that symbol. Bits beyond `group_count` are zero. Both modes omit wasted slots and unused allocation space. The index is built after grouping fixes the logical slot indexes.
+When the symbol has a `1` then its entry is a bitmap where a `1` indicates that the corresponding physical group has a node with that symbol. Bits beyond `group_count` are zero. Both modes omit wasted slots and unused allocation space. The index is built after grouping fixes the physical slot indexes.
 
 EXPERIMENT: try different thresholds for symbol bitmaps
 
 ## Conversion algorithm
 
-The mainline tree is walked in reverse preorder: descend through children right-to-left and emit each parent after its children, filling slab groups from right to left. It walks nodes until one has a field that doesn't fit or until the group is full. It saves node references for the current group, retaining `Subtree` handles for inline leaves. Group deltas are encoded only once the group's bases are final.
+The mainline tree is walked in reverse preorder: descend through children right-to-left and emit each parent after its children, appending physical slab groups from left to right. It walks nodes until one has a field that doesn't fit or until the group is full. It saves node references for the current group, retaining `Subtree` handles for inline leaves. Group deltas are encoded only once the group's bases are final.
 
-The traversal stack tracks absolute byte/point positions, inherited fields and supertype masks, sibling status, and subtree-end boundaries. The current group's scratch entries retain the conversion-derived values needed at encoding time alongside the node references; these values cannot all be recovered from a node reference alone. Intrinsic attributes can be reread from the mainline nodes when the group closes.
+The traversal stack tracks absolute byte/point positions, inherited fields and supertype masks, sibling status, and lower subtree boundaries. The current group's scratch entries retain the conversion-derived values needed at encoding time; these values cannot all be recovered from a node reference alone.
 
-`min_subtree_size`, `max_byte`, `max_row`, `min_col`, and `max_col` are computed as it scans. `leading_waste`, `min_byte`, and `min_row` are known on the last inserted node. Each candidate is checked against the resulting extrema for the whole group. If it fails, the accepted group is closed and the candidate is retried in a new group to the left, recomputing its physical span after inserting padding.
+`min_subtree_size`, `max_byte`, `max_row`, `min_col`, and `max_col` are computed as it scans. `trailing_waste`, `min_byte`, and `min_row` are known on the last inserted node. Each candidate is checked against the resulting extrema for the whole group. If it fails, the accepted group is closed and the candidate is retried in a new group at the end, recomputing its physical span after inserting padding.
 
-For a node at logical slot `i`, let `end` be the slot of the first node outside its subtree, or `slot_count` for a subtree reaching the end of the tree. Its decoded physical span is `end - i - 1`. This includes all intervening waste, including padding immediately before `end`. A leaf can therefore have a nonzero span. To find a first child, advance to the next occupied slot, skipping group-leading waste, and check that it is less than `end`. The API's `descendant_count` counts occupied slots in `[i, end)`, including the node itself as mainline does. Subtree jumps land directly on `end` and need no padding normalization.
+For a node at physical slot `i`, its decoded span is the distance to its lower
+subtree boundary: `first = i - (group_span_base + node_span_delta)`. The subtree
+occupies the valid slots in `[first, i]`. This interval includes intervening
+trailing group waste; even a leaf can have a nonzero physical span. The first
+child is the next occupied lower slot, provided it is at least `first`.
+`descendant_count` counts occupied slots in the interval, including the node.
+The next sibling is at `first - 1`, or `UINT32_MAX` when the traversal is exhausted.
 
-During construction, positions and subtree boundaries are recorded as distances from the right edge of the active tree, so growing the slab or adding groups to the left does not invalidate them. Once a node is placed, later padding is inserted before it and cannot change its span. Final logical indexes are derived once `slot_count` is known.
+Construction records boundaries as physical indexes from the beginning. New
+groups and padding are appended above existing nodes, so their indexes and
+spans remain stable across growth. There is no final slot-index rebasing.
 
 `has_error` state is maintained bottom up, including errors and missing nodes under omitted hidden nodes. Conversion can also read the equivalent mainline summary, `ts_subtree_error_cost() > 0`.
 

@@ -57,6 +57,7 @@ def main():
     parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parents[3])
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--loader", type=Path)
+    parser.add_argument("--binary-root", type=Path, help="Directory containing points/ and bytes/ probes")
     parser.add_argument("--repeats", type=int, default=2)
     args = parser.parse_args()
     if args.repeats < 1:
@@ -68,7 +69,8 @@ def main():
     inputs_directory.mkdir(exist_ok=True)
     manifest_path = root / "build/squat-iterator/absolute-build-manifest.json"
     manifest = json.loads(manifest_path.read_text())
-    binaries = {mode: root / f"build/squat-memory/{mode}/memory-bench"
+    binary_root = args.binary_root.resolve() if args.binary_root else root / "build/squat-memory"
+    binaries = {mode: binary_root / mode / "memory-bench"
                 for mode in ["points", "bytes"]}
     metadata = {
         "platform": platform.platform(),

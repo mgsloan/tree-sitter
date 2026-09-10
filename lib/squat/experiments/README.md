@@ -2,8 +2,14 @@
 
 The historical layout, query, and cursor measurements below used version 2,
 including its field-lookup exception section. Version 3 removes that section and
-returns to a 32-byte header; those recorded measurements have not been rewritten.
+returned to a 32-byte header. The current version 4 uses a 16-byte header and
+reverse-preorder physical slots; historical measurements have not been rewritten.
 See the current [field-lookup policy](field-lookup-review.md).
+
+The [version-4 storage report](storage-v4-results-2026-09-10.md) measures the
+16-byte header, colocated runtime, and reverse-preorder change on the cloud VM.
+It includes point-enabled/byte-only builds, both iterator types, compact packing,
+and updated allocation measurements.
 
 The [recorded run](results-2026-09-09.json) includes every source hash, grammar
 identity, input-level result, and tool snapshot hash. It covers 27 files in eleven

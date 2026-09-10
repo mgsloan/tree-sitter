@@ -19,7 +19,7 @@ extern "C" {
 typedef struct SQTree SQTree;
 typedef struct {
   const SQTree *tree;
-  uint32_t slot;
+  uint32_t slot; /* Physical reverse-preorder index; preorder moves downward. */
 } SQNode;
 typedef struct SQCursor SQCursor;
 typedef struct SQNodeIterator SQNodeIterator;
@@ -82,16 +82,21 @@ const TSLanguage *sq_tree_language(const SQTree *);
 const void *sq_tree_data(const SQTree *, uint32_t *length);
 /* Copies and validates input, including topology and auxiliary indexes. */
 SQTree *sq_tree_from_bytes(const TSLanguage *, const void *, size_t, SQError *);
+/* Validates without copying the slab. Bytes must remain alive and immutable
+ * until this tree and its nodes/cursors are no longer used. They must be aligned
+ * to 8 bytes (64 with the experimental column-alignment build). Deletion frees
+ * only the runtime descriptor; the caller retains ownership of the bytes. */
+SQTree *sq_tree_from_bytes_borrowed(const TSLanguage *, const void *, size_t, SQError *);
 /* Returns an independent compact copy; nodes in the original remain valid. */
 SQTree *sq_tree_repack(const SQTree *, SQError *);
 uint32_t sq_tree_group_count(const SQTree *);
 uint32_t sq_tree_group_capacity(const SQTree *);
 uint32_t sq_tree_slot_count(const SQTree *);
 SQNode sq_tree_root_node(const SQTree *);
-/* Invalid/wasted slots return null. Logical slots are stable across repacking. */
+/* Invalid/wasted slots return null. Physical slots are stable across repacking. */
 SQNode sq_tree_node_at_slot(const SQTree *, uint32_t);
 /* False positives are possible for common symbols, never false negatives. */
-/* One bit per physical slot within a group; leading waste never matches.
+/* One bit per physical slot within a group; trailing waste never matches.
  * This compares encoded values and does not apply public-symbol mapping. */
 uint64_t sq_tree_group_equal(const SQTree *, uint32_t group, SQColumn, uint32_t value);
 bool sq_tree_group_has_symbol(const SQTree *, uint32_t group, TSSymbol public_symbol);

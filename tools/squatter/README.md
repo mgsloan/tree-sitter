@@ -284,3 +284,42 @@ walks, and both iterator walks remain checked against mainline. Use Cargo's
 
 This changes the serialized layout and may change group occupancy, so compare
 like build configurations when isolating iterator cache-window effects.
+
+## Cloud idle shutdown
+
+The two-vCPU benchmark VM uses `cloud-idle.py`, installed as
+`/usr/local/bin/squatter-idle`. Wrap the whole driver, including all sequential
+runs, to keep it active even when an SSH connection drops:
+
+```sh
+nohup squatter-idle run -- python3 benchmark-upload.py BUNDLE [OPTIONS] \
+  > driver.log 2>&1 < /dev/null &
+squatter-idle status
+```
+
+On `squatter-benchmark`, the enabled `squatter-idle.timer` calls the following
+root service every minute (`OnBootSec=1min`, `OnUnitActiveSec=1min`,
+`AccuracySec=1s`). Its timer is wanted by `timers.target`:
+
+```ini
+[Service]
+Type=oneshot
+ExecStartPre=/usr/bin/install -d -o mgsloan -g mgsloan /run/squatter-benchmark
+ExecStart=/usr/local/bin/squatter-idle check
+```
+
+The VM powers off after 1,800 seconds without a wrapped job, within the timer's
+one-minute resolution. A running job holds a shared lock inherited by its
+children; shutdown requires the exclusive lock. The final job completion resets
+the idle timestamp. `/run` and monotonic time prevent stale reboot timestamps or
+wall-clock changes from shortening the grace period. Run setup work through the
+same wrapper when it needs to keep the machine active. The existing GCP maximum
+runtime is an independent hard limit, and the boot disk survives shutdown.
+
+Check `systemctl is-enabled squatter-idle.timer` and
+`systemctl list-timers squatter-idle.timer`. Local shutdown-policy tests run with
+`python3 tools/squatter/test-cloud-idle.py`; they mock the poweroff command.
+
+`/etc/tmpfiles.d/squatter-benchmark.conf` contains
+`d /run/squatter-benchmark 0755 mgsloan mgsloan -`, so jobs can start before the
+first timer tick after reboot. The timestamp is replaced atomically.

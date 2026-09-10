@@ -270,9 +270,18 @@ fn main() -> Result<(), Box<dyn Error>> {
     check_cursor(&packed)?;
     check_queries(&language, source, &mainline, &packed)?;
     check_cursor_reuse(&language, &mainline)?;
-    drop(mainline);
     let compact = packed.repack()?;
     let decoded = Tree::from_bytes(&language, compact.as_bytes())?;
+    let borrowed = Tree::from_bytes_borrowed(&language, compact.as_bytes())?;
+    assert_eq!(borrowed.as_bytes().as_ptr(), compact.as_bytes().as_ptr());
+    assert_eq!(
+        borrowed.root_node().preorder().count(),
+        compact.root_node().preorder().count()
+    );
+    check_iterators(&borrowed)?;
+    check_queries(&language, source, &mainline, &borrowed)?;
+    drop(mainline);
+    drop(borrowed);
     assert_eq!(kinds(&packed), kinds(&decoded));
     check_cursor(&decoded)?;
     assert_eq!(compact.group_count(), compact.group_capacity());

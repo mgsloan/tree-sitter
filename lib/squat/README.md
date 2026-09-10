@@ -63,13 +63,37 @@ bases use specialized loads on little-endian hosts. Variable-width IDs use the
 non-straddling lane decoder. Big-endian hosts retain native-word extraction.
 This does not change the serialized layout.
 
-The version-3 serialized header is 32 bytes; earlier versions are rejected. Every section and column starts on an
-eight-byte boundary. Slabs are native-endian and need the exact matching grammar;
-there is no grammar fingerprint in this version. `sq_tree_from_bytes` copies and
-validates layout, topology, coordinate arithmetic, symbols, fields, dictionaries,
-presence entries. `sq_tree_repack` returns an independent compact copy, so
-existing nodes stay valid. Slab data contains no pointers. The small owning
-`SQTree` handle retains the grammar and derived layout metadata outside the slab.
+The version-4 serialized header is 16 bytes: a format/flags word, live group
+count, allocated group capacity, and supertype-dictionary count. Column and
+auxiliary-section offsets are derived from the exact grammar, capacity, and
+feature flags. The symbol-presence index has an explicit presence flag. All
+previous versions are rejected. Columns start on eight-byte boundaries (64 in
+the experimental alignment build); auxiliary sections remain eight-byte aligned.
+Slabs are native-endian.
+
+Newly packed trees use one allocation: runtime descriptor, supertype metadata,
+alignment padding, then the persisted slab. `sq_tree_data` / Rust `as_bytes`
+returns only the persisted suffix. Builder growth can relocate this allocation;
+public trees and handles are immutable. `sq_tree_repack` returns an independent
+colocated compact copy with the same physical slot IDs.
+
+Physical columns are filled from the beginning in reverse preorder. Nodes use
+direct physical slot indexes, and preorder traversal walks toward lower slots.
+There is no capacity-minus-count lookup or cache. Growth and compaction copy
+used packed words without changing lane phase. Iterator caches decode physical
+windows normally and consume them in descending order. Query plans translate
+slots to ascending preorder positions only where ordered scan intervals need it.
+
+`sq_tree_from_bytes` copies arbitrary-alignment input into a separate owned
+payload and validates topology, coordinates, symbols, fields, dictionaries, and
+presence entries. `sq_tree_from_bytes_borrowed` validates an externally owned,
+immutable, aligned buffer without copying it; deletion frees only the runtime
+prefix. The caller keeps that buffer alive until all uses of the borrowed tree
+finish. Rust's `Tree::from_bytes_borrowed` returns `BorrowedTree<'a>`, tying that
+lifetime to the input slice and exposing read-only tree APIs through `Deref`.
+There is no grammar fingerprint; callers must supply the exact matching grammar.
+Index validation reads the external columns in place, using per-symbol counters
+and bitmap popcounts instead of constructing a temporary copy of the slab.
 
 Empty nodes need care: mainline's `next_sibling` skips siblings ending at the
 current node's end byte. Child enumeration and cursors include them. Squat's
@@ -124,7 +148,7 @@ depends on the representation.
 nodes. Construct it with `sq_node_iterator_new(root, unpack_cache)`, consume nodes
 with `sq_node_iterator_next`, and release it with `sq_node_iterator_delete`.
 The iterator owns no tree and keeps no ancestor stack. It advances consecutive
-physical slots and reads leading waste only at group boundaries. Exhaustion is
+physical slots in descending order and reads trailing waste only at group boundaries. Exhaustion is
 permanent. The tree must outlive both the iterator and returned ordinary nodes.
 
 `sq_node_iterator_attributes` and `sq_node_iterator_field_id` read the last yielded
@@ -200,9 +224,12 @@ are destroyed with the parser before retained tree measurements. Reported peaks
 therefore cover runtime/Squatter allocations, not every construction allocation.
 
 The [column-addressing investigation](experiments/column-addressing-results-2026-09-10.md)
-considers cached column pointers, cached active-group bias, and a proposed smaller
-persisted header. It includes an isolated addressing experiment and keeps these
-proposals separate from the current format.
+records the earlier pointer/bias investigation. The subsequent version-4 format
+uses the smaller header and reverse preorder, which eliminates index bias entirely.
+
+The [version-4 storage results](experiments/storage-v4-results-2026-09-10.md)
+compare the new layout with version 3 on the two-vCPU cloud VM, including both
+point modes, cached/uncached walks, queries, compact packing, and retained memory.
 
 
 ## Optional row/column positions
@@ -236,11 +263,9 @@ Point methods and attribute fields are omitted from Rust as well. Configure Rust
 through Cargo features; a generated C assertion prevents incompatible CFLAGS
 from silently changing the FFI snapshot layout.
 
-The slab header remains 32 bytes. Its byte at offset 1, formerly reserved, is
-now `layout_flags`: 0 includes points, 1 omits them. Other flag values are invalid.
-Version-3 slabs with points retain their original layout and bytes. Each build
-rejects slabs from the other mode before interpreting column offsets; regenerate
-slabs when changing this setting.
+The 16-byte version-4 header records point support in `format_flags`. Each build
+rejects the other mode before interpreting columns. Regenerate version-3 slabs
+and slabs from another point mode; they are incompatible with this format.
 
 [Validation and compiled allocation sizes](experiments/optional-points-validation-2026-09-10.json)
 cover both modes, API omission, sanitizers, and original/mutated corpus checks.

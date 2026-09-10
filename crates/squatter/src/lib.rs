@@ -29,7 +29,7 @@
 use std::{
     ffi::{CStr, c_char, c_void},
     marker::PhantomData,
-    ops::Range,
+    ops::{Deref, Range},
     ptr::NonNull,
 };
 use tree_sitter::Language;
@@ -91,6 +91,29 @@ impl Default for PackOptions {
 
 /// Owns a slab and retains its language; independent of the original tree.
 pub struct Tree(NonNull<c_void>);
+/// Validated view of externally owned immutable slab bytes.
+///
+/// Dereferencing exposes the read-only tree APIs. Nodes and query executions
+/// borrow this descriptor, which in turn cannot outlive the supplied bytes.
+///
+/// ```compile_fail
+/// use tree_sitter_squatter::{BorrowedTree, Tree};
+/// fn dangling(language: &tree_sitter::Language) -> BorrowedTree<'static> {
+///     let bytes = vec![0u8; 128];
+///     Tree::from_bytes_borrowed(language, &bytes).unwrap()
+/// }
+/// ```
+pub struct BorrowedTree<'a> {
+    tree: Tree,
+    bytes: PhantomData<&'a [u8]>,
+}
+impl Deref for BorrowedTree<'_> {
+    type Target = Tree;
+    fn deref(&self) -> &Tree {
+        &self.tree
+    }
+}
+
 // The C slab is immutable and retains a thread-safe Tree-sitter language.
 unsafe impl Send for Tree {}
 unsafe impl Sync for Tree {}
@@ -141,6 +164,32 @@ impl Tree {
         };
         drop(unsafe { Language::from_raw(raw_language) });
         NonNull::new(raw).map(Self).ok_or_else(|| error(status))
+    }
+    /// Validates without copying bytes, using the exact matching grammar.
+    ///
+    /// Input must be aligned to 8 bytes (64 in the experimental alignment build).
+    /// Misaligned input returns `Error::InvalidArgument`; `from_bytes` accepts
+    /// arbitrary alignment by copying. Only the runtime descriptor is owned.
+    pub fn from_bytes_borrowed<'a>(
+        language: &Language,
+        bytes: &'a [u8],
+    ) -> Result<BorrowedTree<'a>, Error> {
+        let raw_language = language.clone().into_raw();
+        let mut status = 0;
+        let raw = unsafe {
+            ffi::sq_tree_from_bytes_borrowed(
+                raw_language.cast(),
+                bytes.as_ptr().cast(),
+                bytes.len(),
+                &mut status,
+            )
+        };
+        drop(unsafe { Language::from_raw(raw_language) });
+        let tree = NonNull::new(raw).map(Self).ok_or_else(|| error(status))?;
+        Ok(BorrowedTree {
+            tree,
+            bytes: PhantomData,
+        })
     }
     pub fn repack(&self) -> Result<Self, Error> {
         let mut status = 0;
@@ -251,6 +300,7 @@ impl<'tree> Node<'tree> {
             lifetime: PhantomData,
         })
     }
+    /// Physical slot in reverse preorder; decreasing slots advance preorder.
     pub fn slot(self) -> u32 {
         self.raw.slot
     }
@@ -263,7 +313,7 @@ impl<'tree> Node<'tree> {
     pub fn preorder(self) -> Preorder<'tree> {
         Preorder {
             next: Some(self),
-            end_slot: unsafe { ffi::sq_node_end_slot(self.raw) },
+            first_slot: unsafe { ffi::sq_node_first_slot(self.raw) },
         }
     }
 
@@ -469,7 +519,7 @@ impl<'tree> Node<'tree> {
 
 pub struct Preorder<'tree> {
     next: Option<Node<'tree>>,
-    end_slot: u32,
+    first_slot: u32,
 }
 impl<'tree> Iterator for Preorder<'tree> {
     type Item = Node<'tree>;
@@ -477,7 +527,7 @@ impl<'tree> Iterator for Preorder<'tree> {
         let node = self.next?;
         self.next = node
             .next_preorder()
-            .filter(|next| next.slot() < self.end_slot);
+            .filter(|next| next.slot() >= self.first_slot);
         Some(node)
     }
 }
@@ -642,6 +692,12 @@ mod ffi {
             length: usize,
             error: *mut i32,
         ) -> *mut c_void;
+        pub fn sq_tree_from_bytes_borrowed(
+            language: *const c_void,
+            bytes: *const c_void,
+            length: usize,
+            error: *mut i32,
+        ) -> *mut c_void;
         pub fn sq_tree_repack(tree: *const c_void, error: *mut i32) -> *mut c_void;
         pub fn sq_tree_data(tree: *const c_void, length: *mut u32) -> *const c_void;
         pub fn sq_tree_delete(tree: *mut c_void);
@@ -685,7 +741,7 @@ mod ffi {
         pub fn sq_node_is_error(node: RawNode) -> bool;
         pub fn sq_node_has_error(node: RawNode) -> bool;
         pub fn sq_node_has_changes(node: RawNode) -> bool;
-        pub fn sq_node_end_slot(node: RawNode) -> u32;
+        pub fn sq_node_first_slot(node: RawNode) -> u32;
         pub fn sq_node_descendant_count(node: RawNode) -> u32;
         pub fn sq_node_child_count(node: RawNode) -> u32;
         pub fn sq_node_named_child_count(node: RawNode) -> u32;

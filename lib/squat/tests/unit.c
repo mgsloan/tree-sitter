@@ -139,14 +139,17 @@ int main(void) {
         uint8_t bits = region ? sq_node_width(&tree->layout, c) : sq_group_width(c);
         uint32_t offset = region ? tree->layout.nodes[c] : tree->layout.groups[c];
         for (uint32_t i = 0; i < 2 * scale; i++) {
-          sq_set(tree->data, offset, scale + i, bits,
+          sq_set(tree->data, offset, i, bits,
                  (uint32_t)((i * UINT64_C(31337) + c) & ((UINT64_C(1) << bits) - 1)));
         }
       }
     }
     const uint32_t capacities[] = {7, 19, 2, 31, 2};
     for (unsigned k = 0; k < sizeof(capacities) / sizeof(capacities[0]); k++) {
-      assert(sq_resize(tree, capacities[k], &error));
+      assert(sq_resize(&tree, capacities[k], &error));
+      assert(tree->storage == SQ_STORAGE_COLOCATED);
+      assert(tree->data == (uint8_t *)tree + sq_runtime_size(&language));
+      assert(tree->supertypes == (TSSymbol *)(tree + 1));
       for (unsigned region = 0; region < 2; region++) {
         uint32_t scale = region ? SQ_GROUP_SIZE : 1;
         unsigned columns = region ? N_COLUMNS : G_COLUMNS;
@@ -154,7 +157,7 @@ int main(void) {
           uint8_t bits = region ? sq_node_width(&tree->layout, c) : sq_group_width(c);
           uint32_t offset = region ? tree->layout.nodes[c] : tree->layout.groups[c];
           for (uint32_t i = 0; i < 2 * scale; i++) {
-            assert(sq_get(tree->data, offset, (capacities[k] - 2) * scale + i, bits) ==
+            assert(sq_get(tree->data, offset, i, bits) ==
                    ((i * UINT64_C(31337) + c) & ((UINT64_C(1) << bits) - 1)));
           }
           for (uint32_t i = 0; i < 2 * scale; i++) {
@@ -162,15 +165,15 @@ int main(void) {
             assert(actual == ((i * UINT64_C(31337) + c) & ((UINT64_C(1) << bits) - 1)));
           }
           for (uint32_t i = 0; i < (capacities[k] - 2) * scale; i++) {
-            assert(sq_get(tree->data, offset, i, bits) == 0);
+            assert(sq_get(tree->data, offset, 2 * scale + i, bits) == 0);
           }
         }
       }
     }
-    assert(!sq_resize(tree, UINT32_MAX, &error) && error == SQ_ERROR_OVERFLOW);
+    assert(!sq_resize(&tree, UINT32_MAX, &error) && error == SQ_ERROR_OVERFLOW);
     sq_tree_delete(tree);
     free(metadata);
   }
-  puts("ok: packed-column decoding, lane relocation, growth, compaction, overflow");
+  puts("ok: packed-column decoding, stable physical lanes, colocated growth, compaction, overflow");
   return 0;
 }

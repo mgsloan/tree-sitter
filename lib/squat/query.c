@@ -4590,12 +4590,12 @@ static bool sq_query_cursor__scan_cancelled(SQQueryCursor *self, SQNode node) {
 static bool sq_query_cursor__scan_seek(SQQueryCursor *self) {
   SQNode current = query_tree_cursor_node(&self->cursor);
   const SQQuery *query = self->query;
-  uint32_t target = current.slot, end = self->scan_root_end;
+  uint32_t target = sq_node_position(current), end = self->scan_root_end;
   if (query->scan_filter.count) {
     target = query_execution_find_symbols(self, current.tree, &query->scan_filter, target, end);
   } else {
     while (target < end) {
-      SQNode node = {current.tree, target};
+      SQNode node = sq_position_node(current.tree, target);
       if (sq_query_cursor__scan_cancelled(self, node)) {
         return false;
       }
@@ -4603,18 +4603,18 @@ static bool sq_query_cursor__scan_seek(SQQueryCursor *self) {
       if (query->scan_symbols.contents[symbol / 64] & (UINT64_C(1) << (symbol % 64))) {
         break;
       }
-      target = sq_next_slot(current.tree, target + 1);
+      target = sq_next_position(current.tree, target + 1);
     }
   }
   if (self->halted) {
     return false;
   }
-  QUERY_EXEC_COUNT(self, records_skipped, target - current.slot);
+  QUERY_EXEC_COUNT(self, records_skipped, target - sq_node_position(current));
   if (target == end) {
     self->halted = true;
     return false;
   }
-  if (target - current.slot >= 2) {
+  if (target - sq_node_position(current) >= 2) {
     self->scan_sparse_samples++;
   }
   if (++self->scan_samples == 32) {
@@ -4625,7 +4625,7 @@ static bool sq_query_cursor__scan_seek(SQQueryCursor *self) {
   }
   // Restore the ancestor path without processing events: this is legal only
   // with no active states. Active states always receive every enter/exit event.
-  while (current.slot != target) {
+  while (sq_node_position(current) != target) {
     QUERY_EXEC_COUNT(self, seek_restoration_steps, 1);
     if (target < sq_node_end_slot(current) && query_tree_cursor_goto_first_child(&self->cursor)) {
       self->depth++;

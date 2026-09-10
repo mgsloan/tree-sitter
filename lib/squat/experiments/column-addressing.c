@@ -16,18 +16,16 @@ typedef struct {
 
 static inline uint32_t pointer_node(const PointerView *view, unsigned column,
                                     uint32_t slot, bool cache_skip) {
-  const SQHeader *header = sq_header(&view->tree);
   uint32_t skip = cache_skip ? view->node_skip
-                            : (header->group_capacity - header->group_count) * SQ_GROUP_SIZE;
+                            : 0;
   return sq_get(view->nodes[column], 0, skip + slot,
                 sq_node_width(&view->tree.layout, column));
 }
 
 static inline uint32_t pointer_group(const PointerView *view, unsigned column,
                                      uint32_t group, bool cache_skip) {
-  const SQHeader *header = sq_header(&view->tree);
   uint32_t skip = cache_skip ? view->group_skip
-                            : header->group_capacity - header->group_count;
+                            : 0;
   return sq_get(view->groups[column], 0, skip + group, sq_group_width(column));
 }
 
@@ -162,7 +160,9 @@ int main(int argc, char **argv) {
     view.groups[column] = tree->data + tree->layout.groups[column];
   for (unsigned column = 0; column < N_COLUMNS; column++)
     view.nodes[column] = tree->data + tree->layout.nodes[column];
-  view.group_skip = sq_header(tree)->group_capacity - sq_header(tree)->group_count;
+  // Version 4 has no index bias. Historical bias comparisons require the
+  // version-3 experiment revision recorded in the report.
+  view.group_skip = 0;
   view.node_skip = view.group_skip * SQ_GROUP_SIZE;
   uint32_t count = sq_node_descendant_count(sq_tree_root_node(tree));
   uint32_t *slots = malloc((size_t)count * sizeof(uint32_t));

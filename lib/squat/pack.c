@@ -27,8 +27,8 @@ typedef struct {
   PackPosition *positions;
   uint64_t *mask;
   uint32_t remaining, structural;
-  /* Distance to the first node outside this subtree, measured from the right.
-   * This stays valid when groups grow or padding is inserted to the left. */
+  /* Lower physical boundary of this subtree. Reverse preorder lets the
+   * builder append groups; growth never changes existing slot indexes. */
   uint32_t boundary;
   TSFieldId field;
   bool visible, later, child_later;
@@ -45,13 +45,13 @@ static bool close_group(Builder *builder) {
   SQHeader *header = sq_header(tree);
   if (header->group_count == header->group_capacity) {
     uint32_t capacity = header->group_capacity;
-    if (capacity > UINT32_MAX / 2 || !sq_resize(tree, capacity * 2, builder->error)) {
+    if (capacity > UINT32_MAX / 2 || !sq_resize(&builder->tree, capacity * 2, builder->error)) {
       return false;
     }
+    tree = builder->tree;
     header = sq_header(tree);
   }
-  header->group_count++;
-  uint32_t group = header->group_capacity - header->group_count;
+  uint32_t group = header->group_count++;
   uint32_t bases[] = {SQ_GROUP_SIZE - builder->count,
                       builder->min[0],
                       builder->min[1],
@@ -68,7 +68,7 @@ static bool close_group(Builder *builder) {
   }
   for (uint32_t i = 0; i < builder->count; i++) {
     Pending *pending = &builder->pending[i];
-    uint32_t slot = (group + 1) * SQ_GROUP_SIZE - i - 1;
+    uint32_t slot = group * SQ_GROUP_SIZE + i;
     uint32_t values[] = {
         !!(pending->flags & 1),
         !!(pending->flags & 2),
@@ -148,7 +148,7 @@ static bool emit(Builder *builder, Frame *frame) {
       return false;
     }
     /* Retrying after close_group includes newly abandoned slots in the span.
-     * The saved boundary still points to the same occupied node on the right. */
+     * The saved boundary still marks the same lower physical slot. */
     pending.values[0] = distance(builder) - frame->boundary;
     uint32_t min[SQ_PACK_VALUES], max[SQ_PACK_VALUES];
     bool fits = builder->count < SQ_GROUP_SIZE;
@@ -274,7 +274,7 @@ SQTree *sq_tree_pack(const TSTree *tree, SQPackOptions options, SQError *error) 
         --frame->structural;
       }
       TSSymbol alias = extra ? 0
-                             : ts_language_alias_at(result->language, parent.ptr->production_id,
+                             : ts_language_alias_at(builder.tree->language, parent.ptr->production_id,
                                                     frame->structural);
       bool visible = alias || ts_subtree_visible(*child);
       bool later = frame->child_later || (!frame->visible && frame->later);
@@ -284,7 +284,7 @@ SQTree *sq_tree_pack(const TSTree *tree, SQPackOptions options, SQError *error) 
       TSFieldId field = frame->visible || extra ? 0 : frame->field;
       if (!extra) {
         const TSFieldMapEntry *map, *end;
-        ts_language_field_map(result->language, parent.ptr->production_id, &map, &end);
+        ts_language_field_map(builder.tree->language, parent.ptr->production_id, &map, &end);
         for (; map < end; map++) {
           if (!map->inherited && map->child_index == frame->structural) {
             field = map->field_id;
@@ -301,9 +301,9 @@ SQTree *sq_tree_pack(const TSTree *tree, SQPackOptions options, SQError *error) 
         }
         TSSymbol own = frame->node.context[3] ? (TSSymbol)frame->node.context[3]
                                               : ts_node_grammar_symbol(frame->node);
-        for (uint32_t supertype_index = 0; supertype_index < result->supertype_count;
+        for (uint32_t supertype_index = 0; supertype_index < builder.tree->supertype_count;
              supertype_index++) {
-          if (result->supertypes[supertype_index] == own) {
+          if (builder.tree->supertypes[supertype_index] == own) {
             child_mask[supertype_index / 64] |= UINT64_C(1) << (supertype_index % 64);
           }
         }
@@ -343,20 +343,20 @@ SQTree *sq_tree_pack(const TSTree *tree, SQPackOptions options, SQError *error) 
   if (!close_group(&builder)) {
     goto failure;
   }
-  if (options.repack && !sq_resize(result, sq_header(result)->group_count, error)) {
+  if (options.repack && !sq_resize(&builder.tree, sq_header(builder.tree)->group_count, error)) {
     goto failure;
   }
-  if (options.symbol_presence && !sq_build_presence(result, error)) {
+  if (options.symbol_presence && !sq_build_presence(&builder.tree, error)) {
     goto failure;
   }
-  if (result->supertype_count > 8 &&
-      !sq_append_dictionary(result, builder.dictionary, builder.dictionary_count, error)) {
+  if (builder.tree->supertype_count > 8 &&
+      !sq_append_dictionary(&builder.tree, builder.dictionary, builder.dictionary_count, error)) {
     goto failure;
   }
   free(stack);
   free(child_mask);
   free(builder.dictionary);
-  return result;
+  return builder.tree;
 failure:
   for (size_t i = 0; i < depth; i++) {
     free(stack[i].positions);
@@ -365,7 +365,7 @@ failure:
   free(stack);
   free(child_mask);
   free(builder.dictionary);
-  sq_tree_delete(result);
+  sq_tree_delete(builder.tree);
   return NULL;
 }
 SQTree *sq_tree_parse(TSParser *parser, const char *source, uint32_t length, SQPackOptions options,

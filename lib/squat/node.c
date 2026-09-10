@@ -9,27 +9,33 @@ bool sq_node_is_null(SQNode node) {
 bool sq_node_eq(SQNode left, SQNode right) {
   return left.tree == right.tree && (!left.tree || left.slot == right.slot);
 }
-uint32_t sq_next_slot(const SQTree *tree, uint32_t slot) {
-  if (slot >= sq_tree_slot_count(tree)) {
-    return sq_tree_slot_count(tree);
-  }
-  uint32_t first =
-      slot / SQ_GROUP_SIZE * SQ_GROUP_SIZE + sq_group_get(tree, G_WASTE, slot / SQ_GROUP_SIZE);
-  return slot < first ? first : slot;
+uint32_t sq_previous_slot(const SQTree *tree, uint32_t slot) {
+  if (slot >= sq_tree_slot_count(tree)) return SQ_NONE;
+  uint32_t group = slot / SQ_GROUP_SIZE;
+  uint32_t end = (group + 1) * SQ_GROUP_SIZE - sq_group_get(tree, G_WASTE, group);
+  return slot >= end ? end - 1 : slot;
+}
+uint32_t sq_next_position(const SQTree *tree, uint32_t position) {
+  uint32_t slots = sq_tree_slot_count(tree);
+  if (position >= slots) return slots;
+  uint32_t physical = sq_previous_slot(tree, slots - 1 - position);
+  return slots - 1 - physical;
 }
 SQNode sq_tree_node_at_slot(const SQTree *tree, uint32_t slot) {
-  if (!tree || slot >= sq_tree_slot_count(tree) || sq_next_slot(tree, slot) != slot) {
-    return sq_null();
-  }
-  return (SQNode){tree, slot};
+  return tree && slot < sq_tree_slot_count(tree) && sq_previous_slot(tree, slot) == slot
+      ? (SQNode){tree, slot} : sq_null();
 }
 SQNode sq_tree_root_node(const SQTree *tree) {
-  return tree && sq_tree_group_count(tree) ? (SQNode){tree, sq_group_get(tree, G_WASTE, 0)}
-                                           : sq_null();
+  return tree && sq_tree_group_count(tree)
+      ? sq_tree_node_at_slot(tree, sq_previous_slot(tree, sq_tree_slot_count(tree) - 1))
+      : sq_null();
+}
+uint32_t sq_node_first_slot(SQNode node) {
+  return node.slot - sq_group_get(node.tree, G_SPAN, node.slot / SQ_GROUP_SIZE) -
+         sq_node_get(node, N_SPAN);
 }
 uint32_t sq_node_end_slot(SQNode node) {
-  return node.slot + 1 + sq_group_get(node.tree, G_SPAN, node.slot / SQ_GROUP_SIZE) +
-         sq_node_get(node, N_SPAN);
+  return sq_tree_slot_count(node.tree) - sq_node_first_slot(node);
 }
 static TSSymbol raw_symbol(SQNode node) {
   return sq_decode_symbol(node.tree, sq_node_get(node, N_SYMBOL));
@@ -112,7 +118,7 @@ bool sq_node_has_supertype(SQNode node, TSSymbol symbol) {
     uint32_t words = (tree->supertype_count + 63) / 64;
     uint64_t word;
     memcpy(&word,
-           tree->data + sq_header(tree)->supertype_dictionary_byte_offset +
+           tree->data + sq_dictionary_offset(tree) +
                ((size_t)value * words + i / 64) * 8,
            8);
     return (word >> (i % 64)) & 1;
@@ -120,70 +126,56 @@ bool sq_node_has_supertype(SQNode node, TSSymbol symbol) {
   return false;
 }
 uint32_t sq_node_descendant_count(SQNode node) {
-  if (!node.tree) {
-    return 0;
+  if (!node.tree) return 0;
+  uint32_t first = sq_node_first_slot(node), count = node.slot - first + 1;
+  for (uint32_t group = first / SQ_GROUP_SIZE; group < node.slot / SQ_GROUP_SIZE; group++) {
+    count -= sq_group_get(node.tree, G_WASTE, group);
   }
-  uint32_t end = sq_node_end_slot(node), result = end - node.slot;
-  for (uint32_t group = node.slot / SQ_GROUP_SIZE + 1; group * SQ_GROUP_SIZE < end; group++) {
-    result -= sq_group_get(node.tree, G_WASTE, group);
-  }
-  return result;
+  return count;
 }
 SQNode sq_node_next_preorder(SQNode node) {
-  return node.tree ? sq_tree_node_at_slot(node.tree, sq_next_slot(node.tree, node.slot + 1))
+  return node.tree ? sq_tree_node_at_slot(node.tree, sq_previous_slot(node.tree, node.slot - 1))
                    : sq_null();
 }
 SQNode sq_node_prev_preorder(SQNode node) {
-  if (!node.tree || node.slot == sq_group_get(node.tree, G_WASTE, 0)) {
-    return sq_null();
-  }
-  uint32_t group = node.slot / SQ_GROUP_SIZE;
-  uint32_t first = group * SQ_GROUP_SIZE + sq_group_get(node.tree, G_WASTE, group);
-  return (SQNode){node.tree, node.slot == first ? group * SQ_GROUP_SIZE - 1 : node.slot - 1};
+  if (!node.tree || node.slot == sq_tree_root_node(node.tree).slot) return sq_null();
+  uint32_t slot = node.slot + 1, group = slot / SQ_GROUP_SIZE;
+  uint32_t end = (group + 1) * SQ_GROUP_SIZE - sq_group_get(node.tree, G_WASTE, group);
+  if (slot >= end) slot = (group + 1) * SQ_GROUP_SIZE;
+  return sq_tree_node_at_slot(node.tree, slot);
 }
 static SQNode first_child(SQNode node) {
-  if (!node.tree) {
-    return sq_null();
-  }
-  uint32_t slot = sq_next_slot(node.tree, node.slot + 1);
-  return slot < sq_node_end_slot(node) ? (SQNode){node.tree, slot} : sq_null();
+  if (!node.tree) return sq_null();
+  // Normalization already establishes an occupied slot. Avoid repeating its
+  // bounds/waste checks through the public node-at-slot constructor.
+  uint32_t slot = sq_previous_slot(node.tree, node.slot - 1);
+  return slot != SQ_NONE && slot >= sq_node_first_slot(node)
+      ? (SQNode){node.tree, slot} : sq_null();
 }
 SQNode sq_node_next_sibling_including_empty(SQNode node) {
-  if (!node.tree || sq_node_get(node, N_LAST)) {
-    return sq_null();
-  }
-  return sq_tree_node_at_slot(node.tree, sq_node_end_slot(node));
+  return node.tree && !sq_node_get(node, N_LAST)
+      ? sq_tree_node_at_slot(node.tree, sq_node_first_slot(node) - 1) : sq_null();
 }
 SQNode sq_node_parent(SQNode node) {
-  if (!node.tree || node.slot == sq_tree_root_node(node.tree).slot) {
-    return sq_null();
-  }
-  // In preorder, the nearest earlier node whose subtree reaches us is our
-  // parent. Starting nearby avoids rescanning every preceding root sibling.
-  // A group's shared span base plus the u8 maximum bounds all its subtree ends,
-  // so distant groups of small subtrees can be rejected with one header read.
-  uint32_t slot = node.slot - 1;
-  for (;;) {
+  if (!node.tree) return sq_null();
+  uint32_t slots = sq_tree_slot_count(node.tree), slot = node.slot + 1;
+  // Earlier preorder nodes occupy higher slots. Reject a group when even its
+  // largest possible span cannot reach this node, then inspect nearby parents.
+  while (slot < slots) {
     uint32_t group = slot / SQ_GROUP_SIZE;
+    uint32_t end = (group + 1) * SQ_GROUP_SIZE - sq_group_get(node.tree, G_WASTE, group);
     uint32_t base = sq_group_get(node.tree, G_SPAN, group);
-    if ((uint64_t)slot + 1 + base + UINT8_MAX > node.slot) {
-      uint32_t first = group * SQ_GROUP_SIZE + sq_group_get(node.tree, G_WASTE, group);
-      while (slot >= first) {
+    if ((uint64_t)slot <= (uint64_t)node.slot + base + UINT8_MAX) {
+      for (; slot < end; slot++) {
         SQNode candidate = {node.tree, slot};
-        if ((uint64_t)slot + 1 + base + sq_node_get(candidate, N_SPAN) > node.slot) {
+        if ((uint64_t)slot <= (uint64_t)node.slot + base + sq_node_get(candidate, N_SPAN)) {
           return candidate;
         }
-        if (slot == first) {
-          break;
-        }
-        slot--;
       }
     }
-    if (!group) {
-      return sq_null();
-    }
-    slot = group * SQ_GROUP_SIZE - 1;
+    slot = (group + 1) * SQ_GROUP_SIZE;
   }
+  return sq_null();
 }
 SQNode sq_node_prev_sibling(SQNode node) {
   SQNode child = first_child(sq_node_parent(node)), previous = sq_null();
@@ -278,13 +270,13 @@ const char *sq_node_field_name_for_named_child(SQNode node, uint32_t i) {
   return sq_node_field_name(sq_node_named_child(node, i));
 }
 SQNode sq_node_child_with_descendant(SQNode node, SQNode descendant) {
-  if (!node.tree || node.tree != descendant.tree || descendant.slot <= node.slot ||
-      descendant.slot >= sq_node_end_slot(node)) {
+  if (!node.tree || node.tree != descendant.tree || descendant.slot >= node.slot ||
+      descendant.slot < sq_node_first_slot(node)) {
     return sq_null();
   }
   for (SQNode child = first_child(node); child.tree;
        child = sq_node_next_sibling_including_empty(child)) {
-    if (sq_node_end_slot(child) > descendant.slot) {
+    if (sq_node_first_slot(child) <= descendant.slot) {
       return child;
     }
   }

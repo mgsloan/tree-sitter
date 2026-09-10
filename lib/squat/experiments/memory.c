@@ -211,9 +211,10 @@ int main(int argc, char **argv) {
     require(sq_node_descendant_count(sq_tree_root_node(tree)) == nodes,
             "packed node count differs");
     // Cross-check the retained allocation tracker against the actual owners.
-    size_t expected = sizeof(*tree) + tree->size +
-        (language->symbol_count + language->alias_count) * sizeof(TSSymbol);
-    require(retained.requested == expected && retained.allocations == 3,
+    size_t expected = sq_runtime_size(language) + tree->size;
+    expected = (expected + SQ_COLUMN_ALIGNMENT - 1) & ~(size_t)(SQ_COLUMN_ALIGNMENT - 1);
+    require(tree->storage == SQ_STORAGE_COLOCATED &&
+                retained.requested == expected && retained.allocations == 1,
             "unexpected Squatter retained allocation");
     printf(",\"%s\":{", compact ? "compact" : "default");
     print_usage("retained", retained);

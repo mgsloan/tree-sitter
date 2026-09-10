@@ -109,6 +109,20 @@ static void sq_query__prepare_presence(SQQuery *query) {
   }
 }
 
+/* Packed groups are in reverse preorder. Reverse the hit bits once per
+ * group so ordered query intervals can retain their ascending scan logic. */
+static uint64_t query_group_equal(const SQTree *tree, uint32_t ordered_group,
+                                  SQColumn column, uint32_t value) {
+  uint64_t bits = sq_tree_group_equal(tree, sq_position_group(tree, ordered_group), column, value);
+  bits = ((bits >> 1) & UINT64_C(0x5555555555555555)) |
+         ((bits & UINT64_C(0x5555555555555555)) << 1);
+  bits = ((bits >> 2) & UINT64_C(0x3333333333333333)) |
+         ((bits & UINT64_C(0x3333333333333333)) << 2);
+  bits = ((bits >> 4) & UINT64_C(0x0f0f0f0f0f0f0f0f)) |
+         ((bits & UINT64_C(0x0f0f0f0f0f0f0f0f)) << 4);
+  return __builtin_bswap64(bits) >> (64 - SQ_GROUP_SIZE);
+}
+
 static bool sq_query_cursor__presence_matches(SQQueryCursor *self, const PatternEntry *pattern,
                                               SQNode root) {
   if (!self->symbol_scan || self->root_has_error) {
@@ -130,7 +144,7 @@ static bool sq_query_cursor__presence_matches(SQQueryCursor *self, const Pattern
   }
   QUERY_EXEC_COUNT(self, presence_checks, 1);
   cache->samples++;
-  uint32_t begin = sq_next_slot(root.tree, root.slot + 1), limit = sq_node_end_slot(root);
+  uint32_t begin = sq_next_position(root.tree, sq_node_position(root) + 1), limit = sq_node_end_slot(root);
   // Reuse only an established empty interval. An exhausted scan budget means
   // unknown, never absence, so the ordinary matcher retains all possible starts.
   if (begin >= cache->start && begin <= cache->next) {
@@ -156,12 +170,12 @@ static bool sq_query_cursor__presence_matches(SQQueryCursor *self, const Pattern
     if (requirement->symbol_count) {
       hits = 0;
       for (uint32_t index = 0; index < requirement->symbol_count; index++) {
-        hits |= sq_tree_group_equal(root.tree, group, SQ_COLUMN_DISPLAY_SYMBOL,
+        hits |= query_group_equal(root.tree, group, SQ_COLUMN_DISPLAY_SYMBOL,
                                     requirement->symbols[index]);
       }
     }
     if (requirement->field) {
-      hits &= sq_tree_group_equal(root.tree, group, SQ_COLUMN_FIELD, requirement->field);
+      hits &= query_group_equal(root.tree, group, SQ_COLUMN_FIELD, requirement->field);
     }
     hits &= UINT64_MAX << (slot - group_start);
     if (end - group_start < 64) {
@@ -303,7 +317,7 @@ static void sq_query_cursor__execution_start(SQQueryCursor *self, SQNode root) {
     return;
   }
   self->execution_root = root;
-  self->execution_position = root.slot;
+  self->execution_position = sq_node_position(root);
   self->execution_last_node = UINT32_MAX;
   self->execution_active = true;
   self->execution_stats.planned = true;
@@ -335,11 +349,11 @@ static void sq_query_cursor__execution_fallback(SQQueryCursor *self) {
     QUERY_EXEC_COUNT(self, seek_restoration_steps, 1);
     for (uint32_t index = 0; index < self->states.size; index++) {
       QueryState *state = &self->states.contents[index];
-      if (self->execution_states.contents[state->heap_insert_order].root == current.slot) {
+      if (self->execution_states.contents[state->heap_insert_order].root == sq_node_position(current)) {
         state->start_depth = self->depth;
       }
     }
-    if (current.slot == self->execution_last_node) {
+    if (sq_node_position(current) == self->execution_last_node) {
       break;
     }
     uint32_t end = sq_node_end_slot(current);
@@ -368,9 +382,9 @@ static void sq_query_cursor__execution_fallback(SQQueryCursor *self) {
 static uint32_t query_execution_named_child(const SQTree *tree, const TSLanguage *language,
                                             uint32_t slot, uint32_t end) {
   (void)language;
-  slot = sq_next_slot(tree, slot);
+  slot = sq_next_position(tree, slot);
   while (slot < end) {
-    SQNode node = {tree, slot};
+    SQNode node = sq_position_node(tree, slot);
     if (sq_node_is_named(node)) {
       break;
     }
@@ -437,9 +451,9 @@ static uint32_t query_execution_find_symbols(SQQueryCursor *cursor, const SQTree
                                              const QuerySymbolFilter *filter, uint32_t start,
                                              uint32_t end) {
   uint32_t width = tree->layout.symbol_bits, lanes = 64 / width;
-  uint32_t prefix = (sq_header(tree)->group_capacity - sq_tree_group_count(tree)) * SQ_GROUP_SIZE;
+  uint32_t slots = sq_tree_slot_count(tree);
   while (start < end) {
-    if (sq_query_cursor__scan_cancelled(cursor, (SQNode){tree, start})) {
+    if (sq_query_cursor__scan_cancelled(cursor, sq_position_node(tree, start))) {
       return end;
     }
     uint32_t group = start / SQ_GROUP_SIZE;
@@ -449,25 +463,26 @@ static uint32_t query_execution_find_symbols(SQQueryCursor *cursor, const SQTree
     }
     // The persisted index is profitable for a small selective root set. Its
     // keys are public IDs, while lane filters compare raw display IDs.
-    if (sq_header(tree)->symbol_presence_byte_offset && filter->symbol_count <= 4) {
+    if (sq_presence_offset(tree) && filter->symbol_count <= 4) {
       bool interested = false;
       for (uint32_t index = 0; index < filter->symbol_count; index++) {
         TSSymbol symbol = sq_decode_symbol(tree, filter->symbols[index]);
         symbol = ts_language_public_symbol(tree->language, symbol);
-        if (sq_tree_group_has_symbol(tree, group, symbol)) {
+        if (sq_tree_group_has_symbol(tree, sq_position_group(tree, group), symbol)) {
           interested = true;
           break;
         }
       }
       if (!interested) {
-        start = sq_next_slot(tree, group_end);
+        start = sq_next_position(tree, group_end);
         continue;
       }
     }
-    uint32_t allocated = prefix + start;
-    uint32_t word_index = allocated / lanes;
-    uint32_t first = word_index * lanes;
-    while (start < group_end) {
+    // Preorder advances toward lower physical lanes. Visit packed words and
+    // their matching high bits from high to low to return the earliest hit.
+    uint32_t low = slots - group_end, high = slots - start;
+    uint32_t word_index = (high - 1) / lanes;
+    for (;;) {
       uint64_t word, hits = 0;
       memcpy(&word, tree->data + tree->layout.nodes[N_SYMBOL] + (size_t)word_index * 8, 8);
       for (uint32_t index = 0; index < filter->count; index++) {
@@ -475,18 +490,16 @@ static uint32_t query_execution_find_symbols(SQQueryCursor *cursor, const SQTree
         hits |= ~(((difference & filter->low_bits) + filter->low_bits) | difference) &
                 filter->high_bits;
       }
-      hits &= UINT64_MAX << ((prefix + start - first) * width);
-      if (hits) {
-        uint32_t hit = first + query_ctz(hits) / width - prefix;
-        if (hit < group_end) {
-          return hit;
-        }
+      while (hits) {
+        unsigned bit = 63u - (unsigned)__builtin_clzll(hits);
+        uint32_t physical = word_index * lanes + bit / width;
+        if (physical >= low && physical < high) return slots - 1 - physical;
+        hits &= ~(UINT64_C(1) << bit);
       }
-      first += lanes;
-      word_index++;
-      start = first - prefix;
+      if (word_index == low / lanes) break;
+      word_index--;
     }
-    start = sq_next_slot(tree, group_end);
+    start = sq_next_position(tree, group_end);
   }
   return end;
 }
@@ -494,9 +507,9 @@ static uint32_t query_execution_find_symbols(SQQueryCursor *cursor, const SQTree
 static uint32_t query_execution_find_root(SQQueryCursor *self, const SQTree *tree, uint32_t start,
                                           uint32_t end) {
   const SQQuery *query = self->query;
-  start = sq_next_slot(tree, start);
+  start = sq_next_position(tree, start);
   while (start < end) {
-    if (sq_query_cursor__scan_cancelled(self, (SQNode){tree, start})) {
+    if (sq_query_cursor__scan_cancelled(self, sq_position_node(tree, start))) {
       return end;
     }
     if (query->scan_filter.count) {
@@ -505,10 +518,10 @@ static uint32_t query_execution_find_root(SQQueryCursor *self, const SQTree *tre
         break;
       }
     }
-    if (query->execution_plan.roots.contents[sq_node_get((SQNode){tree, start}, N_SYMBOL)]) {
+    if (query->execution_plan.roots.contents[sq_node_get(sq_position_node(tree, start), N_SYMBOL)]) {
       return start;
     }
-    start = sq_next_slot(tree, start + 1);
+    start = sq_next_position(tree, start + 1);
   }
   return end;
 }
@@ -572,16 +585,16 @@ static bool sq_query_cursor__execution_advance(SQQueryCursor *self, bool stop_on
     if (++self->operation_count == OP_COUNT_PER_QUERY_CALLBACK_CHECK) {
       self->operation_count = 0;
       if (self->query_options && self->query_options->progress_callback) {
-        self->query_state.current_byte_offset = sq_node_start_byte((SQNode){tree, node});
+        self->query_state.current_byte_offset = sq_node_start_byte(sq_position_node(tree, node));
         if (self->query_options->progress_callback(&self->query_state)) {
           self->halted = true;
           return false;
         }
       }
     }
-    self->execution_position = sq_next_slot(tree, node + 1);
+    self->execution_position = sq_next_position(tree, node + 1);
     self->execution_last_node = node;
-    uint16_t raw = sq_node_get((SQNode){tree, node}, N_SYMBOL);
+    uint16_t raw = sq_node_get(sq_position_node(tree, node), N_SYMBOL);
     TSSymbol symbol = ts_language_public_symbol(query->language, sq_decode_symbol(tree, raw));
     uint64_t roots = plan->roots.contents[raw];
     while (roots) {
@@ -594,7 +607,7 @@ static bool sq_query_cursor__execution_advance(SQQueryCursor *self, bool stop_on
               .id = UINT32_MAX,
               .capture_list_id = CAPTURE_LIST_NONE,
               .heap_insert_order = query_execution_acquire_state(
-                  self, (QueryExecutionState){node, node, sq_node_end_slot((SQNode){tree, node})}),
+                  self, (QueryExecutionState){node, node, sq_node_end_slot(sq_position_node(tree, node))}),
               .step_index = plan->start_steps[pattern],
               .pattern_index = pattern,
           }));
@@ -612,8 +625,8 @@ static bool sq_query_cursor__execution_advance(SQQueryCursor *self, bool stop_on
       QueryStep *step = &query->steps.contents[state->step_index];
       bool matches =
           (!operation->symbol || operation->symbol == symbol) &&
-          (!operation->field || operation->field == sq_node_field_id((SQNode){tree, node}));
-      uint32_t sibling = sq_node_end_slot((SQNode){tree, node});
+          (!operation->field || operation->field == sq_node_field_id(sq_position_node(tree, node)));
+      uint32_t sibling = sq_node_end_slot(sq_position_node(tree, node));
       if (operation->last_named_child &&
           query_execution_named_child(tree, query->language, sibling, position->end) <
               position->end) {
@@ -626,7 +639,7 @@ static bool sq_query_cursor__execution_advance(SQQueryCursor *self, bool stop_on
         continue;
       }
       if (step->capture_ids[0] != NONE) {
-        sq_query_cursor__capture(self, state, step, (SQNode){self->execution_root.tree, node});
+        sq_query_cursor__capture(self, state, step, sq_position_node(self->execution_root.tree, node));
       }
       state->step_index = (plan->local_patterns & ((uint64_t)1 << state->pattern_index))
                               ? plan->end_steps[state->pattern_index]

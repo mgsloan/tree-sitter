@@ -1,3 +1,4 @@
+#define _DEFAULT_SOURCE
 #define _POSIX_C_SOURCE 200809L
 #include <tree_sitter/squat.h>
 #include "../internal.h"
@@ -6,6 +7,8 @@
 #include <assert.h>
 #include <dlfcn.h>
 #include <stdio.h>
+#include <sys/mman.h>
+#include <unistd.h>
 
 static const char *input_name;
 static uint32_t current_ordinal;
@@ -51,7 +54,7 @@ static uint32_t ordinal_packed(Nodes *nodes, SQNode n) {
   uint32_t low = 0, high = nodes->count;
   while (low < high) {
     uint32_t mid = low + (high - low) / 2;
-    if (nodes->packed[mid].slot < n.slot) {
+    if (nodes->packed[mid].slot > n.slot) {
       low = mid + 1;
     } else {
       high = mid;
@@ -206,12 +209,12 @@ static void compare_supertypes(const TSTreeCursor *cursor, SQNode node) {
 static void compare_group_equality(const SQTree *tree) {
   for (uint32_t group = 0; group < sq_tree_group_count(tree); group++) {
     uint32_t waste = sq_group_get(tree, G_WASTE, group);
-    SQNode first = {tree, group * SQ_GROUP_SIZE + waste};
+    SQNode first = {tree, group * SQ_GROUP_SIZE};
     for (unsigned column = 0; column < SQ_COLUMN_COUNT; column++) {
       uint32_t values[] = {0, sq_node_get(first, N_SPAN + column), UINT32_MAX};
       for (unsigned target = 0; target < 3; target++) {
         uint64_t expected = 0;
-        for (uint32_t lane = waste; lane < SQ_GROUP_SIZE; lane++) {
+        for (uint32_t lane = 0; lane < SQ_GROUP_SIZE - waste; lane++) {
           SQNode node = {tree, group * SQ_GROUP_SIZE + lane};
           if (sq_node_get(node, N_SPAN + column) == values[target]) {
             expected |= UINT64_C(1) << lane;
@@ -224,7 +227,7 @@ static void compare_group_equality(const SQTree *tree) {
 }
 
 static void compare_iterator(const Nodes *nodes, SQNode root) {
-  uint32_t end = sq_node_end_slot(root);
+  uint32_t end = sq_node_first_slot(root);
   for (unsigned cached = 0; cached < 2; cached++) {
     SQNodeIterator *iterator = sq_node_iterator_new(root, cached);
     CHECK(iterator && sq_node_is_null(sq_node_iterator_node(iterator)));
@@ -233,7 +236,7 @@ static void compare_iterator(const Nodes *nodes, SQNode root) {
     CHECK(cursor);
     uint32_t ordinal = 0;
     while (!sq_node_eq(nodes->packed[ordinal], root)) ordinal++;
-    for (; ordinal < nodes->count && nodes->packed[ordinal].slot < end; ordinal++) {
+    for (; ordinal < nodes->count && nodes->packed[ordinal].slot >= end; ordinal++) {
       SQNode node = sq_node_iterator_next(iterator);
       CHECK(sq_node_eq(node, nodes->packed[ordinal]));
       CHECK(sq_node_eq(node, sq_node_iterator_node(iterator)));
@@ -394,6 +397,69 @@ static void compare_tree(const TSTree *tree, const SQTree *packed, bool exhausti
   free(nodes->mainline);
   free(nodes->packed);
 }
+static void reject_index_mutation(const SQTree *tree, uint8_t *bytes) {
+  SQError error;
+  CHECK(!sq_tree_from_bytes(tree->language, bytes, tree->size, &error) &&
+        error == SQ_ERROR_INVALID_SLAB);
+  CHECK(!sq_tree_from_bytes_borrowed(tree->language, bytes, tree->size, &error) &&
+        error == SQ_ERROR_INVALID_SLAB);
+  memcpy(bytes, tree->data, tree->size);
+}
+
+static void check_presence_validation(const SQTree *tree) {
+  uint32_t offset = sq_presence_offset(tree);
+  if (!offset) return;
+  uint8_t *bytes = sq_allocate_data(tree->size);
+  CHECK(bytes);
+  memcpy(bytes, tree->data, tree->size);
+  uint32_t symbols = sq_symbols(tree);
+  uint32_t mode_bytes = (uint32_t)sq_column_size(symbols, 1);
+  uint32_t entry_bytes = (sq_tree_group_count(tree) + 31) / 32 * 4;
+  bool checked_bitmap = false, checked_occurrence = false, checked_sentinel = false;
+  for (uint32_t symbol = 0; symbol < symbols; symbol++) {
+    uint8_t *entry = bytes + offset + mode_bytes + (size_t)symbol * entry_bytes;
+    if (sq_get(bytes, offset, symbol, 1) && !checked_bitmap) {
+      // Toggle both an existing bit and an absent bit. The latter tests the
+      // cardinality check, not merely membership of every observed group.
+      for (unsigned value = 0; value <= 1; value++) {
+        for (uint32_t bit = 0; bit < entry_bytes * 8; bit++) {
+          if (((entry[bit / 8] >> (bit % 8)) & 1) == value) {
+            entry[bit / 8] ^= (uint8_t)(1u << (bit % 8));
+            reject_index_mutation(tree, bytes);
+            break;
+          }
+        }
+      }
+      checked_bitmap = true;
+    } else if (!sq_get(bytes, offset, symbol, 1)) {
+      // Occurrences and unused sentinels must each match exactly, including
+      // the preorder position within this symbol's occurrence list.
+      for (uint32_t index = 0; index < entry_bytes / 4; index++) {
+        uint32_t slot;
+        memcpy(&slot, entry + (size_t)index * 4, 4);
+        bool *checked = slot == SQ_NONE ? &checked_sentinel : &checked_occurrence;
+        if (!*checked) {
+          entry[(size_t)index * 4] ^= 1;
+          reject_index_mutation(tree, bytes);
+          *checked = true;
+        }
+      }
+    }
+  }
+  sq_set(bytes, offset, 0, 1, !sq_get(bytes, offset, 0, 1));
+  reject_index_mutation(tree, bytes);
+  if (symbols % 64) {
+    sq_set(bytes, offset, symbols, 1, 1);
+    reject_index_mutation(tree, bytes);
+  }
+  uint64_t used = mode_bytes + (uint64_t)symbols * entry_bytes;
+  if (used < sq_presence_size(tree)) {
+    bytes[offset + used] = 1;
+    reject_index_mutation(tree, bytes);
+  }
+  free(bytes);
+}
+
 static void exercise(const TSLanguage *language, const char *source, uint32_t length,
                      bool exhaustive) {
   TSParser *parser = ts_parser_new();
@@ -408,9 +474,23 @@ static void exercise(const TSLanguage *language, const char *source, uint32_t le
     fprintf(stderr, "pack: %s\n", sq_error_string(error));
   }
   CHECK(packed && error == SQ_OK);
+  CHECK(packed->storage == SQ_STORAGE_COLOCATED);
+  CHECK(packed->data == (uint8_t *)packed + sq_runtime_size(language));
+  CHECK(packed->supertypes == (TSSymbol *)(packed + 1));
   compare_tree(tree, packed, exhaustive);
   SQTree *compact = sq_tree_repack(packed, &error);
   CHECK(compact && error == SQ_OK);
+  CHECK(compact->storage == SQ_STORAGE_COLOCATED);
+  CHECK(compact->data == (uint8_t *)compact + sq_runtime_size(language));
+  if (length <= 4096) check_presence_validation(compact);
+  // Repacking changes capacity and addresses, but never physical slot IDs.
+  SQNode before = sq_tree_root_node(packed), after = sq_tree_root_node(compact);
+  while (before.tree) {
+    CHECK(after.tree && before.slot == after.slot);
+    before = sq_node_next_preorder(before);
+    after = sq_node_next_preorder(after);
+  }
+  CHECK(!after.tree);
   CHECK(sq_tree_group_count(compact) == sq_tree_group_capacity(compact));
   compare_tree(tree, compact, false);
   uint32_t size;
@@ -419,12 +499,35 @@ static void exercise(const TSLanguage *language, const char *source, uint32_t le
   CHECK(unaligned);
   memcpy(unaligned + 1, bytes, size);
   SQTree *loaded = sq_tree_from_bytes(language, unaligned + 1, size, &error);
-  CHECK(loaded);
+  CHECK(loaded && loaded->storage == SQ_STORAGE_COPIED);
+  CHECK(loaded->data != unaligned + 1);
   compare_tree(tree, loaded, false);
+
+  // Borrow a read-only mapping. Validation and deletion must neither write to
+  // nor free the externally owned payload; repacking returns an owned copy.
+  size_t page = (size_t)sysconf(_SC_PAGESIZE);
+  size_t mapped_size = ((size_t)size + page - 1) / page * page;
+  void *mapping = mmap(NULL, mapped_size, PROT_READ | PROT_WRITE,
+                       MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  CHECK(mapping != MAP_FAILED);
+  memcpy(mapping, bytes, size);
+  CHECK(!mprotect(mapping, mapped_size, PROT_READ));
+  SQTree *borrowed = sq_tree_from_bytes_borrowed(language, mapping, size, &error);
+  CHECK(borrowed && borrowed->storage == SQ_STORAGE_BORROWED && borrowed->data == mapping);
+  compare_tree(tree, borrowed, false);
+  SQTree *owned = sq_tree_repack(borrowed, &error);
+  CHECK(owned && owned->storage == SQ_STORAGE_COLOCATED);
+  sq_tree_delete(borrowed);
+  CHECK(!memcmp(mapping, bytes, size));
+  CHECK(!munmap(mapping, mapped_size));
+  compare_tree(tree, owned, false);
+  sq_tree_delete(owned);
+  CHECK(!sq_tree_from_bytes_borrowed(language, unaligned + 1, size, &error) &&
+        error == SQ_ERROR_ARGUMENT);
   CHECK(!sq_tree_from_bytes(language, bytes, size - 1, &error) && error == SQ_ERROR_INVALID_SLAB);
-  // Reject the removed 40-byte format and the earlier version-1 format even
+  // Reject all three earlier format versions even
   // when the rest of this buffer describes a valid current tree.
-  for (unsigned version = 1; version <= 2; version++) {
+  for (unsigned version = 1; version <= 3; version++) {
     unaligned[1] = (uint8_t)((((const uint8_t *)bytes)[0] & 0x0f) | (version << 4));
     CHECK(!sq_tree_from_bytes(language, unaligned + 1, size, &error) &&
           error == SQ_ERROR_INVALID_SLAB);
@@ -439,6 +542,38 @@ static void exercise(const TSLanguage *language, const char *source, uint32_t le
   unaligned[1] = ((const uint8_t *)bytes)[0] ^ 0x80;
   CHECK(!sq_tree_from_bytes(language, unaligned + 1, size, &error) &&
         error == SQ_ERROR_INVALID_SLAB);
+  // Derived section locations still require exact counts and feature flags.
+  SQHeader valid_header;
+  memcpy(&valid_header, bytes, sizeof(valid_header));
+  for (unsigned invalid_case = 0; invalid_case < 4; invalid_case++) {
+    SQHeader changed = valid_header;
+    switch (invalid_case) {
+    case 0: changed.group_count = 0; break;
+    case 1: changed.group_capacity = UINT32_MAX; break;
+    case 2: changed.supertype_dictionary_count = 257; break;
+    case 3: changed.format_flags ^= SQ_PRESENCE; break;
+    }
+    memcpy(unaligned + 1, bytes, size);
+    memcpy(unaligned + 1, &changed, sizeof(changed));
+    CHECK(!sq_tree_from_bytes(language, unaligned + 1, size, &error) &&
+          error == SQ_ERROR_INVALID_SLAB);
+  }
+  if (sq_tree_group_count(packed) > 32 && length <= 4096) {
+    // Large enough for an index, but explicitly omit it. The dictionary (when
+    // required by the grammar) must immediately follow the ordinary columns.
+    options.symbol_presence = false;
+    SQTree *without_index = sq_tree_pack(tree, options, &error);
+    CHECK(without_index && !(sq_header(without_index)->format_flags & SQ_PRESENCE));
+    SQTree *decoded = sq_tree_from_bytes(language, without_index->data, without_index->size, &error);
+    CHECK(decoded);
+    compare_tree(tree, decoded, false);
+    sq_tree_delete(decoded);
+    decoded = sq_tree_from_bytes_borrowed(language, without_index->data, without_index->size, &error);
+    CHECK(decoded && decoded->data == without_index->data);
+    compare_tree(tree, decoded, false);
+    sq_tree_delete(decoded);
+    sq_tree_delete(without_index);
+  }
   if (length < 40) {
     // A changed bit can describe another valid tree. The requirement is safe
     // validation and ownership, not rejection of every possible mutation.
@@ -456,6 +591,9 @@ static void exercise(const TSLanguage *language, const char *source, uint32_t le
     SQTree *without_index = sq_tree_pack(tree, options, &error);
     CHECK(without_index && error == SQ_OK);
     compare_tree(tree, without_index, true);
+    SQTree *decoded = sq_tree_from_bytes(language, without_index->data, without_index->size, &error);
+    CHECK(decoded);
+    sq_tree_delete(decoded);
     sq_tree_delete(without_index);
   }
   free(unaligned);
@@ -520,7 +658,7 @@ int main(int argc, char **argv) {
     char source[4096];
     size_t length = 0;
     source[length++] = '[';
-    for (unsigned index = 0; index < 37; index++) {
+    for (unsigned index = 0; index < 129; index++) {
       int written = snprintf(source + length, sizeof(source) - length,
                              "%s{\"key\":[%u,%u],\"value\":true}",
                              index ? "," : "", index, index + 1);

@@ -80,13 +80,13 @@ int main(int argc, char **argv) {
     SQHeader *header = sq_header(tree);
     uint32_t slots = sq_tree_slot_count(tree);
     uint32_t presence_bytes =
-        header->symbol_presence_byte_offset
-            ? (header->supertype_dictionary_byte_offset ? header->supertype_dictionary_byte_offset
+        sq_presence_offset(tree)
+            ? (sq_dictionary_offset(tree) ? sq_dictionary_offset(tree)
                                                         : tree->size) -
-                  header->symbol_presence_byte_offset
+                  sq_presence_offset(tree)
             : 0;
-    uint32_t dictionary_bytes = header->supertype_dictionary_byte_offset
-                                    ? tree->size - header->supertype_dictionary_byte_offset
+    uint32_t dictionary_bytes = sq_dictionary_offset(tree)
+                                    ? tree->size - sq_dictionary_offset(tree)
                                     : 0;
     uint64_t grammar_bytes = sq_column_size(slots, tree->layout.symbol_bits);
     // Sparse aliases require a bitmap, packed exceptional values and rank

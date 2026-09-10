@@ -80,11 +80,22 @@ void sq_set(uint8_t *data, uint32_t offset, uint32_t index, uint8_t bits, uint32
   word = (word & ~mask) | ((uint64_t)value << shift);
   memcpy(address, &word, 8);
 }
-SQTree *sq_allocate(const TSLanguage *language, uint32_t capacity, SQError *error) {
+size_t sq_runtime_size(const TSLanguage *language) {
+  size_t symbols = (size_t)language->symbol_count + language->alias_count;
+  size_t bytes = sizeof(SQTree) + symbols * sizeof(TSSymbol);
+  return (bytes + SQ_COLUMN_ALIGNMENT - 1) & ~(size_t)(SQ_COLUMN_ALIGNMENT - 1);
+}
+
+static bool compatible_language(const TSLanguage *language) {
+  return language && language->abi_version >= TREE_SITTER_MIN_COMPATIBLE_LANGUAGE_VERSION &&
+         language->abi_version <= TREE_SITTER_LANGUAGE_VERSION &&
+         (uint64_t)language->symbol_count + language->alias_count <= ts_builtin_sym_error_repeat;
+}
+
+static SQTree *allocate_tree(const TSLanguage *language, uint32_t capacity,
+                             uint32_t payload_size, SQStorage storage, SQError *error) {
   sq_fail(error, SQ_OK);
-  if (!language || language->abi_version < TREE_SITTER_MIN_COMPATIBLE_LANGUAGE_VERSION ||
-      language->abi_version > TREE_SITTER_LANGUAGE_VERSION ||
-      language->symbol_count + language->alias_count > ts_builtin_sym_error_repeat) {
+  if (!compatible_language(language)) {
     sq_fail(error, SQ_ERROR_LANGUAGE);
     return NULL;
   }
@@ -93,37 +104,112 @@ SQTree *sq_allocate(const TSLanguage *language, uint32_t capacity, SQError *erro
     sq_fail(error, SQ_ERROR_OVERFLOW);
     return NULL;
   }
-  SQTree *tree = calloc(1, sizeof(*tree));
+  if (!payload_size) payload_size = layout.end;
+  size_t prefix = sq_runtime_size(language);
+  if (storage == SQ_STORAGE_COLOCATED && payload_size > SIZE_MAX - prefix) {
+    sq_fail(error, SQ_ERROR_OVERFLOW);
+    return NULL;
+  }
+  size_t allocation = prefix + (storage == SQ_STORAGE_COLOCATED ? payload_size : 0);
+  SQTree *tree = (SQTree *)sq_allocate_data(allocation);
   if (!tree) {
     sq_fail(error, SQ_ERROR_ALLOCATION);
     return NULL;
   }
-  tree->data = sq_allocate_data(layout.end);
-  tree->supertypes =
-      malloc((size_t)(language->symbol_count + language->alias_count) * sizeof(TSSymbol));
-  if (!tree->data || !tree->supertypes) {
-    sq_tree_delete(tree);
-    sq_fail(error, SQ_ERROR_ALLOCATION);
-    return NULL;
-  }
+  tree->storage = storage;
   tree->language = ts_language_copy(language);
   tree->layout = layout;
-  tree->size = layout.end;
-  for (uint32_t s = 0; s < language->symbol_count + language->alias_count; s++) {
-    if (ts_language_symbol_metadata(language, (TSSymbol)s).supertype) {
-      tree->supertypes[tree->supertype_count++] = (TSSymbol)s;
+  tree->size = payload_size;
+  // Runtime metadata, including the supertype list, precedes the aligned payload.
+  tree->supertypes = (TSSymbol *)(tree + 1);
+  for (uint32_t symbol = 0; symbol < language->symbol_count + language->alias_count; symbol++) {
+    if (ts_language_symbol_metadata(language, (TSSymbol)symbol).supertype) {
+      tree->supertypes[tree->supertype_count++] = (TSSymbol)symbol;
     }
   }
-  SQHeader *header = sq_header(tree);
-  header->magic_bits = SQ_VERSION | (tree->supertype_count > 8 ? SQ_DICTIONARY : 0);
-  header->layout_flags = SQ_LAYOUT_FLAGS;
-  header->group_capacity = capacity;
-  header->groups_byte_offset = layout.groups[0];
-  header->nodes_byte_offset = layout.nodes[0];
+  if (storage == SQ_STORAGE_COLOCATED) {
+    tree->data = (uint8_t *)tree + prefix;
+  } else if (storage == SQ_STORAGE_COPIED) {
+    tree->data = sq_allocate_data(payload_size);
+    if (!tree->data) {
+      sq_tree_delete(tree);
+      sq_fail(error, SQ_ERROR_ALLOCATION);
+      return NULL;
+    }
+  }
   return tree;
 }
-/* Relocate values, not bytes: non-straddling lanes may change alignment. */
-bool sq_resize(SQTree *tree, uint32_t capacity, SQError *error) {
+
+SQTree *sq_allocate(const TSLanguage *language, uint32_t capacity, SQError *error) {
+  SQTree *tree = allocate_tree(language, capacity, 0, SQ_STORAGE_COLOCATED, error);
+  if (tree) {
+    *sq_header(tree) = (SQHeader){.format_flags = SQ_VERSION | SQ_LAYOUT_FLAGS,
+                                  .group_capacity = capacity};
+  }
+  return tree;
+}
+
+SQTree *sq_allocate_loaded(const TSLanguage *language, uint32_t capacity, const void *bytes,
+                            uint32_t length, bool borrowed, SQError *error) {
+  SQTree *tree = allocate_tree(language, capacity, length,
+                              borrowed ? SQ_STORAGE_BORROWED : SQ_STORAGE_COPIED, error);
+  if (tree) {
+    if (borrowed) {
+      // This storage is only read. Mutable helpers reject borrowed descriptors.
+      tree->data = (uint8_t *)bytes;
+    } else {
+      memcpy(tree->data, bytes, length);
+    }
+  }
+  return tree;
+}
+
+/* Release storage without changing the language reference during relocation. */
+static void free_storage(SQTree *tree) {
+  if (tree->storage == SQ_STORAGE_COPIED) free(tree->data);
+  free(tree);
+}
+
+bool sq_grow_data(SQTree **tree_pointer, uint32_t size, SQError *error) {
+  SQTree *tree = *tree_pointer;
+  if (tree->storage == SQ_STORAGE_BORROWED || size < tree->size) {
+    sq_fail(error, SQ_ERROR_ARGUMENT);
+    return false;
+  }
+  if (tree->storage == SQ_STORAGE_COLOCATED) {
+    size_t prefix = sq_runtime_size(tree->language);
+    if (size > SIZE_MAX - prefix) {
+      sq_fail(error, SQ_ERROR_OVERFLOW);
+      return false;
+    }
+    SQTree *next = (SQTree *)sq_reallocate_data((uint8_t *)tree, prefix + tree->size,
+                                                prefix + size);
+    if (!next) {
+      sq_fail(error, SQ_ERROR_ALLOCATION);
+      return false;
+    }
+    next->data = (uint8_t *)next + prefix;
+    next->supertypes = (TSSymbol *)(next + 1);
+    *tree_pointer = tree = next;
+  } else {
+    uint8_t *data = sq_reallocate_data(tree->data, tree->size, size);
+    if (!data) {
+      sq_fail(error, SQ_ERROR_ALLOCATION);
+      return false;
+    }
+    tree->data = data;
+  }
+  tree->size = size;
+  return true;
+}
+
+/* Rebuild column locations while preserving their prefix-filled lane indexes. */
+bool sq_resize(SQTree **tree_pointer, uint32_t capacity, SQError *error) {
+  SQTree *tree = *tree_pointer;
+  if (tree->storage == SQ_STORAGE_BORROWED) {
+    sq_fail(error, SQ_ERROR_ARGUMENT);
+    return false;
+  }
   SQHeader old = *sq_header(tree);
   if (capacity < old.group_count) {
     sq_fail(error, SQ_ERROR_ARGUMENT);
@@ -139,43 +225,40 @@ bool sq_resize(SQTree *tree, uint32_t capacity, SQError *error) {
     sq_fail(error, SQ_ERROR_OVERFLOW);
     return false;
   }
-  uint8_t *data = sq_allocate_data((size_t)total);
-  if (!data) {
+  size_t prefix = sq_runtime_size(tree->language);
+  if (total > SIZE_MAX - prefix) {
+    sq_fail(error, SQ_ERROR_OVERFLOW);
+    return false;
+  }
+  SQTree *replacement = (SQTree *)sq_allocate_data(prefix + (size_t)total);
+  if (!replacement) {
     sq_fail(error, SQ_ERROR_ALLOCATION);
     return false;
   }
+  memcpy(replacement, tree, prefix);
+  replacement->storage = SQ_STORAGE_COLOCATED;
+  replacement->data = (uint8_t *)replacement + prefix;
+  replacement->supertypes = (TSSymbol *)(replacement + 1);
+  replacement->size = (uint32_t)total;
+  replacement->layout = next;
+  uint8_t *data = replacement->data;
   memcpy(data, &old, sizeof(old));
-  SQHeader *header = (SQHeader *)data;
-  header->group_capacity = capacity;
-  header->groups_byte_offset = next.groups[0];
-  header->nodes_byte_offset = next.nodes[0];
-  if (header->symbol_presence_byte_offset) {
-    header->symbol_presence_byte_offset =
-        next.end + old.symbol_presence_byte_offset - tree->layout.end;
-  }
-  if (header->supertype_dictionary_byte_offset) {
-    header->supertype_dictionary_byte_offset =
-        next.end + old.supertype_dictionary_byte_offset - tree->layout.end;
-  }
+  ((SQHeader *)data)->group_capacity = capacity;
+  // Prefix-filled reverse-preorder columns retain both physical indexes and
+  // packed lane phase across growth. Copy their used words, including padding.
   for (unsigned region = 0; region < 2; region++) {
     unsigned columns = region ? N_COLUMNS : G_COLUMNS;
     uint32_t scale = region ? SQ_GROUP_SIZE : 1;
-    for (unsigned c = 0; c < columns; c++) {
-      uint8_t bits = region ? sq_node_width(&next, c) : sq_group_width(c);
-      uint32_t source_offset = region ? tree->layout.nodes[c] : tree->layout.groups[c];
-      uint32_t destination_offset = region ? next.nodes[c] : next.groups[c];
-      for (uint32_t i = 0; i < old.group_count * scale; i++) {
-        uint32_t value = sq_get(tree->data, source_offset,
-                                (old.group_capacity - old.group_count) * scale + i, bits);
-        sq_set(data, destination_offset, (capacity - old.group_count) * scale + i, bits, value);
-      }
+    for (unsigned column = 0; column < columns; column++) {
+      uint8_t bits = region ? sq_node_width(&next, column) : sq_group_width(column);
+      uint32_t source = region ? tree->layout.nodes[column] : tree->layout.groups[column];
+      uint32_t destination = region ? next.nodes[column] : next.groups[column];
+      memcpy(data + destination, tree->data + source, sq_column_size(old.group_count * scale, bits));
     }
   }
   memcpy(data + next.end, tree->data + tree->layout.end, tree->size - tree->layout.end);
-  free(tree->data);
-  tree->data = data;
-  tree->size = (uint32_t)total;
-  tree->layout = next;
+  free_storage(tree);
+  *tree_pointer = replacement;
   return true;
 }
 void sq_tree_delete(SQTree *tree) {
@@ -185,9 +268,7 @@ void sq_tree_delete(SQTree *tree) {
   if (tree->language) {
     ts_language_delete(tree->language);
   }
-  free(tree->data);
-  free(tree->supertypes);
-  free(tree);
+  free_storage(tree);
 }
 const TSLanguage *sq_tree_language(const SQTree *tree) {
   return tree ? tree->language : NULL;

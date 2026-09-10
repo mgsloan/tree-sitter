@@ -28,7 +28,7 @@ typedef struct {
 struct SQNodeIterator {
   const SQTree *tree;
   SQNode current;
-  uint32_t next, end, group_end;
+  uint32_t next, end, group_start;
   UnpackCache *cache;
 };
 
@@ -43,8 +43,8 @@ SQNodeIterator *sq_node_iterator_new(SQNode root, bool unpack_cache) {
   }
   iterator->tree = root.tree;
   iterator->next = root.slot;
-  iterator->end = sq_node_end_slot(root);
-  iterator->group_end = (root.slot / SQ_GROUP_SIZE + 1) * SQ_GROUP_SIZE;
+  iterator->end = sq_node_first_slot(root);
+  iterator->group_start = root.slot / SQ_GROUP_SIZE * SQ_GROUP_SIZE;
   if (unpack_cache) {
     iterator->cache = (UnpackCache *)(iterator + 1);
     iterator->cache->group = SQ_NONE;
@@ -68,18 +68,17 @@ SQNode sq_node_iterator_next(SQNodeIterator *iterator) {
     return sq_null();
   }
   uint32_t slot = iterator->next;
-  if (slot < iterator->end && slot == iterator->group_end) {
-    // Slots inside a group are consecutive. Consult its waste column only
-    // when crossing a boundary, rather than once per visited node.
-    slot += sq_group_get(iterator->tree, G_WASTE, slot / SQ_GROUP_SIZE);
-    iterator->group_end += SQ_GROUP_SIZE;
-  }
-  if (slot >= iterator->end) {
+  if (slot == SQ_NONE || slot < iterator->end) {
     iterator->current = sq_null();
-    iterator->next = iterator->end;
+    iterator->next = SQ_NONE;
     return iterator->current;
   }
-  iterator->next = slot + 1;
+  iterator->next = slot - 1;
+  if (slot == iterator->group_start && slot) {
+    uint32_t group = slot / SQ_GROUP_SIZE - 1;
+    iterator->next -= sq_group_get(iterator->tree, G_WASTE, group);
+    iterator->group_start -= SQ_GROUP_SIZE;
+  }
   iterator->current = (SQNode){iterator->tree, slot};
   return iterator->current;
 }
@@ -109,7 +108,7 @@ static UnpackCache *cache_columns(SQNodeIterator *iterator, unsigned needed) {
   unsigned missing = needed & ~cache->filled;
   if (missing) {
     const SQHeader *header = sq_header(node.tree);
-    uint32_t first = (header->group_capacity - header->group_count + first_group) * SQ_GROUP_SIZE;
+    uint32_t first = first_group * SQ_GROUP_SIZE;
     uint32_t groups = header->group_count - first_group;
     if (groups > groups_per_window) {
       groups = groups_per_window;

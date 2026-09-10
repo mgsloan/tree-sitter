@@ -24,27 +24,21 @@ _Static_assert(SQ_ITERATOR_UNPACK_SLOTS >= SQ_GROUP_SIZE &&
 #endif
 _Static_assert(SQ_COLUMN_ALIGNMENT == 8 || SQ_COLUMN_ALIGNMENT == 64,
                "supported experimental column alignments");
-#define SQ_VERSION                                                                                 \
-  (0x30u |                                                                                         \
-   (SQ_GROUP_SIZE == 32   ? 2u                                                                     \
-    : SQ_GROUP_SIZE == 64 ? 4u                                                                     \
-                          : 0u) |                                                                  \
+#define SQ_VERSION                                               \
+  (UINT32_C(0x53510040) |                                        \
+   (SQ_GROUP_SIZE == 32 ? 2u : SQ_GROUP_SIZE == 64 ? 4u : 0u) |  \
    (SQ_COLUMN_ALIGNMENT == 64 ? 8u : 0u))
-#define SQ_DICTIONARY 1u
-/* The first formerly reserved header byte selects the coordinate layout. */
-#define SQ_LAYOUT_FLAGS (SQ_INCLUDE_POINTS ? 0u : 1u)
+/* Version 4: layout flags and optional sections share one format word. */
+#define SQ_LAYOUT_FLAGS (SQ_INCLUDE_POINTS ? 0u : 0x100u)
+#define SQ_PRESENCE 0x200u
 #define SQ_NONE UINT32_MAX
 
 typedef struct {
-  uint8_t magic_bits;
-  uint8_t layout_flags;
-  uint8_t reserved[2];
+  uint32_t format_flags;
   uint32_t group_count, group_capacity;
-  uint32_t groups_byte_offset, nodes_byte_offset;
-  uint32_t symbol_presence_byte_offset;
-  uint32_t supertype_dictionary_byte_offset, supertype_dictionary_count;
+  uint32_t supertype_dictionary_count;
 } SQHeader;
-_Static_assert(sizeof(SQHeader) == 32, "slab header size");
+_Static_assert(sizeof(SQHeader) == 16, "slab header size");
 
 enum {
   G_WASTE, G_SPAN, G_BYTE, G_END_BYTE,
@@ -81,6 +75,7 @@ typedef struct {
   uint32_t groups[G_COLUMNS], nodes[N_COLUMNS], end;
   uint8_t symbol_bits, field_bits;
 } SQLayout;
+typedef enum { SQ_STORAGE_COLOCATED, SQ_STORAGE_COPIED, SQ_STORAGE_BORROWED } SQStorage;
 struct SQTree {
   const TSLanguage *language;
   uint8_t *data;
@@ -89,6 +84,7 @@ struct SQTree {
   /* Sorted original grammar IDs, including supertype metadata in older ABIs. */
   TSSymbol *supertypes;
   uint32_t supertype_count;
+  SQStorage storage;
 };
 
 static inline SQHeader *sq_header(const SQTree *tree) {
@@ -163,15 +159,11 @@ static inline uint32_t sq_get(const uint8_t *data, uint32_t offset, uint32_t ind
 }
 void sq_set(uint8_t *, uint32_t offset, uint32_t index, uint8_t bits, uint32_t);
 static inline uint32_t sq_group_get(const SQTree *tree, unsigned column, uint32_t group) {
-  SQHeader *header = sq_header(tree);
-  return sq_get(tree->data, tree->layout.groups[column],
-                header->group_capacity - header->group_count + group, sq_group_width(column));
+  return sq_get(tree->data, tree->layout.groups[column], group, sq_group_width(column));
 }
 static inline uint32_t sq_node_get(SQNode node, unsigned column) {
-  SQHeader *header = sq_header(node.tree);
   return sq_get(node.tree->data, node.tree->layout.nodes[column],
-                (header->group_capacity - header->group_count) * SQ_GROUP_SIZE + node.slot,
-                sq_node_width(&node.tree->layout, column));
+                node.slot, sq_node_width(&node.tree->layout, column));
 }
 /* Unpack native-endian, non-straddling fields of 1..16 bits. The caller
  * provides count u16 outputs and enough complete packed words for the range.
@@ -197,13 +189,41 @@ SQUnpackCoordinates sq_unpack_coordinates_select(unsigned kernel);
 #define SQ_COORDINATE_KERNEL 0
 #endif
 
-uint32_t sq_next_slot(const SQTree *, uint32_t);
+uint32_t sq_previous_slot(const SQTree *, uint32_t);
+uint32_t sq_next_position(const SQTree *, uint32_t);
+uint32_t sq_node_first_slot(SQNode);
+/* Query plans use ascending preorder positions; node handles use direct,
+ * descending physical slots. Conversion is confined to ordered scans. */
 uint32_t sq_node_end_slot(SQNode);
+static inline uint32_t sq_node_position(SQNode node) {
+  return sq_tree_slot_count(node.tree) - 1 - node.slot;
+}
+static inline SQNode sq_position_node(const SQTree *tree, uint32_t position) {
+  return (SQNode){tree, sq_tree_slot_count(tree) - 1 - position};
+}
+static inline uint32_t sq_position_group(const SQTree *tree, uint32_t group) {
+  return sq_tree_group_count(tree) - 1 - group;
+}
 SQNode sq_null(void);
 SQTree *sq_allocate(const TSLanguage *, uint32_t, SQError *);
-bool sq_resize(SQTree *, uint32_t, SQError *);
-bool sq_build_presence(SQTree *, SQError *);
-bool sq_append_dictionary(SQTree *, const uint64_t *, uint32_t, SQError *);
+/* Builder operations may move a colocated descriptor. Refresh the caller's
+ * pointer before reading it again; finalized public trees never move. */
+size_t sq_runtime_size(const TSLanguage *);
+SQTree *sq_allocate_loaded(const TSLanguage *, uint32_t, const void *, uint32_t,
+                            bool borrowed, SQError *);
+bool sq_resize(SQTree **, uint32_t, SQError *);
+bool sq_grow_data(SQTree **, uint32_t, SQError *);
+bool sq_build_presence(SQTree **, SQError *);
+bool sq_append_dictionary(SQTree **, const uint64_t *, uint32_t, SQError *);
+uint64_t sq_presence_size(const SQTree *);
+static inline uint32_t sq_presence_offset(const SQTree *tree) {
+  return sq_header(tree)->format_flags & SQ_PRESENCE ? tree->layout.end : 0;
+}
+static inline uint32_t sq_dictionary_offset(const SQTree *tree) {
+  return sq_header(tree)->supertype_dictionary_count
+      ? tree->layout.end + (sq_presence_offset(tree) ? (uint32_t)sq_presence_size(tree) : 0)
+      : 0;
+}
 static inline void sq_fail(SQError *error, SQError value) {
   if (error) {
     *error = value;

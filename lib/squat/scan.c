@@ -33,8 +33,7 @@ uint64_t sq_tree_group_equal(const SQTree *tree, uint32_t group, SQColumn column
   }
 
   uint32_t lanes = 64 / bits;
-  uint32_t allocation_group = sq_header(tree)->group_capacity - sq_tree_group_count(tree) + group;
-  uint32_t first_slot = allocation_group * SQ_GROUP_SIZE;
+  uint32_t first_slot = group * SQ_GROUP_SIZE;
   uint32_t last_slot = first_slot + SQ_GROUP_SIZE;
   uint64_t matches = 0;
   for (uint32_t word_index = first_slot / lanes; word_index <= (last_slot - 1) / lanes;
@@ -52,5 +51,6 @@ uint64_t sq_tree_group_equal(const SQTree *tree, uint32_t group, SQColumn column
     }
   }
   uint32_t waste = sq_group_get(tree, G_WASTE, group);
-  return matches & (UINT64_MAX << waste);
+  uint32_t used = SQ_GROUP_SIZE - waste;
+  return matches & (used == 64 ? UINT64_MAX : (UINT64_C(1) << used) - 1);
 }
