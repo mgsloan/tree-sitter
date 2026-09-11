@@ -367,12 +367,13 @@ SQNode sq_node_first_named_child_for_byte(SQNode node, uint32_t right) {
   return first_for_byte(node, right, true);
 }
 
+#if SQ_INCLUDE_POINTS
 static int point_cmp(TSPoint left, TSPoint right) {
   return left.row != right.row ? (left.row > right.row ? 1 : -1)
                                : (left.column > right.column) - (left.column < right.column);
 }
 
-static SQNode seek(SQNode node, TSPoint start, TSPoint end, bool named, bool bytes) {
+static SQNode seek_point(SQNode node, TSPoint start, TSPoint end, bool named) {
   if (!node.tree || point_cmp(start, end) > 0) {
     return sq_null();
   }
@@ -382,15 +383,8 @@ static SQNode seek(SQNode node, TSPoint start, TSPoint end, bool named, bool byt
     SQNode found = sq_null();
     for (SQNode child = first_child(node); child.tree;
          child = sq_node_next_sibling_including_empty(child)) {
-#if SQ_INCLUDE_POINTS
-      TSPoint child_start =
-          bytes ? (TSPoint){0, sq_node_start_byte(child)} : sq_node_start_point(child);
-      TSPoint child_end = bytes ? (TSPoint){0, sq_node_end_byte(child)} : sq_node_end_point(child);
-#else
-      (void)bytes;
-      TSPoint child_start = {0, sq_node_start_byte(child)};
-      TSPoint child_end = {0, sq_node_end_byte(child)};
-#endif
+      TSPoint child_start = sq_node_start_point(child);
+      TSPoint child_end = sq_node_end_point(child);
       if (point_cmp(child_end, end) < 0) {
         continue;
       }
@@ -401,6 +395,44 @@ static SQNode seek(SQNode node, TSPoint start, TSPoint end, bool named, bool byt
       }
 
       if (point_cmp(start, child_start) < 0) {
+        break;
+      }
+
+      found = child;
+      break;
+    }
+
+    if (!found.tree) {
+      return result;
+    }
+
+    node = found;
+    if (!named || sq_node_is_named(node)) {
+      result = node;
+    }
+  }
+}
+#endif
+
+// Descend in sibling order to preserve the first match at shared empty boundaries.
+// seek_byte has already checked the node and range before taking this fallback.
+static SQNode seek_byte_descent(SQNode node, uint32_t start, uint32_t end, bool named) {
+  SQNode result = node;
+  for (;;) {
+    SQNode found = sq_null();
+    for (SQNode child = first_child(node); child.tree;
+         child = sq_node_next_sibling_including_empty(child)) {
+      uint32_t child_start = sq_node_start_byte(child);
+      uint32_t child_end = sq_node_end_byte(child);
+      if (child_end < end) {
+        continue;
+      }
+
+      if (child_start == child_end ? child_end < start : child_end <= start) {
+        continue;
+      }
+
+      if (start < child_start) {
         break;
       }
 
@@ -458,7 +490,7 @@ static SQNode seek_byte(SQNode node, uint32_t range_start, uint32_t range_end, b
     for (SQNode previous = candidate; previous.tree && previous.slot <= node.slot &&
          sq_node_start_byte(previous) == range_start; previous = sq_node_prev_preorder(previous)) {
       if (sq_node_end_byte(previous) == range_start) {
-        return seek(node, (TSPoint){0, range_start}, (TSPoint){0, range_end}, named, true);
+        return seek_byte_descent(node, range_start, range_end, named);
       }
     }
   }
@@ -486,11 +518,11 @@ SQNode sq_node_named_descendant_for_byte_range(SQNode node, uint32_t range_start
 
 #if SQ_INCLUDE_POINTS
 SQNode sq_node_descendant_for_point_range(SQNode node, TSPoint range_start, TSPoint range_end) {
-  return seek(node, range_start, range_end, false, false);
+  return seek_point(node, range_start, range_end, false);
 }
 
 SQNode sq_node_named_descendant_for_point_range(SQNode node, TSPoint range_start,
                                                 TSPoint range_end) {
-  return seek(node, range_start, range_end, true, false);
+  return seek_point(node, range_start, range_end, true);
 }
 #endif
