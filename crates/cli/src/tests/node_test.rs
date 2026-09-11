@@ -1,4 +1,4 @@
-use tree_sitter::{InputEdit, Node, Parser, Point, Range, Tree};
+use tree_sitter::{InputEdit, Node, Parser, Point, Tree};
 use tree_sitter_generate::load_grammar_file;
 
 use super::{
@@ -1250,39 +1250,26 @@ fn test_node_descendant_for_range_after_hidden_zero_width_token() {
 #[test]
 fn test_node_descendant_for_range_after_hidden_zero_width_subtree() {
     let mut parser = Parser::new();
-    parser.set_language(&get_language("ruby")).unwrap();
-    let code = "class A b end";
-    // At the included-range boundary, Ruby emits a zero-width _line_break
-    // inside a hidden _terminator, immediately before the identifier `b`.
-    parser
-        .set_included_ranges(&[0..8, 8..code.len()].map(|range| Range {
-            start_byte: range.start,
-            end_byte: range.end,
-            start_point: Point::new(0, range.start),
-            end_point: Point::new(0, range.end),
-        }))
-        .unwrap();
-    let tree = parser.parse(code, None).unwrap();
+    parser.set_language(&get_language("php/php")).unwrap();
+    let tree = parser.parse("<?do use B?><?f;", None).unwrap();
     let root = tree.root_node();
-    assert!(!root.has_error());
-    let identifier = root
-        .named_child(0)
-        .unwrap()
-        .child_by_field_name("body")
-        .unwrap()
-        .named_child(0)
+    assert!(root.has_error());
+    let end_tag = get_all_nodes(&tree)
+        .into_iter()
+        .find(|node| node.kind() == "php_end_tag")
         .unwrap();
-    assert_eq!(identifier.kind(), "identifier");
-    assert_eq!(identifier.byte_range(), 8..9);
+    assert_eq!(end_tag.byte_range(), 10..12);
 
-    let point = Point::new(0, 8);
+    // Error recovery leaves an empty _semicolon containing _automatic_semicolon
+    // immediately before the php_end_tag, inside the same ERROR node.
+    let point = Point::new(0, 10);
     for node in [
-        root.descendant_for_byte_range(8, 8),
-        root.named_descendant_for_byte_range(8, 8),
+        root.descendant_for_byte_range(10, 10),
+        root.named_descendant_for_byte_range(10, 10),
         root.descendant_for_point_range(point, point),
         root.named_descendant_for_point_range(point, point),
     ] {
-        assert_eq!(node, Some(identifier));
+        assert_eq!(node, Some(end_tag));
     }
 }
 
