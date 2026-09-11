@@ -48,19 +48,26 @@ is needed. Parent navigation scans backward, using group span bounds to skip gro
 The cursor supports first/last child, next sibling, and parent movement. It
 retains only an ancestor stack, with no sibling history or decoded-column cache.
 
-Byte-range descendant lookup binary-searches the group start-byte minima, scans
-the selected group's deltas, then ascends to the deepest enclosing node. Named
-lookups continue to the nearest named ancestor. Start-byte bases must retain
-actual minima for this search; zero-base selection applies only to other columns.
+Byte-range descendant lookup binary-searches the group start-byte minima, finds
+the selected group's qualifying start, then scans end coordinates to find the
+deepest enclosing node. Named lookups continue to the nearest named ancestor.
+Start-byte bases must retain actual minima for this search; zero-base selection applies only to other columns.
 Equal-start empty nodes use the original sibling descent to preserve boundary
-behavior. The search allocates nothing and adds no serialized index. Parent
-ascent can still scan groups, so the complete lookup is not always logarithmic.
+behavior. The search allocates nothing and adds no serialized index. Finding the
+enclosing end can still scan groups, so the complete lookup is not always logarithmic.
 
-Point-range lookup uses the same approach with group start-row minima. When the
-row matches, it compares the earliest preorder node's start column, since the
-column base may be zero or describe a different row. Point search and its sibling
-descent fallback compile only with `SQ_INCLUDE_POINTS`; byte descent uses integer
-offsets directly.
+Point-range lookup searches group start-row minima. When the row matches, it
+compares the earliest preorder node's start column, since the column base may be
+zero or describe a different row. It retains span-based parent
+traversal: decoding two end columns for unrelated nodes regressed large files.
+Point search and its sibling descent fallback compile only with
+`SQ_INCLUDE_POINTS`; byte descent uses integer offsets directly.
+
+Both searches compare the selected group's start deltas with SSE2 when available,
+masking out unused lanes and slots outside the subtree; other targets use scalar
+scans. Byte end scans reuse group bases and skip groups whose maximum end is too small.
+The equal-start boundary walk uses its subtree root as the bound, avoiding repeated
+whole-tree checks through the public preorder API.
 
 `sq_cursor_attributes` reads a bulk attribute snapshot. Rust exposes it through
 `Node::walk()` and `Cursor::attributes()`:

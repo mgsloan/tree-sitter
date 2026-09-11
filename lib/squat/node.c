@@ -1,4 +1,7 @@
 #include "internal.h"
+#if defined(__SSE2__)
+#include <emmintrin.h>
+#endif
 
 SQNode sq_null(void) {
   return (SQNode){NULL, 0};
@@ -367,12 +370,48 @@ SQNode sq_node_first_named_child_for_byte(SQNode node, uint32_t right) {
   return first_for_byte(node, right, true);
 }
 
+// The equal-start walks stop at their subtree root, so they need only skip
+// unused group lanes; the public preorder API's tree bounds checks are redundant.
+static uint32_t seek_previous_slot(SQNode node) {
+  uint32_t group = node.slot / SQ_GROUP_SIZE;
+  uint32_t limit = (group + 1) * SQ_GROUP_SIZE - sq_group_waste(node.tree, group);
+  return node.slot + 1 < limit ? node.slot + 1 : (group + 1) * SQ_GROUP_SIZE;
+}
+
+#if defined(__SSE2__)
+// Match unsigned start deltas at or below the threshold. A group occupies
+// complete 16-byte chunks, including its unused physical lanes.
+// Callers clip the resulting mask to live lanes within the requested subtree.
+static uint64_t seek_start_mask(const uint8_t *deltas, uint32_t threshold) {
+  if (threshold >= UINT8_MAX) return UINT64_MAX >> (64 - SQ_GROUP_SIZE);
+  __m128i value = _mm_set1_epi8((char)threshold);
+  uint64_t mask = 0;
+  for (unsigned offset = 0; offset < SQ_GROUP_SIZE; offset += 16) {
+    __m128i lanes = _mm_loadu_si128((const __m128i *)(deltas + offset));
+    __m128i match = _mm_cmpeq_epi8(_mm_min_epu8(lanes, value), lanes);
+    mask |= (uint64_t)(unsigned)_mm_movemask_epi8(match) << offset;
+  }
+
+  return mask;
+}
+
+static uint32_t seek_mask_slot(uint64_t mask, uint32_t slot, uint32_t limit) {
+  mask >>= slot % SQ_GROUP_SIZE;
+  uint32_t found = mask ? slot + (uint32_t)__builtin_ctzll(mask) : limit;
+  return found < limit ? found : limit;
+}
+#endif
+
 #if SQ_INCLUDE_POINTS
 static int point_cmp(TSPoint left, TSPoint right) {
   return left.row != right.row ? (left.row > right.row ? 1 : -1)
                                : (left.column > right.column) - (left.column < right.column);
 }
 
+// Keep the shared-boundary fallback out of the indexed search's hot code.
+#if defined(__GNUC__) || defined(__clang__)
+__attribute__((noinline))
+#endif
 static SQNode seek_point_descent(SQNode node, TSPoint start, TSPoint end, bool named) {
   SQNode result = node;
   for (;;) {
@@ -431,8 +470,8 @@ static SQNode seek_point(SQNode node, TSPoint range_start, TSPoint range_end, bo
       after = column > range_start.column;
     }
 
-    if (after) low = middle + 1;
-    else high = middle;
+    low = after ? middle + 1 : low;
+    high = after ? high : middle;
   }
 
   // Clip to live slots in this subtree, then find its last qualifying start.
@@ -440,7 +479,28 @@ static SQNode seek_point(SQNode node, TSPoint range_start, TSPoint range_end, bo
   if (slot < first) slot = first;
   uint32_t limit = (low + 1) * SQ_GROUP_SIZE - sq_group_waste(tree, low);
   if (limit > node.slot + 1) limit = node.slot + 1;
-  while (slot < limit && point_cmp(sq_node_start_point((SQNode){tree, slot}), range_start) > 0) slot++;
+  TSPoint base = {sq_group_start_row_base(tree, low), sq_group_start_column_base(tree, low)};
+#if defined(__SSE2__)
+  // Earlier rows qualify regardless of column; on the requested row, both
+  // limits must hold. The group search guarantees base.row <= range_start.row.
+  uint32_t row = range_start.row - base.row;
+  const uint8_t *rows = tree->data + tree->layout.start_row_delta + low * SQ_GROUP_SIZE;
+  const uint8_t *columns = tree->data + tree->layout.start_column_delta + low * SQ_GROUP_SIZE;
+  uint64_t earlier_rows = row ? seek_start_mask(rows, row - 1) : 0;
+  uint64_t columns_before = range_start.column >= base.column
+      ? seek_start_mask(columns, range_start.column - base.column) : 0;
+  uint64_t mask = earlier_rows | (seek_start_mask(rows, row) & columns_before);
+  slot = seek_mask_slot(mask, slot, limit);
+#else
+  while (slot < limit) {
+    SQNode candidate = {tree, slot};
+    uint32_t row = base.row + sq_node_start_row_delta(candidate);
+    if (row < range_start.row ||
+        (row == range_start.row &&
+         base.column + sq_node_start_column_delta(candidate) <= range_start.column)) break;
+    slot++;
+  }
+#endif
 
   // The subtree boundary may exclude this group's qualifying nodes.
   if (slot == limit) {
@@ -452,16 +512,17 @@ static SQNode seek_point(SQNode node, TSPoint range_start, TSPoint range_end, bo
 
   // Preserve sibling-order selection when empty nodes share the query point.
   if (point_cmp(range_start, range_end) == 0) {
-    for (SQNode previous = candidate; previous.tree && previous.slot <= node.slot &&
+    for (SQNode previous = candidate; previous.slot <= node.slot &&
          point_cmp(sq_node_start_point(previous), range_start) == 0;
-         previous = sq_node_prev_preorder(previous)) {
+         previous.slot = seek_previous_slot(previous)) {
       if (point_cmp(sq_node_end_point(previous), range_start) == 0) {
         return seek_point_descent(node, range_start, range_end, named);
       }
     }
   }
 
-  // Ascend past short ranges and whitespace to the deepest enclosing ancestor.
+  // Keep parent traversal for point ranges: scanning two end columns per
+  // intervening node costs more on large trees than rejecting groups by span.
   while (candidate.slot < node.slot) {
     TSPoint end = sq_node_end_point(candidate);
     if (point_cmp(end, range_end) >= 0 && point_cmp(end, range_start) > 0 &&
@@ -476,6 +537,10 @@ static SQNode seek_point(SQNode node, TSPoint range_start, TSPoint range_end, bo
 
 // Descend in sibling order to preserve the first match at shared empty boundaries.
 // seek_byte has already checked the node and range before taking this fallback.
+// Keep the shared-boundary fallback out of the indexed search's hot code.
+#if defined(__GNUC__) || defined(__clang__)
+__attribute__((noinline))
+#endif
 static SQNode seek_byte_descent(SQNode node, uint32_t start, uint32_t end, bool named) {
   SQNode result = node;
   for (;;) {
@@ -522,8 +587,9 @@ static SQNode seek_byte(SQNode node, uint32_t range_start, uint32_t range_end, b
   uint32_t low = first / SQ_GROUP_SIZE, high = node.slot / SQ_GROUP_SIZE;
   while (low < high) {
     uint32_t middle = low + (high - low) / 2;
-    if (sq_group_start_byte_base(tree, middle) > range_start) low = middle + 1;
-    else high = middle;
+    bool after = sq_group_start_byte_base(tree, middle) > range_start;
+    low = after ? middle + 1 : low;
+    high = after ? high : middle;
   }
 
   // Restrict the group to live slots inside this subtree, then scan its start
@@ -533,7 +599,12 @@ static SQNode seek_byte(SQNode node, uint32_t range_start, uint32_t range_end, b
   if (slot < first) slot = first;
   uint32_t limit = (low + 1) * SQ_GROUP_SIZE - sq_group_waste(tree, low);
   if (limit > node.slot + 1) limit = node.slot + 1;
+#if defined(__SSE2__)
+  const uint8_t *deltas = tree->data + tree->layout.start_byte_delta + low * SQ_GROUP_SIZE;
+  slot = seek_mask_slot(seek_start_mask(deltas, range_start - base), slot, limit);
+#else
   while (slot < limit && base + sq_node_start_byte_delta((SQNode){tree, slot}) > range_start) slot++;
+#endif
 
   // A subtree boundary can cut off the qualifying part of its first group
   if (slot == limit) {
@@ -547,21 +618,39 @@ static SQNode seek_byte(SQNode node, uint32_t range_start, uint32_t range_end, b
   // not the last node with that start. Keep that rare ambiguity on its existing
   // path; ordinary equal-start ancestor chains can use the indexed result.
   if (range_start == range_end) {
-    for (SQNode previous = candidate; previous.tree && previous.slot <= node.slot &&
-         sq_node_start_byte(previous) == range_start; previous = sq_node_prev_preorder(previous)) {
+    for (SQNode previous = candidate; previous.slot <= node.slot &&
+         sq_node_start_byte(previous) == range_start; previous.slot = seek_previous_slot(previous)) {
       if (sq_node_end_byte(previous) == range_start) {
         return seek_byte_descent(node, range_start, range_end, named);
       }
     }
   }
 
-  // The last start may precede whitespace or belong to a range too short for
-  // range_end. Ascend to the deepest enclosing (optionally named) ancestor.
-  while (candidate.slot < node.slot) {
+  // Most selected nodes already cover the range, so avoid group-scan setup.
+  if (candidate.slot < node.slot) {
     uint32_t end = sq_node_end_byte(candidate);
     if (end >= range_end && end > range_start && (!named || sq_node_is_named(candidate))) return candidate;
-    candidate = sq_node_parent(candidate);
-    if (!candidate.tree) return node;
+    candidate.slot++;
+  }
+
+  // Earlier preorder siblings end before the query; the first qualifying end
+  // belongs to an enclosing ancestor. Reuse each group's end base and skip
+  // groups whose maximum end cannot cover the range.
+  while (candidate.slot < node.slot) {
+    uint32_t group = candidate.slot / SQ_GROUP_SIZE;
+    uint32_t limit = (group + 1) * SQ_GROUP_SIZE - sq_group_waste(tree, group);
+    if (limit > node.slot) limit = node.slot;
+    uint32_t base = sq_group_end_byte_base(tree, group);
+    if (base >= range_end && base > range_start) {
+      uint32_t threshold = base - range_end;
+      if (threshold >= base - range_start) threshold = base - range_start - 1;
+      for (; candidate.slot < limit; candidate.slot++) {
+        if (sq_node_end_byte_delta(candidate) <= threshold &&
+            (!named || sq_node_is_named(candidate))) return candidate;
+      }
+    }
+
+    candidate.slot = (group + 1) * SQ_GROUP_SIZE;
   }
 
   return node;
