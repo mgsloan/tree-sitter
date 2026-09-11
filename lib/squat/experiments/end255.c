@@ -6,8 +6,8 @@
 #include <stdio.h>
 #include <time.h>
 
-/* Private copies preserve end = base - u8_delta. Eligible groups choose
- * base 255; no new encoding, widths, flags, or group boundaries are introduced. */
+// Private copies preserve end = base - u8_delta. Eligible groups choose
+// base 255; no new encoding, widths, flags, or group boundaries are introduced.
 _Static_assert(SQ_GROUP_SIZE == 16, "this probe compares fixed 16-slot decoders");
 #ifdef NDEBUG
 #error "The experiment requires its correctness assertions"
@@ -18,6 +18,7 @@ typedef struct {
   uint32_t *base[2], *absolute;
   uint32_t groups, nodes, eligible, already_255;
 } Column;
+
 typedef void (*Decode)(const uint8_t *, uint32_t, uint32_t *);
 typedef uint32_t (*Read)(const uint8_t *, const uint32_t *, uint32_t);
 #define NOIPA __attribute__((noipa))
@@ -26,13 +27,16 @@ typedef uint32_t (*Read)(const uint8_t *, const uint32_t *, uint32_t);
 static NOIPA SCALAR uint32_t read_base(const uint8_t *d, const uint32_t *b, uint32_t slot) {
   return b[slot / SQ_GROUP_SIZE] - d[slot];
 }
+
 static NOIPA SCALAR uint32_t read_complement(const uint8_t *d, const uint32_t *b, uint32_t slot) {
   uint32_t base = b[slot / SQ_GROUP_SIZE];
   return base == 255 ? (d[slot] ^ 255u) : base - d[slot];
 }
+
 static NOIPA SCALAR void scalar_base(const uint8_t *d, uint32_t base, uint32_t *out) {
   for (unsigned i = 0; i < SQ_GROUP_SIZE; i++) out[i] = base - d[i];
 }
+
 static NOIPA SCALAR void scalar_complement(const uint8_t *d, uint32_t base, uint32_t *out) {
   if (base == 255) {
     for (unsigned i = 0; i < SQ_GROUP_SIZE; i++) out[i] = (d[i] ^ 255u);
@@ -40,6 +44,7 @@ static NOIPA SCALAR void scalar_complement(const uint8_t *d, uint32_t base, uint
     for (unsigned i = 0; i < SQ_GROUP_SIZE; i++) out[i] = base - d[i];
   }
 }
+
 static inline void sse_subtract(const uint8_t *d, uint32_t base, uint32_t *out) {
   __m128i bases = _mm_set1_epi32((int32_t)base), zero = _mm_setzero_si128();
   for (unsigned i = 0; i < SQ_GROUP_SIZE; i += 4) {
@@ -50,9 +55,11 @@ static inline void sse_subtract(const uint8_t *d, uint32_t base, uint32_t *out) 
     _mm_storeu_si128((__m128i *)(out + i), _mm_sub_epi32(bases, values));
   }
 }
+
 static NOIPA void sse_base(const uint8_t *d, uint32_t base, uint32_t *out) {
   sse_subtract(d, base, out);
 }
+
 static NOIPA void sse_complement(const uint8_t *d, uint32_t base, uint32_t *out) {
   if (base == 255) {
     __m128i bytes = _mm_xor_si128(_mm_loadu_si128((const __m128i *)d), _mm_set1_epi8(-1));
@@ -66,6 +73,7 @@ static NOIPA void sse_complement(const uint8_t *d, uint32_t base, uint32_t *out)
     sse_subtract(d, base, out);
   }
 }
+
 static inline void sse_subtract_sixteen(const uint8_t *d, uint32_t base, uint32_t *out) {
   __m128i bytes = _mm_loadu_si128((const __m128i *)d), zero = _mm_setzero_si128();
   __m128i low = _mm_unpacklo_epi8(bytes, zero), high = _mm_unpackhi_epi8(bytes, zero);
@@ -75,9 +83,11 @@ static inline void sse_subtract_sixteen(const uint8_t *d, uint32_t base, uint32_
   _mm_storeu_si128((__m128i *)(out + 8), _mm_sub_epi32(bases, _mm_unpacklo_epi16(high, zero)));
   _mm_storeu_si128((__m128i *)(out + 12), _mm_sub_epi32(bases, _mm_unpackhi_epi16(high, zero)));
 }
+
 static NOIPA void sse_sixteen_base(const uint8_t *d, uint32_t base, uint32_t *out) {
   sse_subtract_sixteen(d, base, out);
 }
+
 static NOIPA void sse_sixteen_complement(const uint8_t *d, uint32_t base, uint32_t *out) {
   if (base == 255) {
     __m128i bytes = _mm_xor_si128(_mm_loadu_si128((const __m128i *)d), _mm_set1_epi8(-1));
@@ -91,20 +101,23 @@ static NOIPA void sse_sixteen_complement(const uint8_t *d, uint32_t base, uint32
     sse_subtract_sixteen(d, base, out);
   }
 }
-__attribute__((target("avx2")))
-static inline void avx_subtract(const uint8_t *d, uint32_t base, uint32_t *out) {
+
+__attribute__((target("avx2"))) static inline void avx_subtract(const uint8_t *d, uint32_t base,
+                                                                uint32_t *out) {
   __m256i bases = _mm256_set1_epi32((int32_t)base);
   for (unsigned i = 0; i < SQ_GROUP_SIZE; i += 8) {
     __m256i values = _mm256_cvtepu8_epi32(_mm_loadl_epi64((const __m128i *)(d + i)));
     _mm256_storeu_si256((__m256i *)(out + i), _mm256_sub_epi32(bases, values));
   }
 }
-static NOIPA __attribute__((target("avx2")))
-void avx_base(const uint8_t *d, uint32_t base, uint32_t *out) {
+
+static NOIPA __attribute__((target("avx2"))) void avx_base(const uint8_t *d, uint32_t base,
+                                                           uint32_t *out) {
   avx_subtract(d, base, out);
 }
-static NOIPA __attribute__((target("avx2")))
-void avx_eight_complement(const uint8_t *d, uint32_t base, uint32_t *out) {
+
+static NOIPA __attribute__((target("avx2"))) void
+avx_eight_complement(const uint8_t *d, uint32_t base, uint32_t *out) {
   if (base == 255) {
     for (unsigned i = 0; i < SQ_GROUP_SIZE; i += 8) {
       __m128i bytes = _mm_xor_si128(_mm_loadl_epi64((const __m128i *)(d + i)), _mm_set1_epi8(-1));
@@ -114,8 +127,9 @@ void avx_eight_complement(const uint8_t *d, uint32_t base, uint32_t *out) {
     avx_subtract(d, base, out);
   }
 }
-static NOIPA __attribute__((target("avx2")))
-void avx_sixteen_complement(const uint8_t *d, uint32_t base, uint32_t *out) {
+
+static NOIPA __attribute__((target("avx2"))) void
+avx_sixteen_complement(const uint8_t *d, uint32_t base, uint32_t *out) {
   if (base == 255) {
     // One exact 16-byte load and complement covers the whole physical group.
     __m128i bytes = _mm_xor_si128(_mm_loadu_si128((const __m128i *)d), _mm_set1_epi8(-1));
@@ -125,16 +139,23 @@ void avx_sixteen_complement(const uint8_t *d, uint32_t base, uint32_t *out) {
     avx_subtract(d, base, out);
   }
 }
-static Decode decoders[5][2] = {{scalar_base, scalar_complement}, {sse_base, sse_complement},
-                               {sse_sixteen_base, sse_sixteen_complement}, {avx_base, avx_eight_complement}, {avx_base, avx_sixteen_complement}};
-static const char *kernels[] = {"scalar-node", "scalar-group", "sse2-four", "sse2-sixteen", "avx2-eight", "avx2-sixteen"};
-static const char *variants[] = {"baseline", "existing-complement", "fixed-subtract", "fixed-complement"};
+
+static Decode decoders[5][2] = {{scalar_base, scalar_complement},
+                                {sse_base, sse_complement},
+                                {sse_sixteen_base, sse_sixteen_complement},
+                                {avx_base, avx_eight_complement},
+                                {avx_base, avx_sixteen_complement}};
+static const char *kernels[] = {"scalar-node",  "scalar-group", "sse2-four",
+                                "sse2-sixteen", "avx2-eight",   "avx2-sixteen"};
+static const char *variants[] = {"baseline", "existing-complement", "fixed-subtract",
+                                 "fixed-complement"};
 
 static double now(void) {
   struct timespec value;
   clock_gettime(CLOCK_MONOTONIC, &value);
   return value.tv_sec + value.tv_nsec * 1e-9;
 }
+
 static Column column_new(uint32_t groups) {
   Column c = {.groups = groups};
   c.live = calloc(groups, 1);
@@ -145,13 +166,19 @@ static Column column_new(uint32_t groups) {
     c.base[v] = calloc(groups, 4);
     assert(c.delta[v] && c.base[v]);
   }
+
   return c;
 }
+
 static void column_delete(Column *c) {
   free(c->live);
   free(c->absolute);
-  for (unsigned v = 0; v < 2; v++) { free(c->delta[v]); free(c->base[v]); }
+  for (unsigned v = 0; v < 2; v++) {
+    free(c->delta[v]);
+    free(c->base[v]);
+  }
 }
+
 static void rebase(Column *c) {
   for (uint32_t g = 0; g < c->groups; g++) {
     uint32_t first = g * SQ_GROUP_SIZE, max = 0;
@@ -160,6 +187,7 @@ static void rebase(Column *c) {
       c->absolute[first + i] = value;
       if (value > max) max = value;
     }
+
     bool fits = max <= UINT8_MAX;
     c->eligible += fits;
     c->already_255 += c->base[0][g] == 255;
@@ -183,18 +211,20 @@ static void validate(const Column *c) {
           for (unsigned i = 0; i < c->live[g]; i++)
             values[i] = read(c->delta[v], c->base[v], first + i);
         }
+
         for (unsigned i = 0; i < c->live[g]; i++) assert(values[i] == c->absolute[first + i]);
       }
     }
   }
 }
+
 static NOIPA uint64_t walk(const Column *c, unsigned kernel, unsigned variant, unsigned batches) {
   unsigned v = variant / 2, skip = variant % 2;
   Read read = skip ? read_complement : read_base;
   Decode decode = kernel ? decoders[kernel - 1][skip] : NULL;
   uint64_t sum = 0;
   for (unsigned batch = 0; batch < batches; batch++) {
-    for (uint32_t group = c->groups; group; ) {
+    for (uint32_t group = c->groups; group;) {
       uint32_t g = --group, first = g * SQ_GROUP_SIZE;
       if (kernel) {
         uint32_t values[SQ_GROUP_SIZE];
@@ -202,13 +232,14 @@ static NOIPA uint64_t walk(const Column *c, unsigned kernel, unsigned variant, u
         decode(c->delta[v] + first, base, values);
         sum += values[(g + batch) % c->live[g]];
       } else {
-        for (unsigned i = c->live[g]; i; )
-          sum += read(c->delta[v], c->base[v], first + --i);
+        for (unsigned i = c->live[g]; i;) sum += read(c->delta[v], c->base[v], first + --i);
       }
     }
   }
+
   return sum;
 }
+
 static volatile uint64_t sink;
 static void benchmark(Column *c, const char *name, unsigned repeats) {
   validate(c);
@@ -221,8 +252,9 @@ static void benchmark(Column *c, const char *name, unsigned repeats) {
       if (now() - start >= 0.004 || batches >= (1u << 20)) break;
       batches *= 2;
     }
+
     for (unsigned repeat = 0; repeat < repeats; repeat++) {
-      /* Rotate and reverse blocks: each variant occupies each position equally. */
+      // Rotate and reverse blocks: each variant occupies each position equally.
       for (unsigned step = 0; step < 4; step++) {
         unsigned variant = (repeat / 4 % 2 ? 3 - step : step);
         variant = (variant + repeat) % 4;
@@ -230,13 +262,14 @@ static void benchmark(Column *c, const char *name, unsigned repeats) {
         uint64_t sum = walk(c, kernel, variant, batches);
         double elapsed = now() - start;
         sink += sum;
-        printf("%s,%s,%s,%u,%u,%u,%u,%u,%u,%.9f,%llu\n", name, kernels[kernel],
-               variants[variant], repeat, batches, c->groups, c->nodes, c->eligible,
-               c->already_255, elapsed, (unsigned long long)sum);
+        printf("%s,%s,%s,%u,%u,%u,%u,%u,%u,%.9f,%llu\n", name, kernels[kernel], variants[variant],
+               repeat, batches, c->groups, c->nodes, c->eligible, c->already_255, elapsed,
+               (unsigned long long)sum);
       }
     }
   }
 }
+
 static void boundary_checks(void) {
   // Exact allocations catch a full-group load past the end; every byte value is
   // checked at base 255. Also exercise zero, 256, high-bit bases, and partial groups.
@@ -246,16 +279,19 @@ static void boundary_checks(void) {
     c.base[0][g] = 255;
     for (unsigned i = 0; i < 16; i++) c.delta[0][g * 16 + i] = (g - 4) * 16 + i;
   }
+
   const uint32_t bases[] = {0, 256, 0x80000100u, UINT32_MAX};
   for (unsigned g = 0; g < 4; g++) {
     c.live[g] = g + 1;
     c.base[0][g] = bases[g];
     for (unsigned i = 0; i < c.live[g]; i++) c.delta[0][g * 16 + i] = i;
   }
+
   rebase(&c);
   validate(&c);
   column_delete(&c);
 }
+
 int main(int argc, char **argv) {
   boundary_checks();
   if (argc == 2 && !strcmp(argv[1], "--check")) return 0;
@@ -263,10 +299,15 @@ int main(int argc, char **argv) {
     fprintf(stderr, "usage: end255 LIBRARY SYMBOL SOURCE REPEATS\n");
     return 2;
   }
+
   unsigned repeats = (unsigned)strtoul(argv[4], NULL, 10);
   assert(repeats && repeats % 8 == 0);
   void *library = dlopen(argv[1], RTLD_NOW | RTLD_LOCAL);
-  if (!library) { fprintf(stderr, "%s\n", dlerror()); return 2; }
+  if (!library) {
+    fprintf(stderr, "%s\n", dlerror());
+    return 2;
+  }
+
   const TSLanguage *(*language)(void) = (const TSLanguage *(*)(void))dlsym(library, argv[2]);
   assert(language);
   TSParser *parser = ts_parser_new();
@@ -290,13 +331,15 @@ int main(int argc, char **argv) {
     for (uint32_t g = 0; g < c.groups; g++) {
       c.live[g] = SQ_GROUP_SIZE - sq_group_waste(tree, g);
       c.base[0][g] = sq_get_u32(tree->data, tree->layout.end_column_base, g);
-      memcpy(c.delta[0] + g * SQ_GROUP_SIZE, tree->data + tree->layout.end_column_delta + g * SQ_GROUP_SIZE,
-             SQ_GROUP_SIZE);
+      memcpy(c.delta[0] + g * SQ_GROUP_SIZE,
+             tree->data + tree->layout.end_column_delta + g * SQ_GROUP_SIZE, SQ_GROUP_SIZE);
     }
+
     rebase(&c);
     benchmark(&c, "end_column", repeats);
     column_delete(&c);
   }
+
   fprintf(stderr, "checksum: %llu\n", (unsigned long long)sink);
   sq_tree_delete(tree);
   ts_tree_delete(parsed);

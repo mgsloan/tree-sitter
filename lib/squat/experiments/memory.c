@@ -50,13 +50,16 @@ static Allocation *find_allocation(void *pointer, bool insert) {
     if (entry->pointer == pointer) {
       return entry;
     }
+
     if (entry->pointer == TOMBSTONE && !vacant) {
       vacant = entry;
     }
+
     if (!entry->pointer) {
       return insert ? (vacant ? vacant : entry) : NULL;
     }
   }
+
   require(!insert || vacant, "allocation table exhausted");
   return insert ? vacant : NULL;
 }
@@ -65,6 +68,7 @@ static void record_allocation(void *pointer, size_t requested) {
   if (!tracking || !pointer) {
     return;
   }
+
   Allocation *entry = find_allocation(pointer, true);
   require(entry->pointer != pointer, "duplicate allocation");
   *entry = (Allocation){pointer, requested, malloc_usable_size(pointer)};
@@ -80,6 +84,7 @@ static void forget_allocation(void *pointer) {
   if (!pointer) {
     return;
   }
+
   Allocation *entry = find_allocation(pointer, false);
   if (entry) {
     live.requested -= entry->requested;
@@ -118,8 +123,10 @@ void *__wrap_realloc(void *pointer, size_t size) {
       live.allocations--;
       entry->pointer = TOMBSTONE;
     }
+
     record_allocation(next, size);
   }
+
   return next;
 }
 
@@ -137,8 +144,7 @@ static Usage difference(Usage total, Usage baseline) {
 }
 
 static void print_usage(const char *name, Usage usage) {
-  printf("\"%s\":{\"requested\":%" PRIu64 ",\"usable\":%" PRIu64
-         ",\"allocations\":%" PRIu64 "}",
+  printf("\"%s\":{\"requested\":%" PRIu64 ",\"usable\":%" PRIu64 ",\"allocations\":%" PRIu64 "}",
          name, usage.requested, usage.usable, usage.allocations);
 }
 
@@ -168,6 +174,7 @@ int main(int argc, char **argv) {
     fprintf(stderr, "%s\n", dlerror());
     return 1;
   }
+
   const TSLanguage *(*language_function)(void) =
       (const TSLanguage *(*)(void))dlsym(library, argv[2]);
   require(language_function != NULL, "grammar symbol missing");
@@ -178,8 +185,7 @@ int main(int argc, char **argv) {
   require(length >= 0 && (uint64_t)length <= UINT32_MAX, "invalid source size");
   rewind(file);
   char *source = __real_malloc((size_t)length + 1);
-  require(source && fread(source, 1, (size_t)length, file) == (size_t)length,
-          "cannot read source");
+  require(source && fread(source, 1, (size_t)length, file) == (size_t)length, "cannot read source");
   fclose(file);
 
   tracking = true;
@@ -191,8 +197,8 @@ int main(int argc, char **argv) {
   Usage mainline = live;
   Usage parse_peak = peak;
   uint32_t nodes = ts_node_descendant_count(ts_tree_root_node(parsed));
-  printf("{\"points\":%d,\"group_size\":%u,\"source_bytes\":%ld,\"nodes\":%u,",
-         SQ_INCLUDE_POINTS, SQ_GROUP_SIZE, length, nodes);
+  printf("{\"points\":%d,\"group_size\":%u,\"source_bytes\":%ld,\"nodes\":%u,", SQ_INCLUDE_POINTS,
+         SQ_GROUP_SIZE, length, nodes);
   print_usage("mainline", mainline);
   putchar(',');
   print_usage("parse_peak", parse_peak);
@@ -210,23 +216,25 @@ int main(int argc, char **argv) {
     Usage pack_peak = peak;
     require(sq_node_descendant_count(sq_tree_root_node(tree)) == nodes,
             "packed node count differs");
+
     // Cross-check the retained allocation tracker against the actual owners.
     size_t expected = sq_runtime_size(language) + tree->size;
     expected = (expected + SQ_COLUMN_ALIGNMENT - 1) & ~(size_t)(SQ_COLUMN_ALIGNMENT - 1);
-    require(tree->storage == SQ_STORAGE_COLOCATED &&
-                retained.requested == expected && retained.allocations == 1,
+    require(tree->storage == SQ_STORAGE_COLOCATED && retained.requested == expected &&
+                retained.allocations == 1,
             "unexpected Squatter retained allocation");
     printf(",\"%s\":{", compact ? "compact" : "default");
     print_usage("retained", retained);
     putchar(',');
     print_usage("pack_peak_with_mainline", pack_peak);
-    printf(",\"slab_bytes\":%u,\"groups\":%u,\"group_capacity\":%u}",
-           tree->size, sq_tree_group_count(tree), sq_tree_group_capacity(tree));
+    printf(",\"slab_bytes\":%u,\"groups\":%u,\"group_capacity\":%u}", tree->size,
+           sq_tree_group_count(tree), sq_tree_group_capacity(tree));
     sq_tree_delete(tree);
     Usage remaining = difference(live, mainline);
     require(!remaining.requested && !remaining.usable && !remaining.allocations,
             "packing leaked memory or changed the mainline tree");
   }
+
   ts_tree_delete(parsed);
   require(!live.requested && !live.usable && !live.allocations, "tree cleanup leaked");
 
@@ -248,9 +256,9 @@ int main(int argc, char **argv) {
     putchar(',');
     print_usage(compact ? "compact_parse_pack_peak" : "default_parse_pack_peak", peak);
     sq_tree_delete(tree);
-    require(!live.requested && !live.usable && !live.allocations,
-            "parse-and-pack cleanup leaked");
+    require(!live.requested && !live.usable && !live.allocations, "parse-and-pack cleanup leaked");
   }
+
   tracking = false;
   puts(",\"cleanup_zero\":true}");
   __real_free(source);

@@ -4,9 +4,9 @@
 #include <dlfcn.h>
 #include <stdio.h>
 
-/* Preserve the old sibling-descent algorithm as an independent oracle. Mainline
- * has known empty-node differences, so comparing only against it can conceal
- * a regression in Squatter's existing behavior. */
+// Preserve the old sibling-descent algorithm as an independent oracle. Mainline
+// has known empty-node differences, so comparing only against it can conceal
+// a regression in Squatter's existing behavior.
 static SQNode reference(SQNode node, uint32_t left, uint32_t right, bool named) {
   if (!node.tree || left > right) return sq_null();
   SQNode result = node;
@@ -20,6 +20,7 @@ static SQNode reference(SQNode node, uint32_t left, uint32_t right, bool named) 
       found = child;
       break;
     }
+
     if (!found.tree) return result;
     node = found;
     if (!named || sq_node_is_named(node)) result = node;
@@ -34,18 +35,21 @@ static void check(SQNode node, uint32_t left, uint32_t right) {
     SQNode actual = named ? sq_node_named_descendant_for_byte_range(node, left, right)
                           : sq_node_descendant_for_byte_range(node, left, right);
     if (!sq_node_eq(expected, actual)) {
-      fprintf(stderr, "%s: root=%u [%u,%u] range=[%u,%u] named=%u expected=%u actual=%u\n",
-              path, node.slot, sq_node_start_byte(node), sq_node_end_byte(node), left, right,
-              named, expected.tree ? expected.slot : SQ_NONE, actual.tree ? actual.slot : SQ_NONE);
+      fprintf(stderr, "%s: root=%u [%u,%u] range=[%u,%u] named=%u expected=%u actual=%u\n", path,
+              node.slot, sq_node_start_byte(node), sq_node_end_byte(node), left, right, named,
+              expected.tree ? expected.slot : SQ_NONE, actual.tree ? actual.slot : SQ_NONE);
       abort();
     }
+
     checks++;
   }
 }
+
 static uint32_t random_value(uint64_t *state) {
   *state = *state * UINT64_C(6364136223846793005) + 1;
   return (uint32_t)(*state >> 32);
 }
+
 static void exercise(TSParser *parser, const char *source, uint32_t size) {
   TSTree *parsed = ts_parser_parse_string(parser, NULL, source, size);
   assert(parsed);
@@ -63,24 +67,29 @@ static void exercise(TSParser *parser, const char *source, uint32_t size) {
       for (uint32_t right = left; right <= size + 1; right++) check(root, left, right);
     }
   }
+
   for (unsigned i = 0; i < 256; i++) {
     uint32_t left = random_value(&state) % (size + 1);
     check(root, left, left);
     check(root, left, left + random_value(&state) % 32);
   }
+
   for (unsigned i = 0; i < 64; i++) {
     uint32_t slot = sq_previous_slot(tree, random_value(&state) % sq_tree_slot_count(tree));
     SQNode node = {tree, slot};
     uint32_t start = sq_node_start_byte(node), end = sq_node_end_byte(node);
-    uint32_t positions[] = {start ? start - 1 : 0, start, start + 1, end ? end - 1 : 0, end, end + 1};
+    uint32_t positions[] = {start ? start - 1 : 0, start, start + 1,
+                            end ? end - 1 : 0,     end,   end + 1};
     for (unsigned j = 0; j < 6; j++) {
       check(root, positions[j], positions[j]);
       for (unsigned k = j; k < 6; k++) check(node, positions[j], positions[k]);
     }
   }
+
   sq_tree_delete(tree);
   ts_tree_delete(parsed);
 }
+
 int main(int argc, char **argv) {
   assert(argc == 4);
   void *library = dlopen(argv[1], RTLD_NOW | RTLD_LOCAL);
@@ -108,14 +117,16 @@ int main(int argc, char **argv) {
     fclose(file);
     exercise(parser, source, (uint32_t)size);
     if (size) {
-      /* Missing delimiters, truncation, and invalid bytes exercise error trees. */
+      // Missing delimiters, truncation, and invalid bytes exercise error trees.
       source[size / 2] = '}';
       if (size > 4) source[size / 3] = (char)0xff;
       exercise(parser, source, (uint32_t)size - 1);
     }
+
     free(source);
     files++;
   }
+
   printf("%u files, %llu exact seek comparisons\n", files, (unsigned long long)checks);
   free(line);
   fclose(inputs);

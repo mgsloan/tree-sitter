@@ -3,64 +3,83 @@
 SQNode sq_null(void) {
   return (SQNode){NULL, 0};
 }
+
 bool sq_node_is_null(SQNode node) {
   return !node.tree;
 }
+
 bool sq_node_eq(SQNode left, SQNode right) {
   return left.tree == right.tree && (!left.tree || left.slot == right.slot);
 }
+
 uint32_t sq_previous_slot(const SQTree *tree, uint32_t slot) {
   if (slot >= sq_tree_slot_count(tree)) return SQ_NONE;
   uint32_t group = slot / SQ_GROUP_SIZE;
   uint32_t end = (group + 1) * SQ_GROUP_SIZE - sq_group_waste(tree, group);
   return slot >= end ? end - 1 : slot;
 }
+
 uint32_t sq_next_position(const SQTree *tree, uint32_t position) {
   uint32_t slots = sq_tree_slot_count(tree);
   if (position >= slots) return slots;
   uint32_t physical = sq_previous_slot(tree, slots - 1 - position);
   return slots - 1 - physical;
 }
+
 SQNode sq_tree_node_at_slot(const SQTree *tree, uint32_t slot) {
   return tree && slot < sq_tree_slot_count(tree) && sq_previous_slot(tree, slot) == slot
-      ? (SQNode){tree, slot} : sq_null();
+             ? (SQNode){tree, slot}
+             : sq_null();
 }
+
 SQNode sq_tree_root_node(const SQTree *tree) {
   return tree && sq_tree_group_count(tree)
-      ? sq_tree_node_at_slot(tree, sq_previous_slot(tree, sq_tree_slot_count(tree) - 1))
-      : sq_null();
+             ? sq_tree_node_at_slot(tree, sq_previous_slot(tree, sq_tree_slot_count(tree) - 1))
+             : sq_null();
 }
+
 uint32_t sq_node_first_slot(SQNode node) {
   return node.slot - sq_group_span_base(node.tree, node.slot / SQ_GROUP_SIZE) -
          sq_node_span_delta(node);
 }
+
 uint32_t sq_node_end_slot(SQNode node) {
   return sq_tree_slot_count(node.tree) - sq_node_first_slot(node);
 }
+
 static TSSymbol raw_symbol(SQNode node) {
   return sq_decode_symbol(node.tree, sq_node_symbol_id(node));
 }
+
 TSSymbol sq_node_symbol(SQNode node) {
   return node.tree ? ts_language_public_symbol(node.tree->language, raw_symbol(node)) : 0;
 }
+
 TSSymbol sq_node_grammar_symbol(SQNode node) {
   return node.tree ? sq_decode_symbol(node.tree, sq_node_grammar_id(node)) : 0;
 }
+
 const char *sq_node_type(SQNode node) {
   return node.tree ? ts_language_symbol_name(node.tree->language, raw_symbol(node)) : NULL;
 }
+
 const char *sq_node_grammar_type(SQNode node) {
   return node.tree ? ts_language_symbol_name(node.tree->language, sq_node_grammar_symbol(node))
                    : NULL;
 }
+
 uint32_t sq_node_start_byte(SQNode node) {
   return node.tree ? sq_group_start_byte_base(node.tree, node.slot / SQ_GROUP_SIZE) +
-                     sq_node_start_byte_delta(node) : 0;
+                         sq_node_start_byte_delta(node)
+                   : 0;
 }
+
 uint32_t sq_node_end_byte(SQNode node) {
   return node.tree ? sq_group_end_byte_base(node.tree, node.slot / SQ_GROUP_SIZE) -
-                     sq_node_end_byte_delta(node) : 0;
+                         sq_node_end_byte_delta(node)
+                   : 0;
 }
+
 #if SQ_INCLUDE_POINTS
 TSPoint sq_node_start_point(SQNode node) {
   if (!node.tree) return (TSPoint){0, 0};
@@ -68,6 +87,7 @@ TSPoint sq_node_start_point(SQNode node) {
   return (TSPoint){sq_group_start_row_base(node.tree, group) + sq_node_start_row_delta(node),
                    sq_group_start_column_base(node.tree, group) + sq_node_start_column_delta(node)};
 }
+
 TSPoint sq_node_end_point(SQNode node) {
   if (!node.tree) return (TSPoint){0, 0};
   uint32_t group = node.slot / SQ_GROUP_SIZE;
@@ -75,67 +95,82 @@ TSPoint sq_node_end_point(SQNode node) {
                    sq_group_end_column_base(node.tree, group) - sq_node_end_column_delta(node)};
 }
 #endif
+
 bool sq_node_is_named(SQNode node) {
   return node.tree && ts_language_symbol_metadata(node.tree->language, raw_symbol(node)).named;
 }
+
 bool sq_node_is_extra(SQNode node) {
   return node.tree && sq_node_extra_flag(node);
 }
+
 bool sq_node_is_missing(SQNode node) {
   return node.tree && sq_node_missing_flag(node);
 }
+
 bool sq_node_is_error(SQNode node) {
   return node.tree && sq_node_symbol(node) == ts_builtin_sym_error;
 }
+
 bool sq_node_has_error(SQNode node) {
   return node.tree && sq_node_error_flag(node);
 }
+
 bool sq_node_has_changes(SQNode node) {
   (void)node;
   return false;
 }
+
 TSFieldId sq_node_field_id(SQNode node) {
   return node.tree ? (TSFieldId)sq_node_field_value(node) : 0;
 }
+
 const char *sq_node_field_name(SQNode node) {
   return node.tree ? ts_language_field_name_for_id(node.tree->language, sq_node_field_id(node))
                    : NULL;
 }
+
 bool sq_node_has_supertype(SQNode node, TSSymbol symbol) {
   if (!node.tree) {
     return false;
   }
+
   const SQTree *tree = node.tree;
   for (uint32_t i = 0; i < tree->supertype_count; i++) {
     if (tree->supertypes[i] != symbol) {
       continue;
     }
+
     uint32_t value = sq_node_supertype(node);
     if (tree->supertype_count <= 8) {
       return (value >> i) & 1;
     }
+
     uint32_t words = (tree->supertype_count + 63) / 64;
     uint64_t word;
-    memcpy(&word,
-           tree->data + sq_dictionary_offset(tree) +
-               ((size_t)value * words + i / 64) * 8,
+    memcpy(&word, tree->data + sq_dictionary_offset(tree) + ((size_t)value * words + i / 64) * 8,
            8);
     return (word >> (i % 64)) & 1;
   }
+
   return false;
 }
+
 uint32_t sq_node_descendant_count(SQNode node) {
   if (!node.tree) return 0;
   uint32_t first = sq_node_first_slot(node), count = node.slot - first + 1;
   for (uint32_t group = first / SQ_GROUP_SIZE; group < node.slot / SQ_GROUP_SIZE; group++) {
     count -= sq_group_waste(node.tree, group);
   }
+
   return count;
 }
+
 SQNode sq_node_next_preorder(SQNode node) {
   return node.tree ? sq_tree_node_at_slot(node.tree, sq_previous_slot(node.tree, node.slot - 1))
                    : sq_null();
 }
+
 SQNode sq_node_prev_preorder(SQNode node) {
   if (!node.tree || node.slot == sq_tree_root_node(node.tree).slot) return sq_null();
   uint32_t slot = node.slot + 1, group = slot / SQ_GROUP_SIZE;
@@ -143,21 +178,27 @@ SQNode sq_node_prev_preorder(SQNode node) {
   if (slot >= end) slot = (group + 1) * SQ_GROUP_SIZE;
   return sq_tree_node_at_slot(node.tree, slot);
 }
+
 static SQNode first_child(SQNode node) {
   if (!node.tree) return sq_null();
+
   // Normalization already establishes an occupied slot. Avoid repeating its
   // bounds/waste checks through the public node-at-slot constructor.
   uint32_t slot = sq_previous_slot(node.tree, node.slot - 1);
-  return slot != SQ_NONE && slot >= sq_node_first_slot(node)
-      ? (SQNode){node.tree, slot} : sq_null();
+  return slot != SQ_NONE && slot >= sq_node_first_slot(node) ? (SQNode){node.tree, slot}
+                                                             : sq_null();
 }
+
 SQNode sq_node_next_sibling_including_empty(SQNode node) {
   return node.tree && !sq_node_last_flag(node)
-      ? sq_tree_node_at_slot(node.tree, sq_node_first_slot(node) - 1) : sq_null();
+             ? sq_tree_node_at_slot(node.tree, sq_node_first_slot(node) - 1)
+             : sq_null();
 }
+
 SQNode sq_node_parent(SQNode node) {
   if (!node.tree) return sq_null();
   uint32_t slots = sq_tree_slot_count(node.tree), slot = node.slot + 1;
+
   // Earlier preorder nodes occupy higher slots. Reject a group when even its
   // largest possible span cannot reach this node, then inspect nearby parents.
   while (slot < slots) {
@@ -172,18 +213,23 @@ SQNode sq_node_parent(SQNode node) {
         }
       }
     }
+
     slot = (group + 1) * SQ_GROUP_SIZE;
   }
+
   return sq_null();
 }
+
 SQNode sq_node_prev_sibling(SQNode node) {
   SQNode child = first_child(sq_node_parent(node)), previous = sq_null();
   for (; child.tree && child.slot != node.slot;
        child = sq_node_next_sibling_including_empty(child)) {
     previous = child;
   }
+
   return previous;
 }
+
 SQNode sq_node_next_sibling(SQNode node) {
   uint32_t end_byte = sq_node_end_byte(node);
   do {
@@ -191,6 +237,7 @@ SQNode sq_node_next_sibling(SQNode node) {
   } while (node.tree && sq_node_end_byte(node) <= end_byte);
   return node;
 }
+
 SQNode sq_node_next_named_sibling(SQNode node) {
   uint32_t end_byte = sq_node_end_byte(node);
   do {
@@ -207,8 +254,10 @@ SQNode sq_node_prev_named_sibling(SQNode node) {
       previous = child;
     }
   }
+
   return previous;
 }
+
 static SQNode child_at(SQNode node, uint32_t index, bool named) {
   for (SQNode child = first_child(node); child.tree;
        child = sq_node_next_sibling_including_empty(child)) {
@@ -216,37 +265,47 @@ static SQNode child_at(SQNode node, uint32_t index, bool named) {
       if (!index) {
         return child;
       }
+
       index--;
     }
   }
+
   return sq_null();
 }
+
 static uint32_t child_count(SQNode node, bool named) {
   uint32_t count = 0;
   for (SQNode child = first_child(node); child.tree;
        child = sq_node_next_sibling_including_empty(child)) {
     count += !named || sq_node_is_named(child);
   }
+
   return count;
 }
+
 SQNode sq_node_child(SQNode node, uint32_t i) {
   return child_at(node, i, false);
 }
+
 SQNode sq_node_named_child(SQNode node, uint32_t i) {
   return child_at(node, i, true);
 }
+
 uint32_t sq_node_child_count(SQNode node) {
   return child_count(node, false);
 }
+
 uint32_t sq_node_named_child_count(SQNode node) {
   return child_count(node, true);
 }
+
 SQNode sq_node_child_by_field_id(SQNode node, TSFieldId field) {
   // ERROR productions have no field map. Hidden children can still contribute
   // field names to enumeration, but mainline's field lookup stops at ERROR.
   if (sq_node_is_error(node)) {
     return sq_null();
   }
+
   if (field) {
     for (SQNode child = first_child(node); child.tree;
          child = sq_node_next_sibling_including_empty(child)) {
@@ -255,32 +314,40 @@ SQNode sq_node_child_by_field_id(SQNode node, TSFieldId field) {
       }
     }
   }
+
   return sq_null();
 }
+
 SQNode sq_node_child_by_field_name(SQNode node, const char *name, uint32_t length) {
   return node.tree && name ? sq_node_child_by_field_id(node, ts_language_field_id_for_name(
                                                                  node.tree->language, name, length))
                            : sq_null();
 }
+
 const char *sq_node_field_name_for_child(SQNode node, uint32_t i) {
   return sq_node_field_name(sq_node_child(node, i));
 }
+
 const char *sq_node_field_name_for_named_child(SQNode node, uint32_t i) {
   return sq_node_field_name(sq_node_named_child(node, i));
 }
+
 SQNode sq_node_child_with_descendant(SQNode node, SQNode descendant) {
   if (!node.tree || node.tree != descendant.tree || descendant.slot >= node.slot ||
       descendant.slot < sq_node_first_slot(node)) {
     return sq_null();
   }
+
   for (SQNode child = first_child(node); child.tree;
        child = sq_node_next_sibling_including_empty(child)) {
     if (sq_node_first_slot(child) <= descendant.slot) {
       return child;
     }
   }
+
   return sq_null();
 }
+
 static SQNode first_for_byte(SQNode node, uint32_t byte, bool named) {
   for (SQNode child = first_child(node); child.tree;
        child = sq_node_next_sibling_including_empty(child)) {
@@ -288,22 +355,28 @@ static SQNode first_for_byte(SQNode node, uint32_t byte, bool named) {
       return child;
     }
   }
+
   return sq_null();
 }
+
 SQNode sq_node_first_child_for_byte(SQNode node, uint32_t right) {
   return first_for_byte(node, right, false);
 }
+
 SQNode sq_node_first_named_child_for_byte(SQNode node, uint32_t right) {
   return first_for_byte(node, right, true);
 }
+
 static int point_cmp(TSPoint left, TSPoint right) {
   return left.row != right.row ? (left.row > right.row ? 1 : -1)
                                : (left.column > right.column) - (left.column < right.column);
 }
+
 static SQNode seek(SQNode node, TSPoint start, TSPoint end, bool named, bool bytes) {
   if (!node.tree || point_cmp(start, end) > 0) {
     return sq_null();
   }
+
   SQNode result = node;
   for (;;) {
     SQNode found = sq_null();
@@ -321,19 +394,24 @@ static SQNode seek(SQNode node, TSPoint start, TSPoint end, bool named, bool byt
       if (point_cmp(child_end, end) < 0) {
         continue;
       }
+
       int past = point_cmp(child_end, start);
       if (point_cmp(child_start, child_end) == 0 ? past < 0 : past <= 0) {
         continue;
       }
+
       if (point_cmp(start, child_start) < 0) {
         break;
       }
+
       found = child;
       break;
     }
+
     if (!found.tree) {
       return result;
     }
+
     node = found;
     if (!named || sq_node_is_named(node)) {
       result = node;
@@ -400,14 +478,19 @@ static SQNode seek_byte(SQNode node, uint32_t range_start, uint32_t range_end, b
 SQNode sq_node_descendant_for_byte_range(SQNode node, uint32_t range_start, uint32_t range_end) {
   return seek_byte(node, range_start, range_end, false);
 }
-SQNode sq_node_named_descendant_for_byte_range(SQNode node, uint32_t range_start, uint32_t range_end) {
+
+SQNode sq_node_named_descendant_for_byte_range(SQNode node, uint32_t range_start,
+                                               uint32_t range_end) {
   return seek_byte(node, range_start, range_end, true);
 }
+
 #if SQ_INCLUDE_POINTS
 SQNode sq_node_descendant_for_point_range(SQNode node, TSPoint range_start, TSPoint range_end) {
   return seek(node, range_start, range_end, false, false);
 }
-SQNode sq_node_named_descendant_for_point_range(SQNode node, TSPoint range_start, TSPoint range_end) {
+
+SQNode sq_node_named_descendant_for_point_range(SQNode node, TSPoint range_start,
+                                                TSPoint range_end) {
   return seek(node, range_start, range_end, true, false);
 }
 #endif

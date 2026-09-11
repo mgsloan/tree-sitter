@@ -1,12 +1,10 @@
 #ifndef _DEFAULT_SOURCE
 #define _DEFAULT_SOURCE 1
 #endif
-/* Adapted from ../main query_packed.c; see QUERY_PROVENANCE.md. */
-/*
- * On NetBSD, defining standard requirements like this removes symbols
- * from the namespace; however, we need non-standard symbols for
- * endian.h.
- */
+// Adapted from ../main query_packed.c; see QUERY_PROVENANCE.md.
+// On NetBSD, defining standard requirements like this removes symbols
+// from the namespace; however, we need non-standard symbols for
+// endian.h.
 #if defined(__NetBSD__) && defined(_POSIX_C_SOURCE)
 #undef _POSIX_C_SOURCE
 #endif
@@ -23,36 +21,46 @@
 typedef struct {
   SQCursor *cursor;
 } QueryTreeCursor;
+
 static SQNode query_identity_node(SQNode node) {
   return node;
 }
+
 static SQNode query_tree_cursor_node(const QueryTreeCursor *cursor) {
   return sq_cursor_node(cursor->cursor);
 }
+
 static SQNode query_tree_cursor_parent(const QueryTreeCursor *cursor) {
   return sq_cursor_parent_node(cursor->cursor);
 }
+
 static void query_tree_cursor_delete(QueryTreeCursor *cursor) {
   sq_cursor_delete(cursor->cursor);
   cursor->cursor = NULL;
 }
+
 static void query_tree_cursor_reset(QueryTreeCursor *cursor, SQNode node) {
   query_tree_cursor_delete(cursor);
   cursor->cursor = sq_cursor_new(node);
   ts_assert(!node.tree || cursor->cursor);
 }
+
 static bool query_tree_cursor_goto_first_child(QueryTreeCursor *cursor) {
   return sq_cursor_goto_first_child(cursor->cursor);
 }
+
 static bool query_tree_cursor_goto_next_sibling(QueryTreeCursor *cursor) {
   return sq_cursor_goto_next_sibling(cursor->cursor);
 }
+
 static bool query_tree_cursor_goto_parent(QueryTreeCursor *cursor) {
   return sq_cursor_goto_parent(cursor->cursor);
 }
+
 static unsigned query_ctz(uint64_t bits) {
   return (unsigned)__builtin_ctzll(bits);
 }
+
 static TSSymbol query_decode_symbol(uint32_t raw, uint32_t count) {
   return raw == count       ? ts_builtin_sym_error
          : raw == count + 1 ? ts_builtin_sym_error_repeat
@@ -73,10 +81,8 @@ static TSSymbol query_decode_symbol(uint32_t raw, uint32_t count) {
 #define MAX_ANALYSIS_STATE_DEPTH 8
 #define MAX_ANALYSIS_ITERATION_COUNT 256
 
-/*
- * Stream - A sequence of unicode characters derived from a UTF8 string.
- * This struct is used in parsing queries from S-expressions.
- */
+// Stream - A sequence of unicode characters derived from a UTF8 string.
+// This struct is used in parsing queries from S-expressions.
 typedef struct {
   const char *input;
   const char *start;
@@ -85,65 +91,63 @@ typedef struct {
   uint8_t next_size;
 } Stream;
 
-/*
- * QueryStep - A step in the process of matching a query. Each node within
- * a query S-expression corresponds to one of these steps. An entire pattern
- * is represented as a sequence of these steps. The basic properties of a
- * node are represented by these fields:
- * - `symbol` - The grammar symbol to match. A zero value represents the
- *    wildcard symbol, '_'.
- * - `field` - The field name to match. A zero value means that a field name
- *    was not specified.
- * - `capture_ids` - An array of integers representing the names of captures
- *    associated with this node in the pattern, terminated by a `NONE` value.
- * - `depth` - The depth where this node occurs in the pattern. The root node
- *    of the pattern has depth zero.
- * - `negated_field_list_id` - An id representing a set of fields that must
- *    not be present on a node matching this step.
- *
- * Steps have some additional fields in order to handle the `.` (or "anchor") operator,
- * which forbids additional child nodes:
- * - `is_immediate` - Indicates that the node matching this step cannot be preceded
- *    by other sibling nodes that weren't specified in the pattern.
- * - `is_last_child` - Indicates that the node matching this step cannot have any
- *    subsequent named siblings.
- *
- * For simple patterns, steps are matched in sequential order. But in order to
- * handle alternative/repeated/optional sub-patterns, query steps are not always
- * structured as a linear sequence; they sometimes need to split and merge. This
- * is done using the following fields:
- * - `alternative_index` - The index of a different query step that serves as
- *    an alternative to this step. A `NONE` value represents no alternative.
- *    When a query state reaches a step with an alternative index, the state
- *    is duplicated, with one copy remaining at the original step, and one copy
- *    moving to the alternative step. The alternative may have its own alternative
- *    step, so this splitting is an iterative process.
- * - `is_dead_end` - Indicates that this state cannot be passed directly, and
- *    exists only in order to redirect to an alternative index, with no splitting.
- * - `is_pass_through` - Indicates that state has no matching logic of its own,
- *    and exists only to split a state. One copy of the state advances immediately
- *    to the next step, and one moves to the alternative step.
- * - `alternative_is_skip` - Indicates that this step's `alternative_index` is the
- *    forward skip introduced by a `?` or `*` quantifier (the branch taken when the
- *    quantifier matches zero occurrences). For a state that follows it, an
- *    immediately-following anchor is vacuous.
- * - `is_inside_alternation` - Indicates that state is inside an alternation.
- *    Currently only written to quantifier steps, read by logic that maintains
- *    correctness for quantifiers inside alternations.
- *
- * Steps also store some derived state that summarizes how they relate to other
- * steps within the same pattern. This is used to optimize the matching process:
- * - `contains_captures` - Indicates that this step or one of its child steps
- *    has a non-empty `capture_ids` list.
- * - `parent_pattern_guaranteed` - Indicates that if this step is reached, then
- *    it and all of its subsequent sibling steps within the same parent pattern
- *    are guaranteed to match.
- * - `root_pattern_guaranteed` - Similar to `parent_pattern_guaranteed`, but
- *    for the entire top-level pattern. When iterating through a query's
- *    captures using `sq_query_cursor_next_capture`, this field is used to
- *    detect that a capture can safely be returned from a match that has not
- *    even completed yet.
- */
+// QueryStep - A step in the process of matching a query. Each node within
+// a query S-expression corresponds to one of these steps. An entire pattern
+// is represented as a sequence of these steps. The basic properties of a
+// node are represented by these fields:
+// - `symbol` - The grammar symbol to match. A zero value represents the
+//    wildcard symbol, '_'.
+// - `field` - The field name to match. A zero value means that a field name
+//    was not specified.
+// - `capture_ids` - An array of integers representing the names of captures
+//    associated with this node in the pattern, terminated by a `NONE` value.
+// - `depth` - The depth where this node occurs in the pattern. The root node
+//    of the pattern has depth zero.
+// - `negated_field_list_id` - An id representing a set of fields that must
+//    not be present on a node matching this step.
+//
+// Steps have some additional fields in order to handle the `.` (or "anchor") operator,
+// which forbids additional child nodes:
+// - `is_immediate` - Indicates that the node matching this step cannot be preceded
+//    by other sibling nodes that weren't specified in the pattern.
+// - `is_last_child` - Indicates that the node matching this step cannot have any
+//    subsequent named siblings.
+//
+// For simple patterns, steps are matched in sequential order. But in order to
+// handle alternative/repeated/optional sub-patterns, query steps are not always
+// structured as a linear sequence; they sometimes need to split and merge. This
+// is done using the following fields:
+// - `alternative_index` - The index of a different query step that serves as
+//    an alternative to this step. A `NONE` value represents no alternative.
+//    When a query state reaches a step with an alternative index, the state
+//    is duplicated, with one copy remaining at the original step, and one copy
+//    moving to the alternative step. The alternative may have its own alternative
+//    step, so this splitting is an iterative process.
+// - `is_dead_end` - Indicates that this state cannot be passed directly, and
+//    exists only in order to redirect to an alternative index, with no splitting.
+// - `is_pass_through` - Indicates that state has no matching logic of its own,
+//    and exists only to split a state. One copy of the state advances immediately
+//    to the next step, and one moves to the alternative step.
+// - `alternative_is_skip` - Indicates that this step's `alternative_index` is the
+//    forward skip introduced by a `?` or `*` quantifier (the branch taken when the
+//    quantifier matches zero occurrences). For a state that follows it, an
+//    immediately-following anchor is vacuous.
+// - `is_inside_alternation` - Indicates that state is inside an alternation.
+//    Currently only written to quantifier steps, read by logic that maintains
+//    correctness for quantifiers inside alternations.
+//
+// Steps also store some derived state that summarizes how they relate to other
+// steps within the same pattern. This is used to optimize the matching process:
+// - `contains_captures` - Indicates that this step or one of its child steps
+//    has a non-empty `capture_ids` list.
+// - `parent_pattern_guaranteed` - Indicates that if this step is reached, then
+//    it and all of its subsequent sibling steps within the same parent pattern
+//    are guaranteed to match.
+// - `root_pattern_guaranteed` - Similar to `parent_pattern_guaranteed`, but
+//    for the entire top-level pattern. When iterating through a query's
+//    captures using `sq_query_cursor_next_capture`, this field is used to
+//    detect that a capture can safely be returned from a match that has not
+//    even completed yet.
 typedef struct {
   TSSymbol symbol;
   TSSymbol supertype_symbol;
@@ -166,41 +170,33 @@ typedef struct {
   bool is_local : 1; // a rooted step that completes without visiting another node
 } QueryStep;
 
-/*
- * Slice - A slice of an external array. Within a query, capture names,
- * literal string values, and predicate step information are stored in three
- * contiguous arrays. Individual captures, string values, and predicates are
- * represented as slices of these three arrays.
- */
+// Slice - A slice of an external array. Within a query, capture names,
+// literal string values, and predicate step information are stored in three
+// contiguous arrays. Individual captures, string values, and predicates are
+// represented as slices of these three arrays.
 typedef struct {
   uint32_t offset;
   uint32_t length;
 } Slice;
 
-/*
- * SymbolTable - a two-way mapping of strings to ids.
- */
+// SymbolTable - a two-way mapping of strings to ids.
 typedef struct {
   Array(char) characters;
   Array(Slice) slices;
 } SymbolTable;
 
-/**
- * CaptureQuantifiers - a data structure holding the quantifiers of pattern captures.
- */
+// CaptureQuantifiers - a data structure holding the quantifiers of pattern captures.
 typedef Array(uint8_t) CaptureQuantifiers;
 
-/*
- * PatternEntry - Information about the starting point for matching a particular
- * pattern. These entries are stored in a 'pattern map' - a sorted array that
- * makes it possible to efficiently lookup patterns based on the symbol for their
- * first step. The entry consists of the following fields:
- * - `pattern_index` - the index of the pattern within the query
- * - `step_index` - the index of the pattern's first step in the shared `steps` array
- * - `is_rooted` - whether or not the pattern has a single root node. This property
- *   affects decisions about whether or not to start the pattern for nodes outside
- *   of a QueryCursor's range restriction.
- */
+// PatternEntry - Information about the starting point for matching a particular
+// pattern. These entries are stored in a 'pattern map' - a sorted array that
+// makes it possible to efficiently lookup patterns based on the symbol for their
+// first step. The entry consists of the following fields:
+// - `pattern_index` - the index of the pattern within the query
+// - `step_index` - the index of the pattern's first step in the shared `steps` array
+// - `is_rooted` - whether or not the pattern has a single root node. This property
+//   affects decisions about whether or not to start the pattern for nodes outside
+//   of a QueryCursor's range restriction.
 typedef struct {
   uint16_t step_index;
   uint16_t pattern_index;
@@ -221,33 +217,31 @@ typedef struct {
   uint16_t step_index;
 } StepOffset;
 
-/*
- * QueryState - The state of an in-progress match of a particular pattern
- * in a query. While executing, a `SQQueryCursor` must keep track of a number
- * of possible in-progress matches. Each of those possible matches is
- * represented as one of these states. Fields:
- * - `id` - A numeric id that is exposed to the public API. This allows the
- *    caller to remove a given match, preventing any more of its captures
- *    from being returned.
- * - `start_depth` - The depth in the tree where the first step of the state's
- *    pattern was matched.
- * - `pattern_index` - The pattern that the state is matching.
- * - `consumed_capture_count` - The number of captures from this match that
- *    have already been returned.
- * - `capture_list_id` - A numeric id that can be used to retrieve the state's
- *    list of captures from the `CaptureListPool`.
- * - `heap_insert_order` - A sequence number used to preserve discovery order
- *    among finished states with the same capture position and pattern.
- * - `seeking_immediate_match` - A flag that indicates that the state's next
- *    step must be matched by the very next sibling. This is used when
- *    processing repetitions, or when processing a wildcard node followed by
- *    an anchor.
- * - `has_in_progress_alternatives` - A flag that indicates that there are
- *    other states that have the same captures as this state, but are at
- *    different steps in their pattern. This means that in order to obey the
- *    'longest-match' rule, this state should not be returned as a match until
- *    it is clear that there can be no other alternative match with more captures.
- */
+// QueryState - The state of an in-progress match of a particular pattern
+// in a query. While executing, a `SQQueryCursor` must keep track of a number
+// of possible in-progress matches. Each of those possible matches is
+// represented as one of these states. Fields:
+// - `id` - A numeric id that is exposed to the public API. This allows the
+//    caller to remove a given match, preventing any more of its captures
+//    from being returned.
+// - `start_depth` - The depth in the tree where the first step of the state's
+//    pattern was matched.
+// - `pattern_index` - The pattern that the state is matching.
+// - `consumed_capture_count` - The number of captures from this match that
+//    have already been returned.
+// - `capture_list_id` - A numeric id that can be used to retrieve the state's
+//    list of captures from the `CaptureListPool`.
+// - `heap_insert_order` - A sequence number used to preserve discovery order
+//    among finished states with the same capture position and pattern.
+// - `seeking_immediate_match` - A flag that indicates that the state's next
+//    step must be matched by the very next sibling. This is used when
+//    processing repetitions, or when processing a wildcard node followed by
+//    an anchor.
+// - `has_in_progress_alternatives` - A flag that indicates that there are
+//    other states that have the same captures as this state, but are at
+//    different steps in their pattern. This means that in order to obey the
+//    'longest-match' rule, this state should not be returned as a match until
+//    it is clear that there can be no other alternative match with more captures.
 typedef struct {
   uint32_t id;
   uint32_t capture_list_id;
@@ -274,11 +268,13 @@ typedef Array(QueryState) QueryStateList;
 typedef struct {
   uint32_t next, end, capture_count, first_start_byte;
 } CaptureComparisonEntry;
+
 typedef struct {
   uint64_t bits[128];
   uint64_t valid, common[2], combined[2];
   uint64_t cached_set[2], cached_candidates;
 } CaptureComparisonBlock;
+
 typedef struct {
   SQQueryCapture *contents;
   uint32_t size, capacity;
@@ -297,32 +293,31 @@ typedef struct {
   uint32_t capacity, references, next_free;
 } CaptureListStorage;
 
-/*
- * CaptureListPool - A collection of *lists* of captures. Each query state needs
- * to maintain its own list of captures. To avoid repeated allocations, this struct
- * maintains a fixed set of capture lists, and keeps track of which ones are
- * currently in use by a query state.
- */
+// CaptureListPool - A collection of *lists* of captures. Each query state needs
+// to maintain its own list of captures. To avoid repeated allocations, this struct
+// maintains a fixed set of capture lists, and keeps track of which ones are
+// currently in use by a query state.
 typedef struct {
   Array(CaptureList) list;
   CaptureList empty_list;
+
   // The maximum number of capture lists that we are allowed to allocate. We
   // never allow `list` to allocate more entries than this, dropping pending
   // matches if needed to stay under the limit.
   uint32_t max_capture_list_count;
+
   // Unused lists have size UINT32_MAX and link through next_free.
   // Releasing a list leaves its capture storage intact.
   uint32_t free_capture_list_head;
+
   // Logical lists account for match limits; their buffers may be shared.
   Array(CaptureListStorage) storage;
   uint32_t free_storage_head;
   uint64_t next_prefix_id;
 } CaptureListPool;
 
-/*
- * AnalysisState - The state needed for walking the parse table when analyzing
- * a query pattern, to determine at which steps the pattern might fail to match.
- */
+// AnalysisState - The state needed for walking the parse table when analyzing
+// a query pattern, to determine at which steps the pattern might fail to match.
 typedef struct {
   TSStateId parse_state;
   TSSymbol parent_symbol;
@@ -350,12 +345,10 @@ typedef struct {
   bool did_abort;
 } QueryAnalysis;
 
-/*
- * AnalysisSubgraph - A subset of the states in the parse table that are used
- * in constructing nodes with a certain symbol. Each state is accompanied by
- * some information about the possible node that could be produced in
- * downstream states.
- */
+// AnalysisSubgraph - A subset of the states in the parse table that are used
+// in constructing nodes with a certain symbol. Each state is accompanied by
+// some information about the possible node that could be produced in
+// downstream states.
 typedef struct {
   TSStateId state;
   uint16_t production_id;
@@ -371,11 +364,9 @@ typedef struct {
 
 typedef Array(AnalysisSubgraph) AnalysisSubgraphArray;
 
-/*
- * StatePredecessorMap - A map that stores the predecessors of each parse state.
- * This is used during query analysis to determine which parse states can lead
- * to which reduce actions.
- */
+// StatePredecessorMap - A map that stores the predecessors of each parse state.
+// This is used during query analysis to determine which parse states can lead
+// to which reduce actions.
 typedef struct {
   TSStateId *contents;
 } StatePredecessorMap;
@@ -388,11 +379,9 @@ typedef struct {
   uint32_t symbol_count;
 } QuerySymbolFilter;
 
-/*
- * SQQuery - A tree query, compiled from a string of S-expressions. The query
- * itself is immutable. The mutable state used in the process of executing the
- * query is stored in a `SQQueryCursor`.
- */
+// SQQuery - A tree query, compiled from a string of S-expressions. The query
+// itself is immutable. The mutable state used in the process of executing the
+// query is stored in a `SQQueryCursor`.
 struct SQQuery {
   SymbolTable captures;
   SymbolTable predicate_values;
@@ -417,9 +406,7 @@ struct SQQuery {
   QueryExecutionPlan execution_plan;
 };
 
-/*
- * SQQueryCursor - A stateful struct used to execute a query on a tree.
- */
+// SQQueryCursor - A stateful struct used to execute a query on a tree.
 #if SQ_INCLUDE_POINTS
 typedef TSRange SQRange;
 #else
@@ -439,6 +426,7 @@ struct SQQueryCursor {
   Array(CaptureComparisonBlock) capture_comparison_blocks;
   Array(QueryPresenceCache) presence_cache;
   QueryStateList finished_states;
+
   // Tracks how much of finished_states is in heap order. Elements at indices
   // < this value satisfy the min-heap property; elements >= this value are
   // newly pushed and need to be sifted into place. Only used by `next_capture`.
@@ -458,6 +446,7 @@ struct SQQueryCursor {
   const TSQueryCursorOptions *query_options;
   TSQueryCursorState query_state;
   unsigned operation_count;
+
   // No on_visible_node flag: mainline needs one because its cursor can
   // step onto a real, steppable HIDDEN node (a composite wrapper it still
   // has to recurse through); QueryTreeCursor's goto_first_child/
@@ -503,9 +492,7 @@ static void sq_query_cursor__execution_start(SQQueryCursor *cursor, SQNode root)
 static void sq_query_cursor__execution_fallback(SQQueryCursor *cursor);
 static void query_execution_release_state(SQQueryCursor *cursor, const QueryState *state);
 
-/**********
- * Stream
- **********/
+// Stream
 
 // Advance to the next unicode code point in the stream.
 static bool stream_advance(Stream *self) {
@@ -521,6 +508,7 @@ static bool stream_advance(Stream *self) {
     self->next_size = 0;
     self->next = '\0';
   }
+
   return false;
 }
 
@@ -576,9 +564,7 @@ static uint32_t stream_offset(Stream *self) {
   return (uint32_t)(self->input - self->start);
 }
 
-/******************
- * CaptureListPool
- ******************/
+// CaptureListPool
 
 static CaptureListPool capture_list_pool_new(void) {
   return (CaptureListPool){
@@ -597,12 +583,14 @@ static void capture_list_pool_reset(CaptureListPool *self) {
     list->next_free = i + 1 < self->list.size ? i + 1 : CAPTURE_LIST_NONE;
     list->storage_id = CAPTURE_LIST_NONE;
   }
+
   self->free_capture_list_head = self->list.size ? 0 : CAPTURE_LIST_NONE;
   for (uint32_t index = 0; index < self->storage.size; index++) {
     CaptureListStorage *storage = &self->storage.contents[index];
     storage->references = 0;
     storage->next_free = index + 1 < self->storage.size ? index + 1 : CAPTURE_LIST_NONE;
   }
+
   self->free_storage_head = self->storage.size ? 0 : CAPTURE_LIST_NONE;
   self->next_prefix_id = 0;
 }
@@ -611,6 +599,7 @@ static void capture_list_pool_delete(CaptureListPool *self) {
   for (uint32_t index = 0; index < self->storage.size; index++) {
     ts_free(self->storage.contents[index].contents);
   }
+
   array_delete(&self->storage);
   array_delete(&self->list);
 }
@@ -625,6 +614,7 @@ static void capture_list_pool_clear(CaptureListPool *self, CaptureList *list) {
       self->free_storage_head = list->storage_id;
     }
   }
+
   *list = (CaptureList){.storage_id = CAPTURE_LIST_NONE};
 }
 
@@ -640,22 +630,27 @@ static uint32_t capture_list_pool_make_mutable(CaptureListPool *self, CaptureLis
     } else {
       self->free_storage_head = self->storage.contents[storage_id].next_free;
     }
+
     CaptureListStorage *storage = &self->storage.contents[storage_id];
     array_reserve(storage, list->size + count);
     if (list->size) {
       memcpy(storage->contents, list->contents, list->size * sizeof(SQQueryCapture));
       copied = list->size;
     }
+
     if (list->storage_id != CAPTURE_LIST_NONE) {
       self->storage.contents[list->storage_id].references--;
     }
+
     storage->references = 1;
     list->storage_id = storage_id;
   }
+
   CaptureListStorage *storage = &self->storage.contents[list->storage_id];
   if (storage->capacity < list->size + count) {
     array_reserve(storage, (list->size + count) * 2);
   }
+
   list->contents = storage->contents;
   list->capacity = storage->capacity;
   return copied;
@@ -677,6 +672,7 @@ static void capture_list_pool_share(CaptureListPool *self, CaptureList *target,
   if (!source->size) {
     return;
   }
+
   // Unbranched histories rarely need comparison. Initialize fingerprints on
   // their first branch, and preserve them through subsequent appends.
   if (!source->prefix_id) {
@@ -686,6 +682,7 @@ static void capture_list_pool_share(CaptureListPool *self, CaptureList *target,
       capture_list_hash_capture(source, capture.node.slot, capture.index);
     }
   }
+
   // Appends preserve this prefix even after the buffers detach. A later
   // branch may establish a longer prefix; losing older provenance is safe.
   if (!source->prefix_id || source->prefix_size != source->size) {
@@ -693,11 +690,14 @@ static void capture_list_pool_share(CaptureListPool *self, CaptureList *target,
       for (uint32_t index = 0; index < self->list.size; index++) {
         self->list.contents[index].prefix_id = 0;
       }
+
       self->next_prefix_id = 1;
     }
+
     source->prefix_id = self->next_prefix_id;
     source->prefix_size = source->size;
   }
+
   *target = *source;
   self->storage.contents[source->storage_id].references++;
 }
@@ -706,12 +706,14 @@ static const CaptureList *capture_list_pool_get(const CaptureListPool *self, uin
   if (id >= self->list.size) {
     return &self->empty_list;
   }
+
   return array_get(&self->list, id);
 }
 
 static CaptureList *capture_list_pool_get_mut(CaptureListPool *self, uint32_t id) {
   ts_assert(id < self->list.size);
   CaptureList *list = array_get(&self->list, id);
+
   // Appending or replacing captures invalidates the last bound. UINT32_MAX
   // may also be a valid end byte; that rare value is simply recomputed.
   list->last_end_byte = UINT32_MAX;
@@ -723,6 +725,7 @@ static uint32_t capture_list_pool_last_end_byte(CaptureListPool *self, uint32_t 
   if (list->last_end_byte == UINT32_MAX) {
     list->last_end_byte = sq_node_end_byte(array_back(list)->node);
   }
+
   return list->last_end_byte;
 }
 
@@ -748,6 +751,7 @@ static uint32_t capture_list_pool_acquire(CaptureListPool *self) {
   if (i >= self->max_capture_list_count) {
     return CAPTURE_LIST_NONE;
   }
+
   CaptureList list = {.storage_id = CAPTURE_LIST_NONE};
   array_push(&self->list, list);
   return i;
@@ -757,6 +761,7 @@ static void capture_list_pool_release(CaptureListPool *self, uint32_t id) {
   if (id >= self->list.size) {
     return;
   }
+
   CaptureList *list = array_get(&self->list, id);
   ts_assert(list->size != UINT32_MAX);
   capture_list_pool_clear(self, list);
@@ -765,16 +770,14 @@ static void capture_list_pool_release(CaptureListPool *self, uint32_t id) {
   self->free_capture_list_head = id;
 }
 
-/********************
- * FinishedStateHeap
- *
- * A min-heap of finished query states, ordered by (byte offset of next
- * unconsumed capture, pattern_index, insertion order). This allows
- * sq_query_cursor_next_capture to find the earliest capture in O(1) instead
- * of scanning all finished states. The heap is maintained lazily -
- * sq_query_cursor__advance uses plain array_push, and next_capture sifts
- * new elements into place via a tracked heap_size boundary.
- ********************/
+// FinishedStateHeap
+//
+// A min-heap of finished query states, ordered by (byte offset of next
+// unconsumed capture, pattern_index, insertion order). This allows
+// sq_query_cursor_next_capture to find the earliest capture in O(1) instead
+// of scanning all finished states. The heap is maintained lazily -
+// sq_query_cursor__advance uses plain array_push, and next_capture sifts
+// new elements into place via a tracked heap_size boundary.
 
 static inline uint32_t sq_query__node_start_byte(SQNode node) {
   return sq_node_start_byte(node);
@@ -803,15 +806,19 @@ static inline bool finished_state_precedes(const QueryState *a, const QueryState
   if (a->captures_exhausted) {
     return false;
   }
+
   if (b->captures_exhausted) {
     return true;
   }
+
   if (a->next_capture_byte != b->next_capture_byte) {
     return a->next_capture_byte < b->next_capture_byte;
   }
+
   if (a->pattern_index != b->pattern_index) {
     return a->pattern_index < b->pattern_index;
   }
+
   return a->heap_insert_order < b->heap_insert_order;
 }
 
@@ -824,17 +831,21 @@ static void finished_state_sift_down(QueryStateList *states, uint32_t index) {
     if (left >= size) {
       break;
     }
+
     uint32_t smallest = left;
     if (right < size &&
         finished_state_precedes(array_get(states, right), array_get(states, smallest))) {
       smallest = right;
     }
+
     if (!finished_state_precedes(array_get(states, smallest), &state)) {
       break;
     }
+
     *array_get(states, index) = *array_get(states, smallest);
     index = smallest;
   }
+
   *array_get(states, index) = state;
 }
 
@@ -854,6 +865,7 @@ static inline void finished_state_pop(QueryStateList *states) {
   if (states->size > 1) {
     *array_front(states) = *array_back(states);
   }
+
   states->size--;
   if (states->size > 0) {
     finished_state_sift_down(states, 0);
@@ -866,8 +878,10 @@ static void finished_state_erase(QueryStateList *states, uint32_t index) {
     states->size--;
     return;
   }
+
   *array_get(states, index) = *array_back(states);
   states->size--;
+
   // The replacement element may need to go up or down.
   if (index > 0 &&
       finished_state_precedes(array_get(states, index), array_get(states, (index - 1) / 2))) {
@@ -891,9 +905,7 @@ static void sq_query_cursor__heapify_finished_states(SQQueryCursor *self) {
   }
 }
 
-/**************
- * Quantifiers
- **************/
+// Quantifiers
 
 static TSQuantifier quantifier_mul(TSQuantifier left, TSQuantifier right) {
   switch (left) {
@@ -937,6 +949,7 @@ static TSQuantifier quantifier_mul(TSQuantifier left, TSQuantifier right) {
     };
     break;
   }
+
   return TSQuantifierZero; // to make compiler happy, but all cases should be covered above!
 }
 
@@ -994,6 +1007,7 @@ static TSQuantifier quantifier_join(TSQuantifier left, TSQuantifier right) {
     };
     break;
   }
+
   return TSQuantifierZero; // to make compiler happy, but all cases should be covered above!
 }
 
@@ -1039,6 +1053,7 @@ static TSQuantifier quantifier_add(TSQuantifier left, TSQuantifier right) {
   case TSQuantifierOneOrMore:
     return TSQuantifierOneOrMore;
   }
+
   return TSQuantifierZero; // to make compiler happy, but all cases should be covered above!
 }
 
@@ -1074,6 +1089,7 @@ static void capture_quantifiers_add_for_id(CaptureQuantifiers *self, uint16_t id
   if (self->size <= id) {
     array_grow_by(self, id + 1 - self->size);
   }
+
   uint8_t *own_quantifier = array_get(self, id);
   *own_quantifier = (uint8_t)quantifier_add((TSQuantifier)*own_quantifier, quantifier);
 }
@@ -1083,6 +1099,7 @@ static void capture_quantifiers_add_all(CaptureQuantifiers *self, CaptureQuantif
   if (self->size < quantifiers->size) {
     array_grow_by(self, quantifiers->size - self->size);
   }
+
   for (uint16_t id = 0; id < (uint16_t)quantifiers->size; id++) {
     uint8_t *quantifier = array_get(quantifiers, id);
     uint8_t *own_quantifier = array_get(self, id);
@@ -1105,21 +1122,21 @@ static void capture_quantifiers_join_all(CaptureQuantifiers *self,
   if (self->size < quantifiers->size) {
     array_grow_by(self, quantifiers->size - self->size);
   }
+
   for (uint32_t id = 0; id < quantifiers->size; id++) {
     uint8_t *quantifier = array_get(quantifiers, id);
     uint8_t *own_quantifier = array_get(self, id);
     *own_quantifier =
         (uint8_t)quantifier_join((TSQuantifier)*own_quantifier, (TSQuantifier)*quantifier);
   }
+
   for (uint32_t id = quantifiers->size; id < self->size; id++) {
     uint8_t *own_quantifier = array_get(self, id);
     *own_quantifier = (uint8_t)quantifier_join((TSQuantifier)*own_quantifier, TSQuantifierZero);
   }
 }
 
-/**************
- * SymbolTable
- **************/
+// SymbolTable
 
 static SymbolTable symbol_table_new(void) {
   return (SymbolTable){
@@ -1141,6 +1158,7 @@ static int symbol_table_id_for_name(const SymbolTable *self, const char *name, u
       return i;
     }
   }
+
   return -1;
 }
 
@@ -1156,6 +1174,7 @@ static uint16_t symbol_table_insert_name(SymbolTable *self, const char *name, ui
   if (id >= 0) {
     return (uint16_t)id;
   }
+
   Slice slice = {
       .offset = self->characters.size,
       .length = length,
@@ -1167,9 +1186,7 @@ static uint16_t symbol_table_insert_name(SymbolTable *self, const char *name, ui
   return self->slices.size - 1;
 }
 
-/************
- * QueryStep
- ************/
+// QueryStep
 
 static QueryStep query_step__new(TSSymbol symbol, uint16_t depth, bool is_immediate) {
   QueryStep step = {
@@ -1181,6 +1198,7 @@ static QueryStep query_step__new(TSSymbol symbol, uint16_t depth, bool is_immedi
   for (unsigned i = 0; i < MAX_STEP_CAPTURE_COUNT; i++) {
     step.capture_ids[i] = NONE;
   }
+
   return step;
 }
 
@@ -1201,18 +1219,18 @@ static void query_step__remove_capture(QueryStep *self, uint16_t capture_id) {
         if (self->capture_ids[i + 1] == NONE) {
           break;
         }
+
         self->capture_ids[i] = self->capture_ids[i + 1];
         self->capture_ids[i + 1] = NONE;
         i++;
       }
+
       break;
     }
   }
 }
 
-/**********************
- * StatePredecessorMap
- **********************/
+// StatePredecessorMap
 
 static inline StatePredecessorMap state_predecessor_map_new(const TSLanguage *language) {
   return (StatePredecessorMap){
@@ -1243,9 +1261,7 @@ static inline const TSStateId *state_predecessor_map_get(const StatePredecessorM
   return &self->contents[index + 1];
 }
 
-/****************
- * AnalysisState
- ****************/
+// AnalysisState
 
 static unsigned analysis_state__recursion_depth(const AnalysisState *self) {
   unsigned result = 0;
@@ -1258,6 +1274,7 @@ static unsigned analysis_state__recursion_depth(const AnalysisState *self) {
       }
     }
   }
+
   return result;
 }
 
@@ -1265,43 +1282,55 @@ static inline int analysis_state__compare(AnalysisState *const *self, AnalysisSt
   if ((*self)->depth < (*other)->depth) {
     return 1;
   }
+
   for (unsigned i = 0; i < (*self)->depth; i++) {
     if (i >= (*other)->depth) {
       return -1;
     }
+
     AnalysisStateEntry s1 = (*self)->stack[i];
     AnalysisStateEntry s2 = (*other)->stack[i];
     if (s1.child_index < s2.child_index) {
       return -1;
     }
+
     if (s1.child_index > s2.child_index) {
       return 1;
     }
+
     if (s1.parent_symbol < s2.parent_symbol) {
       return -1;
     }
+
     if (s1.parent_symbol > s2.parent_symbol) {
       return 1;
     }
+
     if (s1.parse_state < s2.parse_state) {
       return -1;
     }
+
     if (s1.parse_state > s2.parse_state) {
       return 1;
     }
+
     if (s1.field_id < s2.field_id) {
       return -1;
     }
+
     if (s1.field_id > s2.field_id) {
       return 1;
     }
   }
+
   if ((*self)->step_index < (*other)->step_index) {
     return -1;
   }
+
   if ((*self)->step_index > (*other)->step_index) {
     return 1;
   }
+
   return 0;
 }
 
@@ -1309,6 +1338,7 @@ static inline AnalysisStateEntry *analysis_state__top(AnalysisState *self) {
   if (self->depth == 0) {
     return &self->stack[0];
   }
+
   return &self->stack[self->depth - 1];
 }
 
@@ -1318,12 +1348,11 @@ static inline bool analysis_state__has_supertype(AnalysisState *self, TSSymbol s
       return true;
     }
   }
+
   return false;
 }
 
-/******************
- * AnalysisStateSet
- ******************/
+// AnalysisStateSet
 
 // Obtains an `AnalysisState` instance, either by consuming one from this set's object pool, or by
 // cloning one from scratch.
@@ -1335,6 +1364,7 @@ static inline AnalysisState *analysis_state_pool__clone_or_reuse(AnalysisStateSe
   } else {
     new_item = ts_malloc(sizeof(AnalysisState));
   }
+
   *new_item = *borrowed_item;
   return new_item;
 }
@@ -1381,12 +1411,11 @@ static inline void analysis_state_set__delete(AnalysisStateSet *self) {
   for (unsigned i = 0; i < self->size; i++) {
     ts_free(self->contents[i]);
   }
+
   array_delete(self);
 }
 
-/****************
- * QueryAnalyzer
- ****************/
+// QueryAnalyzer
 
 static inline QueryAnalysis query_analysis__new(void) {
   return (QueryAnalysis){
@@ -1409,42 +1438,46 @@ static inline void query_analysis__delete(QueryAnalysis *self) {
   array_delete(&self->finished_parent_symbols);
 }
 
-/***********************
- * AnalysisSubgraphNode
- ***********************/
+// AnalysisSubgraphNode
 
 static inline int analysis_subgraph_node__compare(const AnalysisSubgraphNode *self,
                                                   const AnalysisSubgraphNode *other) {
   if (self->state < other->state) {
     return -1;
   }
+
   if (self->state > other->state) {
     return 1;
   }
+
   if (self->child_index < other->child_index) {
     return -1;
   }
+
   if (self->child_index > other->child_index) {
     return 1;
   }
+
   if (self->done < other->done) {
     return -1;
   }
+
   if (self->done > other->done) {
     return 1;
   }
+
   if (self->production_id < other->production_id) {
     return -1;
   }
+
   if (self->production_id > other->production_id) {
     return 1;
   }
+
   return 0;
 }
 
-/*********
- * Query
- *********/
+// Query
 
 // The `pattern_map` contains a mapping from TSSymbol values to indices in the
 // `steps` array. For a given syntax node, the `pattern_map` makes it possible
@@ -1468,6 +1501,7 @@ static inline bool sq_query__pattern_map_search(const SQQuery *self, TSSymbol ne
     *result = base_index;
     return false;
   }
+
   while (size > 1) {
     uint32_t half_size = size / 2;
     uint32_t mid_index = base_index + half_size;
@@ -1476,6 +1510,7 @@ static inline bool sq_query__pattern_map_search(const SQQuery *self, TSSymbol ne
     if (needle > mid_symbol) {
       base_index = mid_index;
     }
+
     size -= half_size;
   }
 
@@ -1531,6 +1566,7 @@ static void sq_query__index_pattern_map(SQQuery *self) {
     if (!slice->length) {
       slice->offset = index;
     }
+
     slice->length++;
   }
 }
@@ -1555,6 +1591,7 @@ static void sq_query__perform_analysis(SQQuery *self, const AnalysisSubgraphArra
     for (unsigned j = 0; j < analysis->final_step_indices.size; j++) {
       printf(" %4u", *array_get(&analysis->final_step_indices, j));
     }
+
     printf("\n");
     for (unsigned j = 0; j < analysis->states.size; j++) {
       AnalysisState *state = *array_get(&analysis->states, j);
@@ -1566,11 +1603,14 @@ static void sq_query__perform_analysis(SQQuery *self, const AnalysisSubgraphArra
         if (state->stack[k].field_id) {
           printf(", field: %s", self->language->field_names[state->stack[k].field_id]);
         }
+
         if (state->stack[k].done) {
           printf(", DONE");
         }
+
         printf("}");
       }
+
       printf(" ]\n");
     }
 #endif
@@ -1620,6 +1660,7 @@ static void sq_query__perform_analysis(SQQuery *self, const AnalysisSubgraphArra
                                      *array_get(&analysis->states, j));
             j++;
           }
+
           break;
         }
       }
@@ -1635,6 +1676,7 @@ static void sq_query__perform_analysis(SQQuery *self, const AnalysisSubgraphArra
       if (!exists) {
         continue;
       }
+
       const AnalysisSubgraph *subgraph = array_get(subgraphs, subgraph_index);
 
       // Follow every possible path in the parse table, but only visit states that
@@ -1720,9 +1762,11 @@ static void sq_query__perform_analysis(SQQuery *self, const AnalysisSubgraphArra
             } else if (step->symbol != visible_symbol) {
               does_match = false;
             }
+
             if (step->field && step->field != field_id) {
               does_match = false;
             }
+
             if (step->supertype_symbol &&
                 !analysis_state__has_supertype(state, step->supertype_symbol)) {
               does_match = false;
@@ -1841,52 +1885,67 @@ static void sq_query__dump_steps(const SQQuery *self, const char *label) {
       printf("%3u: DONE\n", i);
       continue;
     }
+
     printf("%3u: depth=%u sym=%s", i, s->depth,
            s->symbol == WILDCARD_SYMBOL ? "_" : ts_language_symbol_name(self->language, s->symbol));
     if (s->supertype_symbol) {
       printf(" super=%s", ts_language_symbol_name(self->language, s->supertype_symbol));
     }
+
     if (s->field) {
       printf(" field=%s", ts_language_field_name_for_id(self->language, s->field));
     }
+
     if (s->alternative_index != NONE) {
       printf(" alt=%u", s->alternative_index);
     }
+
     if (s->is_immediate) {
       printf(" IMM");
     }
+
     if (s->is_pass_through) {
       printf(" PASS");
     }
+
     if (s->is_dead_end) {
       printf(" DEAD");
     }
+
     if (s->is_last_child) {
       printf(" LAST");
     }
+
     if (s->is_named) {
       printf(" NAMED");
     }
+
     if (s->is_missing) {
       printf(" MISSING");
     }
+
     if (s->is_inside_alternation) {
       printf(" INALT");
     }
+
     if (s->contains_captures) {
       printf(" HASCAP");
     }
+
     if (s->parent_pattern_guaranteed) {
       printf(" PPG");
     }
+
     if (s->root_pattern_guaranteed) {
       printf(" RPG");
     }
+
     for (unsigned c = 0; c < MAX_STEP_CAPTURE_COUNT && s->capture_ids[c] != NONE; c++) {
       uint32_t cap_len;
       const char *cap_name = symbol_table_name_for_id(&self->captures, s->capture_ids[c], &cap_len);
       printf(" @%.*s", (int)cap_len, cap_name);
     }
+
     printf("\n");
   }
 }
@@ -1925,13 +1984,16 @@ static bool sq_query__analyze_patterns(SQQuery *self, unsigned *error_offset) {
       if (next_step->depth == PATTERN_DONE_MARKER || next_step->depth <= step->depth) {
         break;
       }
+
       if (next_step->capture_ids[0] != NONE) {
         step->contains_captures = true;
       }
+
       if (!is_wildcard) {
         next_step->root_pattern_guaranteed = true;
         next_step->parent_pattern_guaranteed = true;
       }
+
       has_children = true;
     }
 
@@ -1950,6 +2012,7 @@ static bool sq_query__analyze_patterns(SQQuery *self, unsigned *error_offset) {
           if (child_step->depth == PATTERN_DONE_MARKER || child_step->depth <= step->depth) {
             break;
           }
+
           if (child_step->depth == step->depth + 1 && child_step->symbol != WILDCARD_SYMBOL) {
             bool is_valid_subtype = false;
             for (uint32_t k = 0; k < subtype_length; k++) {
@@ -1990,6 +2053,7 @@ static bool sq_query__analyze_patterns(SQQuery *self, unsigned *error_offset) {
     AnalysisSubgraph subgraph = {.symbol = parent_symbol};
     array_insert_sorted_by(&subgraphs, .symbol, subgraph);
   }
+
   for (TSSymbol sym = (uint16_t)self->language->token_count;
        sym < (uint16_t)self->language->symbol_count; sym++) {
     if (!ts_language_symbol_metadata(self->language, sym).visible) {
@@ -2039,6 +2103,7 @@ static bool sq_query__analyze_patterns(SQQuery *self, unsigned *error_offset) {
         if (lookahead_iterator.next_state != state) {
           state_predecessor_map_add(&predecessor_map, lookahead_iterator.next_state, state);
         }
+
         if (ts_language_state_is_primary(self->language, state)) {
           const TSSymbol *aliases, *aliases_end;
           ts_language_aliases_for_symbol(self->language, lookahead_iterator.symbol, &aliases,
@@ -2069,6 +2134,7 @@ static bool sq_query__analyze_patterns(SQQuery *self, unsigned *error_offset) {
       i--;
       continue;
     }
+
     array_assign(&next_nodes, &subgraph->nodes);
     while (next_nodes.size > 0) {
       AnalysisSubgraphNode node = array_pop(&next_nodes);
@@ -2104,11 +2170,13 @@ static bool sq_query__analyze_patterns(SQQuery *self, unsigned *error_offset) {
     for (unsigned j = 0; j < subgraph->start_states.size; j++) {
       printf("    {state: %u}\n", *array_get(&subgraph->start_states, j));
     }
+
     for (unsigned j = 0; j < subgraph->nodes.size; j++) {
       AnalysisSubgraphNode *node = array_get(&subgraph->nodes, j);
       printf("    {state: %u, child_index: %u, production_id: %u, done: %d}\n", node->state,
              node->child_index, node->production_id, node->done);
     }
+
     printf("\n");
   }
 #endif
@@ -2182,11 +2250,13 @@ static bool sq_query__analyze_patterns(SQQuery *self, unsigned *error_offset) {
         if (step->depth <= parent_depth || step->depth == PATTERN_DONE_MARKER) {
           break;
         }
+
         if (!step->is_dead_end) {
           step->parent_pattern_guaranteed = false;
           step->root_pattern_guaranteed = false;
         }
       }
+
       continue;
     }
 
@@ -2200,12 +2270,14 @@ static bool sq_query__analyze_patterns(SQQuery *self, unsigned *error_offset) {
         // If there isn't a final step, then that means the parent step itself is unreachable.
         impossible_step_index = parent_step_index;
       }
+
       uint32_t j, impossible_exists;
       array_search_sorted_by(&self->step_offsets, .step_index, impossible_step_index, &j,
                              &impossible_exists);
       if (j >= self->step_offsets.size) {
         j = self->step_offsets.size - 1;
       }
+
       *error_offset = array_get(&self->step_offsets, j)->byte_offset;
       all_patterns_are_valid = false;
       break;
@@ -2249,6 +2321,7 @@ static bool sq_query__analyze_patterns(SQQuery *self, unsigned *error_offset) {
         if (capture_id == NONE) {
           break;
         }
+
         unsigned index, exists;
         array_search_sorted_by(&predicate_capture_ids, , capture_id, &index, &exists);
         if (exists) {
@@ -2277,9 +2350,11 @@ static bool sq_query__analyze_patterns(SQQuery *self, unsigned *error_offset) {
           parent_pattern_guaranteed = true;
           break;
         }
+
         if (step->alternative_index == NONE || step->alternative_index < i) {
           break;
         }
+
         step = array_get(&self->steps, step->alternative_index);
       }
 
@@ -2362,6 +2437,7 @@ static bool sq_query__analyze_patterns(SQQuery *self, unsigned *error_offset) {
       TSSymbol symbol = *array_get(&self->repeat_symbols_with_rootless_patterns, i);
       printf("  %u, %s\n", symbol, ts_language_symbol_name(self->language, symbol));
     }
+
     printf("\n");
   }
 #endif
@@ -2371,6 +2447,7 @@ static bool sq_query__analyze_patterns(SQQuery *self, unsigned *error_offset) {
     array_delete(&array_get(&subgraphs, i)->start_states);
     array_delete(&array_get(&subgraphs, i)->nodes);
   }
+
   array_delete(&subgraphs);
   query_analysis__delete(&analysis);
   array_delete(&next_nodes);
@@ -2434,6 +2511,7 @@ static TSQueryError sq_query__parse_string_literal(SQQuery *self, Stream *stream
   if (stream->next != '"') {
     return TSQueryErrorSyntax;
   }
+
   stream_advance(stream);
   const char *prev_position = stream->input;
 
@@ -2459,6 +2537,7 @@ static TSQueryError sq_query__parse_string_literal(SQQuery *self, Stream *stream
         array_extend(&self->string_buffer, stream->next_size, stream->input);
         break;
       }
+
       prev_position = stream->input + stream->next_size;
     } else {
       if (stream->next == '\\') {
@@ -2476,6 +2555,7 @@ static TSQueryError sq_query__parse_string_literal(SQQuery *self, Stream *stream
         return TSQueryErrorSyntax;
       }
     }
+
     if (!stream_advance(stream)) {
       stream_reset(stream, string_start);
       return TSQueryErrorSyntax;
@@ -2493,11 +2573,13 @@ static TSQueryError sq_query__parse_predicate(SQQuery *self, Stream *stream) {
   if (!stream_is_ident_start(stream)) {
     return TSQueryErrorSyntax;
   }
+
   const char *predicate_name = stream->input;
   stream_scan_identifier(stream);
   if (stream->next != '?' && stream->next != '!') {
     return TSQueryErrorSyntax;
   }
+
   stream_advance(stream);
   uint32_t length = (uint32_t)(stream->input - predicate_name);
   uint16_t id = symbol_table_insert_name(&self->predicate_values, predicate_name, length);
@@ -2526,6 +2608,7 @@ static TSQueryError sq_query__parse_predicate(SQQuery *self, Stream *stream) {
       if (!stream_is_ident_start(stream)) {
         return TSQueryErrorSyntax;
       }
+
       const char *capture_name = stream->input;
       stream_scan_identifier(stream);
       uint32_t capture_length = (uint32_t)(stream->input - capture_name);
@@ -2549,6 +2632,7 @@ static TSQueryError sq_query__parse_predicate(SQQuery *self, Stream *stream) {
       if (e) {
         return e;
       }
+
       uint16_t query_id = symbol_table_insert_name(
           &self->predicate_values, self->string_buffer.contents, self->string_buffer.size);
       array_push(&self->predicate_steps, ((TSQueryPredicateStep){
@@ -2592,6 +2676,7 @@ static TSQueryError sq_query__parse_pattern(SQQuery *self, Stream *stream, uint3
   if (stream->next == 0) {
     return TSQueryErrorSyntax;
   }
+
   if (stream->next == ')' || stream->next == ']') {
     return PARENT_DONE;
   }
@@ -2625,8 +2710,10 @@ static TSQueryError sq_query__parse_pattern(SQQuery *self, Stream *stream, uint3
           stream_advance(stream);
           break;
         }
+
         e = TSQueryErrorSyntax;
       }
+
       if (e) {
         capture_quantifiers_delete(&branch_capture_quantifiers);
         array_delete(&branch_step_indices);
@@ -2643,6 +2730,7 @@ static TSQueryError sq_query__parse_pattern(SQQuery *self, Stream *stream, uint3
       array_push(&self->steps, query_step__new(0, depth, false));
       capture_quantifiers_clear(&branch_capture_quantifiers);
     }
+
     (void)array_pop(&self->steps);
 
     // For all of the branches except for the last one, add the subsequent branch as an
@@ -2679,6 +2767,7 @@ static TSQueryError sq_query__parse_pattern(SQQuery *self, Stream *stream, uint3
           child_is_immediate = true;
           stream_advance(stream);
           stream_skip_whitespace(stream);
+
           // A `.` at a group's end has no sibling to anchor, and a group is not a
           // node, so there is no last child to anchor against.
           if (stream->next == ')') {
@@ -2687,6 +2776,7 @@ static TSQueryError sq_query__parse_pattern(SQQuery *self, Stream *stream, uint3
             return TSQueryErrorSyntax;
           }
         }
+
         TSQueryError e = sq_query__parse_pattern(self, stream, depth, child_is_immediate,
                                                  is_inside_alternation, &child_capture_quantifiers);
         if (e == PARENT_DONE) {
@@ -2694,8 +2784,10 @@ static TSQueryError sq_query__parse_pattern(SQQuery *self, Stream *stream, uint3
             stream_advance(stream);
             break;
           }
+
           e = TSQueryErrorSyntax;
         }
+
         if (e) {
           capture_quantifiers_delete(&child_capture_quantifiers);
           return e;
@@ -2788,9 +2880,11 @@ static TSQueryError sq_query__parse_pattern(SQQuery *self, Stream *stream, uint3
         step->supertype_symbol = step->symbol;
         step->symbol = WILDCARD_SYMBOL;
       }
+
       if (is_missing) {
         step->is_missing = true;
       }
+
       if (symbol == WILDCARD_SYMBOL) {
         step->is_named = true;
       }
@@ -2816,6 +2910,7 @@ static TSQueryError sq_query__parse_pattern(SQQuery *self, Stream *stream, uint3
           if (e) {
             return e;
           }
+
           step->symbol = ts_language_symbol_for_name(self->language, self->string_buffer.contents,
                                                      self->string_buffer.size, false);
         } else {
@@ -2867,6 +2962,7 @@ static TSQueryError sq_query__parse_pattern(SQQuery *self, Stream *stream, uint3
             capture_quantifiers_delete(&child_capture_quantifiers);
             return TSQueryErrorSyntax;
           }
+
           const char *field_name = stream->input;
           stream_scan_identifier(stream);
           uint32_t length = (uint32_t)(stream->input - field_name);
@@ -2898,11 +2994,13 @@ static TSQueryError sq_query__parse_pattern(SQQuery *self, Stream *stream, uint3
         uint16_t step_index = self->steps.size;
         TSQueryError e = sq_query__parse_pattern(self, stream, depth + 1, child_is_immediate,
                                                  is_inside_alternation, &child_capture_quantifiers);
+
         // In the event we only parsed a predicate, meaning no new steps were added,
         // then subtract one so we're not indexing past the end of the array
         if (step_index == self->steps.size) {
           step_index--;
         }
+
         if (e == PARENT_DONE) {
           if (stream->next == ')') {
             if (child_is_immediate) {
@@ -2910,6 +3008,7 @@ static TSQueryError sq_query__parse_pattern(SQQuery *self, Stream *stream, uint3
                 capture_quantifiers_delete(&child_capture_quantifiers);
                 return TSQueryErrorSyntax;
               }
+
               // Mark this step *and* its alternatives as the last child of the parent.
               QueryStep *last_child_step = array_get(&self->steps, last_child_step_index);
               last_child_step->is_last_child = true;
@@ -2934,8 +3033,10 @@ static TSQueryError sq_query__parse_pattern(SQQuery *self, Stream *stream, uint3
             stream_advance(stream);
             break;
           }
+
           e = TSQueryErrorSyntax;
         }
+
         if (e) {
           capture_quantifiers_delete(&child_capture_quantifiers);
           return e;
@@ -2947,6 +3048,7 @@ static TSQueryError sq_query__parse_pattern(SQQuery *self, Stream *stream, uint3
         child_is_immediate = false;
         capture_quantifiers_clear(&child_capture_quantifiers);
       }
+
       capture_quantifiers_delete(&child_capture_quantifiers);
     }
   }
@@ -2975,6 +3077,7 @@ static TSQueryError sq_query__parse_pattern(SQQuery *self, Stream *stream, uint3
       stream_reset(stream, string_start + 1);
       return TSQueryErrorNodeType;
     }
+
     array_push(&self->steps, query_step__new(symbol, depth, is_immediate));
   }
 
@@ -2990,6 +3093,7 @@ static TSQueryError sq_query__parse_pattern(SQQuery *self, Stream *stream, uint3
       stream_reset(stream, field_name);
       return TSQueryErrorSyntax;
     }
+
     stream_advance(stream);
     stream_skip_whitespace(stream);
 
@@ -3002,6 +3106,7 @@ static TSQueryError sq_query__parse_pattern(SQQuery *self, Stream *stream, uint3
       if (e == PARENT_DONE) {
         e = TSQueryErrorSyntax;
       }
+
       return e;
     }
 
@@ -3068,6 +3173,7 @@ static TSQueryError sq_query__parse_pattern(SQQuery *self, Stream *stream, uint3
       if (!stream_is_ident_start(stream)) {
         return TSQueryErrorSyntax;
       }
+
       const char *capture_name = stream->input;
       stream_scan_identifier(stream);
       uint32_t length = (uint32_t)(stream->input - capture_name);
@@ -3122,6 +3228,7 @@ static TSQueryError sq_query__parse_pattern(SQQuery *self, Stream *stream, uint3
     while (step->alternative_index != NONE && step->alternative_index < self->steps.size - 1) {
       step = array_get(&self->steps, step->alternative_index);
     }
+
     step->alternative_index = self->steps.size;
     step->alternative_is_skip = true;
     break;
@@ -3130,6 +3237,7 @@ static TSQueryError sq_query__parse_pattern(SQQuery *self, Stream *stream, uint3
     while (step->alternative_index != NONE && step->alternative_index < self->steps.size) {
       step = array_get(&self->steps, step->alternative_index);
     }
+
     step->alternative_index = self->steps.size;
     step->alternative_is_skip = true;
     break;
@@ -3198,6 +3306,7 @@ SQQuery *sq_query_new(const TSLanguage *language, const char *source, uint32_t s
       if (*error_type == PARENT_DONE) {
         *error_type = TSQueryErrorSyntax;
       }
+
       *error_offset = stream_offset(&stream);
       capture_quantifiers_delete(&capture_quantifiers);
       sq_query_delete(self);
@@ -3238,6 +3347,7 @@ SQQuery *sq_query_new(const TSLanguage *language, const char *source, uint32_t s
         if (child_step->is_dead_end) {
           break;
         }
+
         if (child_step->depth == start_depth) {
           is_rooted = false;
           break;
@@ -3278,6 +3388,7 @@ SQQuery *sq_query_new(const TSLanguage *language, const char *source, uint32_t s
 
       for (uint32_t i = pat_start; i < pat_end; i++) {
         QueryStep *s = array_get(&self->steps, i);
+
         // Ensure this step is a pass_through with a _backward_ alternative (a quantifier loop-back)
         if (!s->is_pass_through || !s->is_inside_alternation || s->alternative_index == NONE ||
             s->alternative_index >= i) {
@@ -3361,6 +3472,7 @@ void sq_query_delete(SQQuery *self) {
       CaptureQuantifiers *capture_quantifiers = array_get(&self->capture_quantifiers, index);
       capture_quantifiers_delete(capture_quantifiers);
     }
+
     array_delete(&self->capture_quantifiers);
     ts_free(self);
   }
@@ -3382,49 +3494,64 @@ SQQuery *sq_query_copy(const SQQuery *self) {
   if (self->scan_symbols.size) {
     array_assign(&copy->scan_symbols, &self->scan_symbols);
   }
+
   if (self->scan_targets.size) {
     array_assign(&copy->scan_targets, &self->scan_targets);
   }
+
   if (self->steps.size) {
     array_assign(&copy->steps, &self->steps);
   }
+
   if (self->pattern_map.size) {
     array_assign(&copy->pattern_map, &self->pattern_map);
   }
+
   if (self->pattern_map_slices.size) {
     array_assign(&copy->pattern_map_slices, &self->pattern_map_slices);
   }
+
   if (self->presence_requirements.size) {
     array_assign(&copy->presence_requirements, &self->presence_requirements);
   }
+
   if (self->predicate_steps.size) {
     array_assign(&copy->predicate_steps, &self->predicate_steps);
   }
+
   if (self->patterns.size) {
     array_assign(&copy->patterns, &self->patterns);
   }
+
   if (self->step_offsets.size) {
     array_assign(&copy->step_offsets, &self->step_offsets);
   }
+
   if (self->negated_fields.size) {
     array_assign(&copy->negated_fields, &self->negated_fields);
   }
+
   if (self->string_buffer.size) {
     array_assign(&copy->string_buffer, &self->string_buffer);
   }
+
   if (self->repeat_symbols_with_rootless_patterns.size) {
     array_assign(&copy->repeat_symbols_with_rootless_patterns,
                  &self->repeat_symbols_with_rootless_patterns);
   }
+
   if (self->captures.characters.size) {
     array_assign(&copy->captures.characters, &self->captures.characters);
   }
+
   if (self->captures.slices.size) {
     array_assign(&copy->captures.slices, &self->captures.slices);
   }
+
   if (self->predicate_values.characters.size) {
     array_assign(&copy->predicate_values.characters, &self->predicate_values.characters);
   }
+
   if (self->predicate_values.slices.size) {
     array_assign(&copy->predicate_values.slices, &self->predicate_values.slices);
   }
@@ -3432,6 +3559,7 @@ SQQuery *sq_query_copy(const SQQuery *self) {
   if (self->capture_quantifiers.size) {
     array_assign(&copy->capture_quantifiers, &self->capture_quantifiers);
   }
+
   for (uint32_t i = 0; i < copy->capture_quantifiers.size; i++) {
     CaptureQuantifiers *dst = array_get(&copy->capture_quantifiers, i);
     const CaptureQuantifiers *src = array_get(&self->capture_quantifiers, i);
@@ -3444,6 +3572,7 @@ SQQuery *sq_query_copy(const SQQuery *self) {
   if (self->execution_plan.supported) {
     sq_query__prepare_execution(copy);
   }
+
   return copy;
 }
 
@@ -3480,6 +3609,7 @@ sq_query_predicates_for_pattern(const SQQuery *self, uint32_t pattern_index, uin
   if (slice.length == 0) {
     return NULL;
   }
+
   return array_get(&self->predicate_steps, slice.offset);
 }
 
@@ -3500,6 +3630,7 @@ bool sq_query_is_pattern_rooted(const SQQuery *self, uint32_t pattern_index) {
       }
     }
   }
+
   return true;
 }
 
@@ -3518,8 +3649,10 @@ bool sq_query_is_pattern_guaranteed_at_step(const SQQuery *self, uint32_t byte_o
     if (step_offset->byte_offset > byte_offset) {
       break;
     }
+
     step_index = step_offset->step_index;
   }
+
   if (step_index < self->steps.size) {
     return array_get(&self->steps, step_index)->root_pattern_guaranteed;
   } else {
@@ -3561,6 +3694,7 @@ void sq_query_disable_pattern(SQQuery *self, uint32_t pattern_index) {
       self->execution_plan.roots.contents[index] &= mask;
     }
   }
+
   // Remove the given pattern from the pattern map. Its steps will still
   // be in the `steps` array, but they will never be read.
   for (unsigned i = 0; i < self->pattern_map.size; i++) {
@@ -3569,16 +3703,16 @@ void sq_query_disable_pattern(SQQuery *self, uint32_t pattern_index) {
       if (i < self->wildcard_root_pattern_count) {
         self->wildcard_root_pattern_count--;
       }
+
       array_erase(&self->pattern_map, i);
       i--;
     }
   }
+
   sq_query__index_pattern_map(self);
 }
 
-/***************
- * QueryCursor
- ***************/
+// QueryCursor
 
 SQQueryCursor *sq_query_cursor_new(void) {
   SQQueryCursor *self = ts_malloc(sizeof(SQQueryCursor));
@@ -3666,6 +3800,7 @@ void sq_query__prepare_symbol_scan(SQQuery *query) {
       return;
     }
   }
+
   uint32_t count = query->language->symbol_count + query->language->alias_count;
   array_grow_by(&query->scan_symbols, (count + 2 + 63) / 64);
   memset(query->scan_symbols.contents, 0, query->scan_symbols.size * sizeof(uint64_t));
@@ -3674,12 +3809,14 @@ void sq_query__prepare_symbol_scan(SQQuery *query) {
     if (symbol < count) {
       symbol = query->language->public_symbol_map[symbol];
     }
+
     unsigned pattern;
     if (sq_query__pattern_map_search(query, symbol, &pattern)) {
       query->scan_symbols.contents[raw / 64] |= (uint64_t)1 << (raw % 64);
       array_push(&query->scan_targets, raw);
     }
   }
+
   sq_query__prepare_symbol_filter(query);
 }
 
@@ -3700,12 +3837,15 @@ void sq_query_cursor_exec(SQQueryCursor *self, const SQQuery *query, SQNode node
       } else {
         LOG("symbol: *");
       }
+
       if (step->field) {
         LOG(", field: %s", query->language->field_names[step->field]);
       }
+
       if (step->alternative_index != NONE) {
         LOG(", alternative: %u", step->alternative_index);
       }
+
       LOG("},\n");
     }
   }
@@ -3729,6 +3869,7 @@ void sq_query_cursor_exec(SQQueryCursor *self, const SQQuery *query, SQNode node
     SQNode root = query_identity_node(node);
     self->scan_root_end = sq_node_end_slot(root);
   }
+
   self->did_exceed_match_limit = false;
   self->dirty_patterns = 0;
   self->states_need_sort = false;
@@ -3741,6 +3882,7 @@ void sq_query_cursor_exec(SQQueryCursor *self, const SQQuery *query, SQNode node
   if (self->symbol_scan && query) {
     array_grow_by(&self->presence_cache, query->presence_requirements.size);
   }
+
   self->execution_active = self->execution_needs_fallback = false;
   array_clear(&self->execution_states);
   self->execution_free_state = UINT32_MAX;
@@ -3762,9 +3904,11 @@ bool sq_query_cursor_set_byte_range(SQQueryCursor *self, uint32_t start_byte, ui
   if (end_byte == 0) {
     end_byte = UINT32_MAX;
   }
+
   if (start_byte > end_byte) {
     return false;
   }
+
   self->execution_needs_fallback = self->execution_active;
   self->included_range.start_byte = start_byte;
   self->included_range.end_byte = end_byte;
@@ -3777,9 +3921,11 @@ bool sq_query_cursor_set_point_range(SQQueryCursor *self, TSPoint start_point, T
   if (end_point.row == 0 && end_point.column == 0) {
     end_point = POINT_MAX;
   }
+
   if (point_gt(start_point, end_point)) {
     return false;
   }
+
   self->execution_needs_fallback = self->execution_active;
   self->included_range.start_point = start_point;
   self->included_range.end_point = end_point;
@@ -3793,9 +3939,11 @@ bool sq_query_cursor_set_containing_byte_range(SQQueryCursor *self, uint32_t sta
   if (end_byte == 0) {
     end_byte = UINT32_MAX;
   }
+
   if (start_byte > end_byte) {
     return false;
   }
+
   self->execution_needs_fallback = self->execution_active;
   self->containing_range.start_byte = start_byte;
   self->containing_range.end_byte = end_byte;
@@ -3808,9 +3956,11 @@ bool sq_query_cursor_set_containing_point_range(SQQueryCursor *self, TSPoint sta
   if (end_point.row == 0 && end_point.column == 0) {
     end_point = POINT_MAX;
   }
+
   if (point_gt(start_point, end_point)) {
     return false;
   }
+
   self->execution_needs_fallback = self->execution_active;
   self->containing_range.start_point = start_point;
   self->containing_range.end_point = end_point;
@@ -3830,6 +3980,7 @@ static inline bool sq_query__node_precedes_range(SQNode node, const SQRange *ran
   return false;
 #endif
 }
+
 static inline bool sq_query__node_follows_range(SQNode node, const SQRange *range) {
   if (sq_node_start_byte(node) >= range->end_byte) return true;
 #if SQ_INCLUDE_POINTS
@@ -3838,7 +3989,6 @@ static inline bool sq_query__node_follows_range(SQNode node, const SQRange *rang
   return false;
 #endif
 }
-
 
 static inline bool sq_query__capture_is_inside_unrestricted_range(SQNode node,
                                                                   const SQRange *range) {
@@ -3896,6 +4046,7 @@ static bool sq_query_cursor__first_in_progress_capture(SQQueryCursor *self, uint
       *pattern_index = state->pattern_index;
     }
   }
+
   return result;
 }
 
@@ -3911,18 +4062,22 @@ static inline int sq_query_cursor__compare_nodes(const SQNode *left, const SQNod
     if (left_start < right_start) {
       return -1;
     }
+
     if (left_start > right_start) {
       return 1;
     }
+
     uint32_t left_node_count = sq_node_end_byte(*left);
     uint32_t right_node_count = sq_node_end_byte(*right);
     if (left_node_count > right_node_count) {
       return -1;
     }
+
     if (left_node_count < right_node_count) {
       return 1;
     }
   }
+
   return 0;
 }
 
@@ -3945,6 +4100,7 @@ CaptureContainment sq_query_cursor__compare_captures(SQQueryCursor *self,
                                                                 : right_captures->size);
     return result;
   }
+
   if (left_captures->prefix_id && right_captures->prefix_id) {
     // These fingerprints only reject containment. Collisions still undergo
     // exact comparison, including node identity and capture order.
@@ -3962,11 +4118,13 @@ CaptureContainment sq_query_cursor__compare_captures(SQQueryCursor *self,
             left_captures->capture_set[word];
       }
     }
+
     if (!result.left_contains_right && !result.right_contains_left) {
       QUERY_EXEC_COUNT(self, capture_filter_rejections, 1);
       return result;
     }
   }
+
   // Shared provenance proves prefix equality even after buffers detach.
   // Otherwise, byte equality is sufficient; differing caches or padding
   // still use the semantic comparison below.
@@ -3976,12 +4134,14 @@ CaptureContainment sq_query_cursor__compare_captures(SQQueryCursor *self,
                        ? left_captures->prefix_size
                        : right_captures->prefix_size;
   }
+
   QUERY_EXEC_COUNT(self, capture_prefix_skips, shared_count);
   while (left_captures->size - shared_count >= 8 && right_captures->size - shared_count >= 8 &&
          !memcmp(left_captures->contents + shared_count, right_captures->contents + shared_count,
                  8 * sizeof(SQQueryCapture))) {
     shared_count += 8;
   }
+
   unsigned i = shared_count, j = shared_count;
   for (;;) {
     if (i < left_captures->size) {
@@ -3999,6 +4159,7 @@ CaptureContainment sq_query_cursor__compare_captures(SQQueryCursor *self,
             result.right_contains_left = false;
             return result;
           }
+
           switch (sq_query_cursor__compare_nodes(&left->node, &right->node)) {
           case -1:
             result.right_contains_left = false;
@@ -4015,6 +4176,7 @@ CaptureContainment sq_query_cursor__compare_captures(SQQueryCursor *self,
             j++;
             break;
           }
+
           if (!result.left_contains_right && !result.right_contains_left) {
             return result;
           }
@@ -4027,9 +4189,11 @@ CaptureContainment sq_query_cursor__compare_captures(SQQueryCursor *self,
       if (j < right_captures->size) {
         result.left_contains_right = false;
       }
+
       break;
     }
   }
+
   return result;
 }
 
@@ -4042,17 +4206,21 @@ static bool sq_query_cursor__state_precedes(const SQQueryCursor *self, const Que
   if (a->start_depth != b->start_depth) {
     return a->start_depth < b->start_depth;
   }
+
   if (a->pattern_index != b->pattern_index) {
     return a->pattern_index < b->pattern_index;
   }
+
   const CaptureList *a_caps = capture_list_pool_get(&self->capture_list_pool, a->capture_list_id);
   const CaptureList *b_caps = capture_list_pool_get(&self->capture_list_pool, b->capture_list_id);
   if ((a_caps->size == 0) != (b_caps->size == 0)) {
     return a_caps->size == 0;
   }
+
   if (a_caps->size == 0) {
     return false;
   }
+
   return a_caps->first_start_byte < b_caps->first_start_byte;
 }
 
@@ -4066,6 +4234,7 @@ static void sq_query_cursor__sort_states_by_capture(SQQueryCursor *self) {
     if (!sq_query_cursor__state_precedes(self, array_get(states, i), array_get(states, i - 1))) {
       continue;
     }
+
     QueryState key = *array_get(states, i);
     uint32_t j = i;
     do {
@@ -4082,6 +4251,7 @@ static bool sq_query_cursor__needs_capture_comparison_blocks(const SQQueryCursor
   if (self->states.size < 256) {
     return false;
   }
+
   uint32_t run = 0, depth = UINT32_MAX, pattern = UINT32_MAX, start = UINT32_MAX;
   for (uint32_t index = 0; index < self->states.size; index++) {
     const QueryState *state = &self->states.contents[index];
@@ -4091,6 +4261,7 @@ static bool sq_query_cursor__needs_capture_comparison_blocks(const SQQueryCursor
       run = 0;
       continue;
     }
+
     if (depth != state->start_depth || pattern != state->pattern_index ||
         start != captures->first_start_byte) {
       run = 0;
@@ -4098,10 +4269,12 @@ static bool sq_query_cursor__needs_capture_comparison_blocks(const SQQueryCursor
       pattern = state->pattern_index;
       start = captures->first_start_byte;
     }
+
     if (++run == 256) {
       return true;
     }
   }
+
   return false;
 }
 
@@ -4116,6 +4289,7 @@ static void sq_query_cursor__index_capture_lists(SQQueryCursor *self) {
   if (self->states.size < 64) {
     return;
   }
+
   QUERY_EXEC_COUNT(self, capture_index_entries, self->states.size);
   array_reserve(&self->capture_comparison_index, self->states.size);
   self->capture_comparison_index.size = self->states.size;
@@ -4127,16 +4301,19 @@ static void sq_query_cursor__index_capture_lists(SQQueryCursor *self) {
       self->capture_comparison_blocks.contents[index].common[1] = UINT64_MAX;
     }
   }
+
   uint32_t bucket_count = 256;
   while (bucket_count < self->states.size && bucket_count < 65536) {
     bucket_count *= 2;
   }
+
   array_reserve(&self->capture_comparison_heads, bucket_count);
   self->capture_comparison_heads.size = bucket_count;
   uint32_t *heads = self->capture_comparison_heads.contents;
   for (uint32_t bucket = 0; bucket < bucket_count; bucket++) {
     heads[bucket] = self->states.size;
   }
+
   for (uint32_t index = self->states.size; index-- > 0;) {
     const QueryState *state = &self->states.contents[index];
     const CaptureList *captures =
@@ -4147,6 +4324,7 @@ static void sq_query_cursor__index_capture_lists(SQQueryCursor *self) {
     if (!captures->prefix_id) {
       continue;
     }
+
     if (self->capture_comparison_blocks.size) {
       CaptureComparisonBlock *block = &self->capture_comparison_blocks.contents[index / 64];
       uint64_t slot = UINT64_C(1) << (index % 64);
@@ -4154,6 +4332,7 @@ static void sq_query_cursor__index_capture_lists(SQQueryCursor *self) {
       block->valid |= slot;
       for (uint32_t word = 0; word < 2; word++) {
         uint64_t differing = captures->capture_set[word] & ~block->common[word];
+
         // Common bits need no bitmap until one history omits them. At that
         // point every previous fingerprinted slot must be restored at once.
         if (previous) {
@@ -4162,6 +4341,7 @@ static void sq_query_cursor__index_capture_lists(SQQueryCursor *self) {
             block->bits[word * 64 + query_ctz(bits)] = previous;
           }
         }
+
         block->common[word] &= captures->capture_set[word];
         block->combined[word] |= captures->capture_set[word];
         for (uint64_t bits = differing; bits; bits &= bits - 1) {
@@ -4169,6 +4349,7 @@ static void sq_query_cursor__index_capture_lists(SQQueryCursor *self) {
         }
       }
     }
+
     uint32_t bucket =
         (captures->capture_hash ^ (captures->capture_hash >> 32)) & (bucket_count - 1);
     entry->next = heads[bucket];
@@ -4194,6 +4375,7 @@ static uint64_t capture_comparison_block_candidates(CaptureComparisonBlock *bloc
   if (block->cached_set[0] == capture_set[0] && block->cached_set[1] == capture_set[1]) {
     return block->cached_candidates;
   }
+
   block->cached_set[0] = capture_set[0];
   block->cached_set[1] = capture_set[1];
   uint64_t subsets = block->valid, supersets = block->valid;
@@ -4201,9 +4383,11 @@ static uint64_t capture_comparison_block_candidates(CaptureComparisonBlock *bloc
     if (block->common[word] & ~capture_set[word]) {
       subsets = 0;
     }
+
     if (capture_set[word] & ~block->combined[word]) {
       supersets = 0;
     }
+
     uint64_t varying = block->combined[word] ^ block->common[word];
     uint64_t required = varying & capture_set[word];
     uint64_t forbidden = varying & ~capture_set[word];
@@ -4212,12 +4396,14 @@ static uint64_t capture_comparison_block_candidates(CaptureComparisonBlock *bloc
       required &= required - 1;
       supersets &= block->bits[word * 64 + bit];
     }
+
     while (forbidden && subsets) {
       uint32_t bit = query_ctz(forbidden);
       forbidden &= forbidden - 1;
       subsets &= ~block->bits[word * 64 + bit];
     }
   }
+
   return block->cached_candidates = subsets | supersets | ~block->valid;
 }
 
@@ -4228,22 +4414,26 @@ static bool sq_query_cursor__group_has_unique_start(const SQQueryCursor *self, u
   if (self->states.size - index < 5) {
     return false;
   }
+
   const QueryState *first = &self->states.contents[index];
   const QueryState *later = &self->states.contents[index + 4];
   if (first->start_depth != later->start_depth || first->pattern_index != later->pattern_index) {
     return false;
   }
+
   uint32_t capture_id = UINT32_MAX;
   for (; index < self->states.size; index++) {
     const QueryState *state = &self->states.contents[index];
     if (state->start_depth != first->start_depth || state->pattern_index != first->pattern_index) {
       break;
     }
+
     const CaptureList *captures =
         capture_list_pool_get(&self->capture_list_pool, state->capture_list_id);
     if (!captures->size || state->dead) {
       continue;
     }
+
     if (capture_id == UINT32_MAX) {
       capture_id = captures->contents[0].index;
       TSQuantifier quantifier =
@@ -4255,6 +4445,7 @@ static bool sq_query_cursor__group_has_unique_start(const SQQueryCursor *self, u
       return false;
     }
   }
+
   return capture_id != UINT32_MAX;
 }
 
@@ -4287,6 +4478,7 @@ static uint32_t sq_query_cursor__add_state(SQQueryCursor *self, const PatternEnt
     if (prev_state->start_depth < start_depth) {
       break;
     }
+
     if (prev_state->start_depth == start_depth) {
       // Avoid inserting an unnecessary duplicate state, which would be
       // immediately pruned by the longest-match criteria.
@@ -4294,10 +4486,12 @@ static uint32_t sq_query_cursor__add_state(SQQueryCursor *self, const PatternEnt
           prev_state->step_index == pattern->step_index) {
         return index - 1;
       }
+
       if (prev_state->pattern_index <= pattern->pattern_index) {
         break;
       }
     }
+
     index--;
   }
 
@@ -4360,6 +4554,7 @@ static CaptureList *sq_query_cursor__prepare_to_capture(SQQueryCursor *self, Que
       }
     }
   }
+
   return capture_list_pool_get_mut(&self->capture_list_pool, state->capture_list_id);
 }
 
@@ -4368,6 +4563,7 @@ static void sq_query_cursor__capture(SQQueryCursor *self, QueryState *state, Que
   if (state->dead) {
     return;
   }
+
   CaptureList *capture_list = sq_query_cursor__prepare_to_capture(self, state, UINT32_MAX);
   if (!capture_list) {
     state->dead = true;
@@ -4383,16 +4579,19 @@ static void sq_query_cursor__capture(SQQueryCursor *self, QueryState *state, Que
     capture_list->first_start_byte = sq_query__node_start_byte(captured_node);
     self->states_need_sort = true;
   }
+
   for (unsigned j = 0; j < MAX_STEP_CAPTURE_COUNT; j++) {
     uint16_t capture_id = step->capture_ids[j];
     if (step->capture_ids[j] == NONE) {
       break;
     }
+
     QUERY_EXEC_COUNT(self, materialized_captures, 1);
     array_push(capture_list, ((SQQueryCapture){captured_node, capture_id}));
     if (capture_list->prefix_id) {
       capture_list_hash_capture(capture_list, node.slot, capture_id);
     }
+
     LOG("  capture node. type:%s, pattern:%u, capture_id:%u, capture_count:%u\n",
         sq_node_type(node), state->pattern_index, capture_id, capture_list->size);
   }
@@ -4427,6 +4626,7 @@ static QueryState *sq_query_cursor__copy_state(SQQueryCursor *self, QueryState *
     if (!new_captures) {
       return NULL;
     }
+
     CaptureList *old_captures = &self->capture_list_pool.list.contents[state->capture_list_id];
     QUERY_EXEC_COUNT(self, capture_shares, old_captures->size);
     capture_list_pool_share(&self->capture_list_pool, new_captures, old_captures);
@@ -4449,6 +4649,7 @@ static void sq_query_cursor__current_status(const QueryTreeCursor *cursor, const
   *is_named = ts_language_symbol_metadata(node.tree->language, raw).named;
   *field = query->needs_fields && sq_cursor_depth(cursor->cursor) ? sq_node_field_id(node) : 0;
   (void)supertypes;
+
   // Exact supertype membership is tested against the slab below, without an
   // ancestor-list truncation. This flag is only a conservative root-start gate.
   *supertype_count = query->needs_supertypes ? 1 : 0;
@@ -4465,6 +4666,7 @@ static bool sq_query_cursor__parent_is_error(const QueryTreeCursor *self,
     status->is_error = !sq_node_is_null(parent) && sq_node_symbol(parent) == ts_builtin_sym_error;
     status->checked = true;
   }
+
   return status->is_error;
 }
 
@@ -4487,6 +4689,7 @@ static bool sq_query_cursor__has_later_sibling(const QueryTreeCursor *cursor,
       }
     }
   }
+
   return named ? status->has_later_named : status->has_later;
 }
 
@@ -4498,12 +4701,14 @@ static bool sq_query_cursor__has_later_field(const QueryTreeCursor *cursor, TSFi
   if (!sq_cursor_depth(cursor->cursor)) {
     return false;
   }
+
   for (SQNode node = sq_node_next_sibling_including_empty(query_tree_cursor_node(cursor));
        node.tree; node = sq_node_next_sibling_including_empty(node)) {
     if (sq_node_field_id(node) == field) {
       return true;
     }
   }
+
   return false;
 }
 
@@ -4572,14 +4777,17 @@ static bool sq_query_cursor__scan_cancelled(SQQueryCursor *self, SQNode node) {
   if (!self->query_options || !self->query_options->progress_callback) {
     return false;
   }
+
   if (++self->operation_count < OP_COUNT_PER_QUERY_CALLBACK_CHECK) {
     return false;
   }
+
   self->operation_count = 0;
   self->query_state.current_byte_offset = sq_node_start_byte(node);
   if (!self->query_options->progress_callback(&self->query_state)) {
     return false;
   }
+
   self->halted = true;
   return true;
 }
@@ -4599,30 +4807,38 @@ static bool sq_query_cursor__scan_seek(SQQueryCursor *self) {
       if (sq_query_cursor__scan_cancelled(self, node)) {
         return false;
       }
+
       uint32_t symbol = sq_node_symbol_id(node);
       if (query->scan_symbols.contents[symbol / 64] & (UINT64_C(1) << (symbol % 64))) {
         break;
       }
+
       target = sq_next_position(current.tree, target + 1);
     }
   }
+
   if (self->halted) {
     return false;
   }
+
   QUERY_EXEC_COUNT(self, records_skipped, target - sq_node_position(current));
   if (target == end) {
     self->halted = true;
     return false;
   }
+
   if (target - sq_node_position(current) >= 2) {
     self->scan_sparse_samples++;
   }
+
   if (++self->scan_samples == 32) {
     if (!self->scan_sparse_samples) {
       self->scan_cooldown = 256;
     }
+
     self->scan_samples = self->scan_sparse_samples = 0;
   }
+
   // Restore the ancestor path without processing events: this is legal only
   // with no active states. Active states always receive every enter/exit event.
   while (sq_node_position(current) != target) {
@@ -4636,8 +4852,10 @@ static bool sq_query_cursor__scan_seek(SQQueryCursor *self) {
         self->depth--;
       }
     }
+
     current = query_tree_cursor_node(&self->cursor);
   }
+
   return true;
 }
 
@@ -4656,6 +4874,7 @@ static inline bool sq_query_cursor__advance(SQQueryCursor *self, bool stop_on_de
       return sq_query_cursor__execution_advance(self, stop_on_definite_step);
     }
   }
+
   bool did_match = false;
   for (;;) {
     if (self->halted) {
@@ -4673,6 +4892,7 @@ static inline bool sq_query_cursor__advance(SQQueryCursor *self, bool stop_on_de
       self->query_state.current_byte_offset =
           sq_node_start_byte(query_tree_cursor_node(&self->cursor));
     }
+
     if (did_match || self->halted ||
         (self->operation_count == 0 &&
          ((self->query_options && self->query_options->progress_callback &&
@@ -4683,6 +4903,7 @@ static inline bool sq_query_cursor__advance(SQQueryCursor *self, bool stop_on_de
     if (!self->ascending && self->scan_cooldown) {
       self->scan_cooldown--;
     }
+
     if (!self->ascending && !self->scan_cooldown && self->states.size == 0 && self->symbol_scan &&
         self->query->scan_symbols.size && self->max_start_depth == UINT32_MAX &&
         sq_query__range_is_unrestricted(&self->included_range) &&
@@ -4728,6 +4949,7 @@ static inline bool sq_query_cursor__advance(SQQueryCursor *self, bool stop_on_de
           *array_get(&self->states, i - deleted_count) = *state;
         }
       }
+
       self->states.size -= deleted_count;
 
       // Leave this node by stepping to its next sibling or to its parent.
@@ -4816,6 +5038,7 @@ static inline bool sq_query_cursor__advance(SQQueryCursor *self, bool stop_on_de
             self->states.size, self->finished_states.size);
 
         bool node_is_error = symbol == ts_builtin_sym_error;
+
         // Cursor parents stay within this execution root.
         QueryParentStatus parent_status = {.checked = !self->root_has_error};
 
@@ -4828,6 +5051,7 @@ static inline bool sq_query_cursor__advance(SQQueryCursor *self, bool stop_on_de
         Slice patterns = symbol_index < self->query->pattern_map_slices.size
                              ? self->query->pattern_map_slices.contents[symbol_index]
                              : (Slice){0};
+
         // Mainline applies the first entry's start depth to the whole symbol group.
         uint32_t start_depth =
             patterns.length
@@ -4839,6 +5063,7 @@ static inline bool sq_query_cursor__advance(SQQueryCursor *self, bool stop_on_de
         uint32_t wildcard_index = 0,
                  wildcard_count = node_is_error ? 0 : self->query->wildcard_root_pattern_count;
         uint32_t pattern_index = patterns.offset, pattern_end = patterns.offset + patterns.length;
+
         // Both slices are in pattern order. Merging starts avoids shifting new
         // wildcard states again when an earlier concrete pattern also matches.
         while (wildcard_index < wildcard_count || pattern_index < pattern_end) {
@@ -4861,6 +5086,7 @@ static inline bool sq_query_cursor__advance(SQQueryCursor *self, bool stop_on_de
                 !sq_query_cursor__presence_matches(self, pattern, node)) {
               continue;
             }
+
             uint32_t inserted = sq_query_cursor__add_state(self, pattern);
             if (inserted < first_updated_state) {
               first_updated_state = inserted;
@@ -4876,6 +5102,7 @@ static inline bool sq_query_cursor__advance(SQQueryCursor *self, bool stop_on_de
           if (j == self->states.size) {
             array_push(&self->states, self->pending_states.contents[pending_index++]);
           }
+
           QUERY_EXEC_COUNT(self, active_steps, 1);
           QueryState *state = array_get(&self->states, j);
           QueryStep *step = array_get(&self->query->steps, state->step_index);
@@ -4899,6 +5126,7 @@ static inline bool sq_query_cursor__advance(SQQueryCursor *self, bool stop_on_de
             if (step->capture_ids[0] != NONE) {
               sq_query_cursor__capture(self, state, step, node);
             }
+
             const QueryPattern *pattern = &self->query->patterns.contents[state->pattern_index];
             state->step_index = pattern->steps.offset + pattern->steps.length - 1;
             state->seeking_immediate_match = false;
@@ -4907,6 +5135,7 @@ static inline bool sq_query_cursor__advance(SQQueryCursor *self, bool stop_on_de
                 self->query->steps.contents[state->step_index].root_pattern_guaranteed) {
               did_match = true;
             }
+
             continue;
           }
 
@@ -4924,6 +5153,7 @@ static inline bool sq_query_cursor__advance(SQQueryCursor *self, bool stop_on_de
             node_does_match =
                 symbol == step->symbol && (!step->is_missing || sq_node_is_missing(node));
           }
+
           QUERY_EXEC_COUNT(self, symbol_rejections, !node_does_match);
           bool later_sibling_can_match =
               !((step->is_immediate && is_named && !state->skipped_quantifier) ||
@@ -4933,11 +5163,13 @@ static inline bool sq_query_cursor__advance(SQQueryCursor *self, bool stop_on_de
               sq_query_cursor__has_later_sibling(&self->cursor, &sibling_status, true)) {
             node_does_match = false;
           }
+
           if (step->supertype_symbol) {
             if (!sq_node_has_supertype(node, step->supertype_symbol)) {
               node_does_match = false;
             }
           }
+
           if (step->field) {
             if (step->field == field_id && later_sibling_can_match) {
               if (!checked_later_field) {
@@ -4945,6 +5177,7 @@ static inline bool sq_query_cursor__advance(SQQueryCursor *self, bool stop_on_de
                     sq_query_cursor__has_later_field(&self->cursor, field_id);
                 checked_later_field = true;
               }
+
               if (!can_have_later_siblings_with_this_field) {
                 later_sibling_can_match = false;
               }
@@ -4981,6 +5214,7 @@ static inline bool sq_query_cursor__advance(SQQueryCursor *self, bool stop_on_de
               array_erase(&self->states, j);
               j--;
             }
+
             continue;
           }
 
@@ -5056,6 +5290,7 @@ static inline bool sq_query_cursor__advance(SQQueryCursor *self, bool stop_on_de
           } else {
             state->seeking_immediate_match = false;
           }
+
           // The zero-skip's vacuous-anchor exemption only covers the immediate
           // step it lands on. Once the state advances, a later anchor is normal.
           state->skipped_quantifier = false;
@@ -5110,12 +5345,14 @@ static inline bool sq_query_cursor__advance(SQQueryCursor *self, bool stop_on_de
                 if (child_step->is_pass_through) {
                   copy->seeking_immediate_match = true;
                 }
+
                 // Taking a `?`/`*` zero-skip means the quantified subpattern matched
                 // nothing. How an adjacent anchor behaves then depends on where it sat:
                 if (child_step->alternative_is_skip) {
                   if (!child_step->is_immediate) {
                     QueryStep *skip_target =
                         array_get(&self->query->steps, child_step->alternative_index);
+
                     // No leading anchor on the skipped step, so an immediately-following
                     // anchor on the skip target is vacuous (`Q* . B` with zero `Q` lets
                     // `B` match anywhere).
@@ -5128,6 +5365,7 @@ static inline bool sq_query_cursor__advance(SQQueryCursor *self, bool stop_on_de
                     // must still be the parent's first named child.
                     copy->seeking_immediate_match = true;
                   }
+
                   // Otherwise the skipped step carried a leading *between* anchor
                   // (`A . Q* ...`): with zero `Q` that adjacency vanishes, while the skip
                   // target's own anchor, if any, still applies (`A . Q* . B` stays adjacent).
@@ -5151,12 +5389,14 @@ static inline bool sq_query_cursor__advance(SQQueryCursor *self, bool stop_on_de
               state->has_in_progress_alternatives = false;
             }
           }
+
           // Later captures, adjacent copies, and removals preserve this order.
           // New states, first captures, evictions, and restored depths invalidate it.
           if (self->states_need_sort) {
             sq_query_cursor__sort_states_by_capture(self);
             self->states_need_sort = false;
           }
+
           sq_query_cursor__index_capture_lists(self);
 
           uint32_t group_depth = UINT32_MAX, group_pattern = UINT32_MAX;
@@ -5167,6 +5407,7 @@ static inline bool sq_query_cursor__advance(SQQueryCursor *self, bool stop_on_de
                 !(dirty_patterns & (UINT64_C(1) << (state->pattern_index % 64)))) {
               continue;
             }
+
             if (state->dead) {
               self->dirty_patterns |= UINT64_C(1) << (state->pattern_index % 64);
               state->removed = true;
@@ -5240,31 +5481,37 @@ static inline bool sq_query_cursor__advance(SQQueryCursor *self, bool stop_on_de
                       &self->capture_comparison_blocks.contents[comparison_block],
                       state_captures->capture_set);
                 }
+
                 uint64_t remaining = comparison_candidates & (UINT64_MAX << (k % 64));
                 uint32_t next = comparison_block * 64 + (remaining ? query_ctz(remaining) : 64);
                 if (next > self->states.size) {
                   next = self->states.size;
                 }
+
                 if (next > k) {
                   QUERY_EXEC_COUNT(self, capture_set_slots_skipped, next - k);
                   k = next - 1;
                   continue;
                 }
               }
+
               if (!other_captures) {
                 other_captures =
                     capture_list_pool_get(&self->capture_list_pool, other_state->capture_list_id);
               }
+
               if (self->capture_comparison_index.size && state_captures->prefix_id &&
                   other_captures->prefix_id && state_captures->size == other_captures->size &&
                   state_captures->capture_hash != other_captures->capture_hash) {
                 while (next_in_bucket <= k) {
                   next_in_bucket = self->capture_comparison_index.contents[next_in_bucket].next;
                 }
+
                 uint32_t next = self->capture_comparison_index.contents[k].end;
                 if (next_in_bucket < next) {
                   next = next_in_bucket;
                 }
+
                 QUERY_EXEC_COUNT(self, indexed_slots_skipped, next - k);
                 k = next - 1;
                 continue;
@@ -5282,8 +5529,10 @@ static inline bool sq_query_cursor__advance(SQQueryCursor *self, bool stop_on_de
                   other_state->removed = true;
                   continue;
                 }
+
                 other_state->has_in_progress_alternatives = true;
               }
+
               if (containment.right_contains_left) {
                 if (state->step_index == other_state->step_index &&
                     (state->seeking_immediate_match || !other_state->seeking_immediate_match)) {
@@ -5295,6 +5544,7 @@ static inline bool sq_query_cursor__advance(SQQueryCursor *self, bool stop_on_de
                   did_remove = true;
                   break;
                 }
+
                 state->has_in_progress_alternatives = true;
               }
             }
@@ -5319,6 +5569,7 @@ static inline bool sq_query_cursor__advance(SQQueryCursor *self, bool stop_on_de
               }
             }
           }
+
           // Defer shifts until the pass ends; only surviving states participate
           // in comparisons, and their relative order is unchanged.
           uint32_t retained = 0;
@@ -5332,12 +5583,15 @@ static inline bool sq_query_cursor__advance(SQQueryCursor *self, bool stop_on_de
               if (depth > self->states_max_depth) {
                 self->states_max_depth = depth;
               }
+
               if (retained != index) {
                 self->states.contents[retained] = self->states.contents[index];
               }
+
               retained++;
             }
           }
+
           self->states.size = retained;
         } else {
           QUERY_EXEC_COUNT(self, dedup_skips, 1);
@@ -5361,6 +5615,7 @@ static bool query_execution_supported(SQQueryCursor *cursor) {
   if (cursor->error != SQ_QUERY_OK) {
     return false;
   }
+
   if (!sq_query__range_is_unrestricted(&cursor->included_range) ||
       !sq_query__range_is_unrestricted(&cursor->containing_range)) {
     for (uint32_t index = 0; index < cursor->query->steps.size; index++) {
@@ -5370,6 +5625,7 @@ static bool query_execution_supported(SQQueryCursor *cursor) {
         return false;
       }
     }
+
     for (uint32_t index = 0; index < cursor->query->pattern_map.size; index++) {
       if (!cursor->query->pattern_map.contents[index].is_rooted) {
         cursor->error = SQ_QUERY_UNSUPPORTED_RANGE;
@@ -5378,6 +5634,7 @@ static bool query_execution_supported(SQQueryCursor *cursor) {
       }
     }
   }
+
   return true;
 }
 
@@ -5389,11 +5646,13 @@ bool sq_query_cursor_next_match(SQQueryCursor *self, SQQueryMatch *match) {
   if (!query_execution_supported(self)) {
     return false;
   }
+
   if (self->finished_states.size == 0) {
     if (!sq_query_cursor__advance(self, false)) {
       return false;
     }
   }
+
   if (self->finished_states_heap_size > 0) {
     sq_query_cursor__heapify_finished_states(self);
   }
@@ -5413,6 +5672,7 @@ bool sq_query_cursor_next_match(SQQueryCursor *self, SQQueryMatch *match) {
   if (state->id == UINT32_MAX) {
     state->id = self->next_state_id++;
   }
+
   match->id = state->id;
   match->pattern_index = state->pattern_index;
   const CaptureList *captures =
@@ -5427,6 +5687,7 @@ bool sq_query_cursor_next_match(SQQueryCursor *self, SQQueryMatch *match) {
   } else {
     array_erase(&self->finished_states, state_index);
   }
+
   return true;
 }
 
@@ -5445,6 +5706,7 @@ void sq_query_cursor_remove_match(SQQueryCursor *self, uint32_t match_id) {
       } else {
         array_erase(&self->finished_states, i);
       }
+
       return;
     }
   }
@@ -5458,6 +5720,7 @@ void sq_query_cursor_remove_match(SQQueryCursor *self, uint32_t match_id) {
       if (self->execution_active) {
         query_execution_release_state(self, state);
       }
+
       self->first_capture.valid = false;
       self->dirty_patterns |= UINT64_C(1) << (state->pattern_index % 64);
       array_erase(&self->states, i);
@@ -5471,6 +5734,7 @@ bool sq_query_cursor_next_capture(SQQueryCursor *self, SQQueryMatch *match,
   if (!query_execution_supported(self)) {
     return false;
   }
+
   // The goal here is to return captures in order, even though they may not
   // be discovered in order, because patterns can overlap. Search for matches
   // until there is a finished capture that is before any unfinished capture.
@@ -5487,6 +5751,7 @@ bool sq_query_cursor_next_capture(SQQueryCursor *self, SQQueryMatch *match,
           &self->first_capture.pattern_index, &self->first_capture.definite);
       self->first_capture.valid = true;
     }
+
     uint32_t first_unfinished_capture_byte = self->first_capture.byte_offset;
     uint32_t first_unfinished_pattern_index = self->first_capture.pattern_index;
     uint32_t first_unfinished_state_index = self->first_capture.state_index;
@@ -5517,11 +5782,9 @@ bool sq_query_cursor_next_capture(SQQueryCursor *self, SQQueryMatch *match,
       bool inside_unrestricted_range =
           sq_query__capture_is_inside_unrestricted_range(node, &self->included_range);
       bool node_precedes_range =
-          !inside_unrestricted_range &&
-          sq_query__node_precedes_range(node, &self->included_range);
+          !inside_unrestricted_range && sq_query__node_precedes_range(node, &self->included_range);
       bool node_follows_range =
-          !inside_unrestricted_range &&
-          sq_query__node_follows_range(node, &self->included_range);
+          !inside_unrestricted_range && sq_query__node_follows_range(node, &self->included_range);
       bool node_outside_of_range = node_precedes_range || node_follows_range;
 
       // Skip captures that are outside of the cursor's range.
@@ -5540,6 +5803,7 @@ bool sq_query_cursor_next_capture(SQQueryCursor *self, SQQueryMatch *match,
         first_finished_capture_byte = node_start_byte;
         first_finished_pattern_index = state->pattern_index;
       }
+
       break;
     }
 
@@ -5559,6 +5823,7 @@ bool sq_query_cursor_next_capture(SQQueryCursor *self, SQQueryMatch *match,
       if (state->id == UINT32_MAX) {
         state->id = self->next_state_id++;
       }
+
       match->id = state->id;
       match->pattern_index = state->pattern_index;
       const CaptureList *captures =
@@ -5568,6 +5833,7 @@ bool sq_query_cursor_next_capture(SQQueryCursor *self, SQQueryMatch *match,
       QUERY_EXEC_COUNT(self, snapshot_captures, captures->size);
       *capture_index = state->consumed_capture_count;
       state->consumed_capture_count++;
+
       // If this state is in the finished_states heap, its sort key has changed
       // (next capture is now later in the document). Restore heap order.
       if (state == first_finished_state) {
@@ -5576,6 +5842,7 @@ bool sq_query_cursor_next_capture(SQQueryCursor *self, SQQueryMatch *match,
       } else {
         self->first_capture.valid = false;
       }
+
       return true;
     }
 

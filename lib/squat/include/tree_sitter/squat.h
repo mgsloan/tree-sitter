@@ -14,19 +14,22 @@
 extern "C" {
 #endif
 
-/* Immutable packed trees. Link this library alongside this checkout's runtime.
- * Slabs use native endianness and require the exact matching grammar. */
+// Immutable packed trees. Link this library alongside this checkout's runtime.
+// Slabs use native endianness and require the exact matching grammar.
 typedef struct SQTree SQTree;
 typedef struct {
   const SQTree *tree;
-  uint32_t slot; /* Physical reverse-preorder index; preorder moves downward. */
+  // Physical reverse-preorder index; preorder moves downward.
+  uint32_t slot;
 } SQNode;
+
 typedef struct SQCursor SQCursor;
 typedef struct SQNodeIterator SQNodeIterator;
-/* Compile callers and this library with the same SQ_INCLUDE_POINTS setting.
- * Point APIs and snapshot members are absent in byte-only builds.
- * A copied snapshot. Strings borrow the tree's retained language. Counts include
- * visible nodes only; descendant_count includes the current node. */
+
+// Compile callers and this library with the same SQ_INCLUDE_POINTS setting.
+// Point APIs and snapshot members are absent in byte-only builds.
+// A copied snapshot. Strings borrow the tree's retained language. Counts include
+// visible nodes only; descendant_count includes the current node.
 typedef struct {
   const char *type, *grammar_type;
   uint32_t start_byte, end_byte;
@@ -38,6 +41,7 @@ typedef struct {
   TSFieldId field_id;
   bool is_named, is_extra, is_missing, is_error, has_error;
 } SQCursorAttributes;
+
 typedef enum {
   SQ_OK = 0,
   SQ_ERROR_ARGUMENT,
@@ -47,8 +51,9 @@ typedef enum {
   SQ_ERROR_INVALID_SLAB,
   SQ_ERROR_LANGUAGE
 } SQError;
+
 typedef struct {
-  /* Zero selects an estimate. Small values are useful for limiting initial allocation. */
+  // Zero selects an estimate. Small values are useful for limiting initial allocation.
   uint32_t initial_group_capacity;
   bool repack;
   bool symbol_presence;
@@ -57,29 +62,35 @@ typedef struct {
 const char *sq_error_string(SQError);
 SQPackOptions sq_pack_options_default(void);
 SQTree *sq_tree_pack(const TSTree *, SQPackOptions, SQError *);
-/* Parse without an old tree, pack, then release the mainline tree. */
+
+// Parse without an old tree, pack, then release the mainline tree.
 SQTree *sq_tree_parse(TSParser *, const char *, uint32_t, SQPackOptions, SQError *);
 void sq_tree_delete(SQTree *);
 const TSLanguage *sq_tree_language(const SQTree *);
 const void *sq_tree_data(const SQTree *, uint32_t *length);
-/* Copies and validates input, including topology and auxiliary indexes. */
+
+// Copies and validates input, including topology and auxiliary indexes.
 SQTree *sq_tree_from_bytes(const TSLanguage *, const void *, size_t, SQError *);
-/* Validates without copying the slab. Bytes must remain alive and immutable
- * until this tree and its nodes/cursors are no longer used. They must be aligned
- * to 8 bytes (64 with the experimental column-alignment build). Deletion frees
- * only the runtime descriptor; the caller retains ownership of the bytes. */
+
+// Validates without copying the slab. Bytes must remain alive and immutable
+// until this tree and its nodes/cursors are no longer used. They must be aligned
+// to 8 bytes (64 with the experimental column-alignment build). Deletion frees
+// only the runtime descriptor; the caller retains ownership of the bytes.
 SQTree *sq_tree_from_bytes_borrowed(const TSLanguage *, const void *, size_t, SQError *);
-/* Returns an independent compact copy; nodes in the original remain valid. */
+
+// Returns an independent compact copy; nodes in the original remain valid.
 SQTree *sq_tree_repack(const SQTree *, SQError *);
 uint32_t sq_tree_group_count(const SQTree *);
 uint32_t sq_tree_group_capacity(const SQTree *);
 uint32_t sq_tree_slot_count(const SQTree *);
 SQNode sq_tree_root_node(const SQTree *);
-/* Invalid/wasted slots return null. Physical slots are stable across repacking. */
+
+// Invalid/wasted slots return null. Physical slots are stable across repacking.
 SQNode sq_tree_node_at_slot(const SQTree *, uint32_t);
-/* Exact equality on encoded values: coordinates are deltas, and symbol IDs
- * have builtin errors remapped after the grammar range. Public-symbol mapping
- * is not applied. One bit per physical lane; trailing waste never matches. */
+
+// Exact equality on encoded values: coordinates are deltas, and symbol IDs
+// have builtin errors remapped after the grammar range. Public-symbol mapping
+// is not applied. One bit per physical lane; trailing waste never matches.
 uint64_t sq_tree_group_span_delta_equal(const SQTree *, uint32_t group, uint32_t value);
 uint64_t sq_tree_group_start_byte_delta_equal(const SQTree *, uint32_t group, uint32_t value);
 uint64_t sq_tree_group_end_byte_delta_equal(const SQTree *, uint32_t group, uint32_t value);
@@ -89,11 +100,13 @@ uint64_t sq_tree_group_end_row_delta_equal(const SQTree *, uint32_t group, uint3
 uint64_t sq_tree_group_start_column_delta_equal(const SQTree *, uint32_t group, uint32_t value);
 uint64_t sq_tree_group_end_column_delta_equal(const SQTree *, uint32_t group, uint32_t value);
 #endif
+
 uint64_t sq_tree_group_supertype_equal(const SQTree *, uint32_t group, uint32_t value);
 uint64_t sq_tree_group_symbol_equal(const SQTree *, uint32_t group, uint32_t value);
 uint64_t sq_tree_group_grammar_symbol_equal(const SQTree *, uint32_t group, uint32_t value);
 uint64_t sq_tree_group_field_equal(const SQTree *, uint32_t group, uint32_t value);
-/* False positives are possible for common symbols, never false negatives. */
+
+// False positives are possible for common symbols, never false negatives.
 bool sq_tree_group_has_symbol(const SQTree *, uint32_t group, TSSymbol public_symbol);
 
 bool sq_node_is_null(SQNode);
@@ -108,6 +121,7 @@ uint32_t sq_node_end_byte(SQNode);
 TSPoint sq_node_start_point(SQNode);
 TSPoint sq_node_end_point(SQNode);
 #endif
+
 bool sq_node_is_named(SQNode);
 bool sq_node_is_extra(SQNode);
 bool sq_node_is_missing(SQNode);
@@ -117,7 +131,8 @@ bool sq_node_has_changes(SQNode);
 bool sq_node_has_supertype(SQNode, TSSymbol);
 TSFieldId sq_node_field_id(SQNode);
 const char *sq_node_field_name(SQNode);
-/* First physical slot outside this subtree; may equal the tree's slot count. */
+
+// First physical slot outside this subtree; may equal the tree's slot count.
 uint32_t sq_node_end_slot(SQNode);
 uint32_t sq_node_descendant_count(SQNode);
 uint32_t sq_node_child_count(SQNode);
@@ -126,8 +141,9 @@ SQNode sq_node_parent(SQNode);
 SQNode sq_node_child(SQNode, uint32_t);
 SQNode sq_node_named_child(SQNode, uint32_t);
 SQNode sq_node_next_sibling(SQNode);
-/* Structural iteration includes empty siblings that mainline's node accessor
- * skips. Child enumeration and cursors use this form. */
+
+// Structural iteration includes empty siblings that mainline's node accessor
+// skips. Child enumeration and cursors use this form.
 SQNode sq_node_next_sibling_including_empty(SQNode);
 SQNode sq_node_prev_sibling(SQNode);
 SQNode sq_node_next_named_sibling(SQNode);
@@ -145,7 +161,7 @@ SQNode sq_node_named_descendant_for_byte_range(SQNode, uint32_t, uint32_t);
 SQNode sq_node_descendant_for_point_range(SQNode, TSPoint, TSPoint);
 SQNode sq_node_named_descendant_for_point_range(SQNode, TSPoint, TSPoint);
 #endif
-/* Preorder traversal stays within this node's tree, and returns null at ends. */
+// Preorder traversal stays within this node's tree, and returns null at ends.
 SQNode sq_node_next_preorder(SQNode);
 SQNode sq_node_prev_preorder(SQNode);
 
@@ -159,14 +175,14 @@ bool sq_cursor_goto_last_child(SQCursor *);
 bool sq_cursor_goto_next_sibling(SQCursor *);
 bool sq_cursor_goto_parent(SQCursor *);
 
-/* Trees must outlive cursors. Each cursor owns its ancestor stack. */
+// Trees must outlive cursors. Each cursor owns its ancestor stack.
 void sq_cursor_attributes(SQCursor *, SQCursorAttributes *);
 
-/* Iterates root and its descendants in visible preorder, including empty nodes.
- * The tree must outlive the iterator and returned SQNodes. Cache storage belongs
- * to the iterator; returned nodes remain ordinary independent handles.
- * next returns null permanently after exhaustion. Attributes/field_id refer to
- * the last returned node and are zero before iteration and after exhaustion. */
+// Iterates root and its descendants in visible preorder, including empty nodes.
+// The tree must outlive the iterator and returned SQNodes. Cache storage belongs
+// to the iterator; returned nodes remain ordinary independent handles.
+// next returns null permanently after exhaustion. Attributes/field_id refer to
+// the last returned node and are zero before iteration and after exhaustion.
 SQNodeIterator *sq_node_iterator_new(SQNode root, bool unpack_cache);
 void sq_node_iterator_delete(SQNodeIterator *);
 SQNode sq_node_iterator_next(SQNodeIterator *);

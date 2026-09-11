@@ -12,18 +12,20 @@ typedef enum {
   SQ_QUERY_UNSUPPORTED_RANGE,
   SQ_QUERY_INVALID_EXECUTION,
 } SQQueryExecutionError;
+
 typedef struct {
   SQNode node;
   uint32_t index;
 } SQQueryCapture;
+
 typedef struct {
   uint32_t id;
   uint16_t pattern_index, capture_count;
   const SQQueryCapture *captures;
 } SQQueryMatch;
 
-/* Mainline matching and predicate metadata, with the range restriction below. C does not evaluate host text predicates. Captures borrow
- * the cursor until its next advancement; the query and tree must remain alive. */
+// Mainline matching and predicate metadata, with the range restriction below. C does not evaluate host text predicates. Captures borrow
+// the cursor until its next advancement; the query and tree must remain alive.
 SQQuery *sq_query_new(const TSLanguage *language, const char *source, uint32_t source_len,
                       uint32_t *error_offset, TSQueryError *error_type);
 void sq_query_delete(SQQuery *self);
@@ -56,22 +58,25 @@ bool sq_query_cursor_set_byte_range(SQQueryCursor *self, uint32_t start_byte, ui
 #if SQ_INCLUDE_POINTS
 bool sq_query_cursor_set_point_range(SQQueryCursor *self, TSPoint start_point, TSPoint end_point);
 #endif
+
 bool sq_query_cursor_set_containing_byte_range(SQQueryCursor *self, uint32_t start_byte,
                                                uint32_t end_byte);
 #if SQ_INCLUDE_POINTS
 bool sq_query_cursor_set_containing_point_range(SQQueryCursor *self, TSPoint start_point,
                                                 TSPoint end_point);
 #endif
+
 bool sq_query_cursor_next_match(SQQueryCursor *self, SQQueryMatch *match);
 void sq_query_cursor_remove_match(SQQueryCursor *self, uint32_t match_id);
 bool sq_query_cursor_next_capture(SQQueryCursor *self, SQQueryMatch *match,
                                   uint32_t *capture_index);
 void sq_query_cursor_set_max_start_depth(SQQueryCursor *self, uint32_t max_start_depth);
 
-/* Disable optimizations for differential testing or diagnosis. Set before exec. */
+// Disable optimizations for differential testing or diagnosis. Set before exec.
 void sq_query_cursor_set_optimized(SQQueryCursor *, bool);
-/* A bounded range with a rootless or branching pattern depends on omitted hidden-node
- * traversal barriers. Such execution is explicitly rejected, not approximated. */
+
+// A bounded range with a rootless or branching pattern depends on omitted hidden-node
+// traversal barriers. Such execution is explicitly rejected, not approximated.
 SQQueryExecutionError sq_query_cursor_error(const SQQueryCursor *);
 #ifdef __cplusplus
 }

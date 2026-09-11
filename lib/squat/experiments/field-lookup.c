@@ -1,5 +1,5 @@
-/* Public-API field-lookup probe, linked separately against each engine.
- * See field-lookup-review.md for builds, expected results, and provenance. */
+// Public-API field-lookup probe, linked separately against each engine.
+// See field-lookup-review.md for builds, expected results, and provenance.
 #include <tree_sitter/api.h>
 #include <assert.h>
 #include <dlfcn.h>
@@ -15,6 +15,7 @@ static void show(const char *prefix, TSNode node) {
          ts_node_end_byte(node), (int)(ts_node_end_byte(node) - ts_node_start_byte(node)),
          source + ts_node_start_byte(node));
 }
+
 static void walk(TSNode node, const TSLanguage *language) {
   show("node: ", node);
   for (TSFieldId field = 1; field <= ts_language_field_count(language); field++) {
@@ -24,6 +25,7 @@ static void walk(TSNode node, const TSLanguage *language) {
       show("", result);
     }
   }
+
   TSTreeCursor cursor = ts_tree_cursor_new(node);
   if (ts_tree_cursor_goto_first_child(&cursor)) {
     do {
@@ -33,21 +35,25 @@ static void walk(TSNode node, const TSLanguage *language) {
       show("", child);
     } while (ts_tree_cursor_goto_next_sibling(&cursor));
   }
+
   ts_tree_cursor_delete(&cursor);
   for (uint32_t i = 0; i < ts_node_named_child_count(node); i++) {
     walk(ts_node_named_child(node, i), language);
   }
 }
+
 int main(int argc, char **argv) {
   assert(argc == 2 || argc == 3);
   if (argc == 3) {
     source = argv[2];
   }
+
   void *library = dlopen(argv[1], RTLD_NOW | RTLD_LOCAL);
   if (!library) {
     fprintf(stderr, "%s\n", dlerror());
     return 1;
   }
+
   const TSLanguage *(*get_language)(void) = dlsym(library, "tree_sitter_typescript");
   assert(get_language);
   const TSLanguage *language = get_language();
@@ -72,6 +78,7 @@ int main(int argc, char **argv) {
       }
     }
   }
+
   sq_tree_delete(packed);
 #endif
   ts_tree_delete(tree);

@@ -24,6 +24,7 @@ static uint64_t scalar(const uint64_t *data, size_t count, uint32_t target, uint
       word >>= bits;
     }
   }
+
   return matches;
 }
 
@@ -39,6 +40,7 @@ static inline __attribute__((always_inline)) uint64_t swar_core(const uint64_t *
     uint64_t equal = ~(((difference & low) + low) | difference | low) & high;
     matches += (unsigned)__builtin_popcountll(equal);
   }
+
   return matches;
 }
 
@@ -77,6 +79,7 @@ __attribute__((target("sse2,popcnt"))) static uint64_t sse2(const uint64_t *data
     matches +=
         (unsigned)__builtin_popcountll((uint64_t)_mm_cvtsi128_si64(_mm_srli_si128(equal, 8)));
   }
+
   return matches + swar(data + i, count - i, target, bits);
 }
 
@@ -100,6 +103,7 @@ __attribute__((target("avx2,popcnt"))) static uint64_t avx2(const uint64_t *data
     matches += (unsigned)__builtin_popcountll((uint64_t)_mm256_extract_epi64(equal, 2));
     matches += (unsigned)__builtin_popcountll((uint64_t)_mm256_extract_epi64(equal, 3));
   }
+
   return matches + swar(data + i, count - i, target, bits);
 }
 #endif
@@ -115,11 +119,13 @@ int main(void) {
   if (!data) {
     return 2;
   }
+
   uint64_t state = 42;
   for (size_t i = 0; i < count; i++) {
     state = state * UINT64_C(6364136223846793005) + 1;
     data[i] = state;
   }
+
   struct {
     const char *name;
     Count count;
@@ -144,6 +150,7 @@ int main(void) {
       if (!methods[m].count) {
         continue;
       }
+
       // A volatile function pointer prevents loop-invariant call elimination.
       Count volatile operation = methods[m].count;
       double timings[11];
@@ -153,6 +160,7 @@ int main(void) {
         for (unsigned batch = 0; batch < 16; batch++) {
           result += operation(data, count, target, bits);
         }
+
         timings[repeat] = (now() - start) * 1e9 / (16 * count * (64 / bits));
         if (result != expected * 16) {
           fprintf(stderr, "incorrect %s kernel at width %u\n", methods[m].name, bits);
@@ -160,10 +168,12 @@ int main(void) {
           return 1;
         }
       }
+
       qsort(timings, 11, sizeof(double), compare_double);
       printf("%u,%s,%.6f,%llu\n", bits, methods[m].name, timings[5], (unsigned long long)expected);
     }
   }
+
   free(data);
   return 0;
 }

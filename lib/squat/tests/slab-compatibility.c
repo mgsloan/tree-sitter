@@ -1,5 +1,5 @@
-/* Write reference slabs, or require byte-for-byte equality with another build.
- * Only public APIs are used so the same probe can link against either layout. */
+// Write reference slabs, or require byte-for-byte equality with another build.
+// Only public APIs are used so the same probe can link against either layout.
 #include <tree_sitter/squat.h>
 #include <assert.h>
 #include <dlfcn.h>
@@ -24,8 +24,7 @@ int main(int argc, char **argv) {
   assert(argc == 5 || argc == 6);
   void *library = dlopen(argv[1], RTLD_NOW | RTLD_LOCAL);
   assert(library);
-  const TSLanguage *(*language_fn)(void) =
-      (const TSLanguage *(*)(void))dlsym(library, argv[2]);
+  const TSLanguage *(*language_fn)(void) = (const TSLanguage *(*)(void))dlsym(library, argv[2]);
   assert(language_fn);
   const TSLanguage *language = language_fn();
   uint32_t source_size;
@@ -66,8 +65,10 @@ int main(int argc, char **argv) {
       sq_tree_delete(borrowed);
       free(reference);
     }
+
     sq_tree_delete(tree);
   }
+
   ts_tree_delete(parsed);
   ts_parser_delete(parser);
   free(source);

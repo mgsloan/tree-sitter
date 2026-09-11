@@ -25,6 +25,7 @@ typedef struct {
   SQNode *packed;
   uint32_t count;
 } Identities;
+
 static Identities identities(TSTree *tree, SQTree *packed) {
   uint32_t count = ts_node_descendant_count(ts_tree_root_node(tree));
   Identities result = {malloc(count * sizeof(TSNode)), malloc(count * sizeof(SQNode)), count};
@@ -40,64 +41,75 @@ static Identities identities(TSTree *tree, SQTree *packed) {
     if (ts_tree_cursor_goto_first_child(&cursor)) {
       continue;
     }
+
     for (;;) {
       if (ts_tree_cursor_goto_next_sibling(&cursor)) {
         break;
       }
+
       if (!ts_tree_cursor_goto_parent(&cursor)) {
         goto done;
       }
     }
   }
+
 done:
   CHECK(index == count && !node.tree);
   ts_tree_cursor_delete(&cursor);
   return result;
 }
+
 static void compare_node(const Identities *ids, TSNode node, SQNode packed) {
   if (ts_node_is_null(node)) {
     CHECK(sq_node_is_null(packed));
     return;
   }
+
   for (uint32_t index = 0; index < ids->count; index++) {
     if (ts_node_eq(node, ids->nodes[index])) {
       CHECK(sq_node_eq(packed, ids->packed[index]));
       return;
     }
   }
+
   CHECK(false);
 }
-/* This allowance applies only to the generated single-capture wildcard query
- * below. A more complex query difference must still fail: a field discrepancy
- * somewhere in a captured subtree is not sufficient evidence to excuse it. */
+
+// This allowance applies only to the generated single-capture wildcard query
+// below. A more complex query difference must still fail: a field discrepancy
+// somewhere in a captured subtree is not sufficient evidence to excuse it.
 static TSFieldId simple_negated_field(const TSLanguage *language, const char *source) {
   if (strncmp(source, "(_ !", 4)) {
     return 0;
   }
+
   const char *end = strchr(source + 4, ')');
   if (!end || strcmp(end, ") @parent")) {
     return 0;
   }
+
   return ts_language_field_id_for_name(language, source + 4, (uint32_t)(end - source - 4));
 }
 
 static bool expected_negated_field_difference(const Identities *ids, uint32_t ordinal,
-                                               TSFieldId field) {
+                                              TSFieldId field) {
   TSNode parent = ids->nodes[ordinal];
   TSNode lookup = ts_node_child_by_field_id(parent, field);
   TSNode visible = visible_child_by_field(parent, field);
   if (ts_node_is_null(lookup) == ts_node_is_null(visible)) {
     return false;
   }
+
   compare_node(ids, visible, sq_node_child_by_field_id(ids->packed[ordinal], field));
   return true;
 }
 
 static bool expected_mainline_field_match(const Identities *ids, const TSQueryMatch *match,
-                                           TSFieldId field) {
+                                          TSFieldId field) {
   if (!field) {
     return false;
   }
+
   CHECK(match->pattern_index == 0 && match->capture_count == 1 && match->captures[0].index == 0);
   for (uint32_t index = 0; index < ids->count; index++) {
     if (ts_node_eq(match->captures[0].node, ids->nodes[index])) {
@@ -105,9 +117,11 @@ static bool expected_mainline_field_match(const Identities *ids, const TSQueryMa
       if (expected) {
         CHECK(ts_node_is_null(ts_node_child_by_field_id(ids->nodes[index], field)));
       }
+
       return expected;
     }
   }
+
   CHECK(false);
   return false;
 }
@@ -117,6 +131,7 @@ static bool expected_packed_field_match(const Identities *ids, const SQQueryMatc
   if (!field) {
     return false;
   }
+
   CHECK(match->pattern_index == 0 && match->capture_count == 1 && match->captures[0].index == 0);
   for (uint32_t index = 0; index < ids->count; index++) {
     if (sq_node_eq(match->captures[0].node, ids->packed[index])) {
@@ -124,9 +139,11 @@ static bool expected_packed_field_match(const Identities *ids, const SQQueryMatc
       if (expected) {
         CHECK(sq_node_is_null(sq_node_child_by_field_id(ids->packed[index], field)));
       }
+
       return expected;
     }
   }
+
   CHECK(false);
   return false;
 }
@@ -135,6 +152,7 @@ static bool cancel(TSQueryCursorState *state) {
   (void)state;
   return true;
 }
+
 static void run_query(const TSLanguage *language, TSTree *tree, SQTree *packed,
                       const Identities *ids, const char *source) {
   query_source = source;
@@ -148,6 +166,7 @@ static void run_query(const TSLanguage *language, TSTree *tree, SQTree *packed,
     CHECK(error_a == error_b && offset_a == offset_b);
     return;
   }
+
   CHECK(ts_query_pattern_count(mainline) == sq_query_pattern_count(query));
   CHECK(ts_query_capture_count(mainline) == sq_query_capture_count(query));
   SQQuery *copy = sq_query_copy(query);
@@ -177,6 +196,7 @@ static void run_query(const TSLanguage *language, TSTree *tree, SQTree *packed,
         sq_query_cursor_set_point_range(b, (TSPoint){0, 1}, (TSPoint){1, 0});
 #endif
       }
+
       TSQueryCursorOptions options = {.progress_callback = cancel};
       ts_query_cursor_exec_with_options(a, mainline, ts_tree_root_node(tree),
                                         mode == 6 ? &options : NULL);
@@ -193,22 +213,27 @@ static void run_query(const TSLanguage *language, TSTree *tree, SQTree *packed,
           if (!found_a || !expected_mainline_field_match(ids, &expected, negated_field)) {
             break;
           }
+
           CHECK(capture_a == 0);
           expected_field_query_mismatches++;
         }
+
         for (;;) {
           found_b = mode == 0 ? sq_query_cursor_next_match(b, &actual)
                               : sq_query_cursor_next_capture(b, &actual, &capture_b);
           if (!found_b || !expected_packed_field_match(ids, &actual, negated_field)) {
             break;
           }
+
           CHECK(capture_b == 0);
           expected_field_query_mismatches++;
         }
+
         if ((mode == 2 || mode == 5) && sq_query_cursor_error(b) == SQ_QUERY_UNSUPPORTED_RANGE) {
           CHECK(!found_b && event == 0);
           break;
         }
+
         // Callback cadence counts representation-specific traversal events.
         // Both executions must stop, but need not stop at the same capture.
         if (mode == 6) {
@@ -218,10 +243,12 @@ static void run_query(const TSLanguage *language, TSTree *tree, SQTree *packed,
             continue;
           }
         }
+
         CHECK(found_a == found_b);
         if (!found_a) {
           break;
         }
+
         if (getenv("SQ_QUERY_TRACE") && mode == 2 && strstr(query_source, "(_)+") &&
             strstr(input_source, "true")) {
           fprintf(stderr, "event %u capture %u/%u\n", event, capture_a, capture_b);
@@ -231,6 +258,7 @@ static void run_query(const TSLanguage *language, TSTree *tree, SQTree *packed,
                     ts_node_start_byte(expected.captures[i].node),
                     ts_node_end_byte(expected.captures[i].node));
           }
+
           for (uint32_t i = 0; i < actual.capture_count; i++) {
             fprintf(stderr, " B %u %s [%u,%u]\n", actual.captures[i].index,
                     sq_node_type(actual.captures[i].node),
@@ -238,12 +266,14 @@ static void run_query(const TSLanguage *language, TSTree *tree, SQTree *packed,
                     sq_node_end_byte(actual.captures[i].node));
           }
         }
+
         if (expected.pattern_index != actual.pattern_index ||
             expected.capture_count != actual.capture_count) {
           fprintf(stderr, "expected pattern %u captures %u, actual pattern %u captures %u\n",
                   expected.pattern_index, expected.capture_count, actual.pattern_index,
                   actual.capture_count);
         }
+
         CHECK(expected.pattern_index == actual.pattern_index);
         CHECK(expected.capture_count == actual.capture_count);
         if (capture_a != capture_b) {
@@ -255,6 +285,7 @@ static void run_query(const TSLanguage *language, TSTree *tree, SQTree *packed,
                     ts_node_start_byte(expected.captures[i].node),
                     ts_node_end_byte(expected.captures[i].node));
           }
+
           for (uint32_t i = 0; i < actual.capture_count; i++) {
             fprintf(stderr, " slab %u %s [%u,%u]\n", actual.captures[i].index,
                     sq_node_type(actual.captures[i].node),
@@ -262,25 +293,30 @@ static void run_query(const TSLanguage *language, TSTree *tree, SQTree *packed,
                     sq_node_end_byte(actual.captures[i].node));
           }
         }
+
         CHECK(capture_a == capture_b);
         for (uint32_t index = 0; index < expected.capture_count; index++) {
           CHECK(expected.captures[index].index == actual.captures[index].index);
           compare_node(ids, expected.captures[index].node, actual.captures[index].node);
         }
+
         if (mode == 7 && event % 2 == 0) {
           ts_query_cursor_remove_match(a, expected.id);
           sq_query_cursor_remove_match(b, actual.id);
         }
       }
+
       CHECK(event < 100000);
       CHECK(ts_query_cursor_did_exceed_match_limit(a) == sq_query_cursor_did_exceed_match_limit(b));
       ts_query_cursor_delete(a);
       sq_query_cursor_delete(b);
     }
   }
+
   ts_query_delete(mainline);
   sq_query_delete(query);
 }
+
 static void exercise(const TSLanguage *language, const char *source, uint32_t length) {
   input_source = source;
   TSParser *parser = ts_parser_new();
@@ -314,16 +350,19 @@ static void exercise(const TSLanguage *language, const char *source, uint32_t le
   for (unsigned index = 0; index < sizeof(queries) / sizeof(queries[0]); index++) {
     run_query(language, tree, packed, &ids, queries[index]);
   }
+
   for (uint32_t index = 0; index < ids.count && index < 24; index++) {
     if (!ts_node_is_named(ids.nodes[index])) {
       continue;
     }
+
     char query[512];
     snprintf(query, sizeof(query), "(%s) @specific", ts_node_type(ids.nodes[index]));
     run_query(language, tree, packed, &ids, query);
     snprintf(query, sizeof(query), "(%s . (_) @first) @parent", ts_node_type(ids.nodes[index]));
     run_query(language, tree, packed, &ids, query);
   }
+
   // Multiple raw roots exercise merged SWAR comparisons; supertypes exercise
   // the inherited mask even when no visible node has the supertype's symbol.
   char alternatives[2048] = "[";
@@ -343,10 +382,12 @@ static void exercise(const TSLanguage *language, const char *source, uint32_t le
       roots++;
     }
   }
+
   if (roots) {
     snprintf(alternatives + used, sizeof(alternatives) - used, "] @roots");
     run_query(language, tree, packed, &ids, alternatives);
   }
+
   for (uint32_t field = 1; field <= ts_language_field_count(language); field++) {
     char query[512];
     const char *name = ts_language_field_name_for_id(language, (TSFieldId)field);
@@ -355,12 +396,14 @@ static void exercise(const TSLanguage *language, const char *source, uint32_t le
     snprintf(query, sizeof(query), "(_ !%s) @parent", name);
     run_query(language, tree, packed, &ids, query);
   }
+
   free(ids.nodes);
   free(ids.packed);
   sq_tree_delete(packed);
   ts_tree_delete(tree);
   ts_parser_delete(parser);
 }
+
 int main(int argc, char **argv) {
   CHECK(argc >= 3);
   void *library = dlopen(argv[1], RTLD_NOW | RTLD_LOCAL);
@@ -368,6 +411,7 @@ int main(int argc, char **argv) {
     fprintf(stderr, "%s\n", dlerror());
     return 2;
   }
+
   const TSLanguage *(*language_fn)(void) = (const TSLanguage *(*)(void))dlsym(library, argv[2]);
   CHECK(language_fn);
   const TSLanguage *language = language_fn();
@@ -381,6 +425,7 @@ int main(int argc, char **argv) {
   for (unsigned i = 0; i < sizeof(samples) / sizeof(samples[0]); i++) {
     exercise(language, samples[i], (uint32_t)strlen(samples[i]));
   }
+
   for (int i = 3; i < argc; i++) {
     FILE *file = fopen(argv[i], "rb");
     CHECK(file);
@@ -395,6 +440,7 @@ int main(int argc, char **argv) {
     exercise(language, source, (uint32_t)length);
     free(source);
   }
+
   printf("ok: query matches, full capture snapshots, ranges, limits, removal, and optimization "
          "modes: %s\n",
          argv[2]);

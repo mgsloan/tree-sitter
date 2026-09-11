@@ -16,8 +16,10 @@ static void equality_tests(void) {
           expected |= UINT64_C(1) << (lane * bits + bits - 1);
         }
       }
+
       assert(sq_equal_lanes(word, target, bits) == expected);
     }
+
     // These adjacent lanes catch borrow/carry false positives in has-zero idioms.
     assert(sq_equal_lanes(0, 0, bits) == (sq_lane_starts(bits) << (bits - 1)));
     assert(sq_equal_lanes(sq_lane_starts(bits), 0, bits) == 0);
@@ -31,6 +33,7 @@ static void read_tests(void) {
     state = state * UINT64_C(6364136223846793005) + 1;
     words[index] = state;
   }
+
   for (uint8_t bits = 1; bits <= 32; bits++) {
     uint32_t lanes = 64 / bits;
     uint64_t mask = (UINT64_C(1) << bits) - 1;
@@ -48,20 +51,24 @@ static void unpack_tests(void) {
     size_t bytes = (size_t)sq_column_size(slots, bits);
     uint8_t *data = malloc(bytes);
     assert(data);
+
     // Deliberately dirty unused tail bits: no decoder may treat them as lanes.
     memset(data, 0xff, bytes);
     for (uint32_t index = 0; index < slots; index++) {
       sq_set_packed(data, 0, index, bits, (index * 7919u) & ((1u << bits) - 1));
     }
+
     for (unsigned kernel = 1; kernel <= 4; kernel++) {
       if (!sq_unpack_supported(kernel)) {
         continue;
       }
+
       SQUnpack unpack = sq_unpack_select(kernel);
       for (uint32_t first = 0; first < lanes; first++) {
         for (uint32_t count = 0; count <= SQ_ITERATOR_UNPACK_SLOTS; count++) {
           uint16_t values[SQ_ITERATOR_UNPACK_SLOTS + 2];
-          for (unsigned index = 0; index < SQ_ITERATOR_UNPACK_SLOTS + 2; index++) values[index] = 0xbeef;
+          for (unsigned index = 0; index < SQ_ITERATOR_UNPACK_SLOTS + 2; index++)
+            values[index] = 0xbeef;
           unpack(data, first, count, bits, values + 1);
           assert(values[0] == 0xbeef && values[count + 1] == 0xbeef);
           for (uint32_t index = 0; index < count; index++) {
@@ -69,13 +76,16 @@ static void unpack_tests(void) {
           }
         }
       }
+
       // The last window ends at the last allocated word, with no overread slack.
       uint16_t values[SQ_ITERATOR_UNPACK_SLOTS];
       unpack(data, slots - SQ_ITERATOR_UNPACK_SLOTS, SQ_ITERATOR_UNPACK_SLOTS, bits, values);
       for (uint32_t index = 0; index < SQ_ITERATOR_UNPACK_SLOTS; index++) {
-        assert(values[index] == sq_get_packed(data, 0, slots - SQ_ITERATOR_UNPACK_SLOTS + index, bits));
+        assert(values[index] ==
+               sq_get_packed(data, 0, slots - SQ_ITERATOR_UNPACK_SLOTS + index, bits));
       }
     }
+
     free(data);
   }
 }
@@ -92,6 +102,7 @@ static void coordinate_unpack_tests(void) {
     for (uint32_t index = 0; index < slots; index++) {
       sq_set_packed(data, 0, index, bits, (index * 7919u) & ((1u << bits) - 1));
     }
+
     for (unsigned kernel = 0; kernel < sizeof(kernels) / sizeof(kernels[0]); kernel++) {
       SQUnpackCoordinates unpack = sq_unpack_coordinates_select(kernels[kernel]);
       for (unsigned base_index = 0; base_index < sizeof(bases) / sizeof(bases[0]); base_index++) {
@@ -100,6 +111,7 @@ static void coordinate_unpack_tests(void) {
           for (uint32_t count = 0; count <= SQ_ITERATOR_UNPACK_SLOTS; count++) {
             uint32_t values[SQ_ITERATOR_UNPACK_SLOTS + 2];
             values[0] = values[count + 1] = 0xdeadbeef;
+
             // Vary the input alignment and exercise every scalar/vector tail.
             uint32_t first = slots - count;
             unpack(data, first, count, bits, base, subtract, values + 1);
@@ -112,26 +124,29 @@ static void coordinate_unpack_tests(void) {
         }
       }
     }
+
     free(data);
   }
 }
 
-/* Use the scalar packed-word contract to check every named column through
- * repeated growth/compaction. Tags distinguish equal-width columns. */
-static void exercise_column(SQTree *tree, uint32_t offset, uint8_t bits,
-                              uint32_t scale, unsigned tag, bool fill) {
+// Use the scalar packed-word contract to check every named column through
+// repeated growth/compaction. Tags distinguish equal-width columns.
+static void exercise_column(SQTree *tree, uint32_t offset, uint8_t bits, uint32_t scale,
+                            unsigned tag, bool fill) {
   uint64_t mask = (UINT64_C(1) << bits) - 1;
   for (uint32_t index = 0; index < 2 * scale; index++) {
     uint32_t expected = (uint32_t)((index * UINT64_C(31337) + tag) & mask);
     if (fill) sq_set_packed(tree->data, offset, index, bits, expected);
     else assert(sq_get_packed(tree->data, offset, index, bits) == expected);
   }
+
   if (!fill) {
     for (uint32_t index = 2 * scale; index < sq_header(tree)->group_capacity * scale; index++) {
       assert(sq_get_packed(tree->data, offset, index, bits) == 0);
     }
   }
 }
+
 static void exercise_columns(SQTree *tree, bool fill) {
   unsigned tag = 0;
   exercise_column(tree, tree->layout.waste, SQ_WASTE_BITS, 1, tag++, fill);
@@ -159,7 +174,8 @@ static void exercise_columns(SQTree *tree, bool fill) {
 #endif
   exercise_column(tree, tree->layout.supertype, 8, SQ_GROUP_SIZE, tag++, fill);
   exercise_column(tree, tree->layout.symbol, tree->layout.symbol_bits, SQ_GROUP_SIZE, tag++, fill);
-  exercise_column(tree, tree->layout.grammar_symbol, tree->layout.symbol_bits, SQ_GROUP_SIZE, tag++, fill);
+  exercise_column(tree, tree->layout.grammar_symbol, tree->layout.symbol_bits, SQ_GROUP_SIZE, tag++,
+                  fill);
   exercise_column(tree, tree->layout.field, tree->layout.field_bits, SQ_GROUP_SIZE, tag++, fill);
 }
 
@@ -175,11 +191,24 @@ static void fixed_width_write_tests(void) {
       uint64_t expected = (words[index / lanes] & ~(mask << shift)) | ((uint64_t)value << shift);
       uint8_t *bytes = (uint8_t *)words;
       switch (bits) {
-      case 1: sq_set_bit(bytes, 0, index, value); assert(sq_get_bit(bytes, 0, index) == value); break;
-      case 8: sq_set_u8(bytes, 0, index, value); assert(sq_get_u8(bytes, 0, index) == value); break;
-      case 16: sq_set_u16(bytes, 0, index, value); assert(sq_get_u16(bytes, 0, index) == value); break;
-      case 32: sq_set_u32(bytes, 0, index, value); assert(sq_get_u32(bytes, 0, index) == value); break;
+      case 1:
+        sq_set_bit(bytes, 0, index, value);
+        assert(sq_get_bit(bytes, 0, index) == value);
+        break;
+      case 8:
+        sq_set_u8(bytes, 0, index, value);
+        assert(sq_get_u8(bytes, 0, index) == value);
+        break;
+      case 16:
+        sq_set_u16(bytes, 0, index, value);
+        assert(sq_get_u16(bytes, 0, index) == value);
+        break;
+      case 32:
+        sq_set_u32(bytes, 0, index, value);
+        assert(sq_get_u32(bytes, 0, index) == value);
+        break;
       }
+
       assert(words[index / lanes] == expected);
     }
   }
@@ -211,10 +240,12 @@ int main(void) {
       assert(tree->supertypes == (TSSymbol *)(tree + 1));
       exercise_columns(tree, false);
     }
+
     assert(!sq_resize(&tree, UINT32_MAX, &error) && error == SQ_ERROR_OVERFLOW);
     sq_tree_delete(tree);
     free(metadata);
   }
+
   puts("ok: packed-column decoding, stable physical lanes, colocated growth, compaction, overflow");
   return 0;
 }

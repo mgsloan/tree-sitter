@@ -9,10 +9,12 @@ static double now(void) {
   clock_gettime(CLOCK_MONOTONIC, &value);
   return value.tv_sec + value.tv_nsec * 1e-9;
 }
+
 static int compare_double(const void *left, const void *right) {
   double a = *(const double *)left, b = *(const double *)right;
   return (a > b) - (a < b);
 }
+
 int main(void) {
   const uint32_t slots = 131072;
   const char *names[] = {"", "scalar", "swar", "bmi2", "avx2"};
@@ -26,9 +28,11 @@ int main(void) {
     for (uint32_t index = 0; index < slots; index++) {
       sq_set_packed(column, 0, index, bits, (index * 7919u) & ((1u << bits) - 1));
     }
+
     double timings[5][9] = {{0}};
     for (unsigned kernel = 1; kernel <= 4; kernel++) {
       if (!sq_unpack_supported(kernel)) continue;
+
       // Volatile indirection prevents hoisting repeated unpack calls. Each
       // kernel writes the same u16 group and consumes every value for checking.
       SQUnpack volatile unpack = sq_unpack_select(kernel);
@@ -40,6 +44,7 @@ int main(void) {
         }
       }
     }
+
     // Rotate kernel order on each repeat to reduce clock/temperature bias.
     for (unsigned repeat = 0; repeat < 9; repeat++) {
       for (unsigned step = 0; step < 4; step++) {
@@ -55,17 +60,21 @@ int main(void) {
             sum += values[0];
           }
         }
+
         checksum += sum;
         timings[kernel][repeat] = (now() - start) * 1e9 / (8 * slots);
       }
     }
+
     for (unsigned kernel = 1; kernel <= 4; kernel++) {
       if (!sq_unpack_supported(kernel)) continue;
       qsort(timings[kernel], 9, sizeof(double), compare_double);
-      printf("%u,%u,%u,%s,%.6f\n", SQ_GROUP_SIZE, SQ_ITERATOR_UNPACK_SLOTS,
-             bits, names[kernel], timings[kernel][4]);
+      printf("%u,%u,%u,%s,%.6f\n", SQ_GROUP_SIZE, SQ_ITERATOR_UNPACK_SLOTS, bits, names[kernel],
+             timings[kernel][4]);
     }
+
     free(column);
   }
+
   fprintf(stderr, "checksum: %llu\n", (unsigned long long)checksum);
 }

@@ -6,8 +6,8 @@
 #define SQ_X86_UNPACK 0
 #endif
 
-/* Expand four densely packed fields into four u16 lanes. Splitting the two
- * pairs before inserting gaps avoids overlap when 4 * bits exceeds 32. */
+// Expand four densely packed fields into four u16 lanes. Splitting the two
+// pairs before inserting gaps avoids overlap when 4 * bits exceeds 32.
 static inline uint64_t spread_four(uint64_t word, uint8_t bits, uint64_t mask) {
   uint64_t pair_mask = (UINT64_C(1) << (2 * bits)) - 1;
   uint64_t pairs = (word & pair_mask) | ((word >> (2 * bits)) << 32);
@@ -15,21 +15,24 @@ static inline uint64_t spread_four(uint64_t word, uint8_t bits, uint64_t mask) {
   return (pairs & low_lanes) | ((pairs & (low_lanes << bits)) << (16 - bits));
 }
 
-/* The narrow layouts already occupy whole bytes. Widen eight bytes together
- * with SSE2, or copy native u16 lanes, rather than routing them through PDEP. */
-static bool unpack_narrow(const uint8_t *column, uint32_t first, uint32_t count,
-                           uint8_t bits, uint16_t *out) {
+// The narrow layouts already occupy whole bytes. Widen eight bytes together
+// with SSE2, or copy native u16 lanes, rather than routing them through PDEP.
+static bool unpack_narrow(const uint8_t *column, uint32_t first, uint32_t count, uint8_t bits,
+                          uint16_t *out) {
   const uint16_t endian = 1;
   if (!*(const uint8_t *)&endian) {
     return false;
   }
+
   if (bits == 16) {
     memcpy(out, column + (size_t)first * 2, (size_t)count * 2);
     return true;
   }
+
   if (bits != 8) {
     return false;
   }
+
   column += first;
 #if defined(__x86_64__)
   while (count >= 8) {
@@ -43,13 +46,14 @@ static bool unpack_narrow(const uint8_t *column, uint32_t first, uint32_t count,
   while (count--) {
     *out++ = *column++;
   }
+
   return true;
 }
 
 typedef uint64_t (*ExpandFour)(uint64_t, uint8_t, uint64_t);
 
-static inline void unpack_words(const uint8_t *column, uint32_t first, uint32_t count,
-                                uint8_t bits, uint16_t *out, ExpandFour expand) {
+static inline void unpack_words(const uint8_t *column, uint32_t first, uint32_t count, uint8_t bits,
+                                uint16_t *out, ExpandFour expand) {
   uint32_t lanes = 64 / bits;
   uint32_t word_index = first / lanes;
   uint32_t skip = first % lanes;
@@ -62,6 +66,7 @@ static inline void unpack_words(const uint8_t *column, uint32_t first, uint32_t 
     if (take > count) {
       take = count;
     }
+
     count -= take;
     skip = 0;
     while (take >= 4) {
@@ -74,13 +79,16 @@ static inline void unpack_words(const uint8_t *column, uint32_t first, uint32_t 
           out[index] = (uint16_t)(expanded >> (16 * index));
         }
       }
+
       out += 4;
       take -= 4;
+
       // Four 16-bit lanes consume the whole word; never shift by 64.
       if (take) {
         word >>= 4 * bits;
       }
     }
+
     while (take--) {
       *out++ = (uint16_t)(word & mask);
       word >>= bits;
@@ -88,51 +96,54 @@ static inline void unpack_words(const uint8_t *column, uint32_t first, uint32_t 
   }
 }
 
-void sq_unpack_u16_scalar(const uint8_t *column, uint32_t first, uint32_t count,
-                          uint8_t bits, uint16_t *out) {
+void sq_unpack_u16_scalar(const uint8_t *column, uint32_t first, uint32_t count, uint8_t bits,
+                          uint16_t *out) {
   for (uint32_t index = 0; index < count; index++) {
     out[index] = (uint16_t)sq_get_packed(column, 0, first + index, bits);
   }
 }
-void sq_unpack_u16_swar(const uint8_t *column, uint32_t first, uint32_t count,
-                        uint8_t bits, uint16_t *out) {
+
+void sq_unpack_u16_swar(const uint8_t *column, uint32_t first, uint32_t count, uint8_t bits,
+                        uint16_t *out) {
   if (unpack_narrow(column, first, count, bits, out)) return;
   unpack_words(column, first, count, bits, out, spread_four);
 }
 
 #if SQ_X86_UNPACK
-__attribute__((target("bmi2")))
-static uint64_t deposit_four(uint64_t word, uint8_t bits, uint64_t mask) {
+__attribute__((target("bmi2"))) static uint64_t deposit_four(uint64_t word, uint8_t bits,
+                                                             uint64_t mask) {
   (void)bits;
+
   // PDEP places the low 4*bits source bits into the selected u16 destinations.
   return _pdep_u64(word, mask * UINT64_C(0x0001000100010001));
 }
-__attribute__((target("bmi2")))
-void sq_unpack_u16_bmi2(const uint8_t *column, uint32_t first, uint32_t count,
-                        uint8_t bits, uint16_t *out) {
+
+__attribute__((target("bmi2"))) void sq_unpack_u16_bmi2(const uint8_t *column, uint32_t first,
+                                                        uint32_t count, uint8_t bits,
+                                                        uint16_t *out) {
   if (unpack_narrow(column, first, count, bits, out)) return;
   unpack_words(column, first, count, bits, out, deposit_four);
 }
 
-__attribute__((target("avx2")))
-static uint64_t vector_four(uint64_t word, uint8_t bits, uint64_t mask) {
+__attribute__((target("avx2"))) static uint64_t vector_four(uint64_t word, uint8_t bits,
+                                                            uint64_t mask) {
   __m256i shifts = _mm256_setr_epi64x(0, bits, 2 * bits, 3 * bits);
   __m256i values = _mm256_srlv_epi64(_mm256_set1_epi64x((long long)word), shifts);
   values = _mm256_and_si256(values, _mm256_set1_epi64x((long long)mask));
+
   // Each 128-bit half contributes two u16 values. Compact those pairs, then
   // join them in the low 64 bits without scalar lane extraction.
-  __m256i shuffle = _mm256_setr_epi8(0, 1, 8, 9, -1, -1, -1, -1,
-                                    -1, -1, -1, -1, -1, -1, -1, -1,
-                                    0, 1, 8, 9, -1, -1, -1, -1,
-                                    -1, -1, -1, -1, -1, -1, -1, -1);
+  __m256i shuffle = _mm256_setr_epi8(0, 1, 8, 9, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, 0,
+                                     1, 8, 9, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1);
   values = _mm256_shuffle_epi8(values, shuffle);
-  __m128i joined = _mm_unpacklo_epi32(_mm256_castsi256_si128(values),
-                                     _mm256_extracti128_si256(values, 1));
+  __m128i joined =
+      _mm_unpacklo_epi32(_mm256_castsi256_si128(values), _mm256_extracti128_si256(values, 1));
   return (uint64_t)_mm_cvtsi128_si64(joined);
 }
-__attribute__((target("avx2")))
-void sq_unpack_u16_avx2(const uint8_t *column, uint32_t first, uint32_t count,
-                        uint8_t bits, uint16_t *out) {
+
+__attribute__((target("avx2"))) void sq_unpack_u16_avx2(const uint8_t *column, uint32_t first,
+                                                        uint32_t count, uint8_t bits,
+                                                        uint16_t *out) {
   if (unpack_narrow(column, first, count, bits, out)) return;
   unpack_words(column, first, count, bits, out, vector_four);
 }
@@ -142,16 +153,19 @@ bool sq_unpack_supported(unsigned kernel) {
   if (kernel <= 2) {
     return true;
   }
+
 #if SQ_X86_UNPACK
   if (kernel == 3) {
     return __builtin_cpu_supports("bmi2");
   }
+
   if (kernel == 4) {
     return __builtin_cpu_supports("avx2");
   }
 #endif
   return false;
 }
+
 SQUnpack sq_unpack_select(unsigned kernel) {
 #if SQ_X86_UNPACK
   // Automatic BMI2 dispatch is limited to the vendor measured by the current
@@ -161,7 +175,8 @@ SQUnpack sq_unpack_select(unsigned kernel) {
   }
 #endif
   switch (kernel) {
-  case 1: return sq_unpack_u16_scalar;
+  case 1:
+    return sq_unpack_u16_scalar;
 #if SQ_X86_UNPACK
   case 3:
     if (sq_unpack_supported(3)) return sq_unpack_u16_bmi2;
@@ -171,41 +186,41 @@ SQUnpack sq_unpack_select(unsigned kernel) {
     break;
 #endif
   }
+
   return sq_unpack_u16_swar;
 }
 
 static void coordinates_scalar_arithmetic(const uint8_t *column, uint32_t first, uint32_t count,
-                                uint8_t bits, uint32_t base, bool subtract,
-                                uint32_t *out) {
+                                          uint8_t bits, uint32_t base, bool subtract,
+                                          uint32_t *out) {
   for (uint32_t index = 0; index < count; index++) {
-    uint32_t delta = bits == 8 ? sq_get_u8(column, 0, first + index)
-                               : sq_get_u16(column, 0, first + index);
+    uint32_t delta =
+        bits == 8 ? sq_get_u8(column, 0, first + index) : sq_get_u16(column, 0, first + index);
     out[index] = subtract ? base - delta : base + delta;
   }
 }
 
-static void coordinates_widen(const uint8_t *column, uint32_t first, uint32_t count,
-                               uint8_t bits, uint32_t *out) {
+static void coordinates_widen(const uint8_t *column, uint32_t first, uint32_t count, uint8_t bits,
+                              uint32_t *out) {
   for (uint32_t index = 0; index < count; index++) {
-    out[index] = bits == 8 ? sq_get_u8(column, 0, first + index)
-                           : sq_get_u16(column, 0, first + index);
+    out[index] =
+        bits == 8 ? sq_get_u8(column, 0, first + index) : sq_get_u16(column, 0, first + index);
   }
 }
 
-static void coordinates_scalar(const uint8_t *column, uint32_t first, uint32_t count,
-                                uint8_t bits, uint32_t base, bool subtract,
-                                uint32_t *out) {
+static void coordinates_scalar(const uint8_t *column, uint32_t first, uint32_t count, uint8_t bits,
+                               uint32_t base, bool subtract, uint32_t *out) {
   if (!subtract && !base) {
     coordinates_widen(column, first, count, bits, out);
     return;
   }
+
   coordinates_scalar_arithmetic(column, first, count, bits, base, subtract, out);
 }
 
 #if SQ_X86_UNPACK
-static void coordinates_sse2(const uint8_t *column, uint32_t first, uint32_t count,
-                              uint8_t bits, uint32_t base, bool subtract,
-                              uint32_t *out) {
+static void coordinates_sse2(const uint8_t *column, uint32_t first, uint32_t count, uint8_t bits,
+                             uint32_t base, bool subtract, uint32_t *out) {
   const uint8_t *input = column + (size_t)first * (bits / 8);
   __m128i bases = _mm_set1_epi32((int32_t)base);
   __m128i zero = _mm_setzero_si128();
@@ -219,53 +234,54 @@ static void coordinates_sse2(const uint8_t *column, uint32_t first, uint32_t cou
     } else {
       deltas = _mm_loadl_epi64((const __m128i *)input);
     }
+
     deltas = _mm_unpacklo_epi16(deltas, zero);
-    __m128i absolute = subtract ? _mm_sub_epi32(bases, deltas)
-                               : _mm_add_epi32(bases, deltas);
+    __m128i absolute = subtract ? _mm_sub_epi32(bases, deltas) : _mm_add_epi32(bases, deltas);
     _mm_storeu_si128((__m128i *)out, absolute);
     first += 4;
     input += 4 * (bits / 8);
     out += 4;
     count -= 4;
   }
+
   // Keep the SSE2 path, including its tail, free of the zero-base branch.
   coordinates_scalar_arithmetic(column, first, count, bits, base, subtract, out);
 }
 
-__attribute__((target("avx2")))
-static void coordinates_avx2(const uint8_t *column, uint32_t first, uint32_t count,
-                              uint8_t bits, uint32_t base, bool subtract,
-                              uint32_t *out) {
+__attribute__((target("avx2"))) static void coordinates_avx2(const uint8_t *column, uint32_t first,
+                                                             uint32_t count, uint8_t bits,
+                                                             uint32_t base, bool subtract,
+                                                             uint32_t *out) {
   const uint8_t *input = column + (size_t)first * (bits / 8);
   if (!subtract && !base) {
     while (count >= 8) {
-      __m256i values = bits == 8
-          ? _mm256_cvtepu8_epi32(_mm_loadl_epi64((const __m128i *)input))
-          : _mm256_cvtepu16_epi32(_mm_loadu_si128((const __m128i *)input));
+      __m256i values = bits == 8 ? _mm256_cvtepu8_epi32(_mm_loadl_epi64((const __m128i *)input))
+                                 : _mm256_cvtepu16_epi32(_mm_loadu_si128((const __m128i *)input));
       _mm256_storeu_si256((__m256i *)out, values);
       first += 8;
       input += 8 * (bits / 8);
       out += 8;
       count -= 8;
     }
+
     coordinates_widen(column, first, count, bits, out);
     return;
   }
+
   __m256i bases = _mm256_set1_epi32((int32_t)base);
   while (count >= 8) {
     // Widen unsigned deltas directly from the slab. No intermediate u16 cache
     // or cross-lane carries: each u32 lane gets its own broadcast-base add/sub.
-    __m256i deltas = bits == 8
-        ? _mm256_cvtepu8_epi32(_mm_loadl_epi64((const __m128i *)input))
-        : _mm256_cvtepu16_epi32(_mm_loadu_si128((const __m128i *)input));
-    __m256i absolute = subtract ? _mm256_sub_epi32(bases, deltas)
-                               : _mm256_add_epi32(bases, deltas);
+    __m256i deltas = bits == 8 ? _mm256_cvtepu8_epi32(_mm_loadl_epi64((const __m128i *)input))
+                               : _mm256_cvtepu16_epi32(_mm_loadu_si128((const __m128i *)input));
+    __m256i absolute = subtract ? _mm256_sub_epi32(bases, deltas) : _mm256_add_epi32(bases, deltas);
     _mm256_storeu_si256((__m256i *)out, absolute);
     first += 8;
     input += 8 * (bits / 8);
     out += 8;
     count -= 8;
   }
+
   coordinates_sse2(column, first, count, bits, base, subtract, out);
 }
 #endif
@@ -275,6 +291,7 @@ SQUnpackCoordinates sq_unpack_coordinates_select(unsigned kernel) {
   if ((kernel == 0 || kernel == 4) && __builtin_cpu_supports("avx2")) {
     return coordinates_avx2;
   }
+
   if (kernel != 1) {
     return coordinates_sse2;
   }
