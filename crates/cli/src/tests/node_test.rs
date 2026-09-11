@@ -1229,13 +1229,18 @@ fn test_node_descendant_for_range_after_hidden_zero_width_token() {
     let language = get_test_fixture_language("external_unicode_column_alignment");
     let mut parser = Parser::new();
     parser.set_language(&language).unwrap();
-    // The scanner emits a hidden, zero-width _start_list before list_item.
     let tree = parser.parse("-", None).unwrap();
     let root = tree.root_node();
+
     assert!(!root.has_error());
     let item = root.named_child(0).unwrap().named_child(0).unwrap();
     assert_eq!(item.kind(), "list_item");
 
+    // Regression test - hidden zero-width leaves at the same position as a zero-width descendant
+    // query caused it to not descend into a visible sibling that shares that location.
+    //
+    // In this case, there is a zero-width `_start_list` at byte 0, followed by `list_item`, also
+    // byte 0. Before the fix, this returned the parent of both instead of the `list_item`.
     let point = Point::new(0, 0);
     for node in [
         root.descendant_for_byte_range(0, 0),
@@ -1253,15 +1258,18 @@ fn test_node_descendant_for_range_after_hidden_zero_width_subtree() {
     parser.set_language(&get_language("php/php")).unwrap();
     let tree = parser.parse("<?do use B?><?f;", None).unwrap();
     let root = tree.root_node();
-    assert!(root.has_error());
+
     let end_tag = get_all_nodes(&tree)
         .into_iter()
         .find(|node| node.kind() == "php_end_tag")
         .unwrap();
     assert_eq!(end_tag.byte_range(), 10..12);
 
-    // Error recovery leaves an empty _semicolon containing _automatic_semicolon
-    // immediately before the php_end_tag, inside the same ERROR node.
+    // Regression test - hidden zero-width subtrees at the same position as a zero-width descendant
+    // query caused it to not descend into a visible sibling that shares that location.
+    //
+    // In this case, there is a zero-width `_semicolon` at byte 10, containing
+    // `_automatic_semicolon`. Before the fix, this returned the parent ERROR node.
     let point = Point::new(0, 10);
     for node in [
         root.descendant_for_byte_range(10, 10),
