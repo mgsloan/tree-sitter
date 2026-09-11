@@ -669,7 +669,9 @@ static SQNode seek_byte(SQNode node, uint32_t range_start, uint32_t range_end, b
 
   // Earlier preorder siblings end before the query; the first qualifying end
   // belongs to an enclosing ancestor. Reuse each group's end base and skip
-  // groups whose maximum end cannot cover the range.
+  // groups whose maximum end cannot cover the range. Unlike point ends, this
+  // needs only one base and delta comparison, so long scans remain competitive
+  // with parent traversal and do not need a distance-based fallback.
   while (candidate.slot < node.slot) {
     uint32_t group = candidate.slot / SQ_GROUP_SIZE;
     uint32_t limit = (group + 1) * SQ_GROUP_SIZE - sq_group_waste(tree, group);
