@@ -1,5 +1,9 @@
 # Cloud seek comparison — 2026-09-11
 
+The subsequent [hybrid experiment](seek-hybrid-results-2026-09-11.md) keeps both
+point ancestor methods and selects between them using candidate distance. It
+retains the direct scan's aggregate gain without the regressions measured here.
+
 The large-file point-end-scan regressions reproduce on the cloud benchmarking instance. The retained implementation uses the faster selected-group search for both seeks, end-delta scanning for byte seeks, and parent traversal for point seeks. No packed encoding changes were made.
 
 Run on `squatter-benchmark`, GCP `e2-standard-2`, `us-central1-a`: Intel Xeon 2.20 GHz, family 6/model 79 (Broadwell), pinned to CPU 0. Binaries were built with GCC 15.3.0, `-O3 -g`, 16-node groups, and run with the guest dynamic loader. The comparison baseline is `220ee121c`, which already binary-searches group starts. The JSON records source/binary hashes and the guest platform.

@@ -308,7 +308,8 @@ commands are saved with the results. Parsing and packing are outside the timer.
 
 Add `--profile point --rounds 3000 --perf-event EVENT` to sample with a supported
 `perf` event; `byte`, `before-point`, and `before-byte` select the other paths.
-See the [cloud results](../../lib/squat/experiments/seek-cloud-results-2026-09-11.md)
+See the [hybrid results](../../lib/squat/experiments/seek-hybrid-results-2026-09-11.md),
+[cloud strategy comparison](../../lib/squat/experiments/seek-cloud-results-2026-09-11.md),
 and [local profiles](../../lib/squat/experiments/seek-profile-results-2026-09-11.md)
 for the retained optimizations and repeated large-file comparisons.
 

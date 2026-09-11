@@ -1,6 +1,9 @@
 # Local seek profiling and optimization — 2026-09-11
 
-The follow-up [cloud comparison](seek-cloud-results-2026-09-11.md) repeats the full corpus and separately tests large-file regression stability.
+The follow-up [cloud comparison](seek-cloud-results-2026-09-11.md) repeats the
+full corpus and separately tests large-file regression stability. A later
+[hybrid experiment](seek-hybrid-results-2026-09-11.md) keeps both ancestor
+methods and chooses from their estimated scan distance.
 
 Both indexed seeks were profiled against commit `220ee121c`, which already binary-searches group starts. The retained changes compare selected-group start deltas with SSE2, use conditional binary-search bounds, and avoid whole-tree checks during equal-start walks. Byte seeking scans end deltas to find enclosing ancestors. Point seeking retains span-based parent traversal. Shared-boundary descent remains available, with inlining disabled under GCC/Clang to keep it out of the indexed search body. No encoding changes or index allocations were introduced.
 
