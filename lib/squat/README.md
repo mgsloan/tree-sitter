@@ -177,9 +177,9 @@ selects scalar/SWAR/BMI2/AVX2 at build time; unavailable hardware selections fal
 back to SWAR. `SQ_COORDINATE_KERNEL=0/1/2/4` independently selects automatic,
 scalar, SSE2, or AVX2 coordinate reconstruction, with a supported fallback.
 
-`SQ_ITERATOR_CACHE_ALL=2` is the default absolute-coordinate cache. Historical
-build modes `0` (IDs only) and `1` (u16 deltas and flags) remain available for
-reproducing earlier experiments. The public boolean constructor still selects
+`SQ_ITERATOR_CACHE_ALL=2` is the default absolute-coordinate cache. Build mode `0`
+(IDs only) remains available for reproducing earlier experiments. The old
+delta-cache mode `1` has been removed. The public boolean constructor still selects
 cached or uncached operation. No slab format or cursor API changes.
 
 `SQ_ITERATOR_UNPACK_SLOTS=32/64/128` widens the iterator cache independently of
