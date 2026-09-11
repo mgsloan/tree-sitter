@@ -373,11 +373,7 @@ static int point_cmp(TSPoint left, TSPoint right) {
                                : (left.column > right.column) - (left.column < right.column);
 }
 
-static SQNode seek_point(SQNode node, TSPoint start, TSPoint end, bool named) {
-  if (!node.tree || point_cmp(start, end) > 0) {
-    return sq_null();
-  }
-
+static SQNode seek_point_descent(SQNode node, TSPoint start, TSPoint end, bool named) {
   SQNode result = node;
   for (;;) {
     SQNode found = sq_null();
@@ -411,6 +407,70 @@ static SQNode seek_point(SQNode node, TSPoint start, TSPoint end, bool named) {
       result = node;
     }
   }
+}
+
+static SQNode seek_point(SQNode node, TSPoint range_start, TSPoint range_end, bool named) {
+  if (!node.tree || point_cmp(range_start, range_end) > 0) return sq_null();
+  if (point_cmp(range_start, sq_node_start_point(node)) < 0 ||
+      point_cmp(range_end, sq_node_end_point(node)) > 0) return node;
+  const SQTree *tree = node.tree;
+  uint32_t first = sq_node_first_slot(node);
+
+  // Search group start rows first. On the same row, resolve the column using
+  // the earliest preorder node: the column base need not be an actual minimum,
+  // and a group's minimum column can belong to a later row.
+  uint32_t low = first / SQ_GROUP_SIZE, high = node.slot / SQ_GROUP_SIZE;
+  while (low < high) {
+    uint32_t middle = low + (high - low) / 2;
+    uint32_t row = sq_group_start_row_base(tree, middle);
+    bool after = row > range_start.row;
+    if (row == range_start.row) {
+      uint32_t earliest = (middle + 1) * SQ_GROUP_SIZE - sq_group_waste(tree, middle) - 1;
+      uint32_t column = sq_group_start_column_base(tree, middle) +
+                        sq_node_start_column_delta((SQNode){tree, earliest});
+      after = column > range_start.column;
+    }
+
+    if (after) low = middle + 1;
+    else high = middle;
+  }
+
+  // Clip to live slots in this subtree, then find its last qualifying start.
+  uint32_t slot = low * SQ_GROUP_SIZE;
+  if (slot < first) slot = first;
+  uint32_t limit = (low + 1) * SQ_GROUP_SIZE - sq_group_waste(tree, low);
+  if (limit > node.slot + 1) limit = node.slot + 1;
+  while (slot < limit && point_cmp(sq_node_start_point((SQNode){tree, slot}), range_start) > 0) slot++;
+
+  // The subtree boundary may exclude this group's qualifying nodes.
+  if (slot == limit) {
+    slot = (low + 1) * SQ_GROUP_SIZE;
+    if (slot > node.slot) return node;
+  }
+
+  SQNode candidate = {tree, slot};
+
+  // Preserve sibling-order selection when empty nodes share the query point.
+  if (point_cmp(range_start, range_end) == 0) {
+    for (SQNode previous = candidate; previous.tree && previous.slot <= node.slot &&
+         point_cmp(sq_node_start_point(previous), range_start) == 0;
+         previous = sq_node_prev_preorder(previous)) {
+      if (point_cmp(sq_node_end_point(previous), range_start) == 0) {
+        return seek_point_descent(node, range_start, range_end, named);
+      }
+    }
+  }
+
+  // Ascend past short ranges and whitespace to the deepest enclosing ancestor.
+  while (candidate.slot < node.slot) {
+    TSPoint end = sq_node_end_point(candidate);
+    if (point_cmp(end, range_end) >= 0 && point_cmp(end, range_start) > 0 &&
+        (!named || sq_node_is_named(candidate))) return candidate;
+    candidate = sq_node_parent(candidate);
+    if (!candidate.tree) return node;
+  }
+
+  return node;
 }
 #endif
 

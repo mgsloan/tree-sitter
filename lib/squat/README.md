@@ -56,6 +56,12 @@ Equal-start empty nodes use the original sibling descent to preserve boundary
 behavior. The search allocates nothing and adds no serialized index. Parent
 ascent can still scan groups, so the complete lookup is not always logarithmic.
 
+Point-range lookup uses the same approach with group start-row minima. When the
+row matches, it compares the earliest preorder node's start column, since the
+column base may be zero or describe a different row. Point search and its sibling
+descent fallback compile only with `SQ_INCLUDE_POINTS`; byte descent uses integer
+offsets directly.
+
 `sq_cursor_attributes` reads a bulk attribute snapshot. Rust exposes it through
 `Node::walk()` and `Cursor::attributes()`:
 
@@ -139,8 +145,8 @@ by the human. Use `--strict-seeks` for the container runner or `SQ_STRICT_SEEKS=
 for the C executable to investigate them. The fixture `tests/fixtures/hidden-seek.css`
 is a minimal valid-input repro. No hidden-node or seek-barrier index is stored.
 
-`tests/seek.c` compares byte seeks exactly with the previous sibling-descent
-algorithm, independently of those mainline differences. Build it with
+`tests/seek.c` compares byte seeks and, when enabled, point seeks exactly with the
+previous sibling-descent algorithms, independently of those mainline differences. Build it with
 `make -C lib/squat ../../build/squat/seek-check`, then run
 `build/squat/seek-check GRAMMAR_LIBRARY GRAMMAR_SYMBOL SOURCE_LIST`, where
 `SOURCE_LIST` contains one source path per line. It checks named/unnamed ranges,
