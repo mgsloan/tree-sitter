@@ -87,15 +87,17 @@ uint32_t sq_node_end_byte(SQNode node) {
 TSPoint sq_node_start_point(SQNode node) {
   if (!node.tree) return (TSPoint){0, 0};
   uint32_t group = node.slot / SQ_GROUP_SIZE;
-  return (TSPoint){sq_group_start_row_base(node.tree, group) + sq_node_start_row_delta(node),
-                   sq_group_start_column_base(node.tree, group) + sq_node_start_column_delta(node)};
+  uint64_t point = sq_group_start_point_base(node.tree, group) +
+                   sq_expand_point_key((uint16_t)sq_node_start_point_key(node));
+  return sq_point_from_key(point);
 }
 
 TSPoint sq_node_end_point(SQNode node) {
   if (!node.tree) return (TSPoint){0, 0};
   uint32_t group = node.slot / SQ_GROUP_SIZE;
-  return (TSPoint){sq_group_end_row_base(node.tree, group) - sq_node_end_row_delta(node),
-                   sq_group_end_column_base(node.tree, group) - sq_node_end_column_delta(node)};
+  uint64_t point = sq_group_end_point_base(node.tree, group) -
+                   sq_expand_point_key((uint16_t)sq_node_end_point_key(node));
+  return sq_point_from_key(point);
 }
 #endif
 
@@ -400,6 +402,7 @@ static uint32_t seek_mask_slot(uint64_t mask, uint32_t slot, uint32_t limit) {
   uint32_t found = mask ? slot + (uint32_t)__builtin_ctzll(mask) : limit;
   return found < limit ? found : limit;
 }
+
 #endif
 
 #if SQ_INCLUDE_POINTS
@@ -408,6 +411,73 @@ enum { SEEK_POINT_SCAN_GROUPS = 512 };
 static int point_cmp(TSPoint left, TSPoint right) {
   return left.row != right.row ? (left.row > right.row ? 1 : -1)
                                : (left.column > right.column) - (left.column < right.column);
+}
+
+// Return the largest encoded start delta whose reconstructed point is at or
+// before target. All smaller keys qualify because row occupies the high byte.
+static bool seek_start_point_threshold(uint64_t base_key, TSPoint target, uint32_t *threshold) {
+  TSPoint base = sq_point_from_key(base_key);
+  if (target.row < base.row) {
+    return false;
+  }
+
+  uint32_t row = target.row - base.row;
+  if (row > UINT8_MAX) {
+    *threshold = UINT16_MAX;
+    return true;
+  }
+
+  if (target.column < base.column) {
+    if (!row) {
+      return false;
+    }
+
+    *threshold = (row << 8) - 1;
+    return true;
+  }
+
+  uint32_t column = target.column - base.column;
+  if (column > UINT8_MAX) {
+    column = UINT8_MAX;
+  }
+
+  *threshold = row << 8 | column;
+  return true;
+}
+
+// End deltas run backward from the group base, so the same key ordering is
+// reversed: every key at or below the returned threshold satisfies the bound.
+static bool seek_end_point_threshold(uint64_t base_key, TSPoint target, bool inclusive,
+                                     uint32_t *threshold) {
+  TSPoint base = sq_point_from_key(base_key);
+  if (base.row < target.row) {
+    return false;
+  }
+
+  uint32_t row = base.row - target.row;
+  if (row > UINT8_MAX) {
+    *threshold = UINT16_MAX;
+    return true;
+  }
+
+  bool equal_row_possible =
+      inclusive ? base.column >= target.column : base.column > target.column;
+  if (!equal_row_possible) {
+    if (!row) {
+      return false;
+    }
+
+    *threshold = (row << 8) - 1;
+    return true;
+  }
+
+  uint32_t column = base.column - target.column - !inclusive;
+  if (column > UINT8_MAX) {
+    column = UINT8_MAX;
+  }
+
+  *threshold = row << 8 | column;
+  return true;
 }
 
 // Keep the shared-boundary fallback out of the indexed search's hot code.
@@ -451,25 +521,38 @@ static SQNode seek_point_descent(SQNode node, TSPoint start, TSPoint end, bool n
 }
 
 static SQNode seek_point(SQNode node, TSPoint range_start, TSPoint range_end, bool named) {
-  if (!node.tree || point_cmp(range_start, range_end) > 0) return sq_null();
-  if (point_cmp(range_start, sq_node_start_point(node)) < 0 ||
-      point_cmp(range_end, sq_node_end_point(node)) > 0) return node;
+  uint64_t range_start_key = sq_point_key(range_start);
+  uint64_t range_end_key = sq_point_key(range_end);
+  if (!node.tree || range_start_key > range_end_key) {
+    return sq_null();
+  }
+
   const SQTree *tree = node.tree;
+  uint32_t node_group = node.slot / SQ_GROUP_SIZE;
+  uint64_t node_start = sq_group_start_point_base(tree, node_group) +
+                        sq_expand_point_key((uint16_t)sq_node_start_point_key(node));
+  uint64_t node_end = sq_group_end_point_base(tree, node_group) -
+                      sq_expand_point_key((uint16_t)sq_node_end_point_key(node));
+  if (range_start_key < node_start || range_end_key > node_end) {
+    return node;
+  }
+
   uint32_t first = sq_node_first_slot(node);
 
-  // Search group start rows first. On the same row, resolve the column using
-  // the earliest preorder node: the column base need not be an actual minimum,
-  // and a group's minimum column can belong to a later row.
+  // Search group start rows first. Only reconstruct the earliest preorder
+  // point when the row ties; the column base need not be an actual minimum.
   uint32_t low = first / SQ_GROUP_SIZE, high = node.slot / SQ_GROUP_SIZE;
   while (low < high) {
     uint32_t middle = low + (high - low) / 2;
-    uint32_t row = sq_group_start_row_base(tree, middle);
+    uint64_t base = sq_group_start_point_base(tree, middle);
+    uint32_t row = (uint32_t)(base >> 32);
     bool after = row > range_start.row;
     if (row == range_start.row) {
       uint32_t earliest = (middle + 1) * SQ_GROUP_SIZE - sq_group_waste(tree, middle) - 1;
-      uint32_t column = sq_group_start_column_base(tree, middle) +
-                        sq_node_start_column_delta((SQNode){tree, earliest});
-      after = column > range_start.column;
+      uint64_t start = base +
+                       sq_expand_point_key(
+                           (uint16_t)sq_node_start_point_key((SQNode){tree, earliest}));
+      after = start > range_start_key;
     }
 
     low = after ? middle + 1 : low;
@@ -481,28 +564,15 @@ static SQNode seek_point(SQNode node, TSPoint range_start, TSPoint range_end, bo
   if (slot < first) slot = first;
   uint32_t limit = (low + 1) * SQ_GROUP_SIZE - sq_group_waste(tree, low);
   if (limit > node.slot + 1) limit = node.slot + 1;
-  TSPoint base = {sq_group_start_row_base(tree, low), sq_group_start_column_base(tree, low)};
-#if defined(__SSE2__)
-  // Earlier rows qualify regardless of column; on the requested row, both
-  // limits must hold. The group search guarantees base.row <= range_start.row.
-  uint32_t row = range_start.row - base.row;
-  const uint8_t *rows = tree->data + tree->layout.start_row_delta + low * SQ_GROUP_SIZE;
-  const uint8_t *columns = tree->data + tree->layout.start_column_delta + low * SQ_GROUP_SIZE;
-  uint64_t earlier_rows = row ? seek_start_mask(rows, row - 1) : 0;
-  uint64_t columns_before = range_start.column >= base.column
-      ? seek_start_mask(columns, range_start.column - base.column) : 0;
-  uint64_t mask = earlier_rows | (seek_start_mask(rows, row) & columns_before);
-  slot = seek_mask_slot(mask, slot, limit);
-#else
-  while (slot < limit) {
-    SQNode candidate = {tree, slot};
-    uint32_t row = base.row + sq_node_start_row_delta(candidate);
-    if (row < range_start.row ||
-        (row == range_start.row &&
-         base.column + sq_node_start_column_delta(candidate) <= range_start.column)) break;
+  uint64_t base = sq_group_start_point_base(tree, low);
+  uint32_t threshold;
+  bool any = seek_start_point_threshold(base, range_start, &threshold);
+
+  // A scalar key comparison can stop at the first qualifying lane. For these
+  // short groups that is cheaper than constructing a complete SIMD lane mask.
+  while (slot < limit && (!any || sq_node_start_point_key((SQNode){tree, slot}) > threshold)) {
     slot++;
   }
-#endif
 
   // The subtree boundary may exclude this group's qualifying nodes.
   if (slot == limit) {
@@ -529,8 +599,10 @@ static SQNode seek_point(SQNode node, TSPoint range_start, TSPoint range_end, bo
   uint32_t distance = node.slot - candidate.slot;
   if (distance > SEEK_POINT_SCAN_GROUPS * SQ_GROUP_SIZE) {
     while (candidate.slot < node.slot) {
-      TSPoint end = sq_node_end_point(candidate);
-      if (point_cmp(end, range_end) >= 0 && point_cmp(end, range_start) > 0 &&
+      uint32_t group = candidate.slot / SQ_GROUP_SIZE;
+      uint64_t end = sq_group_end_point_base(tree, group) -
+                     sq_expand_point_key((uint16_t)sq_node_end_point_key(candidate));
+      if (end >= range_end_key && end > range_start_key &&
           (!named || sq_node_is_named(candidate))) return candidate;
       candidate = sq_node_parent(candidate);
       if (!candidate.tree) return node;
@@ -539,25 +611,31 @@ static SQNode seek_point(SQNode node, TSPoint range_start, TSPoint range_end, bo
     return node;
   }
 
-  // For nearby candidates, scan end columns directly. Earlier preorder
-  // siblings end before the query, so the first qualifying end is an ancestor.
+  // Most start candidates already contain the range. Check that node directly
+  // before paying to derive thresholds and scan the rest of its group.
   if (candidate.slot < node.slot) {
-    TSPoint end = sq_node_end_point(candidate);
-    if (point_cmp(end, range_end) >= 0 && point_cmp(end, range_start) > 0 &&
+    uint32_t group = candidate.slot / SQ_GROUP_SIZE;
+    uint64_t end = sq_group_end_point_base(tree, group) -
+                   sq_expand_point_key((uint16_t)sq_node_end_point_key(candidate));
+    if (end >= range_end_key && end > range_start_key &&
         (!named || sq_node_is_named(candidate))) return candidate;
     candidate.slot++;
   }
 
+  // For nearby candidates, use the stricter end bound: nonempty ranges need
+  // end >= range_end, while empty ranges need end > range_start. Earlier
+  // preorder siblings end before the query, so the first match is an ancestor.
+  bool inclusive = range_start_key != range_end_key;
+  TSPoint end_bound = inclusive ? range_end : range_start;
   while (candidate.slot < node.slot) {
     uint32_t group = candidate.slot / SQ_GROUP_SIZE;
     uint32_t limit = (group + 1) * SQ_GROUP_SIZE - sq_group_waste(tree, group);
     if (limit > node.slot) limit = node.slot;
-    TSPoint base = {sq_group_end_row_base(tree, group), sq_group_end_column_base(tree, group)};
-    if (point_cmp(base, range_end) >= 0 && point_cmp(base, range_start) > 0) {
+    uint64_t end_base = sq_group_end_point_base(tree, group);
+    uint32_t threshold;
+    if (seek_end_point_threshold(end_base, end_bound, inclusive, &threshold)) {
       for (; candidate.slot < limit; candidate.slot++) {
-        TSPoint end = {base.row - sq_node_end_row_delta(candidate),
-                       base.column - sq_node_end_column_delta(candidate)};
-        if (point_cmp(end, range_end) >= 0 && point_cmp(end, range_start) > 0 &&
+        if (sq_node_end_point_key(candidate) <= threshold &&
             (!named || sq_node_is_named(candidate))) return candidate;
       }
     }

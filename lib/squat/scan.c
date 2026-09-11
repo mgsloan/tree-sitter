@@ -70,21 +70,12 @@ uint64_t sq_tree_group_end_byte_delta_equal(const SQTree *tree, uint32_t group, 
 }
 
 #if SQ_INCLUDE_POINTS
-uint64_t sq_tree_group_start_row_delta_equal(const SQTree *tree, uint32_t group, uint32_t value) {
-  return tree ? group_equal(tree, group, tree->layout.start_row_delta, 8, value) : 0;
+uint64_t sq_tree_group_start_point_equal(const SQTree *tree, uint32_t group, uint32_t value) {
+  return tree ? group_equal(tree, group, tree->layout.start_point, 16, value) : 0;
 }
 
-uint64_t sq_tree_group_end_row_delta_equal(const SQTree *tree, uint32_t group, uint32_t value) {
-  return tree ? group_equal(tree, group, tree->layout.end_row_delta, 8, value) : 0;
-}
-
-uint64_t sq_tree_group_start_column_delta_equal(const SQTree *tree, uint32_t group,
-                                                uint32_t value) {
-  return tree ? group_equal(tree, group, tree->layout.start_column_delta, 8, value) : 0;
-}
-
-uint64_t sq_tree_group_end_column_delta_equal(const SQTree *tree, uint32_t group, uint32_t value) {
-  return tree ? group_equal(tree, group, tree->layout.end_column_delta, 8, value) : 0;
+uint64_t sq_tree_group_end_point_equal(const SQTree *tree, uint32_t group, uint32_t value) {
+  return tree ? group_equal(tree, group, tree->layout.end_point, 16, value) : 0;
 }
 #endif
 

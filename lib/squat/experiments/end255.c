@@ -6,6 +6,10 @@
 #include <stdio.h>
 #include <time.h>
 
+#if !SQ_INCLUDE_POINTS
+#error "The end-column probe requires point positions"
+#endif
+
 // Private copies preserve end = base - u8_delta. Eligible groups choose
 // base 255; no new encoding, widths, flags, or group boundaries are introduced.
 _Static_assert(SQ_GROUP_SIZE == 16, "this probe compares fixed 16-slot decoders");
@@ -330,9 +334,11 @@ int main(int argc, char **argv) {
     Column c = column_new(sq_header(tree)->group_count);
     for (uint32_t g = 0; g < c.groups; g++) {
       c.live[g] = SQ_GROUP_SIZE - sq_group_waste(tree, g);
-      c.base[0][g] = sq_get_u32(tree->data, tree->layout.end_column_base, g);
-      memcpy(c.delta[0] + g * SQ_GROUP_SIZE,
-             tree->data + tree->layout.end_column_delta + g * SQ_GROUP_SIZE, SQ_GROUP_SIZE);
+      c.base[0][g] = (uint32_t)sq_group_end_point_base(tree, g);
+      for (uint32_t lane = 0; lane < c.live[g]; lane++) {
+        SQNode node = {tree, g * SQ_GROUP_SIZE + lane};
+        c.delta[0][g * SQ_GROUP_SIZE + lane] = (uint8_t)sq_node_end_point_key(node);
+      }
     }
 
     rebase(&c);

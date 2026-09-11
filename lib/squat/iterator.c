@@ -16,10 +16,8 @@ typedef struct {
   uint32_t start_byte[SQ_ITERATOR_UNPACK_SLOTS];
   uint32_t end_byte[SQ_ITERATOR_UNPACK_SLOTS];
 #if SQ_INCLUDE_POINTS
-  uint32_t start_row[SQ_ITERATOR_UNPACK_SLOTS];
-  uint32_t end_row[SQ_ITERATOR_UNPACK_SLOTS];
-  uint32_t start_column[SQ_ITERATOR_UNPACK_SLOTS];
-  uint32_t end_column[SQ_ITERATOR_UNPACK_SLOTS];
+  uint64_t start_point[SQ_ITERATOR_UNPACK_SLOTS];
+  uint64_t end_point[SQ_ITERATOR_UNPACK_SLOTS];
 #endif
 #endif
   uint16_t symbol[SQ_ITERATOR_UNPACK_SLOTS];
@@ -136,6 +134,26 @@ static void fill_coordinate(const SQTree *tree, const UnpackCache *cache, uint32
                        subtract, out + offset);
   }
 }
+
+#if SQ_INCLUDE_POINTS
+static void fill_point(const SQTree *tree, const UnpackCache *cache, uint32_t point_offset,
+                       uint32_t base_offset, bool subtract, uint64_t *out) {
+  uint32_t count = cache_slot_count(tree, cache);
+  uint32_t first = cache->group * SQ_GROUP_SIZE;
+  uint16_t keys[SQ_ITERATOR_UNPACK_SLOTS];
+  cache->unpack(tree->data + point_offset, first, count, 16, keys);
+
+  // Each group has one packed row/column base. Expand the two u8 components
+  // from every key and cache the resulting absolute point as one u64 value.
+  for (uint32_t offset = 0; offset < count; offset += SQ_GROUP_SIZE) {
+    uint64_t base = sq_get_u64(tree->data, base_offset, cache->group + offset / SQ_GROUP_SIZE);
+    for (uint32_t lane = 0; lane < SQ_GROUP_SIZE; lane++) {
+      uint64_t delta = sq_expand_point_key(keys[offset + lane]);
+      out[offset + lane] = subtract ? base - delta : base + delta;
+    }
+  }
+}
+#endif
 #endif
 
 static void fill_attributes(SQNodeIterator *iterator, UnpackCache *cache) {
@@ -157,14 +175,10 @@ static void fill_attributes(SQNodeIterator *iterator, UnpackCache *cache) {
   fill_coordinate(tree, cache, tree->layout.end_byte_delta, tree->layout.end_byte_base, 16, true,
                   cache->end_byte);
 #if SQ_INCLUDE_POINTS
-  fill_coordinate(tree, cache, tree->layout.start_row_delta, tree->layout.start_row_base, 8, false,
-                  cache->start_row);
-  fill_coordinate(tree, cache, tree->layout.end_row_delta, tree->layout.end_row_base, 8, true,
-                  cache->end_row);
-  fill_coordinate(tree, cache, tree->layout.start_column_delta, tree->layout.start_column_base, 8,
-                  false, cache->start_column);
-  fill_coordinate(tree, cache, tree->layout.end_column_delta, tree->layout.end_column_base, 8, true,
-                  cache->end_column);
+  fill_point(tree, cache, tree->layout.start_point, tree->layout.start_point_base, false,
+             cache->start_point);
+  fill_point(tree, cache, tree->layout.end_point, tree->layout.end_point_base, true,
+             cache->end_point);
 #endif
 #endif
   cache->attributes_filled = true;
@@ -197,8 +211,8 @@ void sq_node_iterator_attributes(SQNodeIterator *iterator, SQCursorAttributes *o
   out->start_byte = cache->start_byte[lane];
   out->end_byte = cache->end_byte[lane];
 #if SQ_INCLUDE_POINTS
-  out->start_point = (TSPoint){cache->start_row[lane], cache->start_column[lane]};
-  out->end_point = (TSPoint){cache->end_row[lane], cache->end_column[lane]};
+  out->start_point = sq_point_from_key(cache->start_point[lane]);
+  out->end_point = sq_point_from_key(cache->end_point[lane]);
 #endif
   out->is_extra = sq_node_extra_flag(node);
   out->is_missing = sq_node_missing_flag(node);

@@ -6,6 +6,10 @@
 #include <stdio.h>
 #include <time.h>
 
+#if !SQ_INCLUDE_POINTS
+#error "The column-base probe requires point positions"
+#endif
+
 // Private columns preserve the production base +/- delta encoding. Only
 // additive columns are rebased; end columns retain their original encoding.
 typedef struct {
@@ -263,19 +267,33 @@ int main(int argc, char **argv) {
   SQError error;
   SQTree *tree = sq_tree_pack(parsed, sq_pack_options_default(), &error);
   assert(tree);
-  const uint32_t bases[] = {tree->layout.span_base, tree->layout.start_column_base,
-                            tree->layout.end_column_base};
-  const uint32_t deltas[] = {tree->layout.span_delta, tree->layout.start_column_delta,
-                             tree->layout.end_column_delta};
   const char *names[] = {"span", "start_column", "end_column"};
   puts("column,kernel,variant,repeat,batches,groups,nodes,eligible,already_zero,seconds,checksum");
   for (unsigned col = 0; col < 3; col++) {
     Column c = column_new(sq_header(tree)->group_count, col == 2);
     for (uint32_t g = 0; g < c.groups; g++) {
       c.live[g] = SQ_GROUP_SIZE - sq_group_waste(tree, g);
-      c.base[0][g] = sq_get_u32(tree->data, bases[col], g);
-      memcpy(c.delta[0] + g * SQ_GROUP_SIZE, tree->data + deltas[col] + g * SQ_GROUP_SIZE,
-             SQ_GROUP_SIZE);
+      if (!col) {
+        c.base[0][g] = sq_group_span_base(tree, g);
+      } else {
+        uint64_t base = col == 1 ? sq_group_start_point_base(tree, g)
+                                 : sq_group_end_point_base(tree, g);
+        c.base[0][g] = (uint32_t)base;
+      }
+
+      for (uint32_t lane = 0; lane < c.live[g]; lane++) {
+        SQNode node = {tree, g * SQ_GROUP_SIZE + lane};
+        uint32_t delta;
+        if (!col) {
+          delta = sq_node_span_delta(node);
+        } else if (col == 1) {
+          delta = sq_node_start_point_key(node);
+        } else {
+          delta = sq_node_end_point_key(node);
+        }
+
+        c.delta[0][g * SQ_GROUP_SIZE + lane] = (uint8_t)delta;
+      }
     }
 
     rebase(&c);

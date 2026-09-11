@@ -177,14 +177,15 @@ static bool validate_nodes(SQTree *tree, SQError *error) {
         sq_group_end_byte_base(tree, group) < sq_node_end_byte_delta(node))
       goto invalid;
 #if SQ_INCLUDE_POINTS
-    if ((uint64_t)sq_group_start_row_base(tree, group) + sq_node_start_row_delta(node) >
-            UINT32_MAX ||
-        sq_group_end_row_base(tree, group) < sq_node_end_row_delta(node))
+    TSPoint start_base = sq_point_from_key(sq_group_start_point_base(tree, group));
+    TSPoint end_base = sq_point_from_key(sq_group_end_point_base(tree, group));
+    uint32_t start_delta = sq_node_start_point_key(node);
+    uint32_t end_delta = sq_node_end_point_key(node);
+    if ((uint64_t)start_base.row + (start_delta >> 8) > UINT32_MAX ||
+        (uint64_t)start_base.column + (start_delta & UINT8_MAX) > UINT32_MAX ||
+        end_base.row < (end_delta >> 8) || end_base.column < (end_delta & UINT8_MAX)) {
       goto invalid;
-    if ((uint64_t)sq_group_start_column_base(tree, group) + sq_node_start_column_delta(node) >
-            UINT32_MAX ||
-        sq_group_end_column_base(tree, group) < sq_node_end_column_delta(node))
-      goto invalid;
+    }
 #endif
 #if SQ_INCLUDE_POINTS
     TSPoint start = sq_node_start_point(node), finish = sq_node_end_point(node);

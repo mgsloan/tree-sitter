@@ -66,10 +66,8 @@ bool sq_layout(const TSLanguage *language, uint32_t capacity, SQLayout *layout) 
   layout->start_byte_base = column_offset(&next, sq_array_size(capacity, 4));
   layout->end_byte_base = column_offset(&next, sq_array_size(capacity, 4));
 #if SQ_INCLUDE_POINTS
-  layout->start_row_base = column_offset(&next, sq_array_size(capacity, 4));
-  layout->end_row_base = column_offset(&next, sq_array_size(capacity, 4));
-  layout->start_column_base = column_offset(&next, sq_array_size(capacity, 4));
-  layout->end_column_base = column_offset(&next, sq_array_size(capacity, 4));
+  layout->start_point_base = column_offset(&next, sq_array_size(capacity, 8));
+  layout->end_point_base = column_offset(&next, sq_array_size(capacity, 8));
 #endif
   layout->last = column_offset(&next, sq_column_size(slots, 1));
   layout->extra = column_offset(&next, sq_column_size(slots, 1));
@@ -79,10 +77,8 @@ bool sq_layout(const TSLanguage *language, uint32_t capacity, SQLayout *layout) 
   layout->start_byte_delta = column_offset(&next, sq_array_size(slots, 1));
   layout->end_byte_delta = column_offset(&next, sq_array_size(slots, 2));
 #if SQ_INCLUDE_POINTS
-  layout->start_row_delta = column_offset(&next, sq_array_size(slots, 1));
-  layout->end_row_delta = column_offset(&next, sq_array_size(slots, 1));
-  layout->start_column_delta = column_offset(&next, sq_array_size(slots, 1));
-  layout->end_column_delta = column_offset(&next, sq_array_size(slots, 1));
+  layout->start_point = column_offset(&next, sq_array_size(slots, 2));
+  layout->end_point = column_offset(&next, sq_array_size(slots, 2));
 #endif
   layout->supertype = column_offset(&next, sq_array_size(slots, 1));
   layout->symbol = column_offset(&next, sq_column_size(slots, layout->symbol_bits));
@@ -299,14 +295,10 @@ bool sq_resize(SQTree **tree_pointer, uint32_t capacity, SQError *error) {
   memcpy(data + next.end_byte_base, tree->data + tree->layout.end_byte_base,
          sq_array_size(groups, 4));
 #if SQ_INCLUDE_POINTS
-  memcpy(data + next.start_row_base, tree->data + tree->layout.start_row_base,
-         sq_array_size(groups, 4));
-  memcpy(data + next.end_row_base, tree->data + tree->layout.end_row_base,
-         sq_array_size(groups, 4));
-  memcpy(data + next.start_column_base, tree->data + tree->layout.start_column_base,
-         sq_array_size(groups, 4));
-  memcpy(data + next.end_column_base, tree->data + tree->layout.end_column_base,
-         sq_array_size(groups, 4));
+  memcpy(data + next.start_point_base, tree->data + tree->layout.start_point_base,
+         sq_array_size(groups, 8));
+  memcpy(data + next.end_point_base, tree->data + tree->layout.end_point_base,
+         sq_array_size(groups, 8));
 #endif
   memcpy(data + next.last, tree->data + tree->layout.last, sq_column_size(slots, 1));
   memcpy(data + next.extra, tree->data + tree->layout.extra, sq_column_size(slots, 1));
@@ -318,14 +310,10 @@ bool sq_resize(SQTree **tree_pointer, uint32_t capacity, SQError *error) {
   memcpy(data + next.end_byte_delta, tree->data + tree->layout.end_byte_delta,
          sq_array_size(slots, 2));
 #if SQ_INCLUDE_POINTS
-  memcpy(data + next.start_row_delta, tree->data + tree->layout.start_row_delta,
-         sq_array_size(slots, 1));
-  memcpy(data + next.end_row_delta, tree->data + tree->layout.end_row_delta,
-         sq_array_size(slots, 1));
-  memcpy(data + next.start_column_delta, tree->data + tree->layout.start_column_delta,
-         sq_array_size(slots, 1));
-  memcpy(data + next.end_column_delta, tree->data + tree->layout.end_column_delta,
-         sq_array_size(slots, 1));
+  memcpy(data + next.start_point, tree->data + tree->layout.start_point,
+         sq_array_size(slots, 2));
+  memcpy(data + next.end_point, tree->data + tree->layout.end_point,
+         sq_array_size(slots, 2));
 #endif
   memcpy(data + next.supertype, tree->data + tree->layout.supertype, sq_array_size(slots, 1));
   memcpy(data + next.symbol, tree->data + tree->layout.symbol,

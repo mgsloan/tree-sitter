@@ -45,13 +45,13 @@ retains the caller's immutable, aligned payload without copying or freeing it.
 
 ## Optional point positions
 
-Row and column storage is optional at compile time (`SQ_INCLUDE_POINTS=0` in C,
-or disabling the default `points` Cargo feature). Byte-only builds omit the four
-row/column columns, their group bases, packing constraints, cache lanes, and
+Point storage is optional at compile time (`SQ_INCLUDE_POINTS=0` in C, or
+disabling the default `points` Cargo feature). Byte-only builds omit the two
+point columns, their group bases, packing constraints, cache lanes, and
 point APIs and snapshot members. Byte positions and byte-range APIs remain.
 The layout below describes the default build with points enabled.
 
-The 16-byte version-4 header has a format/flags word. Readers reject other
+The 16-byte version-5 header has a format/flags word. Readers reject other
 versions, point modes, group sizes, alignments, and unknown flags. Old slabs
 must be regenerated.
 
@@ -81,21 +81,19 @@ struct Node {
   is_missing: bool,
 
   /// Distance to the subtree's lower physical boundary, including group waste.
-  /// Add min_subtree_size to decode the span, then subtract it from this node's
+  /// Add subtree_size_base to decode the span, then subtract it from this node's
   /// slot. The next sibling, when present, occupies the slot below that boundary.
   subtree_size: u8,
-  /// Start byte offset in the input text (add min_byte).
+  /// Start byte offset in the input text (add start_byte_base).
   start_byte: u8,
-  /// End byte offset in the input text (subtract from max_byte).
+  /// End byte offset in the input text (subtract from end_byte_base).
   end_byte_sub: u16,
-  /// Start row in the input text (add min_row).
-  start_row: u8,
-  /// End row in the input text (subtract from max_row).
-  end_row_sub: u8,
-  /// Start col in the input text, in bytes (add min_start_col).
-  start_col: u8,
-  /// End col in the input text, in bytes (subtract from max_end_col).
-  end_col_sub: u8,
+  /// Row delta in the high byte and column delta in the low byte.
+  /// Add both components to start_point_base.
+  start_point: u16,
+  /// Row delta in the high byte and column delta in the low byte.
+  /// Subtract both components from end_point_base.
+  end_point: u16,
 
   /// Supertypes mask or dictionary index.
   supertypes: u8,
@@ -113,13 +111,12 @@ struct Group {
   /// Number of trailing wasted slots, from 0 to 15. Could be a u8.
   trailing_waste: u4,
 
-  min_subtree_size: u32,
-  min_byte: u32,
-  max_byte: u32,
-  min_row: u32,
-  max_row: u32,
-  min_start_col: u32,
-  max_end_col: u32,
+  subtree_size_base: u32,
+  start_byte_base: u32,
+  end_byte_base: u32,
+  /// Row in the high word and column in the low word.
+  start_point_base: u64,
+  end_point_base: u64,
 }
 ```
 
@@ -148,7 +145,7 @@ fields on ERROR parents. Mainline's lookup API can instead inherit through an
 alias-visible wrapper and return a grandchild whose field is absent from the
 parent's visible children. Tests count these as expected mismatches only when
 squat agrees with mainline's visible-child cursor. Other field mismatches fail.
-The sparse field-exception section remains removed. Version 4 uses a 16-byte
+The sparse field-exception section remains removed. Version 5 uses a 16-byte
 header and reverse-preorder physical slots; the loader rejects earlier formats.
 
 Public symbol is mapped from raw display symbol at read time.

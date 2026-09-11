@@ -26,13 +26,13 @@ _Static_assert(SQ_ITERATOR_UNPACK_SLOTS >= SQ_GROUP_SIZE &&
 _Static_assert(SQ_COLUMN_ALIGNMENT == 8 || SQ_COLUMN_ALIGNMENT == 64,
                "supported experimental column alignments");
 #define SQ_VERSION                                                                                 \
-  (UINT32_C(0x53510040) |                                                                          \
+  (UINT32_C(0x53510050) |                                                                          \
    (SQ_GROUP_SIZE == 32   ? 2u                                                                     \
     : SQ_GROUP_SIZE == 64 ? 4u                                                                     \
                           : 0u) |                                                                  \
    (SQ_COLUMN_ALIGNMENT == 64 ? 8u : 0u))
 
-// Version 4: layout flags and optional sections share one format word.
+// Version 5: point rows and columns share lexicographically ordered fields.
 #define SQ_LAYOUT_FLAGS (SQ_INCLUDE_POINTS ? 0u : 0x100u)
 #define SQ_PRESENCE 0x200u
 #define SQ_NONE UINT32_MAX
@@ -48,16 +48,14 @@ _Static_assert(sizeof(SQHeader) == 16, "slab header size");
 #define SQ_WASTE_BITS (SQ_GROUP_SIZE == 16 ? 4u : SQ_GROUP_SIZE == 32 ? 5u : 6u)
 
 typedef struct {
-  // Per-group columns: packed waste followed by native u32 bases.
+  // Per-group columns: packed waste followed by native fixed-width bases.
   uint32_t waste;
   uint32_t span_base;
   uint32_t start_byte_base;
   uint32_t end_byte_base;
 #if SQ_INCLUDE_POINTS
-  uint32_t start_row_base;
-  uint32_t end_row_base;
-  uint32_t start_column_base;
-  uint32_t end_column_base;
+  uint32_t start_point_base;
+  uint32_t end_point_base;
 #endif
   // Per-node columns, in their persisted order. These are slab offsets.
   uint32_t last;
@@ -68,10 +66,8 @@ typedef struct {
   uint32_t start_byte_delta;
   uint32_t end_byte_delta;
 #if SQ_INCLUDE_POINTS
-  uint32_t start_row_delta;
-  uint32_t end_row_delta;
-  uint32_t start_column_delta;
-  uint32_t end_column_delta;
+  uint32_t start_point;
+  uint32_t end_point;
 #endif
   uint32_t supertype;
   uint32_t symbol;
@@ -168,6 +164,16 @@ static inline void sq_set_u32(uint8_t *data, uint32_t offset, uint32_t index, ui
   memcpy(data + offset + (uint64_t)index * 4, &value, sizeof(value));
 }
 
+static inline uint64_t sq_get_u64(const uint8_t *data, uint32_t offset, uint32_t index) {
+  uint64_t value;
+  memcpy(&value, data + offset + (uint64_t)index * 8, sizeof(value));
+  return value;
+}
+
+static inline void sq_set_u64(uint8_t *data, uint32_t offset, uint32_t index, uint64_t value) {
+  memcpy(data + offset + (uint64_t)index * 8, &value, sizeof(value));
+}
+
 static inline bool sq_get_bit(const uint8_t *data, uint32_t offset, uint32_t index) {
   return (sq_get_u8(data, offset, index / 8) >> (index % 8)) & 1;
 }
@@ -216,20 +222,24 @@ static inline uint32_t sq_group_end_byte_base(const SQTree *tree, uint32_t group
 }
 
 #if SQ_INCLUDE_POINTS
-static inline uint32_t sq_group_start_row_base(const SQTree *tree, uint32_t group) {
-  return sq_get_u32(tree->data, tree->layout.start_row_base, group);
+static inline uint64_t sq_point_key(TSPoint point) {
+  return (uint64_t)point.row << 32 | point.column;
 }
 
-static inline uint32_t sq_group_end_row_base(const SQTree *tree, uint32_t group) {
-  return sq_get_u32(tree->data, tree->layout.end_row_base, group);
+static inline TSPoint sq_point_from_key(uint64_t key) {
+  return (TSPoint){(uint32_t)(key >> 32), (uint32_t)key};
 }
 
-static inline uint32_t sq_group_start_column_base(const SQTree *tree, uint32_t group) {
-  return sq_get_u32(tree->data, tree->layout.start_column_base, group);
+static inline uint64_t sq_expand_point_key(uint16_t key) {
+  return (uint64_t)(key >> 8) << 32 | (key & UINT8_MAX);
 }
 
-static inline uint32_t sq_group_end_column_base(const SQTree *tree, uint32_t group) {
-  return sq_get_u32(tree->data, tree->layout.end_column_base, group);
+static inline uint64_t sq_group_start_point_base(const SQTree *tree, uint32_t group) {
+  return sq_get_u64(tree->data, tree->layout.start_point_base, group);
+}
+
+static inline uint64_t sq_group_end_point_base(const SQTree *tree, uint32_t group) {
+  return sq_get_u64(tree->data, tree->layout.end_point_base, group);
 }
 #endif
 
@@ -262,20 +272,12 @@ static inline uint32_t sq_node_end_byte_delta(SQNode node) {
 }
 
 #if SQ_INCLUDE_POINTS
-static inline uint32_t sq_node_start_row_delta(SQNode node) {
-  return sq_get_u8(node.tree->data, node.tree->layout.start_row_delta, node.slot);
+static inline uint32_t sq_node_start_point_key(SQNode node) {
+  return sq_get_u16(node.tree->data, node.tree->layout.start_point, node.slot);
 }
 
-static inline uint32_t sq_node_end_row_delta(SQNode node) {
-  return sq_get_u8(node.tree->data, node.tree->layout.end_row_delta, node.slot);
-}
-
-static inline uint32_t sq_node_start_column_delta(SQNode node) {
-  return sq_get_u8(node.tree->data, node.tree->layout.start_column_delta, node.slot);
-}
-
-static inline uint32_t sq_node_end_column_delta(SQNode node) {
-  return sq_get_u8(node.tree->data, node.tree->layout.end_column_delta, node.slot);
+static inline uint32_t sq_node_end_point_key(SQNode node) {
+  return sq_get_u16(node.tree->data, node.tree->layout.end_point, node.slot);
 }
 #endif
 

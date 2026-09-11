@@ -64,11 +64,13 @@ span-based parent traversal, avoiding the large-file regressions of an
 unrestricted end scan. Point search and its sibling descent fallback compile
 only with `SQ_INCLUDE_POINTS`; byte descent uses integer offsets directly.
 
-Both searches compare the selected group's start deltas with SSE2 when available,
-masking out unused lanes and slots outside the subtree; other targets use scalar
-scans. Byte end scans reuse group bases and skip groups whose maximum end is too small.
-The equal-start boundary walk uses its subtree root as the bound, avoiding repeated
-whole-tree checks through the public preorder API.
+Byte search compares the selected group's start deltas with SSE2 when available,
+masking out unused lanes and slots outside the subtree. Point search compares its
+u16 keys scalarly so it can stop at the first qualifying lane; constructing a full
+SIMD mask was slower for the short default groups. Byte end scans reuse group bases
+and skip groups whose maximum end is too small. The equal-start boundary walk uses
+its subtree root as the bound, avoiding repeated whole-tree checks through the
+public preorder API.
 
 `sq_cursor_attributes` reads a bulk attribute snapshot. Rust exposes it through
 `Node::walk()` and `Cursor::attributes()`:
@@ -81,10 +83,9 @@ cursor.goto_first_child();
 ```
 
 The runtime layout has named slab offsets, with no column enum or offset table.
-Flags, u8/u16 deltas, and u32 bases have explicit typed reads and writes; byte
-positions within native packed words are adjusted on big-endian hosts. Only
-variable-width IDs and group waste use the non-straddling bit decoder. The
-serialized column order and version-4 encoding are unchanged.
+Flags, u8/u16 deltas, and u32/u64 bases have explicit typed reads and writes;
+byte positions within native packed words are adjusted on big-endian hosts.
+Only variable-width IDs and group waste use the non-straddling bit decoder.
 
 Subtree-span and start-column bases are zero when every live value in the group
 fits in u8; otherwise they use the actual minimum. The packer chooses these bases
@@ -92,9 +93,15 @@ after closing the group, preserving group boundaries. End columns keep their
 actual maxima and the existing base-minus-delta encoding. Bases are encoding
 parameters rather than a general minimum/maximum index: revisit these choices
 if actual minimum or maximum column positions, or minimum subtree sizes, become
-useful for future operations. Existing version-4 slabs remain readable.
+useful for future operations.
 
-The version-4 serialized header is 16 bytes: a format/flags word, live group
+Point rows and columns share one u16 key per node, with the row delta in the
+high byte and column delta in the low byte. Their componentwise group bases are
+stored symmetrically as one u64 key, with the row in the high word. The payload
+still uses four bytes per node and 16 bytes per group before column padding,
+while lexicographic point comparisons now use one integer key.
+
+The version-5 serialized header is 16 bytes: a format/flags word, live group
 count, allocated group capacity, and supertype-dictionary count. Column and
 auxiliary-section offsets are derived from the exact grammar, capacity, and
 feature flags. The symbol-presence index has an explicit presence flag. All
@@ -274,10 +281,10 @@ compare the new layout with version 3 on the two-vCPU cloud VM, including both
 point modes, cached/uncached walks, queries, compact packing, and retained memory.
 
 
-## Optional row/column positions
+## Optional point positions
 
-Points are enabled by default. A byte-only C build removes the four row/column
-node columns, their four group bases, packing constraints and temporary point
+Points are enabled by default. A byte-only C build removes the two point
+node columns, their two group bases, packing constraints and temporary point
 positions, iterator cache entries, and query cursor point ranges:
 
 ```sh
@@ -305,9 +312,9 @@ Point methods and attribute fields are omitted from Rust as well. Configure Rust
 through Cargo features; a generated C assertion prevents incompatible CFLAGS
 from silently changing the FFI snapshot layout.
 
-The 16-byte version-4 header records point support in `format_flags`. Each build
-rejects the other mode before interpreting columns. Regenerate version-3 slabs
-and slabs from another point mode; they are incompatible with this format.
+The 16-byte version-5 header records point support in `format_flags`. Each build
+rejects the other mode before interpreting columns. Regenerate older slabs and
+slabs from another point mode; they are incompatible with this format.
 
 [Validation and compiled allocation sizes](experiments/optional-points-validation-2026-09-10.json)
 cover both modes, API omission, sanitizers, and original/mutated corpus checks.
@@ -318,15 +325,17 @@ cover both modes, API omission, sanitizers, and original/mutated corpus checks.
 Named equality functions replace the old `SQColumn` selector. For example,
 `sq_tree_group_field_equal(tree, group, value)` replaces
 `sq_tree_group_equal(tree, group, SQ_COLUMN_FIELD, value)`. Each previously
-exposed encoded column has its own function, including byte/point deltas,
+exposed encoded column has its own function, including byte deltas and point keys,
 supertypes, raw display symbols, and grammar symbols. Point functions remain
 absent from byte-only builds. These are exact physical-lane masks, with the same
 SWAR kernel and encoded-value semantics.
 
 Iterator caches likewise use named lane arrays. A field-only request fills only
 fields; a snapshot fills the remaining named attributes once per unpack window.
-Two booleans track those states. There is no column-bitmask/ctz dispatch, and the
-absolute u32 SIMD reconstruction and uncached iterator remain available.
+Two booleans track those states. There is no column-bitmask/ctz dispatch. Byte
+coordinates retain absolute u32 SIMD reconstruction. Point fill expands each
+u16 key, combines it with one packed group base, and caches the absolute point
+as one u64 value.
 
 The [named-column comparison](experiments/named-columns-results-2026-09-10.md)
 records cloud timings and byte-for-byte compatibility with the storage commit.

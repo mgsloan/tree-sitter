@@ -251,12 +251,8 @@ static void compare_group_equality(const SQTree *tree) {
                          sq_node_start_byte_delta);
     compare_equal_column(tree, group, sq_tree_group_end_byte_delta_equal, sq_node_end_byte_delta);
 #if SQ_INCLUDE_POINTS
-    compare_equal_column(tree, group, sq_tree_group_start_row_delta_equal, sq_node_start_row_delta);
-    compare_equal_column(tree, group, sq_tree_group_end_row_delta_equal, sq_node_end_row_delta);
-    compare_equal_column(tree, group, sq_tree_group_start_column_delta_equal,
-                         sq_node_start_column_delta);
-    compare_equal_column(tree, group, sq_tree_group_end_column_delta_equal,
-                         sq_node_end_column_delta);
+    compare_equal_column(tree, group, sq_tree_group_start_point_equal, sq_node_start_point_key);
+    compare_equal_column(tree, group, sq_tree_group_end_point_equal, sq_node_end_point_key);
 #endif
     compare_equal_column(tree, group, sq_tree_group_supertype_equal, sq_node_supertype);
     compare_equal_column(tree, group, sq_tree_group_symbol_equal, sq_node_symbol_id);
@@ -544,8 +540,10 @@ static void check_pack_bases(const SQTree *tree) {
 
     CHECK(sq_group_span_base(tree, group) == (span_max <= UINT8_MAX ? 0 : span_min));
 #if SQ_INCLUDE_POINTS
-    CHECK(sq_group_start_column_base(tree, group) == (column_max <= UINT8_MAX ? 0 : column_min));
-    CHECK(sq_group_end_column_base(tree, group) == end_column_max);
+    TSPoint start_base = sq_point_from_key(sq_group_start_point_base(tree, group));
+    TSPoint end_base = sq_point_from_key(sq_group_end_point_base(tree, group));
+    CHECK(start_base.column == (column_max <= UINT8_MAX ? 0 : column_min));
+    CHECK(end_base.column == end_column_max);
 #endif
   }
 }

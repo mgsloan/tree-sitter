@@ -147,6 +147,22 @@ static void exercise_column(SQTree *tree, uint32_t offset, uint8_t bits, uint32_
   }
 }
 
+#if SQ_INCLUDE_POINTS
+static void exercise_u64_column(SQTree *tree, uint32_t offset, unsigned tag, bool fill) {
+  for (uint32_t index = 0; index < 2; index++) {
+    uint64_t expected = index * UINT64_C(0x123456789abcdef) + tag;
+    if (fill) sq_set_u64(tree->data, offset, index, expected);
+    else assert(sq_get_u64(tree->data, offset, index) == expected);
+  }
+
+  if (!fill) {
+    for (uint32_t index = 2; index < sq_header(tree)->group_capacity; index++) {
+      assert(sq_get_u64(tree->data, offset, index) == 0);
+    }
+  }
+}
+#endif
+
 static void exercise_columns(SQTree *tree, bool fill) {
   unsigned tag = 0;
   exercise_column(tree, tree->layout.waste, SQ_WASTE_BITS, 1, tag++, fill);
@@ -154,10 +170,8 @@ static void exercise_columns(SQTree *tree, bool fill) {
   exercise_column(tree, tree->layout.start_byte_base, 32, 1, tag++, fill);
   exercise_column(tree, tree->layout.end_byte_base, 32, 1, tag++, fill);
 #if SQ_INCLUDE_POINTS
-  exercise_column(tree, tree->layout.start_row_base, 32, 1, tag++, fill);
-  exercise_column(tree, tree->layout.end_row_base, 32, 1, tag++, fill);
-  exercise_column(tree, tree->layout.start_column_base, 32, 1, tag++, fill);
-  exercise_column(tree, tree->layout.end_column_base, 32, 1, tag++, fill);
+  exercise_u64_column(tree, tree->layout.start_point_base, tag++, fill);
+  exercise_u64_column(tree, tree->layout.end_point_base, tag++, fill);
 #endif
   exercise_column(tree, tree->layout.last, 1, SQ_GROUP_SIZE, tag++, fill);
   exercise_column(tree, tree->layout.extra, 1, SQ_GROUP_SIZE, tag++, fill);
@@ -167,10 +181,8 @@ static void exercise_columns(SQTree *tree, bool fill) {
   exercise_column(tree, tree->layout.start_byte_delta, 8, SQ_GROUP_SIZE, tag++, fill);
   exercise_column(tree, tree->layout.end_byte_delta, 16, SQ_GROUP_SIZE, tag++, fill);
 #if SQ_INCLUDE_POINTS
-  exercise_column(tree, tree->layout.start_row_delta, 8, SQ_GROUP_SIZE, tag++, fill);
-  exercise_column(tree, tree->layout.end_row_delta, 8, SQ_GROUP_SIZE, tag++, fill);
-  exercise_column(tree, tree->layout.start_column_delta, 8, SQ_GROUP_SIZE, tag++, fill);
-  exercise_column(tree, tree->layout.end_column_delta, 8, SQ_GROUP_SIZE, tag++, fill);
+  exercise_column(tree, tree->layout.start_point, 16, SQ_GROUP_SIZE, tag++, fill);
+  exercise_column(tree, tree->layout.end_point, 16, SQ_GROUP_SIZE, tag++, fill);
 #endif
   exercise_column(tree, tree->layout.supertype, 8, SQ_GROUP_SIZE, tag++, fill);
   exercise_column(tree, tree->layout.symbol, tree->layout.symbol_bits, SQ_GROUP_SIZE, tag++, fill);

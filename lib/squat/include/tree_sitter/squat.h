@@ -95,10 +95,9 @@ uint64_t sq_tree_group_span_delta_equal(const SQTree *, uint32_t group, uint32_t
 uint64_t sq_tree_group_start_byte_delta_equal(const SQTree *, uint32_t group, uint32_t value);
 uint64_t sq_tree_group_end_byte_delta_equal(const SQTree *, uint32_t group, uint32_t value);
 #if SQ_INCLUDE_POINTS
-uint64_t sq_tree_group_start_row_delta_equal(const SQTree *, uint32_t group, uint32_t value);
-uint64_t sq_tree_group_end_row_delta_equal(const SQTree *, uint32_t group, uint32_t value);
-uint64_t sq_tree_group_start_column_delta_equal(const SQTree *, uint32_t group, uint32_t value);
-uint64_t sq_tree_group_end_column_delta_equal(const SQTree *, uint32_t group, uint32_t value);
+// Point keys store the row delta in the high byte and column delta in the low byte.
+uint64_t sq_tree_group_start_point_equal(const SQTree *, uint32_t group, uint32_t value);
+uint64_t sq_tree_group_end_point_equal(const SQTree *, uint32_t group, uint32_t value);
 #endif
 
 uint64_t sq_tree_group_supertype_equal(const SQTree *, uint32_t group, uint32_t value);

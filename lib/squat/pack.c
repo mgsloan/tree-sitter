@@ -88,10 +88,10 @@ static bool close_group(Builder *builder) {
   sq_set_u32(tree->data, tree->layout.start_byte_base, group, builder->base.start_byte);
   sq_set_u32(tree->data, tree->layout.end_byte_base, group, builder->max.end_byte);
 #if SQ_INCLUDE_POINTS
-  sq_set_u32(tree->data, tree->layout.start_row_base, group, builder->base.start_row);
-  sq_set_u32(tree->data, tree->layout.end_row_base, group, builder->max.end_row);
-  sq_set_u32(tree->data, tree->layout.start_column_base, group, builder->base.start_column);
-  sq_set_u32(tree->data, tree->layout.end_column_base, group, builder->max.end_column);
+  TSPoint start_base = {builder->base.start_row, builder->base.start_column};
+  TSPoint end_base = {builder->max.end_row, builder->max.end_column};
+  sq_set_u64(tree->data, tree->layout.start_point_base, group, sq_point_key(start_base));
+  sq_set_u64(tree->data, tree->layout.end_point_base, group, sq_point_key(end_base));
 #endif
 
   for (uint32_t i = 0; i < builder->count; i++) {
@@ -109,14 +109,13 @@ static bool close_group(Builder *builder) {
     sq_set_u16(tree->data, tree->layout.end_byte_delta, slot,
                builder->max.end_byte - pending->values.end_byte);
 #if SQ_INCLUDE_POINTS
-    sq_set_u8(tree->data, tree->layout.start_row_delta, slot,
-              pending->values.start_row - builder->base.start_row);
-    sq_set_u8(tree->data, tree->layout.end_row_delta, slot,
-              builder->max.end_row - pending->values.end_row);
-    sq_set_u8(tree->data, tree->layout.start_column_delta, slot,
-              pending->values.start_column - builder->base.start_column);
-    sq_set_u8(tree->data, tree->layout.end_column_delta, slot,
-              builder->max.end_column - pending->values.end_column);
+    uint16_t start_point =
+        (uint16_t)((pending->values.start_row - builder->base.start_row) << 8) |
+        (uint16_t)(pending->values.start_column - builder->base.start_column);
+    uint16_t end_point = (uint16_t)((builder->max.end_row - pending->values.end_row) << 8) |
+                         (uint16_t)(builder->max.end_column - pending->values.end_column);
+    sq_set_u16(tree->data, tree->layout.start_point, slot, start_point);
+    sq_set_u16(tree->data, tree->layout.end_point, slot, end_point);
 #endif
 
     sq_set_u8(tree->data, tree->layout.supertype, slot, pending->super);
@@ -162,7 +161,8 @@ static bool intern_mask(Builder *builder, const uint64_t *mask, uint8_t *result)
 }
 
 // Stage candidate extrema separately: a rejected node must not change the
-// accepted group's bases. Only end-byte deltas have a wider, u16 range.
+// accepted group's bases. End bytes use a u16 delta; each point uses two u8
+// component deltas joined into one lexicographically ordered u16 key.
 static bool extend_range(uint32_t value, uint32_t previous_base, uint32_t previous_max,
                          uint32_t limit, uint32_t *base, uint32_t *max) {
   *base = value < previous_base ? value : previous_base;

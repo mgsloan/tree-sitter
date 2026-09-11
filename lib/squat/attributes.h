@@ -26,12 +26,12 @@ static inline void sq_attributes_with_ids(SQNode node, uint32_t symbol, uint32_t
   out->start_byte = sq_group_start_byte_base(node.tree, group) + sq_node_start_byte_delta(node);
   out->end_byte = sq_group_end_byte_base(node.tree, group) - sq_node_end_byte_delta(node);
 #if SQ_INCLUDE_POINTS
-  out->start_point =
-      (TSPoint){sq_group_start_row_base(node.tree, group) + sq_node_start_row_delta(node),
-                sq_group_start_column_base(node.tree, group) + sq_node_start_column_delta(node)};
-  out->end_point =
-      (TSPoint){sq_group_end_row_base(node.tree, group) - sq_node_end_row_delta(node),
-                sq_group_end_column_base(node.tree, group) - sq_node_end_column_delta(node)};
+  uint64_t start_point = sq_group_start_point_base(node.tree, group) +
+                         sq_expand_point_key((uint16_t)sq_node_start_point_key(node));
+  uint64_t end_point = sq_group_end_point_base(node.tree, group) -
+                       sq_expand_point_key((uint16_t)sq_node_end_point_key(node));
+  out->start_point = sq_point_from_key(start_point);
+  out->end_point = sq_point_from_key(end_point);
 #endif
   out->is_extra = sq_node_extra_flag(node);
   out->is_missing = sq_node_missing_flag(node);
