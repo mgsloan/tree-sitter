@@ -285,6 +285,33 @@ walks, and both iterator walks remain checked against mainline. Use Cargo's
 This changes the serialized layout and may change group occupancy, so compare
 like build configurations when isolating iterator cache-window effects.
 
+## Paired seek profiling
+
+From the repository root, compare the current seek implementation with a frozen
+`node.c` on the same packed trees:
+
+```sh
+python3 tools/squatter/benchmark-seek.py --output build/seek-profile/points --points 1
+python3 tools/squatter/benchmark-seek.py --output build/seek-profile/bytes --points 0
+```
+
+Each output directory must be empty. The default uses the frozen 10,000-file
+bundle at `build/squat-corpus-10k`; select another with `--bundle`. Use
+`--files-per-grammar 20` for a pilot or `--grammar typescript` for one language.
+The default baseline is `220ee121c`. Baseline and current code use the current
+slab layout, so this probe is suitable for seek changes, not layout comparisons.
+
+Every query is checked before timing. The probe records five alternating timing
+pairs, their individual samples, and median thread CPU times for original and
+mutated files, with empty and mixed-range workloads. Build/input hashes and
+commands are saved with the results. Parsing and packing are outside the timer.
+
+Add `--profile point --rounds 3000 --perf-event EVENT` to sample with a supported
+`perf` event; `byte`, `before-point`, and `before-byte` select the other paths.
+See the [cloud results](../../lib/squat/experiments/seek-cloud-results-2026-09-11.md)
+and [local profiles](../../lib/squat/experiments/seek-profile-results-2026-09-11.md)
+for the retained optimizations and repeated large-file comparisons.
+
 ## Cloud idle shutdown
 
 The two-vCPU benchmark VM uses `cloud-idle.py`, installed as

@@ -1,0 +1,1563 @@
+{
+  "baseline_commit": "220ee121c",
+  "code_commit": "9924497276bc8f8b3bf2567976b0c3c029c13256",
+  "node_sha256": "70a691034e2e183745a8d6a0d87fb36743b75c4dfc9d3865898018fcb9899e54",
+  "probe_sha256": "b37f20f14180764206dc39da12cf5c01ec27d662e646d79f74c05c1ce832e3de",
+  "builds": {
+    "points": {
+      "metadata": {
+        "started": "2026-09-11T18:39:31.653574+00:00",
+        "compiler": "gcc (GCC) 15.3.0",
+        "power_online": {
+          "/sys/class/power_supply/ucsi-source-psy-USBC000:002/online": "1",
+          "/sys/class/power_supply/ucsi-source-psy-USBC000:001/online": "0",
+          "/sys/class/power_supply/AC/online": "1"
+        },
+        "baseline": "220ee121ceed1b090d23cef6bf24d05acda245b8",
+        "current_head": "220ee121ceed1b090d23cef6bf24d05acda245b8",
+        "baseline_node_sha256": "88f489980296c4aeefbc02402575624160743c56a11351cad6cd72a66f0036dd",
+        "current_node_sha256": "70a691034e2e183745a8d6a0d87fb36743b75c4dfc9d3865898018fcb9899e54",
+        "probe_sha256": "235e7a41988c4df79cf5f5574f90d741b1c15c95753839c2d7aa016f1e18b13c",
+        "binary_sha256": "278fb9c6e9900ea3569fc50724267734023648867f1cb00dd285593b0e15e6a4",
+        "input_manifest_sha256": "6e97d391c8e69cad53b89bffabe50a22c802cf7f2b9f02266776db90a8263b9c",
+        "registry_sha256": "26739d4bf4ab17ebbbe3d20fd8917d45c90ea3b2a514caff480e867e028ffa53",
+        "flags": [
+          "-O3",
+          "-g",
+          "-DSQ_INCLUDE_POINTS=1",
+          "-std=c11",
+          "-Wall",
+          "-Wextra",
+          "-Werror"
+        ],
+        "cpu": 0,
+        "platform": "Linux-7.1.12+deb14-amd64-x86_64-with-glibc2.42",
+        "cpu_info": "Architecture:                            x86_64\nCPU op-mode(s):                          32-bit, 64-bit\nAddress sizes:                           46 bits physical, 48 bits virtual\nByte Order:                              Little Endian\nCPU(s):                                  14\nOn-line CPU(s) list:                     0-13\nVendor ID:                               GenuineIntel\nModel name:                              Intel(R) Core(TM) Ultra 7 165U\nCPU family:                              6\nModel:                                   170\nThread(s) per core:                      2\nCore(s) per socket:                      12\nSocket(s):                               1\nStepping:                                4\nMicrocode version:                       0x28\nCPU(s) scaling MHz:                      74%\nCPU max MHz:                             4900.0000\nCPU min MHz:                             400.0000\nBogoMIPS:                                5376.00\nFlags:                                   fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush dts acpi mmx fxsr sse sse2 ss ht tm pbe syscall nx pdpe1gb rdtscp lm constant_tsc art arch_perfmon pebs bts rep_good nopl xtopology nonstop_tsc cpuid aperfmperf tsc_known_freq pni pclmulqdq dtes64 monitor ds_cpl vmx smx est tm2 ssse3 sdbg fma cx16 xtpr pdcm pcid sse4_1 sse4_2 x2apic movbe popcnt tsc_deadline_timer aes xsave avx f16c rdrand lahf_lm abm 3dnowprefetch cpuid_fault epb ssbd ibrs ibpb stibp ibrs_enhanced tpr_shadow flexpriority ept vpid ept_ad fsgsbase tsc_adjust bmi1 avx2 smep bmi2 erms invpcid rdseed adx smap clflushopt clwb intel_pt sha_ni xsaveopt xsavec xgetbv1 xsaves split_lock_detect user_shstk avx_vnni dtherm ida arat pln pts hwp hwp_notify hwp_act_window hwp_epp hwp_pkg_req hfi vnmi umip pku ospke waitpkg gfni vaes vpclmulqdq rdpid bus_lock_detect movdiri movdir64b fsrm md_clear serialize pconfig arch_lbr ibt flush_l1d arch_capabilities\nVirtualization:                          VT-x\nL1d cache:                               352 KiB (10 instances)\nL1i cache:                               640 KiB (10 instances)\nL2 cache:                                10 MiB (5 instances)\nL3 cache:                                12 MiB (1 instance)\nNUMA node(s):                            1\nNUMA node0 CPU(s):                       0-13\nVulnerability Gather data sampling:      Not affected\nVulnerability Ghostwrite:                Not affected\nVulnerability Indirect target selection: Not affected\nVulnerability Itlb multihit:             Not affected\nVulnerability L1tf:                      Not affected\nVulnerability Mds:                       Not affected\nVulnerability Meltdown:                  Not affected\nVulnerability Mmio stale data:           Not affected\nVulnerability Old microcode:             Not affected\nVulnerability Reg file data sampling:    Not affected\nVulnerability Retbleed:                  Not affected\nVulnerability Spec rstack overflow:      Not affected\nVulnerability Spec store bypass:         Mitigation; Speculative Store Bypass disabled via prctl\nVulnerability Spectre v1:                Mitigation; usercopy/swapgs barriers and __user pointer sanitization\nVulnerability Spectre v2:                Mitigation; Enhanced / Automatic IBRS; IBPB conditional; PBRSB-eIBRS Not affected; BHI BHI_DIS_S\nVulnerability Srbds:                     Not affected\nVulnerability Tsa:                       Not affected\nVulnerability Tsx async abort:           Not affected\nVulnerability Vmscape:                   Mitigation; IBPB before exit to userspace\n",
+        "rounds": 32,
+        "queries_per_round": 128,
+        "repeats": 5,
+        "points": 1,
+        "operations": [
+          {
+            "grammar": "bash",
+            "files": 192,
+            "command": [
+              "taskset",
+              "-c",
+              "0",
+              "/home/mgsloan/cozy/tree-squatter/pareto/build/squat-seek-profile/final-points/seek-bench",
+              "/home/mgsloan/cozy/tree-squatter/pareto/build/squat-corpus-10k/grammars/bash.so",
+              "tree_sitter_bash",
+              "/home/mgsloan/cozy/tree-squatter/pareto/build/squat-seek-profile/final-points/bash.list",
+              "32",
+              "0"
+            ]
+          },
+          {
+            "grammar": "c",
+            "files": 252,
+            "command": [
+              "taskset",
+              "-c",
+              "0",
+              "/home/mgsloan/cozy/tree-squatter/pareto/build/squat-seek-profile/final-points/seek-bench",
+              "/home/mgsloan/cozy/tree-squatter/pareto/build/squat-corpus-10k/grammars/c.so",
+              "tree_sitter_c",
+              "/home/mgsloan/cozy/tree-squatter/pareto/build/squat-seek-profile/final-points/c.list",
+              "32",
+              "0"
+            ]
+          },
+          {
+            "grammar": "cpp",
+            "files": 958,
+            "command": [
+              "taskset",
+              "-c",
+              "0",
+              "/home/mgsloan/cozy/tree-squatter/pareto/build/squat-seek-profile/final-points/seek-bench",
+              "/home/mgsloan/cozy/tree-squatter/pareto/build/squat-corpus-10k/grammars/cpp.so",
+              "tree_sitter_cpp",
+              "/home/mgsloan/cozy/tree-squatter/pareto/build/squat-seek-profile/final-points/cpp.list",
+              "32",
+              "0"
+            ]
+          },
+          {
+            "grammar": "css",
+            "files": 1165,
+            "command": [
+              "taskset",
+              "-c",
+              "0",
+              "/home/mgsloan/cozy/tree-squatter/pareto/build/squat-seek-profile/final-points/seek-bench",
+              "/home/mgsloan/cozy/tree-squatter/pareto/build/squat-corpus-10k/grammars/css.so",
+              "tree_sitter_css",
+              "/home/mgsloan/cozy/tree-squatter/pareto/build/squat-seek-profile/final-points/css.list",
+              "32",
+              "0"
+            ]
+          },
+          {
+            "grammar": "go",
+            "files": 1147,
+            "command": [
+              "taskset",
+              "-c",
+              "0",
+              "/home/mgsloan/cozy/tree-squatter/pareto/build/squat-seek-profile/final-points/seek-bench",
+              "/home/mgsloan/cozy/tree-squatter/pareto/build/squat-corpus-10k/grammars/go.so",
+              "tree_sitter_go",
+              "/home/mgsloan/cozy/tree-squatter/pareto/build/squat-seek-profile/final-points/go.list",
+              "32",
+              "0"
+            ]
+          },
+          {
+            "grammar": "html",
+            "files": 466,
+            "command": [
+              "taskset",
+              "-c",
+              "0",
+              "/home/mgsloan/cozy/tree-squatter/pareto/build/squat-seek-profile/final-points/seek-bench",
+              "/home/mgsloan/cozy/tree-squatter/pareto/build/squat-corpus-10k/grammars/html.so",
+              "tree_sitter_html",
+              "/home/mgsloan/cozy/tree-squatter/pareto/build/squat-seek-profile/final-points/html.list",
+              "32",
+              "0"
+            ]
+          },
+          {
+            "grammar": "json",
+            "files": 1164,
+            "command": [
+              "taskset",
+              "-c",
+              "0",
+              "/home/mgsloan/cozy/tree-squatter/pareto/build/squat-seek-profile/final-points/seek-bench",
+              "/home/mgsloan/cozy/tree-squatter/pareto/build/squat-corpus-10k/grammars/json.so",
+              "tree_sitter_json",
+              "/home/mgsloan/cozy/tree-squatter/pareto/build/squat-seek-profile/final-points/json.list",
+              "32",
+              "0"
+            ]
+          },
+          {
+            "grammar": "python",
+            "files": 1164,
+            "command": [
+              "taskset",
+              "-c",
+              "0",
+              "/home/mgsloan/cozy/tree-squatter/pareto/build/squat-seek-profile/final-points/seek-bench",
+              "/home/mgsloan/cozy/tree-squatter/pareto/build/squat-corpus-10k/grammars/python.so",
+              "tree_sitter_python",
+              "/home/mgsloan/cozy/tree-squatter/pareto/build/squat-seek-profile/final-points/python.list",
+              "32",
+              "0"
+            ]
+          },
+          {
+            "grammar": "tsx",
+            "files": 1164,
+            "command": [
+              "taskset",
+              "-c",
+              "0",
+              "/home/mgsloan/cozy/tree-squatter/pareto/build/squat-seek-profile/final-points/seek-bench",
+              "/home/mgsloan/cozy/tree-squatter/pareto/build/squat-corpus-10k/grammars/tsx.so",
+              "tree_sitter_tsx",
+              "/home/mgsloan/cozy/tree-squatter/pareto/build/squat-seek-profile/final-points/tsx.list",
+              "32",
+              "0"
+            ]
+          },
+          {
+            "grammar": "typescript",
+            "files": 1164,
+            "command": [
+              "taskset",
+              "-c",
+              "0",
+              "/home/mgsloan/cozy/tree-squatter/pareto/build/squat-seek-profile/final-points/seek-bench",
+              "/home/mgsloan/cozy/tree-squatter/pareto/build/squat-corpus-10k/grammars/typescript.so",
+              "tree_sitter_typescript",
+              "/home/mgsloan/cozy/tree-squatter/pareto/build/squat-seek-profile/final-points/typescript.list",
+              "32",
+              "0"
+            ]
+          },
+          {
+            "grammar": "yaml",
+            "files": 1164,
+            "command": [
+              "taskset",
+              "-c",
+              "0",
+              "/home/mgsloan/cozy/tree-squatter/pareto/build/squat-seek-profile/final-points/seek-bench",
+              "/home/mgsloan/cozy/tree-squatter/pareto/build/squat-corpus-10k/grammars/yaml.so",
+              "tree_sitter_yaml",
+              "/home/mgsloan/cozy/tree-squatter/pareto/build/squat-seek-profile/final-points/yaml.list",
+              "32",
+              "0"
+            ]
+          }
+        ]
+      },
+      "summary": {
+        "byte-empty": {
+          "cases": 20000,
+          "before_ns": 1582557607,
+          "after_ns": 1059263601,
+          "total_ratio": 0.6693365197668915,
+          "median_ratio": 0.6629568356845733,
+          "slower_over_5_percent": 294,
+          "slower_median_bytes": 0.0,
+          "largest_increase_ns_per_seek": 66.85107421875
+        },
+        "byte-mixed": {
+          "cases": 20000,
+          "before_ns": 1634571899,
+          "after_ns": 1066244749,
+          "total_ratio": 0.6523082586041692,
+          "median_ratio": 0.6427410722066965,
+          "slower_over_5_percent": 297,
+          "slower_median_bytes": 0,
+          "largest_increase_ns_per_seek": 5.329345703125
+        },
+        "point-empty": {
+          "cases": 20000,
+          "before_ns": 2120496737,
+          "after_ns": 1778324473,
+          "total_ratio": 0.8386357979102139,
+          "median_ratio": 0.8253236637149814,
+          "slower_over_5_percent": 1183,
+          "slower_median_bytes": 671,
+          "largest_increase_ns_per_seek": 46.264404296875
+        },
+        "point-mixed": {
+          "cases": 20000,
+          "before_ns": 2008753305,
+          "after_ns": 1852141802,
+          "total_ratio": 0.9220354721457447,
+          "median_ratio": 0.9120230317884127,
+          "slower_over_5_percent": 1208,
+          "slower_median_bytes": 631.5,
+          "largest_increase_ns_per_seek": 35.275390625
+        }
+      },
+      "languages": {
+        "bash": {
+          "byte-empty": {
+            "cases": 384,
+            "before_ns": 25107195,
+            "after_ns": 16796743,
+            "total_ratio": 0.6690011767543128,
+            "median_ratio": 0.6687430376469096,
+            "slower_over_5_percent": 0,
+            "slower_median_bytes": null,
+            "largest_increase_ns_per_seek": -0.712646484375
+          },
+          "byte-mixed": {
+            "cases": 384,
+            "before_ns": 25840252,
+            "after_ns": 16489472,
+            "total_ratio": 0.6381312380390098,
+            "median_ratio": 0.6529612194299548,
+            "slower_over_5_percent": 1,
+            "slower_median_bytes": 521,
+            "largest_increase_ns_per_seek": 0.59326171875
+          },
+          "point-empty": {
+            "cases": 384,
+            "before_ns": 34927452,
+            "after_ns": 29229574,
+            "total_ratio": 0.8368653401914345,
+            "median_ratio": 0.8385907901767132,
+            "slower_over_5_percent": 4,
+            "slower_median_bytes": 348.0,
+            "largest_increase_ns_per_seek": 1.71630859375
+          },
+          "point-mixed": {
+            "cases": 384,
+            "before_ns": 32027367,
+            "after_ns": 29559022,
+            "total_ratio": 0.9229301303475868,
+            "median_ratio": 0.9209186230965758,
+            "slower_over_5_percent": 12,
+            "slower_median_bytes": 520.5,
+            "largest_increase_ns_per_seek": 4.768798828125
+          }
+        },
+        "c": {
+          "byte-empty": {
+            "cases": 504,
+            "before_ns": 46183857,
+            "after_ns": 33168001,
+            "total_ratio": 0.7181730404197293,
+            "median_ratio": 0.7036853452839984,
+            "slower_over_5_percent": 5,
+            "slower_median_bytes": 0,
+            "largest_increase_ns_per_seek": 29.564453125
+          },
+          "byte-mixed": {
+            "cases": 504,
+            "before_ns": 45069163,
+            "after_ns": 30131943,
+            "total_ratio": 0.6685711691606077,
+            "median_ratio": 0.6564794111910878,
+            "slower_over_5_percent": 4,
+            "slower_median_bytes": 0.0,
+            "largest_increase_ns_per_seek": 2.43896484375
+          },
+          "point-empty": {
+            "cases": 504,
+            "before_ns": 58598800,
+            "after_ns": 50760728,
+            "total_ratio": 0.8662417660429906,
+            "median_ratio": 0.8615426604499938,
+            "slower_over_5_percent": 14,
+            "slower_median_bytes": 1228.0,
+            "largest_increase_ns_per_seek": 3.00390625
+          },
+          "point-mixed": {
+            "cases": 504,
+            "before_ns": 54319491,
+            "after_ns": 50885867,
+            "total_ratio": 0.9367883620264409,
+            "median_ratio": 0.928134896634186,
+            "slower_over_5_percent": 21,
+            "slower_median_bytes": 1430,
+            "largest_increase_ns_per_seek": 24.717041015625
+          }
+        },
+        "cpp": {
+          "byte-empty": {
+            "cases": 1916,
+            "before_ns": 147165879,
+            "after_ns": 100111289,
+            "total_ratio": 0.6802615503013439,
+            "median_ratio": 0.6919261782142099,
+            "slower_over_5_percent": 2,
+            "slower_median_bytes": 6076.0,
+            "largest_increase_ns_per_seek": 0.676025390625
+          },
+          "byte-mixed": {
+            "cases": 1916,
+            "before_ns": 147926283,
+            "after_ns": 96152115,
+            "total_ratio": 0.6500002099018468,
+            "median_ratio": 0.6693086825133578,
+            "slower_over_5_percent": 3,
+            "slower_median_bytes": 554,
+            "largest_increase_ns_per_seek": 1.00927734375
+          },
+          "point-empty": {
+            "cases": 1916,
+            "before_ns": 195217403,
+            "after_ns": 167737571,
+            "total_ratio": 0.8592347220191224,
+            "median_ratio": 0.858401335823979,
+            "slower_over_5_percent": 85,
+            "slower_median_bytes": 1451,
+            "largest_increase_ns_per_seek": 9.042236328125
+          },
+          "point-mixed": {
+            "cases": 1916,
+            "before_ns": 182376151,
+            "after_ns": 169193595,
+            "total_ratio": 0.9277177639306577,
+            "median_ratio": 0.9251481483691726,
+            "slower_over_5_percent": 103,
+            "slower_median_bytes": 1509,
+            "largest_increase_ns_per_seek": 11.396728515625
+          }
+        },
+        "css": {
+          "byte-empty": {
+            "cases": 2330,
+            "before_ns": 177476058,
+            "after_ns": 120663273,
+            "total_ratio": 0.6798847932491265,
+            "median_ratio": 0.6563839376731204,
+            "slower_over_5_percent": 9,
+            "slower_median_bytes": 0,
+            "largest_increase_ns_per_seek": 2.947265625
+          },
+          "byte-mixed": {
+            "cases": 2330,
+            "before_ns": 236127411,
+            "after_ns": 160573154,
+            "total_ratio": 0.6800275890036332,
+            "median_ratio": 0.622233541787792,
+            "slower_over_5_percent": 9,
+            "slower_median_bytes": 0,
+            "largest_increase_ns_per_seek": 3.598388671875
+          },
+          "point-empty": {
+            "cases": 2330,
+            "before_ns": 254628598,
+            "after_ns": 204178510,
+            "total_ratio": 0.8018679425788615,
+            "median_ratio": 0.7858330288108937,
+            "slower_over_5_percent": 38,
+            "slower_median_bytes": 455.0,
+            "largest_increase_ns_per_seek": 7.2890625
+          },
+          "point-mixed": {
+            "cases": 2330,
+            "before_ns": 285505471,
+            "after_ns": 264255003,
+            "total_ratio": 0.9255689639656678,
+            "median_ratio": 0.9044214455648466,
+            "slower_over_5_percent": 53,
+            "slower_median_bytes": 540,
+            "largest_increase_ns_per_seek": 34.302734375
+          }
+        },
+        "go": {
+          "byte-empty": {
+            "cases": 2294,
+            "before_ns": 176700801,
+            "after_ns": 121089084,
+            "total_ratio": 0.6852775047692059,
+            "median_ratio": 0.6900930255986064,
+            "slower_over_5_percent": 3,
+            "slower_median_bytes": 793,
+            "largest_increase_ns_per_seek": 1.64990234375
+          },
+          "byte-mixed": {
+            "cases": 2294,
+            "before_ns": 181742838,
+            "after_ns": 113314948,
+            "total_ratio": 0.6234905828861328,
+            "median_ratio": 0.6251336484035054,
+            "slower_over_5_percent": 2,
+            "slower_median_bytes": 780.5,
+            "largest_increase_ns_per_seek": 1.302734375
+          },
+          "point-empty": {
+            "cases": 2294,
+            "before_ns": 232459045,
+            "after_ns": 193770817,
+            "total_ratio": 0.8335697025684675,
+            "median_ratio": 0.8281837438310902,
+            "slower_over_5_percent": 106,
+            "slower_median_bytes": 837.5,
+            "largest_increase_ns_per_seek": 7.84228515625
+          },
+          "point-mixed": {
+            "cases": 2294,
+            "before_ns": 220361505,
+            "after_ns": 202379064,
+            "total_ratio": 0.9183957243348833,
+            "median_ratio": 0.9138693987216243,
+            "slower_over_5_percent": 102,
+            "slower_median_bytes": 839.0,
+            "largest_increase_ns_per_seek": 10.946044921875
+          }
+        },
+        "html": {
+          "byte-empty": {
+            "cases": 932,
+            "before_ns": 91953003,
+            "after_ns": 56812565,
+            "total_ratio": 0.617843497726768,
+            "median_ratio": 0.6490088521197325,
+            "slower_over_5_percent": 10,
+            "slower_median_bytes": 1049.0,
+            "largest_increase_ns_per_seek": 1.32470703125
+          },
+          "byte-mixed": {
+            "cases": 932,
+            "before_ns": 80389382,
+            "after_ns": 50209250,
+            "total_ratio": 0.6245756435843729,
+            "median_ratio": 0.6511234148876102,
+            "slower_over_5_percent": 7,
+            "slower_median_bytes": 63,
+            "largest_increase_ns_per_seek": 1.55419921875
+          },
+          "point-empty": {
+            "cases": 932,
+            "before_ns": 116159647,
+            "after_ns": 102548354,
+            "total_ratio": 0.8828225347482331,
+            "median_ratio": 0.8860113712904272,
+            "slower_over_5_percent": 127,
+            "slower_median_bytes": 1562,
+            "largest_increase_ns_per_seek": 11.4775390625
+          },
+          "point-mixed": {
+            "cases": 932,
+            "before_ns": 97896783,
+            "after_ns": 91650077,
+            "total_ratio": 0.9361908960787813,
+            "median_ratio": 0.9344836651974247,
+            "slower_over_5_percent": 124,
+            "slower_median_bytes": 1715.0,
+            "largest_increase_ns_per_seek": 9.20947265625
+          }
+        },
+        "json": {
+          "byte-empty": {
+            "cases": 2328,
+            "before_ns": 202411462,
+            "after_ns": 126898845,
+            "total_ratio": 0.6269350744573942,
+            "median_ratio": 0.6366800689639358,
+            "slower_over_5_percent": 7,
+            "slower_median_bytes": 15696,
+            "largest_increase_ns_per_seek": 2.173828125
+          },
+          "byte-mixed": {
+            "cases": 2328,
+            "before_ns": 218547955,
+            "after_ns": 133027781,
+            "total_ratio": 0.6086892050762955,
+            "median_ratio": 0.6143670540867999,
+            "slower_over_5_percent": 3,
+            "slower_median_bytes": 97,
+            "largest_increase_ns_per_seek": 1.879150390625
+          },
+          "point-empty": {
+            "cases": 2328,
+            "before_ns": 266323577,
+            "after_ns": 219579920,
+            "total_ratio": 0.8244854716711769,
+            "median_ratio": 0.8091517837363305,
+            "slower_over_5_percent": 58,
+            "slower_median_bytes": 7339.5,
+            "largest_increase_ns_per_seek": 10.236328125
+          },
+          "point-mixed": {
+            "cases": 2328,
+            "before_ns": 261767454,
+            "after_ns": 240514407,
+            "total_ratio": 0.9188094368675794,
+            "median_ratio": 0.9093353433220098,
+            "slower_over_5_percent": 97,
+            "slower_median_bytes": 4224,
+            "largest_increase_ns_per_seek": 30.092529296875
+          }
+        },
+        "python": {
+          "byte-empty": {
+            "cases": 2328,
+            "before_ns": 226268685,
+            "after_ns": 166167832,
+            "total_ratio": 0.7343828068828879,
+            "median_ratio": 0.6580986864792835,
+            "slower_over_5_percent": 227,
+            "slower_median_bytes": 0,
+            "largest_increase_ns_per_seek": 66.85107421875
+          },
+          "byte-mixed": {
+            "cases": 2328,
+            "before_ns": 213104395,
+            "after_ns": 152732874,
+            "total_ratio": 0.7167044771648187,
+            "median_ratio": 0.6518203616443292,
+            "slower_over_5_percent": 234,
+            "slower_median_bytes": 0.0,
+            "largest_increase_ns_per_seek": 5.329345703125
+          },
+          "point-empty": {
+            "cases": 2328,
+            "before_ns": 287346362,
+            "after_ns": 250173953,
+            "total_ratio": 0.8706355328765221,
+            "median_ratio": 0.8323685464310804,
+            "slower_over_5_percent": 321,
+            "slower_median_bytes": 0,
+            "largest_increase_ns_per_seek": 46.264404296875
+          },
+          "point-mixed": {
+            "cases": 2328,
+            "before_ns": 256162694,
+            "after_ns": 238925607,
+            "total_ratio": 0.9327103930285805,
+            "median_ratio": 0.9037706948763011,
+            "slower_over_5_percent": 333,
+            "slower_median_bytes": 0,
+            "largest_increase_ns_per_seek": 8.68212890625
+          }
+        },
+        "tsx": {
+          "byte-empty": {
+            "cases": 2328,
+            "before_ns": 172770927,
+            "after_ns": 114094892,
+            "total_ratio": 0.6603824727987945,
+            "median_ratio": 0.6585949863222371,
+            "slower_over_5_percent": 4,
+            "slower_median_bytes": 178.5,
+            "largest_increase_ns_per_seek": 1.35302734375
+          },
+          "byte-mixed": {
+            "cases": 2328,
+            "before_ns": 182429726,
+            "after_ns": 115808557,
+            "total_ratio": 0.6348118781913864,
+            "median_ratio": 0.6376112747531351,
+            "slower_over_5_percent": 3,
+            "slower_median_bytes": 0,
+            "largest_increase_ns_per_seek": 1.73193359375
+          },
+          "point-empty": {
+            "cases": 2328,
+            "before_ns": 240200618,
+            "after_ns": 195078675,
+            "total_ratio": 0.8121489304411365,
+            "median_ratio": 0.8065923229984684,
+            "slower_over_5_percent": 55,
+            "slower_median_bytes": 807,
+            "largest_increase_ns_per_seek": 4.291748046875
+          },
+          "point-mixed": {
+            "cases": 2328,
+            "before_ns": 230482483,
+            "after_ns": 208041047,
+            "total_ratio": 0.902632791403935,
+            "median_ratio": 0.8960272724352243,
+            "slower_over_5_percent": 57,
+            "slower_median_bytes": 808,
+            "largest_increase_ns_per_seek": 35.275390625
+          }
+        },
+        "typescript": {
+          "byte-empty": {
+            "cases": 2328,
+            "before_ns": 144040569,
+            "after_ns": 100216190,
+            "total_ratio": 0.6957497508913617,
+            "median_ratio": 0.7027688258493042,
+            "slower_over_5_percent": 0,
+            "slower_median_bytes": null,
+            "largest_increase_ns_per_seek": 0.656494140625
+          },
+          "byte-mixed": {
+            "cases": 2328,
+            "before_ns": 148718728,
+            "after_ns": 100513805,
+            "total_ratio": 0.6758651472597318,
+            "median_ratio": 0.6932433482745142,
+            "slower_over_5_percent": 5,
+            "slower_median_bytes": 206,
+            "largest_increase_ns_per_seek": 1.4482421875
+          },
+          "point-empty": {
+            "cases": 2328,
+            "before_ns": 203914654,
+            "after_ns": 174180844,
+            "total_ratio": 0.8541850258589067,
+            "median_ratio": 0.845331945804669,
+            "slower_over_5_percent": 266,
+            "slower_median_bytes": 1163.0,
+            "largest_increase_ns_per_seek": 5.5615234375
+          },
+          "point-mixed": {
+            "cases": 2328,
+            "before_ns": 193690312,
+            "after_ns": 178718900,
+            "total_ratio": 0.9227043838929848,
+            "median_ratio": 0.9208041825603213,
+            "slower_over_5_percent": 179,
+            "slower_median_bytes": 1088,
+            "largest_increase_ns_per_seek": 7.607666015625
+          }
+        },
+        "yaml": {
+          "byte-empty": {
+            "cases": 2328,
+            "before_ns": 172479171,
+            "after_ns": 103244887,
+            "total_ratio": 0.5985933629052519,
+            "median_ratio": 0.5963075581723469,
+            "slower_over_5_percent": 27,
+            "slower_median_bytes": 0,
+            "largest_increase_ns_per_seek": 3.66748046875
+          },
+          "byte-mixed": {
+            "cases": 2328,
+            "before_ns": 154675766,
+            "after_ns": 97290850,
+            "total_ratio": 0.6289986629191803,
+            "median_ratio": 0.636025688968179,
+            "slower_over_5_percent": 26,
+            "slower_median_bytes": 0.0,
+            "largest_increase_ns_per_seek": 2.87158203125
+          },
+          "point-empty": {
+            "cases": 2328,
+            "before_ns": 230720581,
+            "after_ns": 191085527,
+            "total_ratio": 0.8282118837070717,
+            "median_ratio": 0.8252599547969086,
+            "slower_over_5_percent": 109,
+            "slower_median_bytes": 138,
+            "largest_increase_ns_per_seek": 16.484619140625
+          },
+          "point-mixed": {
+            "cases": 2328,
+            "before_ns": 194163594,
+            "after_ns": 178019213,
+            "total_ratio": 0.9168516575769606,
+            "median_ratio": 0.9132696516199568,
+            "slower_over_5_percent": 127,
+            "slower_median_bytes": 138,
+            "largest_increase_ns_per_seek": 14.52490234375
+          }
+        }
+      }
+    },
+    "bytes": {
+      "metadata": {
+        "started": "2026-09-11T18:47:11.218874+00:00",
+        "compiler": "gcc (GCC) 15.3.0",
+        "power_online": {
+          "/sys/class/power_supply/ucsi-source-psy-USBC000:002/online": "1",
+          "/sys/class/power_supply/ucsi-source-psy-USBC000:001/online": "0",
+          "/sys/class/power_supply/AC/online": "1"
+        },
+        "baseline": "220ee121ceed1b090d23cef6bf24d05acda245b8",
+        "current_head": "220ee121ceed1b090d23cef6bf24d05acda245b8",
+        "baseline_node_sha256": "88f489980296c4aeefbc02402575624160743c56a11351cad6cd72a66f0036dd",
+        "current_node_sha256": "70a691034e2e183745a8d6a0d87fb36743b75c4dfc9d3865898018fcb9899e54",
+        "probe_sha256": "235e7a41988c4df79cf5f5574f90d741b1c15c95753839c2d7aa016f1e18b13c",
+        "binary_sha256": "c64d3c1d4525ce87735473df102dac81c8ca27d832fa78caf523367b1d918c42",
+        "input_manifest_sha256": "6e97d391c8e69cad53b89bffabe50a22c802cf7f2b9f02266776db90a8263b9c",
+        "registry_sha256": "26739d4bf4ab17ebbbe3d20fd8917d45c90ea3b2a514caff480e867e028ffa53",
+        "flags": [
+          "-O3",
+          "-g",
+          "-DSQ_INCLUDE_POINTS=0",
+          "-std=c11",
+          "-Wall",
+          "-Wextra",
+          "-Werror"
+        ],
+        "cpu": 0,
+        "platform": "Linux-7.1.12+deb14-amd64-x86_64-with-glibc2.42",
+        "cpu_info": "Architecture:                            x86_64\nCPU op-mode(s):                          32-bit, 64-bit\nAddress sizes:                           46 bits physical, 48 bits virtual\nByte Order:                              Little Endian\nCPU(s):                                  14\nOn-line CPU(s) list:                     0-13\nVendor ID:                               GenuineIntel\nModel name:                              Intel(R) Core(TM) Ultra 7 165U\nCPU family:                              6\nModel:                                   170\nThread(s) per core:                      2\nCore(s) per socket:                      12\nSocket(s):                               1\nStepping:                                4\nMicrocode version:                       0x28\nCPU(s) scaling MHz:                      77%\nCPU max MHz:                             4900.0000\nCPU min MHz:                             400.0000\nBogoMIPS:                                5376.00\nFlags:                                   fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush dts acpi mmx fxsr sse sse2 ss ht tm pbe syscall nx pdpe1gb rdtscp lm constant_tsc art arch_perfmon pebs bts rep_good nopl xtopology nonstop_tsc cpuid aperfmperf tsc_known_freq pni pclmulqdq dtes64 monitor ds_cpl vmx smx est tm2 ssse3 sdbg fma cx16 xtpr pdcm pcid sse4_1 sse4_2 x2apic movbe popcnt tsc_deadline_timer aes xsave avx f16c rdrand lahf_lm abm 3dnowprefetch cpuid_fault epb ssbd ibrs ibpb stibp ibrs_enhanced tpr_shadow flexpriority ept vpid ept_ad fsgsbase tsc_adjust bmi1 avx2 smep bmi2 erms invpcid rdseed adx smap clflushopt clwb intel_pt sha_ni xsaveopt xsavec xgetbv1 xsaves split_lock_detect user_shstk avx_vnni dtherm ida arat pln pts hwp hwp_notify hwp_act_window hwp_epp hwp_pkg_req hfi vnmi umip pku ospke waitpkg gfni vaes vpclmulqdq rdpid bus_lock_detect movdiri movdir64b fsrm md_clear serialize pconfig arch_lbr ibt flush_l1d arch_capabilities\nVirtualization:                          VT-x\nL1d cache:                               352 KiB (10 instances)\nL1i cache:                               640 KiB (10 instances)\nL2 cache:                                10 MiB (5 instances)\nL3 cache:                                12 MiB (1 instance)\nNUMA node(s):                            1\nNUMA node0 CPU(s):                       0-13\nVulnerability Gather data sampling:      Not affected\nVulnerability Ghostwrite:                Not affected\nVulnerability Indirect target selection: Not affected\nVulnerability Itlb multihit:             Not affected\nVulnerability L1tf:                      Not affected\nVulnerability Mds:                       Not affected\nVulnerability Meltdown:                  Not affected\nVulnerability Mmio stale data:           Not affected\nVulnerability Old microcode:             Not affected\nVulnerability Reg file data sampling:    Not affected\nVulnerability Retbleed:                  Not affected\nVulnerability Spec rstack overflow:      Not affected\nVulnerability Spec store bypass:         Mitigation; Speculative Store Bypass disabled via prctl\nVulnerability Spectre v1:                Mitigation; usercopy/swapgs barriers and __user pointer sanitization\nVulnerability Spectre v2:                Mitigation; Enhanced / Automatic IBRS; IBPB conditional; PBRSB-eIBRS Not affected; BHI BHI_DIS_S\nVulnerability Srbds:                     Not affected\nVulnerability Tsa:                       Not affected\nVulnerability Tsx async abort:           Not affected\nVulnerability Vmscape:                   Mitigation; IBPB before exit to userspace\n",
+        "rounds": 32,
+        "queries_per_round": 128,
+        "repeats": 5,
+        "points": 0,
+        "operations": [
+          {
+            "grammar": "bash",
+            "files": 192,
+            "command": [
+              "taskset",
+              "-c",
+              "0",
+              "/home/mgsloan/cozy/tree-squatter/pareto/build/squat-seek-profile/final-bytes/seek-bench",
+              "/home/mgsloan/cozy/tree-squatter/pareto/build/squat-corpus-10k/grammars/bash.so",
+              "tree_sitter_bash",
+              "/home/mgsloan/cozy/tree-squatter/pareto/build/squat-seek-profile/final-bytes/bash.list",
+              "32",
+              "0"
+            ]
+          },
+          {
+            "grammar": "c",
+            "files": 252,
+            "command": [
+              "taskset",
+              "-c",
+              "0",
+              "/home/mgsloan/cozy/tree-squatter/pareto/build/squat-seek-profile/final-bytes/seek-bench",
+              "/home/mgsloan/cozy/tree-squatter/pareto/build/squat-corpus-10k/grammars/c.so",
+              "tree_sitter_c",
+              "/home/mgsloan/cozy/tree-squatter/pareto/build/squat-seek-profile/final-bytes/c.list",
+              "32",
+              "0"
+            ]
+          },
+          {
+            "grammar": "cpp",
+            "files": 958,
+            "command": [
+              "taskset",
+              "-c",
+              "0",
+              "/home/mgsloan/cozy/tree-squatter/pareto/build/squat-seek-profile/final-bytes/seek-bench",
+              "/home/mgsloan/cozy/tree-squatter/pareto/build/squat-corpus-10k/grammars/cpp.so",
+              "tree_sitter_cpp",
+              "/home/mgsloan/cozy/tree-squatter/pareto/build/squat-seek-profile/final-bytes/cpp.list",
+              "32",
+              "0"
+            ]
+          },
+          {
+            "grammar": "css",
+            "files": 1165,
+            "command": [
+              "taskset",
+              "-c",
+              "0",
+              "/home/mgsloan/cozy/tree-squatter/pareto/build/squat-seek-profile/final-bytes/seek-bench",
+              "/home/mgsloan/cozy/tree-squatter/pareto/build/squat-corpus-10k/grammars/css.so",
+              "tree_sitter_css",
+              "/home/mgsloan/cozy/tree-squatter/pareto/build/squat-seek-profile/final-bytes/css.list",
+              "32",
+              "0"
+            ]
+          },
+          {
+            "grammar": "go",
+            "files": 1147,
+            "command": [
+              "taskset",
+              "-c",
+              "0",
+              "/home/mgsloan/cozy/tree-squatter/pareto/build/squat-seek-profile/final-bytes/seek-bench",
+              "/home/mgsloan/cozy/tree-squatter/pareto/build/squat-corpus-10k/grammars/go.so",
+              "tree_sitter_go",
+              "/home/mgsloan/cozy/tree-squatter/pareto/build/squat-seek-profile/final-bytes/go.list",
+              "32",
+              "0"
+            ]
+          },
+          {
+            "grammar": "html",
+            "files": 466,
+            "command": [
+              "taskset",
+              "-c",
+              "0",
+              "/home/mgsloan/cozy/tree-squatter/pareto/build/squat-seek-profile/final-bytes/seek-bench",
+              "/home/mgsloan/cozy/tree-squatter/pareto/build/squat-corpus-10k/grammars/html.so",
+              "tree_sitter_html",
+              "/home/mgsloan/cozy/tree-squatter/pareto/build/squat-seek-profile/final-bytes/html.list",
+              "32",
+              "0"
+            ]
+          },
+          {
+            "grammar": "json",
+            "files": 1164,
+            "command": [
+              "taskset",
+              "-c",
+              "0",
+              "/home/mgsloan/cozy/tree-squatter/pareto/build/squat-seek-profile/final-bytes/seek-bench",
+              "/home/mgsloan/cozy/tree-squatter/pareto/build/squat-corpus-10k/grammars/json.so",
+              "tree_sitter_json",
+              "/home/mgsloan/cozy/tree-squatter/pareto/build/squat-seek-profile/final-bytes/json.list",
+              "32",
+              "0"
+            ]
+          },
+          {
+            "grammar": "python",
+            "files": 1164,
+            "command": [
+              "taskset",
+              "-c",
+              "0",
+              "/home/mgsloan/cozy/tree-squatter/pareto/build/squat-seek-profile/final-bytes/seek-bench",
+              "/home/mgsloan/cozy/tree-squatter/pareto/build/squat-corpus-10k/grammars/python.so",
+              "tree_sitter_python",
+              "/home/mgsloan/cozy/tree-squatter/pareto/build/squat-seek-profile/final-bytes/python.list",
+              "32",
+              "0"
+            ]
+          },
+          {
+            "grammar": "tsx",
+            "files": 1164,
+            "command": [
+              "taskset",
+              "-c",
+              "0",
+              "/home/mgsloan/cozy/tree-squatter/pareto/build/squat-seek-profile/final-bytes/seek-bench",
+              "/home/mgsloan/cozy/tree-squatter/pareto/build/squat-corpus-10k/grammars/tsx.so",
+              "tree_sitter_tsx",
+              "/home/mgsloan/cozy/tree-squatter/pareto/build/squat-seek-profile/final-bytes/tsx.list",
+              "32",
+              "0"
+            ]
+          },
+          {
+            "grammar": "typescript",
+            "files": 1164,
+            "command": [
+              "taskset",
+              "-c",
+              "0",
+              "/home/mgsloan/cozy/tree-squatter/pareto/build/squat-seek-profile/final-bytes/seek-bench",
+              "/home/mgsloan/cozy/tree-squatter/pareto/build/squat-corpus-10k/grammars/typescript.so",
+              "tree_sitter_typescript",
+              "/home/mgsloan/cozy/tree-squatter/pareto/build/squat-seek-profile/final-bytes/typescript.list",
+              "32",
+              "0"
+            ]
+          },
+          {
+            "grammar": "yaml",
+            "files": 1164,
+            "command": [
+              "taskset",
+              "-c",
+              "0",
+              "/home/mgsloan/cozy/tree-squatter/pareto/build/squat-seek-profile/final-bytes/seek-bench",
+              "/home/mgsloan/cozy/tree-squatter/pareto/build/squat-corpus-10k/grammars/yaml.so",
+              "tree_sitter_yaml",
+              "/home/mgsloan/cozy/tree-squatter/pareto/build/squat-seek-profile/final-bytes/yaml.list",
+              "32",
+              "0"
+            ]
+          }
+        ]
+      },
+      "summary": {
+        "byte-empty": {
+          "cases": 20000,
+          "before_ns": 1489618604,
+          "after_ns": 993803400,
+          "total_ratio": 0.6671529190971356,
+          "median_ratio": 0.6625045449997331,
+          "slower_over_5_percent": 290,
+          "slower_median_bytes": 0.0,
+          "largest_increase_ns_per_seek": 5.66357421875
+        },
+        "byte-mixed": {
+          "cases": 20000,
+          "before_ns": 1546371628,
+          "after_ns": 992871595,
+          "total_ratio": 0.6420653205362612,
+          "median_ratio": 0.6321534849947108,
+          "slower_over_5_percent": 290,
+          "slower_median_bytes": 0.0,
+          "largest_increase_ns_per_seek": 3.677490234375
+        }
+      },
+      "languages": {
+        "bash": {
+          "byte-empty": {
+            "cases": 384,
+            "before_ns": 23516762,
+            "after_ns": 15623870,
+            "total_ratio": 0.6643716511652412,
+            "median_ratio": 0.6689834718930323,
+            "slower_over_5_percent": 0,
+            "slower_median_bytes": null,
+            "largest_increase_ns_per_seek": -0.500732421875
+          },
+          "byte-mixed": {
+            "cases": 384,
+            "before_ns": 24233880,
+            "after_ns": 15215864,
+            "total_ratio": 0.6278756847851025,
+            "median_ratio": 0.6462513228458475,
+            "slower_over_5_percent": 0,
+            "slower_median_bytes": null,
+            "largest_increase_ns_per_seek": -0.724853515625
+          }
+        },
+        "c": {
+          "byte-empty": {
+            "cases": 504,
+            "before_ns": 43167019,
+            "after_ns": 30487352,
+            "total_ratio": 0.7062649380537489,
+            "median_ratio": 0.699145738696851,
+            "slower_over_5_percent": 4,
+            "slower_median_bytes": 0.0,
+            "largest_increase_ns_per_seek": 1.392578125
+          },
+          "byte-mixed": {
+            "cases": 504,
+            "before_ns": 42535817,
+            "after_ns": 28153719,
+            "total_ratio": 0.6618826435142882,
+            "median_ratio": 0.646573139688275,
+            "slower_over_5_percent": 4,
+            "slower_median_bytes": 0.0,
+            "largest_increase_ns_per_seek": 1.457763671875
+          }
+        },
+        "cpp": {
+          "byte-empty": {
+            "cases": 1916,
+            "before_ns": 136978155,
+            "after_ns": 92579070,
+            "total_ratio": 0.6758674038207041,
+            "median_ratio": 0.6923192775429101,
+            "slower_over_5_percent": 0,
+            "slower_median_bytes": null,
+            "largest_increase_ns_per_seek": -0.31689453125
+          },
+          "byte-mixed": {
+            "cases": 1916,
+            "before_ns": 138525389,
+            "after_ns": 88583296,
+            "total_ratio": 0.6394733603671743,
+            "median_ratio": 0.6596523000835411,
+            "slower_over_5_percent": 1,
+            "slower_median_bytes": 457,
+            "largest_increase_ns_per_seek": 1.16015625
+          }
+        },
+        "css": {
+          "byte-empty": {
+            "cases": 2330,
+            "before_ns": 168547629,
+            "after_ns": 114755403,
+            "total_ratio": 0.6808485155255433,
+            "median_ratio": 0.6613257760240376,
+            "slower_over_5_percent": 9,
+            "slower_median_bytes": 0,
+            "largest_increase_ns_per_seek": 1.44873046875
+          },
+          "byte-mixed": {
+            "cases": 2330,
+            "before_ns": 226184093,
+            "after_ns": 150333244,
+            "total_ratio": 0.6646499407011792,
+            "median_ratio": 0.6062033900130255,
+            "slower_over_5_percent": 9,
+            "slower_median_bytes": 0,
+            "largest_increase_ns_per_seek": 1.433349609375
+          }
+        },
+        "go": {
+          "byte-empty": {
+            "cases": 2294,
+            "before_ns": 170282858,
+            "after_ns": 116007724,
+            "total_ratio": 0.6812648399406123,
+            "median_ratio": 0.6853349296975173,
+            "slower_over_5_percent": 1,
+            "slower_median_bytes": 679,
+            "largest_increase_ns_per_seek": 5.66357421875
+          },
+          "byte-mixed": {
+            "cases": 2294,
+            "before_ns": 175645766,
+            "after_ns": 107204361,
+            "total_ratio": 0.610344122954834,
+            "median_ratio": 0.6122910265695207,
+            "slower_over_5_percent": 1,
+            "slower_median_bytes": 632,
+            "largest_increase_ns_per_seek": 0.36328125
+          }
+        },
+        "html": {
+          "byte-empty": {
+            "cases": 932,
+            "before_ns": 85156596,
+            "after_ns": 52082331,
+            "total_ratio": 0.6116065395568419,
+            "median_ratio": 0.6505970622593706,
+            "slower_over_5_percent": 7,
+            "slower_median_bytes": 299,
+            "largest_increase_ns_per_seek": 1.5302734375
+          },
+          "byte-mixed": {
+            "cases": 932,
+            "before_ns": 74866310,
+            "after_ns": 46367578,
+            "total_ratio": 0.619338364612868,
+            "median_ratio": 0.6450006677331401,
+            "slower_over_5_percent": 4,
+            "slower_median_bytes": 12.5,
+            "largest_increase_ns_per_seek": 1.444091796875
+          }
+        },
+        "json": {
+          "byte-empty": {
+            "cases": 2328,
+            "before_ns": 186813853,
+            "after_ns": 116562810,
+            "total_ratio": 0.6239516402458655,
+            "median_ratio": 0.6367985812950614,
+            "slower_over_5_percent": 1,
+            "slower_median_bytes": 180589,
+            "largest_increase_ns_per_seek": 0.710693359375
+          },
+          "byte-mixed": {
+            "cases": 2328,
+            "before_ns": 202272391,
+            "after_ns": 120664495,
+            "total_ratio": 0.5965445625250951,
+            "median_ratio": 0.6014415693824989,
+            "slower_over_5_percent": 0,
+            "slower_median_bytes": null,
+            "largest_increase_ns_per_seek": -0.2646484375
+          }
+        },
+        "python": {
+          "byte-empty": {
+            "cases": 2328,
+            "before_ns": 213101700,
+            "after_ns": 156437575,
+            "total_ratio": 0.7340982028768424,
+            "median_ratio": 0.655863512899076,
+            "slower_over_5_percent": 239,
+            "slower_median_bytes": 0,
+            "largest_increase_ns_per_seek": 4.805908203125
+          },
+          "byte-mixed": {
+            "cases": 2328,
+            "before_ns": 200424977,
+            "after_ns": 142569861,
+            "total_ratio": 0.7113377939916141,
+            "median_ratio": 0.6427379182022406,
+            "slower_over_5_percent": 240,
+            "slower_median_bytes": 0.0,
+            "largest_increase_ns_per_seek": 3.677490234375
+          }
+        },
+        "tsx": {
+          "byte-empty": {
+            "cases": 2328,
+            "before_ns": 165610965,
+            "after_ns": 108987099,
+            "total_ratio": 0.6580910811068579,
+            "median_ratio": 0.6555640049139728,
+            "slower_over_5_percent": 2,
+            "slower_median_bytes": 0.0,
+            "largest_increase_ns_per_seek": 1.241455078125
+          },
+          "byte-mixed": {
+            "cases": 2328,
+            "before_ns": 175782634,
+            "after_ns": 109240883,
+            "total_ratio": 0.6214543525386017,
+            "median_ratio": 0.6271697715180631,
+            "slower_over_5_percent": 2,
+            "slower_median_bytes": 0.0,
+            "largest_increase_ns_per_seek": 1.40185546875
+          }
+        },
+        "typescript": {
+          "byte-empty": {
+            "cases": 2328,
+            "before_ns": 134677994,
+            "after_ns": 93253321,
+            "total_ratio": 0.6924169140802617,
+            "median_ratio": 0.7015466891404099,
+            "slower_over_5_percent": 3,
+            "slower_median_bytes": 978,
+            "largest_increase_ns_per_seek": 1.127197265625
+          },
+          "byte-mixed": {
+            "cases": 2328,
+            "before_ns": 140609677,
+            "after_ns": 93775898,
+            "total_ratio": 0.6669235005781288,
+            "median_ratio": 0.6862652195380106,
+            "slower_over_5_percent": 2,
+            "slower_median_bytes": 1081.0,
+            "largest_increase_ns_per_seek": 1.8544921875
+          }
+        },
+        "yaml": {
+          "byte-empty": {
+            "cases": 2328,
+            "before_ns": 161765073,
+            "after_ns": 97026845,
+            "total_ratio": 0.5998009533244546,
+            "median_ratio": 0.6008264101065053,
+            "slower_over_5_percent": 24,
+            "slower_median_bytes": 0.0,
+            "largest_increase_ns_per_seek": 1.462890625
+          },
+          "byte-mixed": {
+            "cases": 2328,
+            "before_ns": 145290694,
+            "after_ns": 90762396,
+            "total_ratio": 0.6246951783436315,
+            "median_ratio": 0.6306332265612389,
+            "slower_over_5_percent": 27,
+            "slower_median_bytes": 0,
+            "largest_increase_ns_per_seek": 1.57275390625
+          }
+        }
+      }
+    }
+  },
+  "correctness": {
+    "points-full": {
+      "byte": 100992822,
+      "point": 101111988
+    },
+    "bytes-full": {
+      "byte": 100992822,
+      "point": 0
+    },
+    "group32": {
+      "byte": 2289478,
+      "point": 2292088
+    },
+    "group64": {
+      "byte": 2289478,
+      "point": 2292088
+    },
+    "sanitized": {
+      "byte": 2289478,
+      "point": 2292088
+    },
+    "scalar": {
+      "byte": 2289478,
+      "point": 2292088
+    }
+  },
+  "profiles": {
+    "byte": {
+      "before": {
+        "cpu_core/cycles/u": 1980467101,
+        "cpu_core/instructions/u": 11229722921,
+        "cpu_core/branches/u": 2069540690,
+        "cpu_core/branch-misses/u": 1588821
+      },
+      "after": {
+        "cpu_core/cycles/u": 1369127267,
+        "cpu_core/instructions/u": 7426746616,
+        "cpu_core/branches/u": 1099291127,
+        "cpu_core/branch-misses/u": 782541
+      },
+      "ratios": {
+        "cpu_core/cycles/u": 0.6913153297566441,
+        "cpu_core/instructions/u": 0.6613472717222352,
+        "cpu_core/branches/u": 0.5311763775951658,
+        "cpu_core/branch-misses/u": 0.49252936611487386
+      }
+    },
+    "point": {
+      "before": {
+        "cpu_core/cycles/u": 2673513419,
+        "cpu_core/instructions/u": 16020381460,
+        "cpu_core/branches/u": 2494751822,
+        "cpu_core/branch-misses/u": 1676694
+      },
+      "after": {
+        "cpu_core/cycles/u": 2429267684,
+        "cpu_core/instructions/u": 13726732826,
+        "cpu_core/branches/u": 2040380032,
+        "cpu_core/branch-misses/u": 1611099
+      },
+      "ratios": {
+        "cpu_core/cycles/u": 0.9086424129147039,
+        "cpu_core/instructions/u": 0.8568293370712285,
+        "cpu_core/branches/u": 0.8178689415142955,
+        "cpu_core/branch-misses/u": 0.9608783713665106
+      }
+    }
+  },
+  "pilot_experiments": {
+    "ends": {
+      "byte-empty": {
+        "cases": 440,
+        "total_ratio": 0.9109545328401026,
+        "median_ratio": 0.9734100695827732
+      },
+      "byte-mixed": {
+        "cases": 440,
+        "total_ratio": 0.7581813786336561,
+        "median_ratio": 0.7760401095637097
+      },
+      "point-empty": {
+        "cases": 440,
+        "total_ratio": 0.9964678979666548,
+        "median_ratio": 1.0358142195354891
+      },
+      "point-mixed": {
+        "cases": 440,
+        "total_ratio": 0.8866567856906994,
+        "median_ratio": 0.8961657057716896
+      }
+    },
+    "ends-fast": {
+      "byte-empty": {
+        "cases": 440,
+        "total_ratio": 0.8609729801404353,
+        "median_ratio": 0.8986101965368167
+      },
+      "byte-mixed": {
+        "cases": 440,
+        "total_ratio": 0.7352849787322764,
+        "median_ratio": 0.7582655445753752
+      },
+      "point-empty": {
+        "cases": 440,
+        "total_ratio": 0.9257546092091794,
+        "median_ratio": 0.9518887070716142
+      },
+      "point-mixed": {
+        "cases": 440,
+        "total_ratio": 0.875293305947093,
+        "median_ratio": 0.881190579658387
+      }
+    },
+    "branchless": {
+      "byte-empty": {
+        "cases": 440,
+        "total_ratio": 0.8425223998350178,
+        "median_ratio": 0.8822151825386209
+      },
+      "byte-mixed": {
+        "cases": 440,
+        "total_ratio": 0.7307898787367124,
+        "median_ratio": 0.7483879702786347
+      },
+      "point-empty": {
+        "cases": 440,
+        "total_ratio": 0.8963332543882744,
+        "median_ratio": 0.9228235922238551
+      },
+      "point-mixed": {
+        "cases": 440,
+        "total_ratio": 0.8491043668971581,
+        "median_ratio": 0.8452538207553366
+      }
+    },
+    "simd": {
+      "byte-empty": {
+        "cases": 440,
+        "total_ratio": 0.7652272192375655,
+        "median_ratio": 0.789262715119674
+      },
+      "byte-mixed": {
+        "cases": 440,
+        "total_ratio": 0.6972829060232527,
+        "median_ratio": 0.7087152038394928
+      },
+      "point-empty": {
+        "cases": 440,
+        "total_ratio": 0.8296835011301252,
+        "median_ratio": 0.8422349232564587
+      },
+      "point-mixed": {
+        "cases": 440,
+        "total_ratio": 0.8137092206789994,
+        "median_ratio": 0.8031310663997904
+      }
+    },
+    "bounded": {
+      "byte-empty": {
+        "cases": 440,
+        "total_ratio": 0.6682762210721725,
+        "median_ratio": 0.6769079208029811
+      },
+      "byte-mixed": {
+        "cases": 440,
+        "total_ratio": 0.6598544735366976,
+        "median_ratio": 0.650556584803265
+      },
+      "point-empty": {
+        "cases": 440,
+        "total_ratio": 0.7298287321824399,
+        "median_ratio": 0.7277892743027956
+      },
+      "point-mixed": {
+        "cases": 440,
+        "total_ratio": 0.7856543305502524,
+        "median_ratio": 0.7560793554082538
+      }
+    },
+    "spans-focused": {
+      "byte-empty": {
+        "cases": 566,
+        "total_ratio": 0.8372600424512591,
+        "median_ratio": 0.7143944072952946
+      },
+      "byte-mixed": {
+        "cases": 566,
+        "total_ratio": 0.8297027202771119,
+        "median_ratio": 0.6898635499106544
+      },
+      "point-empty": {
+        "cases": 566,
+        "total_ratio": 0.9032659063941104,
+        "median_ratio": 0.7556982508688295
+      },
+      "point-mixed": {
+        "cases": 566,
+        "total_ratio": 0.9676442869042745,
+        "median_ratio": 0.7845672046841503
+      }
+    },
+    "lazy-ends-focused": {
+      "byte-empty": {
+        "cases": 566,
+        "total_ratio": 0.8406182217417304,
+        "median_ratio": 0.7112163159698517
+      },
+      "byte-mixed": {
+        "cases": 566,
+        "total_ratio": 0.8274570864284133,
+        "median_ratio": 0.685584238088934
+      },
+      "point-empty": {
+        "cases": 566,
+        "total_ratio": 1.0141969884104869,
+        "median_ratio": 0.8565456317417963
+      },
+      "point-mixed": {
+        "cases": 566,
+        "total_ratio": 1.0840626591358304,
+        "median_ratio": 1.018851024134598
+      }
+    },
+    "point-parent-focused": {
+      "byte-empty": {
+        "cases": 566,
+        "total_ratio": 0.8431269250795017,
+        "median_ratio": 0.7134078843735647
+      },
+      "byte-mixed": {
+        "cases": 566,
+        "total_ratio": 0.8293022092919592,
+        "median_ratio": 0.6866860696849827
+      },
+      "point-empty": {
+        "cases": 566,
+        "total_ratio": 0.9045124533231917,
+        "median_ratio": 0.833323908610484
+      },
+      "point-mixed": {
+        "cases": 566,
+        "total_ratio": 0.9703868105591595,
+        "median_ratio": 0.9373940146894671
+      }
+    },
+    "hybrid-focused": {
+      "byte-empty": {
+        "cases": 566,
+        "total_ratio": 0.8534900767850341,
+        "median_ratio": 0.7185588628128353
+      },
+      "byte-mixed": {
+        "cases": 566,
+        "total_ratio": 0.8210694449425385,
+        "median_ratio": 0.6876670154831135
+      },
+      "point-empty": {
+        "cases": 566,
+        "total_ratio": 0.9037409167560135,
+        "median_ratio": 0.831787191406741
+      },
+      "point-mixed": {
+        "cases": 566,
+        "total_ratio": 0.9847938911083547,
+        "median_ratio": 0.9774634316727379
+      }
+    },
+    "outlined-focused": {
+      "byte-empty": {
+        "cases": 566,
+        "total_ratio": 0.837981557441906,
+        "median_ratio": 0.7028931149659039
+      },
+      "byte-mixed": {
+        "cases": 566,
+        "total_ratio": 0.8269242840897011,
+        "median_ratio": 0.6761083930249876
+      },
+      "point-empty": {
+        "cases": 566,
+        "total_ratio": 0.9084569021415275,
+        "median_ratio": 0.8438562677368968
+      },
+      "point-mixed": {
+        "cases": 566,
+        "total_ratio": 0.9731928507718738,
+        "median_ratio": 0.9310506888332083
+      }
+    },
+    "ancestor-helper-focused": {
+      "byte-empty": {
+        "cases": 566,
+        "total_ratio": 0.8258652422559831,
+        "median_ratio": 0.7028676541674928
+      },
+      "byte-mixed": {
+        "cases": 566,
+        "total_ratio": 0.8264960175826552,
+        "median_ratio": 0.6748535218052623
+      },
+      "point-empty": {
+        "cases": 566,
+        "total_ratio": 0.9110641156215569,
+        "median_ratio": 0.7665113582837075
+      },
+      "point-mixed": {
+        "cases": 566,
+        "total_ratio": 0.9589457039580994,
+        "median_ratio": 0.7867250474290254
+      }
+    },
+    "bounded-helper-focused": {
+      "byte-empty": {
+        "cases": 566,
+        "total_ratio": 0.8363200496361203,
+        "median_ratio": 0.7006854988574174
+      },
+      "byte-mixed": {
+        "cases": 566,
+        "total_ratio": 0.8306092402491085,
+        "median_ratio": 0.6785804379997357
+      },
+      "point-empty": {
+        "cases": 566,
+        "total_ratio": 0.9011385187947313,
+        "median_ratio": 0.8232007642636539
+      },
+      "point-mixed": {
+        "cases": 566,
+        "total_ratio": 0.9800357925181639,
+        "median_ratio": 0.9601225142235199
+      }
+    },
+    "final-scalar-pilot": {
+      "byte-empty": {
+        "cases": 440,
+        "total_ratio": 0.718696788835896,
+        "median_ratio": 0.7425927433755433
+      },
+      "byte-mixed": {
+        "cases": 440,
+        "total_ratio": 0.6710412297285852,
+        "median_ratio": 0.6785877812200453
+      },
+      "point-empty": {
+        "cases": 440,
+        "total_ratio": 0.8834252130526935,
+        "median_ratio": 0.8842313682114601
+      },
+      "point-mixed": {
+        "cases": 440,
+        "total_ratio": 0.9485001553578706,
+        "median_ratio": 0.9429874390643749
+      }
+    }
+  },
+  "rejected_full_point_end_scan": {
+    "byte-empty": {
+      "cases": 20000,
+      "total_ratio": 0.6747347429149757,
+      "median_ratio": 0.6727806209379326
+    },
+    "byte-mixed": {
+      "cases": 20000,
+      "total_ratio": 0.6475832846179175,
+      "median_ratio": 0.6477506016097438
+    },
+    "point-empty": {
+      "cases": 20000,
+      "total_ratio": 0.7364461849628262,
+      "median_ratio": 0.7265475838136095
+    },
+    "point-mixed": {
+      "cases": 20000,
+      "total_ratio": 0.7738284483215029,
+      "median_ratio": 0.7553561719130156
+    }
+  },
+  "raw_results": "build/squat-seek-profile/"
+}
