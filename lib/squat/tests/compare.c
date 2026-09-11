@@ -473,6 +473,35 @@ static void check_presence_validation(const SQTree *tree) {
   free(bytes);
 }
 
+static void check_pack_bases(const SQTree *tree) {
+  for (uint32_t group = 0; group < sq_tree_group_count(tree); group++) {
+    uint32_t count = SQ_GROUP_SIZE - sq_group_waste(tree, group);
+    uint32_t span_min = UINT32_MAX, span_max = 0;
+#if SQ_INCLUDE_POINTS
+    uint32_t column_min = UINT32_MAX, column_max = 0, end_column_max = 0;
+#endif
+    for (uint32_t lane = 0; lane < count; lane++) {
+      SQNode node = {tree, group * SQ_GROUP_SIZE + lane};
+      uint32_t span = node.slot - sq_node_first_slot(node);
+      if (span < span_min) span_min = span;
+      if (span > span_max) span_max = span;
+#if SQ_INCLUDE_POINTS
+      uint32_t column = sq_node_start_point(node).column;
+      if (column < column_min) column_min = column;
+      if (column > column_max) column_max = column;
+      uint32_t end_column = sq_node_end_point(node).column;
+      if (end_column > end_column_max) end_column_max = end_column;
+#endif
+    }
+    CHECK(sq_group_span_base(tree, group) == (span_max <= UINT8_MAX ? 0 : span_min));
+#if SQ_INCLUDE_POINTS
+    CHECK(sq_group_start_column_base(tree, group) ==
+          (column_max <= UINT8_MAX ? 0 : column_min));
+    CHECK(sq_group_end_column_base(tree, group) == end_column_max);
+#endif
+  }
+}
+
 static void exercise(const TSLanguage *language, const char *source, uint32_t length,
                      bool exhaustive) {
   TSParser *parser = ts_parser_new();
@@ -490,6 +519,7 @@ static void exercise(const TSLanguage *language, const char *source, uint32_t le
   CHECK(packed->storage == SQ_STORAGE_COLOCATED);
   CHECK(packed->data == (uint8_t *)packed + sq_runtime_size(language));
   CHECK(packed->supertypes == (TSSymbol *)(packed + 1));
+  check_pack_bases(packed);
   compare_tree(tree, packed, exhaustive);
   SQTree *compact = sq_tree_repack(packed, &error);
   CHECK(compact && error == SQ_OK);

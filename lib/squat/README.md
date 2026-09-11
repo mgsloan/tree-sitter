@@ -62,7 +62,15 @@ The runtime layout has named slab offsets, with no column enum or offset table.
 Flags, u8/u16 deltas, and u32 bases have explicit typed reads and writes; byte
 positions within native packed words are adjusted on big-endian hosts. Only
 variable-width IDs and group waste use the non-straddling bit decoder. The
-serialized column order and version-4 bytes are unchanged.
+serialized column order and version-4 encoding are unchanged.
+
+Subtree-span and start-column bases are zero when every live value in the group
+fits in u8; otherwise they use the actual minimum. The packer chooses these bases
+after closing the group, preserving group boundaries. End columns keep their
+actual maxima and the existing base-minus-delta encoding. Bases are encoding
+parameters rather than a general minimum/maximum index: revisit these choices
+if actual minimum or maximum column positions, or minimum subtree sizes, become
+useful for future operations. Existing version-4 slabs remain readable.
 
 The version-4 serialized header is 16 bytes: a format/flags word, live group
 count, allocated group capacity, and supertype-dictionary count. Column and
@@ -164,6 +172,10 @@ widens unsigned byte/u16 deltas directly from the slab and adds or subtracts a
 broadcast group base with AVX2 (eight lanes) or SSE2 (four lanes) on x86-64.
 Other platforms use a portable scalar implementation. Single-bit flags remain
 packed; child and descendant counts still use ordinary tree scans.
+
+AVX2 and scalar group decoding skip addition for zero bases. SSE2 and per-node
+scalar reads retain their arithmetic paths. Subtraction always retains its
+base-minus-delta semantics, including when the base is zero.
 
 A field-only consumer unpacks only fields; a navigation-only consumer never
 unpacks anything. Repeated attribute reads reuse the same window. Returned

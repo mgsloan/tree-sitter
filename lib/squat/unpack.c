@@ -174,7 +174,7 @@ SQUnpack sq_unpack_select(unsigned kernel) {
   return sq_unpack_u16_swar;
 }
 
-static void coordinates_scalar(const uint8_t *column, uint32_t first, uint32_t count,
+static void coordinates_scalar_arithmetic(const uint8_t *column, uint32_t first, uint32_t count,
                                 uint8_t bits, uint32_t base, bool subtract,
                                 uint32_t *out) {
   for (uint32_t index = 0; index < count; index++) {
@@ -182,6 +182,24 @@ static void coordinates_scalar(const uint8_t *column, uint32_t first, uint32_t c
                                : sq_get_u16(column, 0, first + index);
     out[index] = subtract ? base - delta : base + delta;
   }
+}
+
+static void coordinates_widen(const uint8_t *column, uint32_t first, uint32_t count,
+                               uint8_t bits, uint32_t *out) {
+  for (uint32_t index = 0; index < count; index++) {
+    out[index] = bits == 8 ? sq_get_u8(column, 0, first + index)
+                           : sq_get_u16(column, 0, first + index);
+  }
+}
+
+static void coordinates_scalar(const uint8_t *column, uint32_t first, uint32_t count,
+                                uint8_t bits, uint32_t base, bool subtract,
+                                uint32_t *out) {
+  if (!subtract && !base) {
+    coordinates_widen(column, first, count, bits, out);
+    return;
+  }
+  coordinates_scalar_arithmetic(column, first, count, bits, base, subtract, out);
 }
 
 #if SQ_X86_UNPACK
@@ -210,7 +228,8 @@ static void coordinates_sse2(const uint8_t *column, uint32_t first, uint32_t cou
     out += 4;
     count -= 4;
   }
-  coordinates_scalar(column, first, count, bits, base, subtract, out);
+  // Keep the SSE2 path, including its tail, free of the zero-base branch.
+  coordinates_scalar_arithmetic(column, first, count, bits, base, subtract, out);
 }
 
 __attribute__((target("avx2")))
@@ -218,6 +237,20 @@ static void coordinates_avx2(const uint8_t *column, uint32_t first, uint32_t cou
                               uint8_t bits, uint32_t base, bool subtract,
                               uint32_t *out) {
   const uint8_t *input = column + (size_t)first * (bits / 8);
+  if (!subtract && !base) {
+    while (count >= 8) {
+      __m256i values = bits == 8
+          ? _mm256_cvtepu8_epi32(_mm_loadl_epi64((const __m128i *)input))
+          : _mm256_cvtepu16_epi32(_mm_loadu_si128((const __m128i *)input));
+      _mm256_storeu_si256((__m256i *)out, values);
+      first += 8;
+      input += 8 * (bits / 8);
+      out += 8;
+      count -= 8;
+    }
+    coordinates_widen(column, first, count, bits, out);
+    return;
+  }
   __m256i bases = _mm256_set1_epi32((int32_t)base);
   while (count >= 8) {
     // Widen unsigned deltas directly from the slab. No intermediate u16 cache
