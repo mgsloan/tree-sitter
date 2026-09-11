@@ -3,7 +3,10 @@ use tree_sitter_generate::load_grammar_file;
 
 use super::{
     Rand, get_random_edit,
-    helpers::fixtures::{fixtures_dir, get_language, get_test_language},
+    helpers::{
+        fixtures::{fixtures_dir, get_language, get_test_language},
+        to_sexp_with_hidden_nodes,
+    },
 };
 use crate::{
     parse::perform_edit,
@@ -1212,6 +1215,9 @@ private:
     let mut parser = Parser::new();
     parser.set_language(&get_language("cpp")).unwrap();
     let tree = parser.parse(code, None).unwrap();
+    assert!(
+        to_sexp_with_hidden_nodes(&tree).contains("(_field_declarator (MISSING field_identifier))")
+    );
     let root = tree.root_node();
 
     let class_specifier = root.child(0).unwrap();
@@ -1231,6 +1237,7 @@ fn test_node_descendant_for_range_after_hidden_zero_width_token() {
     parser.set_language(&language).unwrap();
     // The scanner emits a hidden, zero-width _start_list before list_item.
     let tree = parser.parse("-", None).unwrap();
+    assert!(to_sexp_with_hidden_nodes(&tree).contains("(_start_list)"));
     let root = tree.root_node();
     assert!(!root.has_error());
     let item = root.named_child(0).unwrap().named_child(0).unwrap();
@@ -1263,6 +1270,7 @@ fn test_node_descendant_for_range_after_hidden_zero_width_subtree() {
         }))
         .unwrap();
     let tree = parser.parse(code, None).unwrap();
+    assert!(to_sexp_with_hidden_nodes(&tree).contains("(_terminator (_line_break))"));
     let root = tree.root_node();
     assert!(!root.has_error());
     let identifier = root

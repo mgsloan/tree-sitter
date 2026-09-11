@@ -2184,6 +2184,7 @@ dependencies = [
  "anstyle",
  "anyhow",
  "bstr",
+ "cc",
  "clap",
  "clap_complete",
  "clap_complete_nushell",

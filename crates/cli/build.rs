@@ -6,6 +6,19 @@ use std::{
 };
 
 fn main() {
+    // Preserve Cargo's default package-wide change tracking.
+    println!("cargo:rerun-if-changed=.");
+    let include = PathBuf::from(env::var("DEP_TREE_SITTER_INCLUDE").unwrap());
+    let src = include.parent().unwrap().join("src");
+    println!("cargo:rerun-if-changed={}", include.display());
+    println!("cargo:rerun-if-changed={}", src.display());
+    cc::Build::new()
+        .std("c11")
+        .include(include)
+        .include(src)
+        .file("src/tests/helpers.c")
+        .compile("tree-sitter-test-helpers");
+
     if let Some(git_sha) = read_git_sha() {
         println!("cargo:rustc-env=BUILD_SHA={git_sha}");
     }
