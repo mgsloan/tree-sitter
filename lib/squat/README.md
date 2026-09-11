@@ -58,10 +58,11 @@ enclosing end can still scan groups, so the complete lookup is not always logari
 
 Point-range lookup searches group start-row minima. When the row matches, it
 compares the earliest preorder node's start column, since the column base may be
-zero or describe a different row. It retains span-based parent
-traversal: decoding two end columns for unrelated nodes regressed large files.
-Point search and its sibling descent fallback compile only with
-`SQ_INCLUDE_POINTS`; byte descent uses integer offsets directly.
+zero or describe a different row. After selecting a candidate, it scans end
+coordinates when the subtree root is within 512 groups. Longer distances use
+span-based parent traversal, avoiding the large-file regressions of an
+unrestricted end scan. Point search and its sibling descent fallback compile
+only with `SQ_INCLUDE_POINTS`; byte descent uses integer offsets directly.
 
 Both searches compare the selected group's start deltas with SSE2 when available,
 masking out unused lanes and slots outside the subtree; other targets use scalar

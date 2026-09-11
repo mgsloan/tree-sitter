@@ -403,6 +403,8 @@ static uint32_t seek_mask_slot(uint64_t mask, uint32_t slot, uint32_t limit) {
 #endif
 
 #if SQ_INCLUDE_POINTS
+enum { SEEK_POINT_SCAN_GROUPS = 512 };
+
 static int point_cmp(TSPoint left, TSPoint right) {
   return left.row != right.row ? (left.row > right.row ? 1 : -1)
                                : (left.column > right.column) - (left.column < right.column);
@@ -521,14 +523,46 @@ static SQNode seek_point(SQNode node, TSPoint range_start, TSPoint range_end, bo
     }
   }
 
-  // Keep parent traversal for point ranges: scanning two end columns per
-  // intervening node costs more on large trees than rejecting groups by span.
-  while (candidate.slot < node.slot) {
+  // Parent traversal is cheaper when a direct end scan would cross many groups.
+  // The slot distance estimates that work after the start search has selected
+  // its candidate, and is also meaningful for seeks rooted inside a large tree.
+  uint32_t distance = node.slot - candidate.slot;
+  if (distance > SEEK_POINT_SCAN_GROUPS * SQ_GROUP_SIZE) {
+    while (candidate.slot < node.slot) {
+      TSPoint end = sq_node_end_point(candidate);
+      if (point_cmp(end, range_end) >= 0 && point_cmp(end, range_start) > 0 &&
+          (!named || sq_node_is_named(candidate))) return candidate;
+      candidate = sq_node_parent(candidate);
+      if (!candidate.tree) return node;
+    }
+
+    return node;
+  }
+
+  // For nearby candidates, scan end columns directly. Earlier preorder
+  // siblings end before the query, so the first qualifying end is an ancestor.
+  if (candidate.slot < node.slot) {
     TSPoint end = sq_node_end_point(candidate);
     if (point_cmp(end, range_end) >= 0 && point_cmp(end, range_start) > 0 &&
         (!named || sq_node_is_named(candidate))) return candidate;
-    candidate = sq_node_parent(candidate);
-    if (!candidate.tree) return node;
+    candidate.slot++;
+  }
+
+  while (candidate.slot < node.slot) {
+    uint32_t group = candidate.slot / SQ_GROUP_SIZE;
+    uint32_t limit = (group + 1) * SQ_GROUP_SIZE - sq_group_waste(tree, group);
+    if (limit > node.slot) limit = node.slot;
+    TSPoint base = {sq_group_end_row_base(tree, group), sq_group_end_column_base(tree, group)};
+    if (point_cmp(base, range_end) >= 0 && point_cmp(base, range_start) > 0) {
+      for (; candidate.slot < limit; candidate.slot++) {
+        TSPoint end = {base.row - sq_node_end_row_delta(candidate),
+                       base.column - sq_node_end_column_delta(candidate)};
+        if (point_cmp(end, range_end) >= 0 && point_cmp(end, range_start) > 0 &&
+            (!named || sq_node_is_named(candidate))) return candidate;
+      }
+    }
+
+    candidate.slot = (group + 1) * SQ_GROUP_SIZE;
   }
 
   return node;
