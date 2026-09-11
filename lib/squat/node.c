@@ -340,17 +340,74 @@ static SQNode seek(SQNode node, TSPoint start, TSPoint end, bool named, bool byt
     }
   }
 }
-SQNode sq_node_descendant_for_byte_range(SQNode node, uint32_t left, uint32_t right) {
-  return seek(node, (TSPoint){0, left}, (TSPoint){0, right}, false, true);
+
+static SQNode seek_byte(SQNode node, uint32_t range_start, uint32_t range_end, bool named) {
+  if (!node.tree || range_start > range_end) return sq_null();
+  if (range_start < sq_node_start_byte(node) || range_end > sq_node_end_byte(node)) return node;
+  const SQTree *tree = node.tree;
+  uint32_t first = sq_node_first_slot(node);
+
+  // Use binary search to locate the last preorder group that can contain a
+  // start at or before range_start.
+  uint32_t low = first / SQ_GROUP_SIZE, high = node.slot / SQ_GROUP_SIZE;
+  while (low < high) {
+    uint32_t middle = low + (high - low) / 2;
+    if (sq_group_start_byte_base(tree, middle) > range_start) low = middle + 1;
+    else high = middle;
+  }
+
+  // Restrict the group to live slots inside this subtree, then scan its start
+  // deltas for the last preorder node starting at or before range_start.
+  uint32_t base = sq_group_start_byte_base(tree, low);
+  uint32_t slot = low * SQ_GROUP_SIZE;
+  if (slot < first) slot = first;
+  uint32_t limit = (low + 1) * SQ_GROUP_SIZE - sq_group_waste(tree, low);
+  if (limit > node.slot + 1) limit = node.slot + 1;
+  while (slot < limit && base + sq_node_start_byte_delta((SQNode){tree, slot}) > range_start) slot++;
+
+  // A subtree boundary can cut off the qualifying part of its first group
+  if (slot == limit) {
+    slot = (low + 1) * SQ_GROUP_SIZE;
+    if (slot > node.slot) return node;
+  }
+
+  SQNode candidate = {tree, slot};
+
+  // At a shared boundary the original descent prefers the first empty sibling,
+  // not the last node with that start. Keep that rare ambiguity on its existing
+  // path; ordinary equal-start ancestor chains can use the indexed result.
+  if (range_start == range_end) {
+    for (SQNode previous = candidate; previous.tree && previous.slot <= node.slot &&
+         sq_node_start_byte(previous) == range_start; previous = sq_node_prev_preorder(previous)) {
+      if (sq_node_end_byte(previous) == range_start) {
+        return seek(node, (TSPoint){0, range_start}, (TSPoint){0, range_end}, named, true);
+      }
+    }
+  }
+
+  // The last start may precede whitespace or belong to a range too short for
+  // range_end. Ascend to the deepest enclosing (optionally named) ancestor.
+  while (candidate.slot < node.slot) {
+    uint32_t end = sq_node_end_byte(candidate);
+    if (end >= range_end && end > range_start && (!named || sq_node_is_named(candidate))) return candidate;
+    candidate = sq_node_parent(candidate);
+    if (!candidate.tree) return node;
+  }
+
+  return node;
 }
-SQNode sq_node_named_descendant_for_byte_range(SQNode node, uint32_t left, uint32_t right) {
-  return seek(node, (TSPoint){0, left}, (TSPoint){0, right}, true, true);
+
+SQNode sq_node_descendant_for_byte_range(SQNode node, uint32_t range_start, uint32_t range_end) {
+  return seek_byte(node, range_start, range_end, false);
+}
+SQNode sq_node_named_descendant_for_byte_range(SQNode node, uint32_t range_start, uint32_t range_end) {
+  return seek_byte(node, range_start, range_end, true);
 }
 #if SQ_INCLUDE_POINTS
-SQNode sq_node_descendant_for_point_range(SQNode node, TSPoint left, TSPoint right) {
-  return seek(node, left, right, false, false);
+SQNode sq_node_descendant_for_point_range(SQNode node, TSPoint range_start, TSPoint range_end) {
+  return seek(node, range_start, range_end, false, false);
 }
-SQNode sq_node_named_descendant_for_point_range(SQNode node, TSPoint left, TSPoint right) {
-  return seek(node, left, right, true, false);
+SQNode sq_node_named_descendant_for_point_range(SQNode node, TSPoint range_start, TSPoint range_end) {
+  return seek(node, range_start, range_end, true, false);
 }
 #endif

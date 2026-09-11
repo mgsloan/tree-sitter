@@ -35,6 +35,9 @@ clean:
 $(BUILD)/unit: tests/unit.c $(BUILD)/libtree-sitter-squat.a $(BUILD)/runtime.o
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) $^ -o $@
 
+$(BUILD)/seek-check: tests/seek.c $(BUILD)/libtree-sitter-squat.a $(BUILD)/runtime.o
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) $^ -ldl -o $@
+
 .PHONY: check
 check: $(BUILD)/unit
 	$(BUILD)/unit

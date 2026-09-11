@@ -48,6 +48,14 @@ is needed. Parent navigation scans backward, using group span bounds to skip gro
 The cursor supports first/last child, next sibling, and parent movement. It
 retains only an ancestor stack, with no sibling history or decoded-column cache.
 
+Byte-range descendant lookup binary-searches the group start-byte minima, scans
+the selected group's deltas, then ascends to the deepest enclosing node. Named
+lookups continue to the nearest named ancestor. Start-byte bases must retain
+actual minima for this search; zero-base selection applies only to other columns.
+Equal-start empty nodes use the original sibling descent to preserve boundary
+behavior. The search allocates nothing and adds no serialized index. Parent
+ascent can still scan groups, so the complete lookup is not always logarithmic.
+
 `sq_cursor_attributes` reads a bulk attribute snapshot. Rust exposes it through
 `Node::walk()` and `Cursor::attributes()`:
 
@@ -130,6 +138,13 @@ Known mainline seek differences are counted but ignored by default, as requested
 by the human. Use `--strict-seeks` for the container runner or `SQ_STRICT_SEEKS=1`
 for the C executable to investigate them. The fixture `tests/fixtures/hidden-seek.css`
 is a minimal valid-input repro. No hidden-node or seek-barrier index is stored.
+
+`tests/seek.c` compares byte seeks exactly with the previous sibling-descent
+algorithm, independently of those mainline differences. Build it with
+`make -C lib/squat ../../build/squat/seek-check`, then run
+`build/squat/seek-check GRAMMAR_LIBRARY GRAMMAR_SYMBOL SOURCE_LIST`, where
+`SOURCE_LIST` contains one source path per line. It checks named/unnamed ranges,
+subtree roots, boundaries, and malformed variants of every input.
 
 Query declarations are in [`squat_query.h`](include/tree_sitter/squat_query.h).
 Compile once with `sq_query_new`, execute with `sq_query_cursor_exec`, and advance
