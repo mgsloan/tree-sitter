@@ -359,6 +359,8 @@ static inline TSNode ts_node__descendant_for_byte_range(
   if (range_start > range_end) {
     return ts_node__null();
   }
+  bool range_is_empty = range_start == range_end;
+
   TSNode node = self;
   TSNode last_visible_node = self;
 
@@ -375,18 +377,23 @@ static inline TSNode ts_node__descendant_for_byte_range(
       // the end of the range
       if (node_end < range_end) continue;
 
-      // ...and exceed the start of the range, unless the node itself is
-      // empty, in which case it must at least be equal to the start of the range.
-      bool is_empty = ts_node_start_byte(child) == node_end;
-      if (is_empty ? node_end < range_start : node_end <= range_start) continue;
-
       // The start of this node must extend far enough backward to
       // touch the start of the range.
-      if (range_start < ts_node_start_byte(child)) break;
+      uint32_t node_start = ts_node_start_byte(child);
+      if (range_start < node_start) break;
 
-      // Skip empty subtrees with no visible nodes to allow finding a later sibling.
-      if (is_empty && !ts_node__is_relevant(child, true) &&
-          ts_node_child_count(child) == 0) continue;
+      if (range_is_empty && range_start == node_end) {
+        if (range_start == node_start) {
+          // Empty queries typically match nodes with an empty byte range.
+          // However, there is a special case for hidden subtrees with hidden
+          // descendants. Descending is skipped because the range of the next
+          // sibling may have visible matches for the query.
+          if (!ts_node__is_relevant(child, true) && ts_node_child_count(child) == 0) continue;
+        } else {
+          // Empty query does not include the end of a non-empty node.
+          continue;
+        }
+      }
 
       node = child;
       if (ts_node__is_relevant(node, include_anonymous)) {
@@ -409,6 +416,7 @@ static inline TSNode ts_node__descendant_for_point_range(
   if (point_gt(range_start, range_end)) {
     return ts_node__null();
   }
+  bool range_is_empty = point_eq(range_start, range_end);
   TSNode node = self;
   TSNode last_visible_node = self;
 
@@ -425,20 +433,23 @@ static inline TSNode ts_node__descendant_for_point_range(
       // the end of the range
       if (point_lt(node_end, range_end)) continue;
 
-      // ...and exceed the start of the range, unless the node itself is
-      // empty, in which case it must at least be equal to the start of the range.
-      bool is_empty =  point_eq(ts_node_start_point(child), node_end);
-      if (is_empty ? point_lt(node_end, range_start) : point_lte(node_end, range_start)) {
-        continue;
-      }
-
       // The start of this node must extend far enough backward to
       // touch the start of the range.
-      if (point_lt(range_start, ts_node_start_point(child))) break;
+      TSPoint node_start = ts_node_start_point(child);
+      if (point_lt(range_start, node_start)) break;
 
-      // Skip empty subtrees with no visible nodes to allow finding a later sibling.
-      if (is_empty && !ts_node__is_relevant(child, true) &&
-          ts_node_child_count(child) == 0) continue;
+      if (range_is_empty && point_eq(range_start, node_end)) {
+        if (point_eq(range_start, node_start)) {
+          // Empty queries typically match nodes with an empty point range.
+          // However, there is a special case for hidden subtrees with hidden
+          // descendants. Descending is skipped because the range of the next
+          // sibling may have visible matches for the query.
+          if (!ts_node__is_relevant(child, true) && ts_node_child_count(child) == 0) continue;
+        } else {
+          // Empty query does not include the end of a non-empty node.
+          continue;
+        }
+      }
 
       node = child;
       if (ts_node__is_relevant(node, include_anonymous)) {
