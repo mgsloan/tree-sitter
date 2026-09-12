@@ -46,9 +46,13 @@ typedef struct {
 } Builder;
 
 typedef struct {
-  TSNode node;
+  // These are the raw values that ts_node_new would place in a TSNode. Keeping
+  // them separately avoids constructing a node and calling exported accessors
+  // for every visible subtree during this internal-runtime traversal.
+  const Subtree *subtree;
   const Subtree *children;
   const TSSymbol *aliases;
+  PackPosition position;
   PackPosition inline_position;
   uint64_t mask, child_mask;
   uint32_t position_mark, position_offset;
@@ -60,6 +64,7 @@ typedef struct {
   // builder append groups; growth never changes existing slot indexes.
   uint32_t boundary;
   TSFieldId field;
+  TSSymbol alias;
   bool visible, later, child_later;
 } Frame;
 
@@ -369,30 +374,34 @@ static bool group_fits(const Builder *builder, const PackValues *value, PackValu
   return true;
 }
 
-static bool emit(Builder *builder, Frame *frame) {
-  TSNode node = frame->node;
-  TSSymbol raw_symbol =
-      node.context[3] ? (TSSymbol)node.context[3] : ts_node_grammar_symbol(node);
+static bool emit(Builder *builder, const Frame *frame) {
+  Subtree subtree = *frame->subtree;
+  Length size = ts_subtree_size(subtree);
+  TSSymbol grammar = ts_subtree_symbol(subtree);
+  TSSymbol raw_symbol = frame->alias ? frame->alias : grammar;
 #if SQ_INCLUDE_POINTS
-  TSPoint start = ts_node_start_point(node), end = ts_node_end_point(node);
+  Length end = length_add(frame->position, size);
+  uint32_t start_byte = frame->position.bytes;
+#else
+  uint32_t start_byte = frame->position;
 #endif
   Pending pending = {
       .values =
           {
-              .start_byte = ts_node_start_byte(node),
-              .end_byte = ts_node_end_byte(node),
+              .start_byte = start_byte,
+              .end_byte = start_byte + size.bytes,
 #if SQ_INCLUDE_POINTS
-              .start_row = start.row,
-              .end_row = end.row,
-              .start_column = start.column,
-              .end_column = end.column,
+              .start_row = frame->position.extent.row,
+              .end_row = end.extent.row,
+              .start_column = frame->position.extent.column,
+              .end_column = end.extent.column,
 #endif
           },
       .symbol = sq_encode_symbol(builder->tree, raw_symbol),
-      .grammar = sq_encode_symbol(builder->tree, ts_node_grammar_symbol(node)),
+      .grammar = sq_encode_symbol(builder->tree, grammar),
       .field = frame->field,
-      .flags = (!frame->later) | (ts_node_is_extra(node) << 1) | (ts_node_has_error(node) << 2) |
-               (ts_node_is_missing(node) << 3),
+      .flags = (!frame->later) | (ts_subtree_extra(subtree) << 1) |
+               ((ts_subtree_error_cost(subtree) > 0) << 2) | (ts_subtree_missing(subtree) << 3),
   };
   const uint64_t *mask = builder->words == 1 ? &frame->mask
                          : builder->words > 1 ? builder->masks + frame->mask_offset
@@ -424,9 +433,12 @@ static bool emit(Builder *builder, Frame *frame) {
   }
 }
 
-static bool init_frame(Builder *builder, Frame *frame, TSNode node, TSFieldId field, bool visible,
+static bool init_frame(Builder *builder, Frame *frame, const Subtree *subtree_pointer,
+                       PackPosition position, TSSymbol alias, TSFieldId field, bool visible,
                        bool later, uint64_t mask, uint32_t mask_offset) {
-  *frame = (Frame){.node = node,
+  *frame = (Frame){.subtree = subtree_pointer,
+                   .position = position,
+                   .alias = alias,
                    .field = field,
                    .visible = visible,
                    .later = later,
@@ -439,7 +451,7 @@ static bool init_frame(Builder *builder, Frame *frame, TSNode node, TSFieldId fi
                    .mask = mask,
                    .mask_offset = mask_offset,
                    .child_mask_offset = SQ_NONE};
-  Subtree subtree = *(const Subtree *)node.id;
+  Subtree subtree = *subtree_pointer;
   uint32_t count = ts_subtree_child_count(subtree);
   if (count) {
     frame->children = ts_subtree_children(subtree);
@@ -447,11 +459,6 @@ static bool init_frame(Builder *builder, Frame *frame, TSNode node, TSFieldId fi
         ts_language_alias_sequence(builder->tree->language, subtree.ptr->production_id);
     if (count > 1 && !reserve_positions(builder, count, &frame->position_offset)) return false;
 
-#if SQ_INCLUDE_POINTS
-    PackPosition position = {ts_node_start_byte(node), ts_node_start_point(node)};
-#else
-    PackPosition position = ts_node_start_byte(node);
-#endif
     for (uint32_t i = 0; i < count; i++) {
       if (i) {
 #if SQ_INCLUDE_POINTS
@@ -492,7 +499,7 @@ static bool init_frame(Builder *builder, Frame *frame, TSNode node, TSFieldId fi
 
     if (builder->words == 1) {
       frame->child_mask = visible ? 0 : mask;
-      TSSymbol own = node.context[3] ? (TSSymbol)node.context[3] : ts_node_grammar_symbol(node);
+      TSSymbol own = alias ? alias : ts_subtree_symbol(subtree);
       uint32_t symbols =
           builder->tree->language->symbol_count + builder->tree->language->alias_count;
       if (own < symbols && builder->supertype_indexes[own]) {
@@ -508,7 +515,7 @@ static bool init_frame(Builder *builder, Frame *frame, TSNode node, TSFieldId fi
                (size_t)builder->words * sizeof(uint64_t));
       }
 
-      TSSymbol own = node.context[3] ? (TSSymbol)node.context[3] : ts_node_grammar_symbol(node);
+      TSSymbol own = alias ? alias : ts_subtree_symbol(subtree);
       uint32_t symbols =
           builder->tree->language->symbol_count + builder->tree->language->alias_count;
       if (own < symbols && builder->supertype_indexes[own]) {
@@ -569,7 +576,16 @@ SQTree *sq_tree_pack(const TSTree *tree, SQPackOptions options, SQError *error) 
     memset(builder.masks + zero_mask_offset, 0, (size_t)builder.words * sizeof(uint64_t));
   }
 
-  if (!init_frame(&builder, &stack[0], root, 0, true, false, 0, zero_mask_offset)) {
+#if SQ_INCLUDE_POINTS
+  PackPosition root_position = {
+      .bytes = root.context[0],
+      .extent = {root.context[1], root.context[2]},
+  };
+#else
+  PackPosition root_position = root.context[0];
+#endif
+  if (!init_frame(&builder, &stack[0], (const Subtree *)root.id, root_position,
+                  (TSSymbol)root.context[3], 0, true, false, 0, zero_mask_offset)) {
     goto failure;
   }
 
@@ -602,21 +618,15 @@ SQTree *sq_tree_pack(const TSTree *tree, SQPackOptions options, SQError *error) 
         continue;
       }
 
-#if SQ_INCLUDE_POINTS
-      Length position = frame->position_offset != SQ_NONE
-                            ? builder.positions[frame->position_offset + index]
-                            : frame->inline_position;
-#else
-      uint32_t child_position = frame->position_offset != SQ_NONE
-                                    ? builder.positions[frame->position_offset + index]
-                                    : frame->inline_position;
-      Length position = {.bytes = child_position};
-#endif
-      TSNode node = ts_node_new(tree, child, position, alias);
+      PackPosition position = frame->position_offset != SQ_NONE
+                                  ? builder.positions[frame->position_offset + index]
+                                  : frame->inline_position;
       uint64_t child_mask = frame->child_mask;
       uint32_t child_mask_offset = frame->child_mask_offset;
       if (!child_count) {
-        Frame leaf = {.node = node,
+        Frame leaf = {.subtree = child,
+                      .position = position,
+                      .alias = alias,
                       .mask = child_mask,
                       .mask_offset = child_mask_offset,
                       .boundary = distance(&builder),
@@ -643,8 +653,8 @@ SQTree *sq_tree_pack(const TSTree *tree, SQPackOptions options, SQError *error) 
         stack_capacity *= 2;
       }
 
-      if (!init_frame(&builder, &stack[depth], node, field, visible, later, child_mask,
-                      child_mask_offset)) {
+      if (!init_frame(&builder, &stack[depth], child, position, alias, field, visible, later,
+                      child_mask, child_mask_offset)) {
         goto failure;
       }
 
