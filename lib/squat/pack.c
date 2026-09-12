@@ -632,6 +632,58 @@ SQPackOptions sq_pack_options_default(void) {
   return (SQPackOptions){.repack = false, .symbol_presence = true};
 }
 
+typedef struct {
+  const Subtree *child;
+  uint64_t mask;
+  uint32_t child_count;
+  TSFieldId field;
+  TSSymbol alias;
+  bool visible;
+} Descent;
+
+// A hidden subtree with one child keeps nothing past that child: the child starts
+// at the same position, no scratch is reserved, and later passes through
+// unchanged. Descend without a frame, computing what init_frame and the single
+// pop of its child would: the production's alias and direct field for structural
+// child 0, and this subtree's supertype bit. Out of line so grammars with few
+// such wrappers keep the traversal loop compact.
+__attribute__((noinline))
+static void descend_hidden(const Builder *builder, const TSLanguage *language, uint32_t symbols,
+                           Descent *descent) {
+  do {
+    const SubtreeHeapData *data = descent->child->ptr;
+    const Subtree *grandchild = ts_subtree_children(*descent->child);
+    ChildFacts inner = child_facts(*grandchild);
+    TSSymbol inner_alias = 0;
+    TSFieldId inner_field = 0;
+    if (!inner.extra) {
+      const TSSymbol *aliases = ts_language_alias_sequence(language, data->production_id);
+      if (aliases) inner_alias = aliases[0];
+      inner_field = descent->field;
+      if (language->field_count) {
+        const TSFieldMapEntry *map, *end;
+        ts_language_field_map(language, data->production_id, &map, &end);
+        for (; map < end; map++) {
+          if (!map->inherited && map->child_index == 0) {
+            inner_field = map->field_id;
+            break;
+          }
+        }
+      }
+    }
+
+    if (builder->words == 1 && data->symbol < symbols && builder->supertype_indexes[data->symbol]) {
+      descent->mask |= UINT64_C(1) << (builder->supertype_indexes[data->symbol] - 1);
+    }
+
+    descent->child = grandchild;
+    descent->alias = inner_alias;
+    descent->visible = inner_alias || inner.visible;
+    descent->field = inner_field;
+    descent->child_count = inner.child_count;
+  } while (!descent->visible && descent->child_count == 1);
+}
+
 SQTree *sq_tree_pack(const TSTree *tree, SQPackOptions options, SQError *error) {
   sq_fail(error, SQ_OK);
   if (!tree) {
@@ -658,7 +710,8 @@ SQTree *sq_tree_pack(const TSTree *tree, SQPackOptions options, SQError *error) 
                      .error = error};
   size_t depth = 0, stack_capacity = 32;
   Frame *stack = malloc(stack_capacity * sizeof(Frame));
-  uint32_t symbols = result->language->symbol_count + result->language->alias_count;
+  const TSLanguage *language = result->language;
+  uint32_t symbols = language->symbol_count + language->alias_count;
   if (builder.words) {
     builder.supertype_indexes = calloc(symbols, sizeof(uint16_t));
   }
@@ -724,7 +777,25 @@ SQTree *sq_tree_pack(const TSTree *tree, SQPackOptions options, SQError *error) 
                                   : frame->inline_position;
       uint64_t child_mask = frame->child_mask;
       uint32_t child_mask_offset = frame->child_mask_offset;
+
+      if (!visible && child_count == 1 && builder.words <= 1) {
+        Descent descent = {.child = child,
+                           .mask = child_mask,
+                           .child_count = child_count,
+                           .field = field,
+                           .alias = alias,
+                           .visible = visible};
+        descend_hidden(&builder, language, symbols, &descent);
+        child = descent.child;
+        child_mask = descent.mask;
+        child_count = descent.child_count;
+        field = descent.field;
+        alias = descent.alias;
+        visible = descent.visible;
+      }
+
       if (!child_count) {
+        if (!visible) continue;
         EmitNode leaf = {.subtree = child,
                          .position = position,
                          .mask = child_mask,
