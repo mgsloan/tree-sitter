@@ -352,7 +352,6 @@ static SQTree *load_bytes(const TSLanguage *language, const void *bytes, size_t 
     expected += sq_presence_size(&shape);
   }
 
-  uint32_t supertype_count = 0;
   if (language->abi_version < TREE_SITTER_MIN_COMPATIBLE_LANGUAGE_VERSION ||
       language->abi_version > TREE_SITTER_LANGUAGE_VERSION ||
       (uint64_t)language->symbol_count + language->alias_count > ts_builtin_sym_error_repeat) {
@@ -360,30 +359,31 @@ static SQTree *load_bytes(const TSLanguage *language, const void *bytes, size_t 
     return NULL;
   }
 
-  // Same direct read as allocate_tree: the accessor's builtin-error special cases
-  // lie outside this range, and loading a small cached tree is otherwise dominated
-  // by this grammar-sized scan.
-  const TSSymbolMetadata *metadata = language->symbol_metadata;
-  uint32_t symbol_space = (uint32_t)language->symbol_count + language->alias_count;
-  for (uint32_t symbol = 0; symbol < symbol_space; symbol++) {
-    supertype_count += metadata[symbol].supertype;
-  }
-
-  if (supertype_count > 8) {
-    if (!header.supertype_dictionary_count || header.supertype_dictionary_count > 256) {
-      goto invalid;
-    }
-
-    expected += (uint64_t)header.supertype_dictionary_count * ((supertype_count + 63) / 64) * 8;
-  } else if (header.supertype_dictionary_count) {
-    goto invalid;
-  }
-
-  if (expected != length) goto invalid;
-
+  // The remaining size check needs the grammar's supertype count, which
+  // allocate_tree derives anyway. Allocate first and read it back rather than
+  // repeating that grammar-sized scan; the allocation covers the caller's length,
+  // which is already bounded, and every later rejection releases the tree.
   SQTree *tree =
       sq_allocate_loaded(language, header.group_capacity, bytes, (uint32_t)length, borrowed, error);
   if (!tree) return NULL;
+  if (tree->supertype_count > 8) {
+    if (!header.supertype_dictionary_count || header.supertype_dictionary_count > 256) {
+      sq_tree_delete(tree);
+      goto invalid;
+    }
+
+    expected +=
+        (uint64_t)header.supertype_dictionary_count * ((tree->supertype_count + 63) / 64) * 8;
+  } else if (header.supertype_dictionary_count) {
+    sq_tree_delete(tree);
+    goto invalid;
+  }
+
+  if (expected != length) {
+    sq_tree_delete(tree);
+    goto invalid;
+  }
+
   const uint8_t *data = tree->data;
   if (!validate_nodes(tree, error)) {
     sq_tree_delete(tree);

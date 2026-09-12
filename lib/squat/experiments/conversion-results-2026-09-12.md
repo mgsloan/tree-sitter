@@ -134,17 +134,31 @@ and file I/O, which this does not measure.
 opening a cached slab improves more than converting a fresh one. Local medians
 over the same 300-file batches, best of nine repeats, `-O3`:
 
-| Grammar | Before | After | |
-|---|---:|---:|---|
-| typescript | 4.55 µs/file | 1.95 µs/file | −57% |
-| python | 4.89 µs/file | 3.12 µs/file | −36% |
-| cpp | 10.05 µs/file | 6.39 µs/file | −36% |
-| json | 3.65 µs/file | 3.67 µs/file | 0% |
+`load_bytes` also ran that scan a second time, purely to size-check the slab: it
+counted supertypes itself when `allocate_tree` derives the identical value while
+allocating. Allocating first and reading `tree->supertype_count` back removes the
+duplicate. The allocation moves ahead of the final size check, so every later
+rejection releases the tree; `length` is bounded and `layout.end <= length` is
+already verified by then.
+
+Paired alternating medians over the same 300-file batches:
+
+| Grammar | Session start | Direct read | Also deduplicated | |
+|---|---:|---:|---:|---|
+| typescript | 4.53 µs/file | 1.95 µs/file | 1.67 µs/file | −63% |
+| cpp | 10.10 µs/file | 6.45 µs/file | 5.87 µs/file | −42% |
+| python | 4.90 µs/file | 3.14 µs/file | 2.86 µs/file | −42% |
+| json | 3.67 µs/file | 3.68 µs/file | 3.45 µs/file | −6% |
+| **Total** | **23.21** | **15.23** | **13.84** | **−41%** |
 
 This is the operation the persistence design exists to perform. For the same
-TypeScript batch, parsing costs 15.7 µs/file, so a cache hit went from 3.4× to
-8.0× faster than parsing. Packing itself is only 9-17% of parse-plus-pack on
+TypeScript batch, parsing costs 15.7 µs/file, so a cache hit went from 3.5× to
+9.4× faster than parsing. Packing itself is only 9-17% of parse-plus-pack on
 these files, so the fresh-parse path gains far less: about 1.5-4% end to end.
+
+The deduplication reorders allocation relative to validation, so it was also
+checked under ASan, UBSan, and leak detection across four grammars, covering the
+malformed, truncated, and unaligned-borrow rejection paths in `compare.c`.
 
 Reproduce the load path with `make -C lib/squat $BUILD/load-bench` and
 [load.c](load.c), which serializes each parsed file once and then times repeated
