@@ -32,6 +32,10 @@ typedef struct {
   SQTree *tree;
   Pending pending[SQ_GROUP_SIZE];
   uint32_t count;
+
+  // First slot of the open group. Mirrors group_count * SQ_GROUP_SIZE so the
+  // per-node physical distance does not chase tree->data and the header.
+  uint32_t slot_base;
   PackValues base, max;
   uint64_t *dictionary;
   uint32_t dictionary_count, dictionary_capacity, words;
@@ -45,27 +49,36 @@ typedef struct {
   SQError *error;
 } Builder;
 
+// Everything emit reads. These are the raw values that ts_node_new would place
+// in a TSNode; keeping them separately avoids constructing a node and calling
+// exported accessors for every visible subtree during this internal traversal.
+// A childless subtree fills only this, never a whole traversal frame.
 typedef struct {
-  // These are the raw values that ts_node_new would place in a TSNode. Keeping
-  // them separately avoids constructing a node and calling exported accessors
-  // for every visible subtree during this internal-runtime traversal.
   const Subtree *subtree;
-  const Subtree *children;
-  const TSSymbol *aliases;
   PackPosition position;
-  PackPosition inline_position;
-  uint64_t mask, child_mask;
-  uint32_t position_mark, position_offset;
-  uint32_t field_mark, field_offset;
-  uint32_t mask_mark, mask_offset, child_mask_offset;
-  uint32_t remaining, structural;
+  uint64_t mask;
+  uint32_t mask_offset;
 
   // Lower physical boundary of this subtree. Reverse preorder lets the
   // builder append groups; growth never changes existing slot indexes.
   uint32_t boundary;
   TSFieldId field;
   TSSymbol alias;
-  bool visible, later, child_later;
+  bool later;
+} EmitNode;
+
+// Leading member so a visible frame emits without copying its node state.
+typedef struct {
+  EmitNode node;
+  const Subtree *children;
+  const TSSymbol *aliases;
+  PackPosition inline_position;
+  uint64_t child_mask;
+  uint32_t position_mark, position_offset;
+  uint32_t field_mark, field_offset;
+  uint32_t mask_mark, child_mask_offset;
+  uint32_t remaining, structural;
+  bool visible, child_later;
 } Frame;
 
 static bool reserve_positions(Builder *builder, uint32_t count, uint32_t *offset) {
@@ -151,7 +164,7 @@ allocation:
 }
 
 static uint32_t distance(const Builder *builder) {
-  return sq_header(builder->tree)->group_count * SQ_GROUP_SIZE + builder->count;
+  return builder->slot_base + builder->count;
 }
 
 static void set_group_flags(uint8_t *data, uint32_t offset, uint32_t group, uint64_t flags) {
@@ -184,23 +197,21 @@ static inline uint32_t pending_id(const Pending *pending, PendingColumn column) 
 static void set_pending_column(uint8_t *data, uint32_t offset, uint32_t first, uint32_t count,
                                uint8_t bits, const Pending *pending, PendingColumn column) {
   uint32_t lanes = 64 / bits;
-  uint32_t word_index = first / lanes;
-  uint8_t *address = data + offset + (uint64_t)word_index * 8;
+  uint32_t lane = first % lanes;
+  uint8_t *address = data + offset + (uint64_t)(first / lanes) * 8;
   uint64_t word;
   memcpy(&word, address, sizeof(word));
 
   uint64_t value_mask = (UINT64_C(1) << bits) - 1;
   for (uint32_t i = 0; i < count; i++) {
-    uint32_t index = first + i;
-    uint32_t next_word_index = index / lanes;
-    if (next_word_index != word_index) {
+    if (lane == lanes) {
       memcpy(address, &word, sizeof(word));
-      word_index = next_word_index;
-      address = data + offset + (uint64_t)word_index * 8;
+      address += 8;
       memcpy(&word, address, sizeof(word));
+      lane = 0;
     }
 
-    uint32_t shift = index % lanes * bits;
+    uint32_t shift = lane++ * bits;
     uint64_t mask = value_mask << shift;
     word = (word & ~mask) | ((uint64_t)pending_id(&pending[i], column) << shift);
   }
@@ -290,6 +301,7 @@ static bool close_group(Builder *builder) {
   }
 
   builder->count = 0;
+  builder->slot_base += SQ_GROUP_SIZE;
   return true;
 }
 
@@ -374,7 +386,7 @@ static bool group_fits(const Builder *builder, const PackValues *value, PackValu
   return true;
 }
 
-static bool emit(Builder *builder, const Frame *frame) {
+static bool emit(Builder *builder, const EmitNode *frame) {
   Subtree subtree = *frame->subtree;
   Length size = ts_subtree_size(subtree);
   TSSymbol grammar = ts_subtree_symbol(subtree);
@@ -385,45 +397,55 @@ static bool emit(Builder *builder, const Frame *frame) {
 #else
   uint32_t start_byte = frame->position;
 #endif
-  Pending pending = {
-      .values =
-          {
-              .start_byte = start_byte,
-              .end_byte = start_byte + size.bytes,
-#if SQ_INCLUDE_POINTS
-              .start_row = frame->position.extent.row,
-              .end_row = end.extent.row,
-              .start_column = frame->position.extent.column,
-              .end_column = end.extent.column,
-#endif
-          },
-      .symbol = sq_encode_symbol(builder->tree, raw_symbol),
-      .grammar = sq_encode_symbol(builder->tree, grammar),
-      .field = frame->field,
-      .flags = (!frame->later) | (ts_subtree_extra(subtree) << 1) |
-               ((ts_subtree_error_cost(subtree) > 0) << 2) | (ts_subtree_missing(subtree) << 3),
-  };
+  uint8_t super;
   const uint64_t *mask = builder->words == 1 ? &frame->mask
                          : builder->words > 1 ? builder->masks + frame->mask_offset
                                               : NULL;
-  if (!intern_mask(builder, mask, &pending.super)) {
+  if (!intern_mask(builder, mask, &super)) {
     return false;
   }
 
+  // Fill the staged slot in place. Assembling a local Pending and copying it
+  // here stalled on store forwarding: narrow field stores were immediately
+  // reloaded as wide vectors. A rejected candidate is simply rewritten at the
+  // reopened group's first slot.
   for (;;) {
+    // Staging needs a free slot, so a full group closes before the candidate is
+    // written. Closing a full group leaves the physical distance unchanged.
+    if (builder->count == SQ_GROUP_SIZE && !close_group(builder)) {
+      return false;
+    }
+
     if (distance(builder) >= UINT32_MAX - SQ_GROUP_SIZE) {
       sq_fail(builder->error, SQ_ERROR_OVERFLOW);
       return false;
     }
 
+    Pending *slot = &builder->pending[builder->count];
+    slot->values.start_byte = start_byte;
+    slot->values.end_byte = start_byte + size.bytes;
+#if SQ_INCLUDE_POINTS
+    slot->values.start_row = frame->position.extent.row;
+    slot->values.end_row = end.extent.row;
+    slot->values.start_column = frame->position.extent.column;
+    slot->values.end_column = end.extent.column;
+#endif
+
     // Retrying after close_group includes newly abandoned slots in the span.
     // The saved boundary still marks the same lower physical slot.
-    pending.values.span = distance(builder) - frame->boundary;
+    slot->values.span = distance(builder) - frame->boundary;
     PackValues base, max;
-    if (group_fits(builder, &pending.values, &base, &max)) {
+    if (group_fits(builder, &slot->values, &base, &max)) {
       builder->base = base;
       builder->max = max;
-      builder->pending[builder->count++] = pending;
+      slot->symbol = sq_encode_symbol(builder->tree, raw_symbol);
+      slot->grammar = sq_encode_symbol(builder->tree, grammar);
+      slot->field = frame->field;
+      slot->flags = (uint8_t)((!frame->later) | (ts_subtree_extra(subtree) << 1) |
+                              ((ts_subtree_error_cost(subtree) > 0) << 2) |
+                              (ts_subtree_missing(subtree) << 3));
+      slot->super = super;
+      builder->count++;
       return true;
     }
 
@@ -436,24 +458,27 @@ static bool emit(Builder *builder, const Frame *frame) {
 static bool init_frame(Builder *builder, Frame *frame, const Subtree *subtree_pointer,
                        PackPosition position, TSSymbol alias, TSFieldId field, bool visible,
                        bool later, uint64_t mask, uint32_t mask_offset) {
-  *frame = (Frame){.subtree = subtree_pointer,
-                   .position = position,
-                   .alias = alias,
-                   .field = field,
-                   .visible = visible,
-                   .later = later,
-                   .boundary = distance(builder),
-                   .position_mark = builder->position_count,
-                   .position_offset = SQ_NONE,
-                   .field_mark = builder->field_count,
-                   .field_offset = SQ_NONE,
-                   .mask_mark = builder->mask_count,
-                   .mask = mask,
-                   .mask_offset = mask_offset,
-                   .child_mask_offset = SQ_NONE};
+  frame->node.subtree = subtree_pointer;
+  frame->node.position = position;
+  frame->node.mask = mask;
+  frame->node.mask_offset = mask_offset;
+  frame->node.boundary = distance(builder);
+  frame->node.field = field;
+  frame->node.alias = alias;
+  frame->node.later = later;
+  frame->visible = visible;
+  frame->position_mark = builder->position_count;
+  frame->position_offset = SQ_NONE;
+  frame->field_mark = builder->field_count;
+  frame->field_offset = SQ_NONE;
+  frame->mask_mark = builder->mask_count;
+  frame->child_mask_offset = SQ_NONE;
+  frame->remaining = 0;
   Subtree subtree = *subtree_pointer;
   uint32_t count = ts_subtree_child_count(subtree);
   if (count) {
+    frame->structural = 0;
+    frame->child_later = false;
     frame->children = ts_subtree_children(subtree);
     frame->aliases =
         ts_language_alias_sequence(builder->tree->language, subtree.ptr->production_id);
@@ -602,12 +627,12 @@ SQTree *sq_tree_pack(const TSTree *tree, SQPackOptions options, SQError *error) 
 
       TSSymbol alias = extra || !frame->aliases ? 0 : frame->aliases[frame->structural];
       bool visible = alias || ts_subtree_visible(*child);
-      bool later = frame->child_later || (!frame->visible && frame->later);
+      bool later = frame->child_later || (!frame->visible && frame->node.later);
       frame->child_later |= visible || ts_subtree_visible_child_count(*child) > 0;
 
       // Hidden wrappers carry their incoming field; visible nodes start a new
       // child relationship. Extras interrupt field inheritance.
-      TSFieldId field = frame->visible || extra ? 0 : frame->field;
+      TSFieldId field = frame->visible || extra ? 0 : frame->node.field;
       if (!extra && frame->field_offset != SQ_NONE) {
         TSFieldId direct = builder.fields[frame->field_offset + frame->structural];
         if (direct) field = direct;
@@ -624,15 +649,14 @@ SQTree *sq_tree_pack(const TSTree *tree, SQPackOptions options, SQError *error) 
       uint64_t child_mask = frame->child_mask;
       uint32_t child_mask_offset = frame->child_mask_offset;
       if (!child_count) {
-        Frame leaf = {.subtree = child,
-                      .position = position,
-                      .alias = alias,
-                      .mask = child_mask,
-                      .mask_offset = child_mask_offset,
-                      .boundary = distance(&builder),
-                      .field = field,
-                      .visible = true,
-                      .later = later};
+        EmitNode leaf = {.subtree = child,
+                         .position = position,
+                         .mask = child_mask,
+                         .mask_offset = child_mask_offset,
+                         .boundary = distance(&builder),
+                         .field = field,
+                         .alias = alias,
+                         .later = later};
         if (!emit(&builder, &leaf)) goto failure;
         continue;
       }
@@ -660,7 +684,7 @@ SQTree *sq_tree_pack(const TSTree *tree, SQPackOptions options, SQError *error) 
 
       depth++;
     } else {
-      if (frame->visible && !emit(&builder, frame)) {
+      if (frame->visible && !emit(&builder, &frame->node)) {
         goto failure;
       }
 
