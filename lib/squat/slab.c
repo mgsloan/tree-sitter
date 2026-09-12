@@ -92,6 +92,21 @@ bool sq_layout(const TSLanguage *language, uint32_t capacity, SQLayout *layout) 
 }
 
 void sq_set_packed(uint8_t *data, uint32_t offset, uint32_t index, uint8_t bits, uint32_t value) {
+  switch (bits) {
+  case 1:
+    sq_set_bit(data, offset, index, value != 0);
+    return;
+  case 8:
+    sq_set_u8(data, offset, index, (uint8_t)value);
+    return;
+  case 16:
+    sq_set_u16(data, offset, index, (uint16_t)value);
+    return;
+  case 32:
+    sq_set_u32(data, offset, index, value);
+    return;
+  }
+
   uint32_t lanes = 64 / bits, shift = index % lanes * bits;
   uint8_t *address = data + offset + (uint64_t)(index / lanes) * 8;
   uint64_t word, mask = ((UINT64_C(1) << bits) - 1) << shift;
@@ -238,7 +253,10 @@ bool sq_grow_data(SQTree **tree_pointer, uint32_t size, SQError *error) {
 }
 
 // Rebuild column locations while preserving their prefix-filled lane indexes.
-bool sq_resize(SQTree **tree_pointer, uint32_t capacity, SQError *error) {
+// Builder finalization can reserve a new empty suffix in the same allocation;
+// ordinary resizing instead copies the tree's existing serialized suffix.
+static bool resize_tree(SQTree **tree_pointer, uint32_t capacity, uint32_t trailing_size,
+                        bool preserve_trailing, SQError *error) {
   SQTree *tree = *tree_pointer;
   if (tree->storage == SQ_STORAGE_BORROWED) {
     sq_fail(error, SQ_ERROR_ARGUMENT);
@@ -257,7 +275,7 @@ bool sq_resize(SQTree **tree_pointer, uint32_t capacity, SQError *error) {
     return false;
   }
 
-  uint64_t total = (uint64_t)next.end + tree->size - tree->layout.end;
+  uint64_t total = (uint64_t)next.end + trailing_size;
   if (total > UINT32_MAX) {
     sq_fail(error, SQ_ERROR_OVERFLOW);
     return false;
@@ -322,10 +340,46 @@ bool sq_resize(SQTree **tree_pointer, uint32_t capacity, SQError *error) {
          sq_column_size(slots, next.symbol_bits));
   memcpy(data + next.field, tree->data + tree->layout.field,
          sq_column_size(slots, next.field_bits));
-  memcpy(data + next.end, tree->data + tree->layout.end, tree->size - tree->layout.end);
+  if (preserve_trailing) {
+    memcpy(data + next.end, tree->data + tree->layout.end, trailing_size);
+  }
   free_storage(tree);
   *tree_pointer = replacement;
   return true;
+}
+
+bool sq_resize(SQTree **tree_pointer, uint32_t capacity, SQError *error) {
+  SQTree *tree = *tree_pointer;
+  if (tree->storage == SQ_STORAGE_BORROWED || tree->size < tree->layout.end ||
+      capacity < sq_header(tree)->group_count) {
+    sq_fail(error, SQ_ERROR_ARGUMENT);
+    return false;
+  }
+  if (capacity == sq_header(tree)->group_capacity && tree->storage == SQ_STORAGE_COLOCATED) {
+    return true;
+  }
+  return resize_tree(tree_pointer, capacity, tree->size - tree->layout.end, true, error);
+}
+
+bool sq_prepare_final(SQTree **tree_pointer, uint32_t capacity, uint32_t trailing_size,
+                      SQError *error) {
+  SQTree *tree = *tree_pointer;
+  if (tree->storage == SQ_STORAGE_BORROWED || tree->size != tree->layout.end ||
+      capacity < sq_header(tree)->group_count) {
+    sq_fail(error, SQ_ERROR_ARGUMENT);
+    return false;
+  }
+
+  if (capacity != sq_header(tree)->group_capacity) {
+    return resize_tree(tree_pointer, capacity, trailing_size, false, error);
+  }
+
+  uint64_t total = (uint64_t)tree->layout.end + trailing_size;
+  if (total > UINT32_MAX) {
+    sq_fail(error, SQ_ERROR_OVERFLOW);
+    return false;
+  }
+  return total == tree->size || sq_grow_data(tree_pointer, (uint32_t)total, error);
 }
 
 void sq_tree_delete(SQTree *tree) {

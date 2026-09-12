@@ -6,63 +6,76 @@ uint64_t sq_presence_size(const SQTree *tree) {
   return (sq_column_size((uint32_t)symbols, 1) + symbols * entry_bytes + 7) & ~UINT64_C(7);
 }
 
-bool sq_build_presence(SQTree **tree_pointer, SQError *error) {
-  SQTree *tree = *tree_pointer;
+static void set_group(uint8_t *entry, uint32_t group) {
+  entry[group / 8] |= (uint8_t)(1u << (group % 8));
+}
+
+bool sq_build_presence(SQTree *tree, SQError *error) {
   uint32_t groups = sq_tree_group_count(tree);
   if (groups <= 32) {
     return true;
   }
 
-  uint64_t length = sq_presence_size(tree), total = (uint64_t)tree->size + length;
-  if (total > UINT32_MAX) {
+  uint64_t length = sq_presence_size(tree);
+  uint32_t symbols = sq_symbols(tree), entry_bytes = (groups + 31) / 32 * 4;
+  uint32_t entry_slots = entry_bytes / sizeof(uint32_t);
+  uint64_t scratch_size = (uint64_t)symbols * sizeof(uint32_t) + entry_bytes;
+  if (scratch_size > SIZE_MAX) {
     sq_fail(error, SQ_ERROR_OVERFLOW);
     return false;
   }
-
-  uint32_t symbols = sq_symbols(tree), entry_bytes = (groups + 31) / 32 * 4;
-  uint32_t *counts = calloc(symbols, sizeof(uint32_t));
-  if (!counts) {
+  uint8_t *scratch = calloc(1, (size_t)scratch_size);
+  if (!scratch) {
     sq_fail(error, SQ_ERROR_ALLOCATION);
     return false;
   }
+  uint32_t *counts = (uint32_t *)scratch;
+  uint8_t *bitmap = scratch + (size_t)symbols * sizeof(uint32_t);
 
-  uint32_t offset = tree->size;
-  if (!sq_grow_data(tree_pointer, (uint32_t)total, error)) {
-    free(counts);
+  uint32_t offset = tree->layout.end;
+  if ((uint64_t)offset + length > tree->size) {
+    sq_fail(error, SQ_ERROR_ARGUMENT);
+    free(scratch);
     return false;
   }
 
-  tree = *tree_pointer;
   uint8_t *next = tree->data;
   memset(next + offset, 0, (size_t)length);
   sq_header(tree)->format_flags |= SQ_PRESENCE;
-  for (SQNode node = sq_tree_root_node(tree); node.tree; node = sq_node_next_preorder(node)) {
-    counts[sq_encode_symbol(tree, sq_node_symbol(node))]++;
-  }
 
   uint8_t *entries = next + offset + sq_column_size(symbols, 1);
-  for (uint32_t symbol_index = 0; symbol_index < symbols; symbol_index++) {
-    if (counts[symbol_index] > entry_bytes / 4) {
-      sq_set_packed(next, offset, symbol_index, 1, 1);
-    } else {
-      memset(entries + (size_t)symbol_index * entry_bytes, 0xff, entry_bytes);
-    }
+  memset(entries, 0xff, (size_t)symbols * entry_bytes);
 
-    counts[symbol_index] = 0;
+  // Physical slots descend in public preorder. Scan groups and their live
+  // lanes in that order so sparse entries retain their serialized ordering.
+  // An entry promotes exactly when its next occurrence no longer fits.
+  for (uint32_t group = groups; group-- > 0;) {
+    uint32_t first = group * SQ_GROUP_SIZE;
+    uint32_t end = first + SQ_GROUP_SIZE - sq_group_waste(tree, group);
+    for (uint32_t slot = end; slot-- > first;) {
+      uint32_t raw = sq_get_packed(next, tree->layout.symbol, slot, tree->layout.symbol_bits);
+      TSSymbol symbol = ts_language_public_symbol(tree->language, sq_decode_symbol(tree, raw));
+      uint32_t symbol_index = sq_encode_symbol(tree, symbol);
+      uint8_t *entry = entries + (size_t)symbol_index * entry_bytes;
+      if (sq_get_packed(next, offset, symbol_index, 1)) {
+        set_group(entry, group);
+      } else if (counts[symbol_index] < entry_slots) {
+        memcpy(entry + (size_t)counts[symbol_index]++ * sizeof(slot), &slot, sizeof(slot));
+      } else {
+        memset(bitmap, 0, entry_bytes);
+        for (uint32_t i = 0; i < entry_slots; i++) {
+          uint32_t previous;
+          memcpy(&previous, entry + (size_t)i * sizeof(previous), sizeof(previous));
+          set_group(bitmap, previous / SQ_GROUP_SIZE);
+        }
+        set_group(bitmap, group);
+        memcpy(entry, bitmap, entry_bytes);
+        sq_set_packed(next, offset, symbol_index, 1, 1);
+      }
+    }
   }
 
-  for (SQNode node = sq_tree_root_node(tree); node.tree; node = sq_node_next_preorder(node)) {
-    uint32_t symbol_index = sq_encode_symbol(tree, sq_node_symbol(node));
-    uint8_t *entry = entries + (size_t)symbol_index * entry_bytes;
-    if (sq_get_packed(next, offset, symbol_index, 1)) {
-      uint32_t group = node.slot / SQ_GROUP_SIZE;
-      entry[group / 8] |= (uint8_t)(1u << (group % 8));
-    } else {
-      memcpy(entry + (size_t)counts[symbol_index]++ * 4, &node.slot, 4);
-    }
-  }
-
-  free(counts);
+  free(scratch);
   return true;
 }
 
@@ -110,23 +123,18 @@ bool sq_tree_group_has_symbol(const SQTree *tree, uint32_t group, TSSymbol symbo
   return false;
 }
 
-bool sq_append_dictionary(SQTree **tree_pointer, const uint64_t *dictionary, uint32_t count,
+bool sq_append_dictionary(SQTree *tree, const uint64_t *dictionary, uint32_t count,
                           SQError *error) {
-  SQTree *tree = *tree_pointer;
   uint64_t bytes = (uint64_t)count * ((tree->supertype_count + 63) / 64) * 8;
-  if ((uint64_t)tree->size + bytes > UINT32_MAX) {
-    sq_fail(error, SQ_ERROR_OVERFLOW);
+  uint64_t offset = tree->layout.end;
+  if (sq_presence_offset(tree)) offset += sq_presence_size(tree);
+  if (offset + bytes > tree->size) {
+    sq_fail(error, SQ_ERROR_ARGUMENT);
     return false;
   }
 
-  uint32_t offset = tree->size;
-  if (!sq_grow_data(tree_pointer, tree->size + (uint32_t)bytes, error)) {
-    return false;
-  }
-
-  tree = *tree_pointer;
   sq_header(tree)->supertype_dictionary_count = count;
-  memcpy(tree->data + offset, dictionary, (size_t)bytes);
+  memcpy(tree->data + (uint32_t)offset, dictionary, (size_t)bytes);
   return true;
 }
 

@@ -351,9 +351,10 @@ size_t sq_runtime_size(const TSLanguage *);
 SQTree *sq_allocate_loaded(const TSLanguage *, uint32_t, const void *, uint32_t, bool borrowed,
                            SQError *);
 bool sq_resize(SQTree **, uint32_t, SQError *);
+bool sq_prepare_final(SQTree **, uint32_t capacity, uint32_t trailing_size, SQError *);
 bool sq_grow_data(SQTree **, uint32_t, SQError *);
-bool sq_build_presence(SQTree **, SQError *);
-bool sq_append_dictionary(SQTree **, const uint64_t *, uint32_t, SQError *);
+bool sq_build_presence(SQTree *, SQError *);
+bool sq_append_dictionary(SQTree *, const uint64_t *, uint32_t, SQError *);
 uint64_t sq_presence_size(const SQTree *);
 static inline uint32_t sq_presence_offset(const SQTree *tree) {
   return sq_header(tree)->format_flags & SQ_PRESENCE ? tree->layout.end : 0;

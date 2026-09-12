@@ -251,6 +251,8 @@ int main(void) {
       assert(tree->data == (uint8_t *)tree + sq_runtime_size(&language));
       assert(tree->supertypes == (TSSymbol *)(tree + 1));
       exercise_columns(tree, false);
+      SQTree *same = tree;
+      assert(sq_resize(&tree, capacities[k], &error) && tree == same);
     }
 
     assert(!sq_resize(&tree, UINT32_MAX, &error) && error == SQ_ERROR_OVERFLOW);
