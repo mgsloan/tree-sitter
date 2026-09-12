@@ -18,9 +18,17 @@ typedef struct {
 
 typedef struct {
   PackValues values;
-  uint32_t symbol, grammar, field;
-  uint8_t flags, super;
+  uint8_t super;
 } Pending;
+
+// Write position in one packed column: the word holding the next slot's lane
+// and that lane's shift. Valid until the slab grows, which only happens when a
+// group opens, and cursors are recomputed there.
+typedef struct {
+  uint8_t *address;
+  uint32_t shift, limit;
+  uint8_t bits;
+} LaneCursor;
 
 #if SQ_INCLUDE_POINTS
 typedef Length PackPosition;
@@ -47,6 +55,20 @@ typedef struct {
   uint32_t mask_count, mask_capacity;
   uint16_t *supertype_indexes;
   uint32_t symbol_space;
+
+  // Language facts read for every frame, kept here so the hot paths do not
+  // chase builder->tree->language each time.
+  const TSLanguage *language;
+  uint32_t symbol_count, language_field_count;
+  bool small_supertypes;
+
+  // Packed IDs and flags are written as each node is accepted rather than when
+  // its group closes; see open_group.
+  // Symbol and grammar columns share a width and a slot, so one cursor serves
+  // both; the grammar lane sits grammar_offset bytes after the symbol lane.
+  LaneCursor symbol_lane, field_lane;
+  size_t grammar_offset;
+  uint64_t last_flags, extra_flags, error_flags, missing_flags;
   SQError *error;
 } Builder;
 
@@ -204,45 +226,66 @@ static void set_group_flags(uint8_t *data, uint32_t offset, uint32_t group, uint
 #endif
 }
 
-typedef enum { PENDING_SYMBOL, PENDING_GRAMMAR, PENDING_FIELD } PendingColumn;
-
-static inline uint32_t pending_id(const Pending *pending, PendingColumn column) {
-  switch (column) {
-  case PENDING_SYMBOL:
-    return pending->symbol;
-  case PENDING_GRAMMAR:
-    return pending->grammar;
-  case PENDING_FIELD:
-    return pending->field;
-  }
-  return 0;
+static void start_lanes(LaneCursor *cursor, uint8_t *column, uint8_t bits, uint32_t slot) {
+  uint32_t lanes = 64 / bits;
+  cursor->address = column + (uint64_t)(slot / lanes) * 8;
+  cursor->shift = slot % lanes * bits;
+  cursor->limit = 64 - bits;
+  cursor->bits = bits;
 }
 
-// A group usually contributes several lanes to the same packed word. Keep that
-// word in a register and commit it once, including for the fixed-width cases.
-// Partial boundary words retain lanes written by adjacent groups.
-static void set_pending_column(uint8_t *data, uint32_t offset, uint32_t first, uint32_t count,
-                               uint8_t bits, const Pending *pending, PendingColumn column) {
-  uint32_t lanes = 64 / bits;
-  uint32_t lane = first % lanes;
-  uint8_t *address = data + offset + (uint64_t)(first / lanes) * 8;
+// Lanes of a not-yet-written group are zero, so a value is ORed in. Partial
+// boundary words keep the lanes of the previous group. The next lane starts a
+// new word once its shift would pass the last non-straddling position.
+static inline void put_lane(LaneCursor *cursor, uint32_t value) {
   uint64_t word;
-  memcpy(&word, address, sizeof(word));
-
-  uint64_t value_mask = (UINT64_C(1) << bits) - 1;
-  for (uint32_t i = 0; i < count; i++) {
-    if (lane == lanes) {
-      memcpy(address, &word, sizeof(word));
-      address += 8;
-      memcpy(&word, address, sizeof(word));
-      lane = 0;
-    }
-
-    uint32_t shift = lane++ * bits;
-    uint64_t mask = value_mask << shift;
-    word = (word & ~mask) | ((uint64_t)pending_id(&pending[i], column) << shift);
+  memcpy(&word, cursor->address, sizeof(word));
+  word |= (uint64_t)value << cursor->shift;
+  memcpy(cursor->address, &word, sizeof(word));
+  cursor->shift += cursor->bits;
+  if (cursor->shift > cursor->limit) {
+    cursor->shift = 0;
+    cursor->address += 8;
   }
-  memcpy(address, &word, sizeof(word));
+}
+
+// The same write for two equal-width columns at one slot.
+static inline void put_lane_pair(LaneCursor *cursor, size_t second, uint32_t first_value,
+                                 uint32_t second_value) {
+  uint64_t first_word, second_word;
+  memcpy(&first_word, cursor->address, sizeof(first_word));
+  memcpy(&second_word, cursor->address + second, sizeof(second_word));
+  first_word |= (uint64_t)first_value << cursor->shift;
+  second_word |= (uint64_t)second_value << cursor->shift;
+  memcpy(cursor->address, &first_word, sizeof(first_word));
+  memcpy(cursor->address + second, &second_word, sizeof(second_word));
+  cursor->shift += cursor->bits;
+  if (cursor->shift > cursor->limit) {
+    cursor->shift = 0;
+    cursor->address += 8;
+  }
+}
+
+// Groups are filled once, in slot order, into zeroed storage, so every lane of
+// the group being opened is still zero. Growth happens here instead of when the
+// group closes: it is the same group index either way, so the capacity sequence
+// and the final bytes are unchanged.
+static bool open_group(Builder *builder) {
+  SQHeader *header = sq_header(builder->tree);
+  if (header->group_count == header->group_capacity) {
+    uint32_t capacity = header->group_capacity;
+    if (capacity > UINT32_MAX / 2 || !sq_resize(&builder->tree, capacity * 2, builder->error)) {
+      return false;
+    }
+  }
+
+  SQTree *tree = builder->tree;
+  start_lanes(&builder->symbol_lane, tree->data + tree->layout.symbol, tree->layout.symbol_bits,
+              builder->slot_base);
+  builder->grammar_offset = (size_t)tree->layout.grammar_symbol - tree->layout.symbol;
+  start_lanes(&builder->field_lane, tree->data + tree->layout.field, tree->layout.field_bits,
+              builder->slot_base);
+  return true;
 }
 
 static bool close_group(Builder *builder) {
@@ -252,15 +295,6 @@ static bool close_group(Builder *builder) {
 
   SQTree *tree = builder->tree;
   SQHeader *header = sq_header(tree);
-  if (header->group_count == header->group_capacity) {
-    uint32_t capacity = header->group_capacity;
-    if (capacity > UINT32_MAX / 2 || !sq_resize(&builder->tree, capacity * 2, builder->error)) {
-      return false;
-    }
-
-    tree = builder->tree;
-    header = sq_header(tree);
-  }
 
   // Track actual extrema until the group closes so zero-base selection cannot
   // change group boundaries. These bases need not retain actual minima: revisit
@@ -285,25 +319,11 @@ static bool close_group(Builder *builder) {
   sq_set_u64(tree->data, tree->layout.end_point_base, group, sq_point_key(end_base));
 #endif
 
-  uint64_t last = 0, extra = 0, error = 0, missing = 0;
-  for (uint32_t i = 0; i < builder->count; i++) {
-    uint64_t flags = builder->pending[i].flags;
-    last |= (flags & 1) << i;
-    extra |= ((flags >> 1) & 1) << i;
-    error |= ((flags >> 2) & 1) << i;
-    missing |= ((flags >> 3) & 1) << i;
-  }
-  set_group_flags(tree->data, tree->layout.last, group, last);
-  set_group_flags(tree->data, tree->layout.extra, group, extra);
-  set_group_flags(tree->data, tree->layout.error, group, error);
-  set_group_flags(tree->data, tree->layout.missing, group, missing);
-
-  set_pending_column(tree->data, tree->layout.symbol, first, builder->count,
-                     tree->layout.symbol_bits, builder->pending, PENDING_SYMBOL);
-  set_pending_column(tree->data, tree->layout.grammar_symbol, first, builder->count,
-                     tree->layout.symbol_bits, builder->pending, PENDING_GRAMMAR);
-  set_pending_column(tree->data, tree->layout.field, first, builder->count,
-                     tree->layout.field_bits, builder->pending, PENDING_FIELD);
+  set_group_flags(tree->data, tree->layout.last, group, builder->last_flags);
+  set_group_flags(tree->data, tree->layout.extra, group, builder->extra_flags);
+  set_group_flags(tree->data, tree->layout.error, group, builder->error_flags);
+  set_group_flags(tree->data, tree->layout.missing, group, builder->missing_flags);
+  builder->last_flags = builder->extra_flags = builder->error_flags = builder->missing_flags = 0;
 
   // Stores through the slab's byte pointer may alias the tree, so the column
   // offsets and the destination base are read once rather than per slot.
@@ -342,7 +362,7 @@ static bool close_group(Builder *builder) {
 }
 
 static bool intern_mask(Builder *builder, const uint64_t *mask, uint8_t *result) {
-  if (builder->tree->supertype_count <= 8) {
+  if (builder->small_supertypes) {
     *result = mask ? (uint8_t)mask[0] : 0;
     return true;
   }
@@ -498,13 +518,20 @@ static bool emit(Builder *builder, const EmitNode *frame) {
     slot->values.span = distance(builder) - frame->boundary;
     PackValues base, max;
     if (group_fits(builder, &slot->values, &base, &max)) {
+      if (!builder->count && !open_group(builder)) {
+        return false;
+      }
+
       builder->base = base;
       builder->max = max;
-      slot->symbol = encode_symbol(builder, raw_symbol);
-      slot->grammar = encode_symbol(builder, grammar);
-      slot->field = frame->field;
-      slot->flags =
-          (uint8_t)((!frame->later) | (extra << 1) | (has_error << 2) | (missing << 3));
+      uint32_t bit = builder->count;
+      builder->last_flags |= (uint64_t)!frame->later << bit;
+      builder->extra_flags |= (uint64_t)extra << bit;
+      builder->error_flags |= (uint64_t)has_error << bit;
+      builder->missing_flags |= (uint64_t)missing << bit;
+      put_lane_pair(&builder->symbol_lane, builder->grammar_offset,
+                    encode_symbol(builder, raw_symbol), encode_symbol(builder, grammar));
+      put_lane(&builder->field_lane, frame->field);
       slot->super = super;
       builder->count++;
       return true;
@@ -541,7 +568,7 @@ static bool init_frame(Builder *builder, Frame *frame, const Subtree *subtree_po
     frame->child_later = false;
     frame->children = ts_subtree_children(subtree);
     frame->aliases =
-        ts_language_alias_sequence(builder->tree->language, subtree.ptr->production_id);
+        ts_language_alias_sequence(builder->language, subtree.ptr->production_id);
     if (count > 1 && !reserve_positions(builder, count, &frame->position_offset)) return false;
 
     // Extents cannot be recovered by subtracting a multiline child's size, so
@@ -579,9 +606,9 @@ static bool init_frame(Builder *builder, Frame *frame, const Subtree *subtree_po
 
     frame->structural = structural;
 
-    if (frame->structural && builder->tree->language->field_count) {
+    if (frame->structural && builder->language_field_count) {
       const TSFieldMapEntry *map, *end;
-      ts_language_field_map(builder->tree->language, subtree.ptr->production_id, &map, &end);
+      ts_language_field_map(builder->language, subtree.ptr->production_id, &map, &end);
       const TSFieldMapEntry *first = map;
       while (first < end && first->inherited) first++;
       if (first < end) {
@@ -598,9 +625,7 @@ static bool init_frame(Builder *builder, Frame *frame, const Subtree *subtree_po
     if (builder->words == 1) {
       frame->child_mask = visible ? 0 : mask;
       TSSymbol own = alias ? alias : ts_subtree_symbol(subtree);
-      uint32_t symbols =
-          builder->tree->language->symbol_count + builder->tree->language->alias_count;
-      if (own < symbols && builder->supertype_indexes[own]) {
+      if (own < builder->symbol_count && builder->supertype_indexes[own]) {
         frame->child_mask |= UINT64_C(1) << (builder->supertype_indexes[own] - 1);
       }
     } else if (builder->words > 1) {
@@ -614,9 +639,7 @@ static bool init_frame(Builder *builder, Frame *frame, const Subtree *subtree_po
       }
 
       TSSymbol own = alias ? alias : ts_subtree_symbol(subtree);
-      uint32_t symbols =
-          builder->tree->language->symbol_count + builder->tree->language->alias_count;
-      if (own < symbols && builder->supertype_indexes[own]) {
+      if (own < builder->symbol_count && builder->supertype_indexes[own]) {
         uint32_t index = builder->supertype_indexes[own] - 1;
         child_mask[index / 64] |= UINT64_C(1) << (index % 64);
       }
@@ -707,6 +730,10 @@ SQTree *sq_tree_pack(const TSTree *tree, SQPackOptions options, SQError *error) 
   Builder builder = {.tree = result,
                      .words = (result->supertype_count + 63) / 64,
                      .symbol_space = sq_symbols(result),
+                     .language = result->language,
+                     .symbol_count = result->language->symbol_count + result->language->alias_count,
+                     .language_field_count = result->language->field_count,
+                     .small_supertypes = result->supertype_count <= 8,
                      .error = error};
   size_t depth = 0, stack_capacity = 32;
   Frame *stack = malloc(stack_capacity * sizeof(Frame));
