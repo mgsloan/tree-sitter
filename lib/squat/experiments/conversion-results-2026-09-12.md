@@ -1,21 +1,24 @@
 # Conversion speedups — 2026-09-12
 
-Two rounds of format-preserving changes to `sq_tree_pack` reduce cloud-measured
-conversion time by **14.6% with default packing and 14.2% with compact packing**
-against `9d73c40ef`. Neither round changes the serialized representation.
+Four rounds of format-preserving per-node changes to `sq_tree_pack` reduce
+cloud-measured conversion time on large inputs by **25.6% with default packing and
+25.0% with compact packing** against `9d73c40ef`. None changes the serialized
+representation.
 
 | Round | Change | Default packing | Compact packing |
 |---|---|---:|---:|
 | 1 | [Frame and staging rework](conversion-frames-2026-09-12.json) | −10.9% | −10.8% |
 | 2 | [Single subtree decode, hoisted columns](conversion-decode-2026-09-12.json) | −4.2% | −3.8% |
-| | Compounded | −14.6% | −14.2% |
+| 4 | [Presence index from whole symbol words](conversion-presence-2026-09-12.json) | −8.2% | −8.0% |
+| 5 | [Frameless descent through hidden wrappers](conversion-descent-2026-09-12.json) | −5.1% | −5.0% |
+| | Compounded | −25.6% | −25.0% |
 
 Round 3 removes a cost proportional to the grammar rather than the tree, so it is
 invisible on those inputs and worth **−10.3% on batches of small files**. Its
 measurements are in [the setup record](conversion-setup-2026-09-12.json).
 
 Each round has its own freshly measured paired baseline, so the compounded
-figure is the product of two separate comparisons, not one measurement.
+figure is the product of four separate comparisons, not one measurement.
 
 ## Method
 
@@ -167,6 +170,64 @@ Reproduce the load path with `make -C lib/squat $BUILD/load-bench` and
 [setup.c](setup.c): it parses every listed file, then times repeated conversion of
 the whole batch. Pair two builds and alternate their order; one unalternated
 `-O2`-versus-`-O3` pair produced a convincing 5-12% phantom regression here.
+
+## Round 4: presence index from whole symbol words
+
+`sq_build_presence` is a full second pass over the packed tree. It decoded every
+symbol through the generic per-slot reader, which divides by the lane count and
+dispatches on width, then called `ts_language_public_symbol` out of line and
+reread the entry's mode bit for each slot. It now decodes each group's lanes from
+whole native words, maps stored symbols to public entries through a table built
+once per tree, and marks promotion with an occurrence count above the entry's
+sparse capacity. Every packed column stores lane i at shift i × bits under a
+native load, so one decoder covers all widths on either endianness.
+
+Cloud: −8.2% default (706.9 to 649.2 ms) and −8.0% compact
+(715.4 to 658.4 ms); per file between −5.9% and −10.1%. The laptop showed −5.9%.
+
+## Round 5: frameless descent through hidden single-child subtrees
+
+A hidden subtree with one child keeps nothing past that child: the same start
+position, no scratch, and `later` unchanged. Each still paid a whole frame —
+`init_frame`, a pop for the child, and a final pop. Counting them in the raw
+trees: 53-57% of frames on the large TSX inputs, 47% TypeScript, 36% Python, 32%
+C++, 22% JSON, 8% YAML. `descend_hidden` walks such chains directly, deriving the
+production's alias and direct field for structural child 0 and the wrapper's
+supertype bit. Grammars with more than 64 supertypes keep masks in scratch and
+still use frames.
+
+Cloud: −5.1% default (650.4 to 617.4 ms) and −5.0% compact
+(662.4 to 629.3 ms); per file between +0.8% and −13.2%, with YAML at
++0.8% and −0.2%. The same code inline in the traversal loop measured −4.7% and
+−4.5% overall but slowed YAML by 2.8% and 2.5%, so the helper stays out of line.
+The laptop disagreed with both — mixed, with YAML +7% — which is why the VM decides.
+
+## Measured and rejected
+
+- **Right-to-left child positions.** `init_frame`'s first touch of each child's
+  heap block looked memory-bound, and a redesign could have touched blocks in
+  allocation order instead. But per-node conversion is flat across tree sizes
+  that fit in cache and those that do not: Python 51.6, 50.1 and 49.8 ns per
+  visible node for ~6K-, ~33K- and 456K-node trees. The misses are not headroom.
+- **Branch mispredicts.** 0.25-0.35% of branches, a few percent of time; the hot
+  loads sit after a data-dependent branch, which is where skid lands.
+- **Fixed 16-slot loops in `close_group`,** zeroing abandoned slots so loop counts
+  are constant: slower on every one of 18 rows locally, +2.6% overall.
+- **A vectorized fit check** over an 8-lane `PackValues`. Byte-identical, and
+  GCC vectorizes it at x86-64-v3 into 20 instructions, but at the baseline SSE2
+  these builds target it emulates unsigned min/max and executes more: 651.3M to
+  666.9M instructions for a Python conversion under callgrind.
+
+## Where instructions go now
+
+Exact callgrind counts inside `sq_tree_pack`, which do not vary with the
+laptop's core type or power state: about 714 instructions per visible node for
+Python and 802 for TSX. `emit` is the largest function at roughly 230
+instructions per call, a third of which is the seven scalar range checks; the
+rest is spread thin over prologue, symbol encoding, flag assembly and staging.
+`init_frame` runs about 210 per call, with repeated reloads through
+`builder->tree->language`. `close_group` spends about 15 instructions per slot per
+packed column on lane arithmetic.
 
 ## Where the remaining time goes
 

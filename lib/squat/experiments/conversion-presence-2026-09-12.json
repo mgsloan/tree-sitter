@@ -1,0 +1,509 @@
+{
+  "build": {
+    "head": "0f9116df621109bdfafe0975a31f88976eae90aa",
+    "flags": "-O3 -g -fno-omit-frame-pointer; no LTO; points enabled; 16-slot groups",
+    "compiler": "gcc (GCC) 15.3.0",
+    "variants": {
+      "scan3": "lib/squat at 46b467d02 (before the presence rewrite)",
+      "presence": "lib/squat at 0f9116df6 (presence rewrite)",
+      "fused": "presence plus inline frameless descent through hidden single-child subtrees",
+      "fusedB": "presence plus the same descent in a noinline helper"
+    },
+    "binary_sha256": {
+      "fused-bench": "5ae624714764fb9e733789c62d210bfc5fddc36dc31994adfc3334f3e21f780e",
+      "fusedB-bench": "ae4131fd5d7871f88d15ad3be1e065d202596591d7a889d81874b342028d5e9c",
+      "presence-bench": "ed44842beec7faa76e822b8e4f83dfd6c87f5674d26c61152eb3eb44cc5d72c3",
+      "scan3-bench": "14aa897d2aaabe75cf0c0d0642c6768e31e2501f8de99cebdb6a6504150433b2"
+    }
+  },
+  "baseline": "scan3",
+  "candidate": "presence",
+  "rows": [
+    {
+      "path": "test/Chart.js/node_modules/.pnpm/language-subtag-registry@0.3.23/node_modules/language-subtag-registry/data/json/registry.json",
+      "grammar": "json",
+      "repack": 0,
+      "nodes": 490245,
+      "samples_ms": {
+        "scan3": [
+          56.977607,
+          57.203243,
+          57.218739,
+          57.44265,
+          58.353083
+        ],
+        "presence": [
+          51.327956,
+          52.048391,
+          52.047721,
+          52.119845,
+          51.374714
+        ]
+      },
+      "medians_ms": {
+        "scan3": 57.218739,
+        "presence": 52.047721
+      },
+      "ratio": 0.9096271939862219
+    },
+    {
+      "path": "test/Chart.js/node_modules/.pnpm/prettier@2.8.8/node_modules/prettier/esm/parser-typescript.mjs",
+      "grammar": "tsx",
+      "repack": 0,
+      "nodes": 511131,
+      "samples_ms": {
+        "scan3": [
+          86.466077,
+          85.684197,
+          85.835171,
+          85.033029,
+          85.546631
+        ],
+        "presence": [
+          79.063112,
+          79.347442,
+          79.505664,
+          79.043402,
+          78.862512
+        ]
+      },
+      "medians_ms": {
+        "scan3": 85.684197,
+        "presence": 79.063112
+      },
+      "ratio": 0.9227268827646247
+    },
+    {
+      "path": "test/act/pkg/runner/testdata/actions/node20/node_modules/@vercel/ncc/dist/ncc/loaders/typescript/lib/lib.dom.d.ts",
+      "grammar": "typescript",
+      "repack": 0,
+      "nodes": 190002,
+      "samples_ms": {
+        "scan3": [
+          29.789358,
+          29.525907,
+          29.663597,
+          29.505021,
+          29.370548
+        ],
+        "presence": [
+          27.10171,
+          27.647161,
+          27.567968,
+          26.84099,
+          26.975591
+        ]
+      },
+      "medians_ms": {
+        "scan3": 29.525907,
+        "presence": 27.10171
+      },
+      "ratio": 0.9178959345770479
+    },
+    {
+      "path": "test/entt/single_include/entt/entt.hpp",
+      "grammar": "cpp",
+      "repack": 0,
+      "nodes": 709679,
+      "samples_ms": {
+        "scan3": [
+          107.081133,
+          106.318071,
+          105.358563,
+          106.459022,
+          107.16268
+        ],
+        "presence": [
+          96.199049,
+          95.521786,
+          96.221553,
+          96.693328,
+          97.061994
+        ]
+      },
+      "medians_ms": {
+        "scan3": 106.459022,
+        "presence": 96.221553
+      },
+      "ratio": 0.9038365297024802
+    },
+    {
+      "path": "train/black/profiling/dict_huge.py",
+      "grammar": "python",
+      "repack": 0,
+      "nodes": 455815,
+      "samples_ms": {
+        "scan3": [
+          77.820853,
+          79.159103,
+          78.894942,
+          78.88073,
+          78.591673
+        ],
+        "presence": [
+          73.075684,
+          74.239912,
+          72.919553,
+          73.262783,
+          74.152993
+        ]
+      },
+      "medians_ms": {
+        "scan3": 78.88073,
+        "presence": 73.262783
+      },
+      "ratio": 0.9287792214904704
+    },
+    {
+      "path": "train/nodebb/node_modules/@fortawesome/fontawesome-free/metadata/icon-families.yml",
+      "grammar": "yaml",
+      "repack": 0,
+      "nodes": 207403,
+      "samples_ms": {
+        "scan3": [
+          30.452019,
+          30.878911,
+          30.07358,
+          30.459672,
+          30.43756
+        ],
+        "presence": [
+          27.650556,
+          27.954193,
+          27.915832,
+          27.670981,
+          27.904652
+        ]
+      },
+      "medians_ms": {
+        "scan3": 30.452019,
+        "presence": 27.904652
+      },
+      "ratio": 0.9163481738271606
+    },
+    {
+      "path": "train/nodebb/node_modules/@typescript/typescript-linux-x64/lib/lib.dom.d.ts",
+      "grammar": "typescript",
+      "repack": 0,
+      "nodes": 218742,
+      "samples_ms": {
+        "scan3": [
+          34.12682,
+          33.93464,
+          34.226703,
+          34.256599,
+          34.266691
+        ],
+        "presence": [
+          31.656429,
+          31.136683,
+          31.542375,
+          31.450371,
+          31.301239
+        ]
+      },
+      "medians_ms": {
+        "scan3": 34.226703,
+        "presence": 31.450371
+      },
+      "ratio": 0.9188840362450336
+    },
+    {
+      "path": "train/nodebb/node_modules/ace-builds/src/worker-xquery.js",
+      "grammar": "tsx",
+      "repack": 0,
+      "nodes": 839376,
+      "samples_ms": {
+        "scan3": [
+          165.581528,
+          164.426804,
+          163.192275,
+          164.012657,
+          163.390023
+        ],
+        "presence": [
+          154.115705,
+          153.841137,
+          153.731825,
+          154.067459,
+          152.219349
+        ]
+      },
+      "medians_ms": {
+        "scan3": 164.012657,
+        "presence": 153.841137
+      },
+      "ratio": 0.9379833228358712
+    },
+    {
+      "path": "train/nodebb/node_modules/natural/lib/natural/sentiment/English/senticon_en.json",
+      "grammar": "json",
+      "repack": 0,
+      "nodes": 1043241,
+      "samples_ms": {
+        "scan3": [
+          119.563155,
+          120.407646,
+          120.621479,
+          120.485318,
+          120.246045
+        ],
+        "presence": [
+          107.194628,
+          108.947506,
+          108.0626,
+          108.470992,
+          108.317102
+        ]
+      },
+      "medians_ms": {
+        "scan3": 120.407646,
+        "presence": 108.317102
+      },
+      "ratio": 0.8995865760883658
+    },
+    {
+      "path": "test/Chart.js/node_modules/.pnpm/language-subtag-registry@0.3.23/node_modules/language-subtag-registry/data/json/registry.json",
+      "grammar": "json",
+      "repack": 1,
+      "nodes": 490245,
+      "samples_ms": {
+        "scan3": [
+          60.029467,
+          59.245275,
+          59.380123,
+          59.61973,
+          58.998573
+        ],
+        "presence": [
+          53.475575,
+          53.440121,
+          53.581259,
+          54.007725,
+          53.681937
+        ]
+      },
+      "medians_ms": {
+        "scan3": 59.380123,
+        "presence": 53.581259
+      },
+      "ratio": 0.9023433481267799
+    },
+    {
+      "path": "test/Chart.js/node_modules/.pnpm/prettier@2.8.8/node_modules/prettier/esm/parser-typescript.mjs",
+      "grammar": "tsx",
+      "repack": 1,
+      "nodes": 511131,
+      "samples_ms": {
+        "scan3": [
+          86.986107,
+          86.61478,
+          86.825817,
+          86.241152,
+          86.38006
+        ],
+        "presence": [
+          80.352211,
+          80.351785,
+          79.510021,
+          79.873139,
+          80.049508
+        ]
+      },
+      "medians_ms": {
+        "scan3": 86.61478,
+        "presence": 80.049508
+      },
+      "ratio": 0.9242014815485302
+    },
+    {
+      "path": "test/act/pkg/runner/testdata/actions/node20/node_modules/@vercel/ncc/dist/ncc/loaders/typescript/lib/lib.dom.d.ts",
+      "grammar": "typescript",
+      "repack": 1,
+      "nodes": 190002,
+      "samples_ms": {
+        "scan3": [
+          33.209008,
+          33.121535,
+          33.483346,
+          51.861459,
+          33.256852
+        ],
+        "presence": [
+          30.894656,
+          30.758837,
+          31.118863,
+          30.991188,
+          30.906223
+        ]
+      },
+      "medians_ms": {
+        "scan3": 33.256852,
+        "presence": 30.906223
+      },
+      "ratio": 0.9293189565867509
+    },
+    {
+      "path": "test/entt/single_include/entt/entt.hpp",
+      "grammar": "cpp",
+      "repack": 1,
+      "nodes": 709679,
+      "samples_ms": {
+        "scan3": [
+          107.371203,
+          107.359335,
+          107.127157,
+          106.728102,
+          108.180667
+        ],
+        "presence": [
+          98.591858,
+          97.563161,
+          97.321576,
+          97.588004,
+          98.761933
+        ]
+      },
+      "medians_ms": {
+        "scan3": 107.359335,
+        "presence": 97.588004
+      },
+      "ratio": 0.9089848032311303
+    },
+    {
+      "path": "train/black/profiling/dict_huge.py",
+      "grammar": "python",
+      "repack": 1,
+      "nodes": 455815,
+      "samples_ms": {
+        "scan3": [
+          78.779761,
+          78.572558,
+          78.592536,
+          77.524705,
+          81.100866
+        ],
+        "presence": [
+          73.298514,
+          72.995243,
+          73.645034,
+          72.573536,
+          72.765832
+        ]
+      },
+      "medians_ms": {
+        "scan3": 78.592536,
+        "presence": 72.995243
+      },
+      "ratio": 0.9287808577649156
+    },
+    {
+      "path": "train/nodebb/node_modules/@fortawesome/fontawesome-free/metadata/icon-families.yml",
+      "grammar": "yaml",
+      "repack": 1,
+      "nodes": 207403,
+      "samples_ms": {
+        "scan3": [
+          30.291121,
+          30.295477,
+          30.285082,
+          30.144588,
+          30.19162
+        ],
+        "presence": [
+          27.801022,
+          27.928053,
+          28.120767,
+          27.788517,
+          28.254556
+        ]
+      },
+      "medians_ms": {
+        "scan3": 30.285082,
+        "presence": 27.928053
+      },
+      "ratio": 0.9221719459105311
+    },
+    {
+      "path": "train/nodebb/node_modules/@typescript/typescript-linux-x64/lib/lib.dom.d.ts",
+      "grammar": "typescript",
+      "repack": 1,
+      "nodes": 218742,
+      "samples_ms": {
+        "scan3": [
+          34.021007,
+          34.05216,
+          33.876132,
+          34.093473,
+          34.24481
+        ],
+        "presence": [
+          31.608425,
+          31.683928,
+          31.416908,
+          31.375627,
+          31.438954
+        ]
+      },
+      "medians_ms": {
+        "scan3": 34.05216,
+        "presence": 31.438954
+      },
+      "ratio": 0.9232587301363555
+    },
+    {
+      "path": "train/nodebb/node_modules/ace-builds/src/worker-xquery.js",
+      "grammar": "tsx",
+      "repack": 1,
+      "nodes": 839376,
+      "samples_ms": {
+        "scan3": [
+          164.342182,
+          164.660134,
+          164.919875,
+          165.990825,
+          163.469268
+        ],
+        "presence": [
+          154.995327,
+          155.157645,
+          154.725144,
+          156.223383,
+          154.392016
+        ]
+      },
+      "medians_ms": {
+        "scan3": 164.660134,
+        "presence": 154.995327
+      },
+      "ratio": 0.9413045115097501
+    },
+    {
+      "path": "train/nodebb/node_modules/natural/lib/natural/sentiment/English/senticon_en.json",
+      "grammar": "json",
+      "repack": 1,
+      "nodes": 1043241,
+      "samples_ms": {
+        "scan3": [
+          121.132203,
+          121.312875,
+          121.150469,
+          120.834206,
+          121.375404
+        ],
+        "presence": [
+          109.91086,
+          108.890455,
+          108.868132,
+          108.069716,
+          108.193097
+        ]
+      },
+      "medians_ms": {
+        "scan3": 121.150469,
+        "presence": 108.868132
+      },
+      "ratio": 0.8986191543344335
+    }
+  ]
+}
