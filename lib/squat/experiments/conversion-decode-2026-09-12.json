@@ -1,0 +1,507 @@
+{
+  "build": {
+    "head": "e547ad94bc95dfa9de3d015e29dd9a1ec0e9aa2d",
+    "flags": "-O3 -g -fno-omit-frame-pointer; no LTO; points enabled; 16-slot groups",
+    "compiler": "gcc (GCC) 15.3.0",
+    "variants": {
+      "baseline": {
+        "source": "lib/squat/pack.c at HEAD (e547ad94b)",
+        "binary_sha256": "8e12c60a824583133ae2bd42ba7ca1aebbebef22dc3214a78392bdc1c3fbb4dc",
+        "pack_sha256": "d683af01de76ca5c961c2657303a4b0c4395075a22a7a2e32817c89fa267afd7"
+      },
+      "candidate": {
+        "source": "lib/squat/pack.c working tree: single-decode + column hoisting",
+        "binary_sha256": "134f3e91f98bfd8f76fcb09f05af771e9a1c9fb7d92e1ffc680ac8976277d0ba",
+        "pack_sha256": "710b11865ef02770290a2aa50b34a5e4ce33751101f4c08cdc8bebce4400f64b"
+      }
+    }
+  },
+  "rows": [
+    {
+      "path": "test/Chart.js/node_modules/.pnpm/language-subtag-registry@0.3.23/node_modules/language-subtag-registry/data/json/registry.json",
+      "grammar": "json",
+      "repack": 0,
+      "nodes": 490245,
+      "samples_ms": {
+        "baseline": [
+          62.569965,
+          63.523464,
+          62.262605,
+          62.425922,
+          62.774389
+        ],
+        "candidate": [
+          58.55525,
+          59.378757,
+          58.630397,
+          58.739384,
+          58.023202
+        ]
+      },
+      "medians_ms": {
+        "baseline": 62.569965,
+        "candidate": 58.630397
+      },
+      "ratio": 0.9370373948586994
+    },
+    {
+      "path": "test/Chart.js/node_modules/.pnpm/prettier@2.8.8/node_modules/prettier/esm/parser-typescript.mjs",
+      "grammar": "tsx",
+      "repack": 0,
+      "nodes": 511131,
+      "samples_ms": {
+        "baseline": [
+          89.908694,
+          90.66743,
+          90.58182,
+          91.424911,
+          91.201576
+        ],
+        "candidate": [
+          87.781283,
+          88.135595,
+          88.293461,
+          88.478541,
+          88.175821
+        ]
+      },
+      "medians_ms": {
+        "baseline": 90.66743,
+        "candidate": 88.175821
+      },
+      "ratio": 0.9725192497460224
+    },
+    {
+      "path": "test/act/pkg/runner/testdata/actions/node20/node_modules/@vercel/ncc/dist/ncc/loaders/typescript/lib/lib.dom.d.ts",
+      "grammar": "typescript",
+      "repack": 0,
+      "nodes": 190002,
+      "samples_ms": {
+        "baseline": [
+          31.77653,
+          31.497009,
+          31.210497,
+          31.642942,
+          31.548735
+        ],
+        "candidate": [
+          30.351435,
+          30.549816,
+          30.046823,
+          30.245339,
+          30.547628
+        ]
+      },
+      "medians_ms": {
+        "baseline": 31.548735,
+        "candidate": 30.351435
+      },
+      "ratio": 0.9620491915127499
+    },
+    {
+      "path": "test/entt/single_include/entt/entt.hpp",
+      "grammar": "cpp",
+      "repack": 0,
+      "nodes": 709679,
+      "samples_ms": {
+        "baseline": [
+          112.707371,
+          114.475978,
+          114.127258,
+          113.539252,
+          111.829226
+        ],
+        "candidate": [
+          108.027462,
+          109.20883,
+          109.910019,
+          108.311016,
+          106.805384
+        ]
+      },
+      "medians_ms": {
+        "baseline": 113.539252,
+        "candidate": 108.311016
+      },
+      "ratio": 0.9539521715362366
+    },
+    {
+      "path": "train/black/profiling/dict_huge.py",
+      "grammar": "python",
+      "repack": 0,
+      "nodes": 455815,
+      "samples_ms": {
+        "baseline": [
+          82.499089,
+          83.232992,
+          83.378199,
+          83.527996,
+          83.355411
+        ],
+        "candidate": [
+          79.646797,
+          80.106987,
+          81.303908,
+          81.252305,
+          79.890314
+        ]
+      },
+      "medians_ms": {
+        "baseline": 83.355411,
+        "candidate": 80.106987
+      },
+      "ratio": 0.9610292366022885
+    },
+    {
+      "path": "train/nodebb/node_modules/@fortawesome/fontawesome-free/metadata/icon-families.yml",
+      "grammar": "yaml",
+      "repack": 0,
+      "nodes": 207403,
+      "samples_ms": {
+        "baseline": [
+          32.045167,
+          32.574729,
+          32.198251,
+          32.833456,
+          32.141883
+        ],
+        "candidate": [
+          31.498815,
+          31.425124,
+          31.354498,
+          31.029952,
+          36.439022
+        ]
+      },
+      "medians_ms": {
+        "baseline": 32.198251,
+        "candidate": 31.425124
+      },
+      "ratio": 0.9759885404955692
+    },
+    {
+      "path": "train/nodebb/node_modules/@typescript/typescript-linux-x64/lib/lib.dom.d.ts",
+      "grammar": "typescript",
+      "repack": 0,
+      "nodes": 218742,
+      "samples_ms": {
+        "baseline": [
+          36.748742,
+          36.389309,
+          36.379566,
+          36.428955,
+          36.953079
+        ],
+        "candidate": [
+          34.601859,
+          34.998298,
+          34.878232,
+          35.003538,
+          35.598337
+        ]
+      },
+      "medians_ms": {
+        "baseline": 36.428955,
+        "candidate": 34.998298
+      },
+      "ratio": 0.9607274762616714
+    },
+    {
+      "path": "train/nodebb/node_modules/ace-builds/src/worker-xquery.js",
+      "grammar": "tsx",
+      "repack": 0,
+      "nodes": 839376,
+      "samples_ms": {
+        "baseline": [
+          175.278201,
+          179.273358,
+          176.673386,
+          174.208698,
+          176.090474
+        ],
+        "candidate": [
+          169.104243,
+          169.94023,
+          168.339711,
+          168.942017,
+          169.821625
+        ]
+      },
+      "medians_ms": {
+        "baseline": 176.090474,
+        "candidate": 169.104243
+      },
+      "ratio": 0.9603259004232109
+    },
+    {
+      "path": "train/nodebb/node_modules/natural/lib/natural/sentiment/English/senticon_en.json",
+      "grammar": "json",
+      "repack": 0,
+      "nodes": 1043241,
+      "samples_ms": {
+        "baseline": [
+          130.695679,
+          133.126608,
+          130.173593,
+          132.386835,
+          130.051812
+        ],
+        "candidate": [
+          124.074051,
+          124.015969,
+          124.970418,
+          123.800166,
+          125.148308
+        ]
+      },
+      "medians_ms": {
+        "baseline": 130.695679,
+        "candidate": 124.074051
+      },
+      "ratio": 0.9493355247039191
+    },
+    {
+      "path": "test/Chart.js/node_modules/.pnpm/language-subtag-registry@0.3.23/node_modules/language-subtag-registry/data/json/registry.json",
+      "grammar": "json",
+      "repack": 1,
+      "nodes": 490245,
+      "samples_ms": {
+        "baseline": [
+          65.542811,
+          65.479519,
+          65.594897,
+          65.59106,
+          65.05079
+        ],
+        "candidate": [
+          61.314035,
+          62.028417,
+          61.614665,
+          62.53121,
+          63.3696
+        ]
+      },
+      "medians_ms": {
+        "baseline": 65.542811,
+        "candidate": 62.028417
+      },
+      "ratio": 0.9463801758517802
+    },
+    {
+      "path": "test/Chart.js/node_modules/.pnpm/prettier@2.8.8/node_modules/prettier/esm/parser-typescript.mjs",
+      "grammar": "tsx",
+      "repack": 1,
+      "nodes": 511131,
+      "samples_ms": {
+        "baseline": [
+          95.056351,
+          93.859123,
+          92.573019,
+          93.073077,
+          92.81465
+        ],
+        "candidate": [
+          92.186148,
+          89.695402,
+          90.854001,
+          90.27181,
+          89.064196
+        ]
+      },
+      "medians_ms": {
+        "baseline": 93.073077,
+        "candidate": 90.27181
+      },
+      "ratio": 0.9699024993017047
+    },
+    {
+      "path": "test/act/pkg/runner/testdata/actions/node20/node_modules/@vercel/ncc/dist/ncc/loaders/typescript/lib/lib.dom.d.ts",
+      "grammar": "typescript",
+      "repack": 1,
+      "nodes": 190002,
+      "samples_ms": {
+        "baseline": [
+          35.097197,
+          35.655485,
+          35.391539,
+          35.642706,
+          35.379918
+        ],
+        "candidate": [
+          34.34287,
+          33.871402,
+          34.393151,
+          34.569597,
+          33.911898
+        ]
+      },
+      "medians_ms": {
+        "baseline": 35.391539,
+        "candidate": 34.34287
+      },
+      "ratio": 0.9703694998965712
+    },
+    {
+      "path": "test/entt/single_include/entt/entt.hpp",
+      "grammar": "cpp",
+      "repack": 1,
+      "nodes": 709679,
+      "samples_ms": {
+        "baseline": [
+          114.956032,
+          113.788514,
+          115.388007,
+          114.532527,
+          115.172078
+        ],
+        "candidate": [
+          109.430902,
+          109.435401,
+          110.767774,
+          109.400821,
+          111.025789
+        ]
+      },
+      "medians_ms": {
+        "baseline": 114.956032,
+        "candidate": 109.435401
+      },
+      "ratio": 0.9519761520648173
+    },
+    {
+      "path": "train/black/profiling/dict_huge.py",
+      "grammar": "python",
+      "repack": 1,
+      "nodes": 455815,
+      "samples_ms": {
+        "baseline": [
+          84.503915,
+          83.918589,
+          83.434276,
+          83.218171,
+          83.753294
+        ],
+        "candidate": [
+          80.661654,
+          82.121382,
+          80.612547,
+          82.407473,
+          81.149764
+        ]
+      },
+      "medians_ms": {
+        "baseline": 83.753294,
+        "candidate": 81.149764
+      },
+      "ratio": 0.9689142972693111
+    },
+    {
+      "path": "train/nodebb/node_modules/@fortawesome/fontawesome-free/metadata/icon-families.yml",
+      "grammar": "yaml",
+      "repack": 1,
+      "nodes": 207403,
+      "samples_ms": {
+        "baseline": [
+          32.858648,
+          32.687404,
+          32.861623,
+          32.447336,
+          32.583683
+        ],
+        "candidate": [
+          31.451578,
+          31.613587,
+          31.535021,
+          31.67858,
+          31.304639
+        ]
+      },
+      "medians_ms": {
+        "baseline": 32.687404,
+        "candidate": 31.535021
+      },
+      "ratio": 0.9647453496154054
+    },
+    {
+      "path": "train/nodebb/node_modules/@typescript/typescript-linux-x64/lib/lib.dom.d.ts",
+      "grammar": "typescript",
+      "repack": 1,
+      "nodes": 218742,
+      "samples_ms": {
+        "baseline": [
+          36.662315,
+          36.668966,
+          37.15606,
+          37.094652,
+          36.64151
+        ],
+        "candidate": [
+          35.716194,
+          35.564154,
+          36.273791,
+          35.02145,
+          35.232972
+        ]
+      },
+      "medians_ms": {
+        "baseline": 36.668966,
+        "candidate": 35.564154
+      },
+      "ratio": 0.9698706530203225
+    },
+    {
+      "path": "train/nodebb/node_modules/ace-builds/src/worker-xquery.js",
+      "grammar": "tsx",
+      "repack": 1,
+      "nodes": 839376,
+      "samples_ms": {
+        "baseline": [
+          177.982404,
+          176.957815,
+          176.695384,
+          180.506651,
+          178.614961
+        ],
+        "candidate": [
+          171.549147,
+          171.970629,
+          169.285523,
+          172.94148,
+          172.191657
+        ]
+      },
+      "medians_ms": {
+        "baseline": 177.982404,
+        "candidate": 171.970629
+      },
+      "ratio": 0.9662226441216065
+    },
+    {
+      "path": "train/nodebb/node_modules/natural/lib/natural/sentiment/English/senticon_en.json",
+      "grammar": "json",
+      "repack": 1,
+      "nodes": 1043241,
+      "samples_ms": {
+        "baseline": [
+          130.750839,
+          131.982357,
+          135.033061,
+          132.419859,
+          131.090456
+        ],
+        "candidate": [
+          126.206966,
+          126.39169,
+          123.90056,
+          124.319077,
+          126.826518
+        ]
+      },
+      "medians_ms": {
+        "baseline": 131.982357,
+        "candidate": 126.206966
+      },
+      "ratio": 0.9562411891159057
+    }
+  ]
+}

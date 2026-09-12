@@ -46,6 +46,7 @@ typedef struct {
   uint64_t *masks;
   uint32_t mask_count, mask_capacity;
   uint16_t *supertype_indexes;
+  uint32_t symbol_space;
   SQError *error;
 } Builder;
 
@@ -80,6 +81,32 @@ typedef struct {
   uint32_t remaining, structural;
   bool visible, child_later;
 } Frame;
+
+// The traversal reads several fields of every raw subtree, and each subtree.h
+// accessor repeats the inline/heap test. Decode the needed fields once.
+typedef struct {
+  uint32_t child_count, visible_child_count;
+  bool visible, extra;
+} ChildFacts;
+
+static inline ChildFacts child_facts(Subtree subtree) {
+  ChildFacts facts;
+  if (subtree.data.is_inline) {
+    facts.child_count = 0;
+    facts.visible_child_count = 0;
+    facts.visible = subtree.data.visible;
+    facts.extra = subtree.data.extra;
+  } else {
+    const SubtreeHeapData *data = subtree.ptr;
+    facts.child_count = data->child_count;
+
+    // visible_child_count shares a union with terminal-only members.
+    facts.visible_child_count = data->child_count ? data->visible_child_count : 0;
+    facts.visible = data->visible;
+    facts.extra = data->extra;
+  }
+  return facts;
+}
 
 static bool reserve_positions(Builder *builder, uint32_t count, uint32_t *offset) {
   uint64_t needed = (uint64_t)builder->position_count + count;
@@ -245,6 +272,7 @@ static bool close_group(Builder *builder) {
 #endif
 
   uint32_t group = header->group_count++;
+  uint32_t first = group * SQ_GROUP_SIZE;
   sq_set_packed(tree->data, tree->layout.waste, group, SQ_WASTE_BITS,
                 SQ_GROUP_SIZE - builder->count);
   sq_set_u32(tree->data, tree->layout.span_base, group, builder->base.span);
@@ -259,18 +287,17 @@ static bool close_group(Builder *builder) {
 
   uint64_t last = 0, extra = 0, error = 0, missing = 0;
   for (uint32_t i = 0; i < builder->count; i++) {
-    uint64_t bit = UINT64_C(1) << i;
-    last |= (builder->pending[i].flags & 1) ? bit : 0;
-    extra |= (builder->pending[i].flags & 2) ? bit : 0;
-    error |= (builder->pending[i].flags & 4) ? bit : 0;
-    missing |= (builder->pending[i].flags & 8) ? bit : 0;
+    uint64_t flags = builder->pending[i].flags;
+    last |= (flags & 1) << i;
+    extra |= ((flags >> 1) & 1) << i;
+    error |= ((flags >> 2) & 1) << i;
+    missing |= ((flags >> 3) & 1) << i;
   }
   set_group_flags(tree->data, tree->layout.last, group, last);
   set_group_flags(tree->data, tree->layout.extra, group, extra);
   set_group_flags(tree->data, tree->layout.error, group, error);
   set_group_flags(tree->data, tree->layout.missing, group, missing);
 
-  uint32_t first = group * SQ_GROUP_SIZE;
   set_pending_column(tree->data, tree->layout.symbol, first, builder->count,
                      tree->layout.symbol_bits, builder->pending, PENDING_SYMBOL);
   set_pending_column(tree->data, tree->layout.grammar_symbol, first, builder->count,
@@ -278,26 +305,35 @@ static bool close_group(Builder *builder) {
   set_pending_column(tree->data, tree->layout.field, first, builder->count,
                      tree->layout.field_bits, builder->pending, PENDING_FIELD);
 
-  for (uint32_t i = 0; i < builder->count; i++) {
-    const Pending *pending = &builder->pending[i];
-    uint32_t slot = group * SQ_GROUP_SIZE + i;
-
-    sq_set_u8(tree->data, tree->layout.span_delta, slot, pending->values.span - builder->base.span);
-    sq_set_u8(tree->data, tree->layout.start_byte_delta, slot,
-              pending->values.start_byte - builder->base.start_byte);
-    sq_set_u16(tree->data, tree->layout.end_byte_delta, slot,
-               builder->max.end_byte - pending->values.end_byte);
+  // Stores through the slab's byte pointer may alias the tree, so the column
+  // offsets and the destination base are read once rather than per slot.
+  uint8_t *data = tree->data;
+  uint8_t *span_delta = data + tree->layout.span_delta + first;
+  uint8_t *start_byte_delta = data + tree->layout.start_byte_delta + first;
+  uint8_t *end_byte_delta = data + tree->layout.end_byte_delta + (size_t)first * 2;
+  uint8_t *supertype = data + tree->layout.supertype + first;
 #if SQ_INCLUDE_POINTS
-    uint16_t start_point =
-        (uint16_t)((pending->values.start_row - builder->base.start_row) << 8) |
-        (uint16_t)(pending->values.start_column - builder->base.start_column);
-    uint16_t end_point = (uint16_t)((builder->max.end_row - pending->values.end_row) << 8) |
-                         (uint16_t)(builder->max.end_column - pending->values.end_column);
-    sq_set_u16(tree->data, tree->layout.start_point, slot, start_point);
-    sq_set_u16(tree->data, tree->layout.end_point, slot, end_point);
+  uint8_t *start_point = data + tree->layout.start_point + (size_t)first * 2;
+  uint8_t *end_point = data + tree->layout.end_point + (size_t)first * 2;
+#endif
+  PackValues base = builder->base, max = builder->max;
+  for (uint32_t i = 0; i < builder->count; i++) {
+    const PackValues *values = &builder->pending[i].values;
+
+    span_delta[i] = (uint8_t)(values->span - base.span);
+    start_byte_delta[i] = (uint8_t)(values->start_byte - base.start_byte);
+    uint16_t end_byte = (uint16_t)(max.end_byte - values->end_byte);
+    memcpy(end_byte_delta + (size_t)i * 2, &end_byte, sizeof(end_byte));
+#if SQ_INCLUDE_POINTS
+    uint16_t start = (uint16_t)((values->start_row - base.start_row) << 8) |
+                     (uint16_t)(values->start_column - base.start_column);
+    uint16_t end = (uint16_t)((max.end_row - values->end_row) << 8) |
+                   (uint16_t)(max.end_column - values->end_column);
+    memcpy(start_point + (size_t)i * 2, &start, sizeof(start));
+    memcpy(end_point + (size_t)i * 2, &end, sizeof(end));
 #endif
 
-    sq_set_u8(tree->data, tree->layout.supertype, slot, pending->super);
+    supertype[i] = builder->pending[i].super;
   }
 
   builder->count = 0;
@@ -386,10 +422,36 @@ static bool group_fits(const Builder *builder, const PackValues *value, PackValu
   return true;
 }
 
+static inline uint32_t encode_symbol(const Builder *builder, TSSymbol symbol) {
+  return symbol == ts_builtin_sym_error          ? builder->symbol_space - 2
+         : symbol == ts_builtin_sym_error_repeat ? builder->symbol_space - 1
+                                                 : symbol;
+}
+
 static bool emit(Builder *builder, const EmitNode *frame) {
   Subtree subtree = *frame->subtree;
-  Length size = ts_subtree_size(subtree);
-  TSSymbol grammar = ts_subtree_symbol(subtree);
+  Length size;
+  TSSymbol grammar;
+  uint32_t error_cost;
+  bool extra, missing;
+  if (subtree.data.is_inline) {
+    size = (Length){subtree.data.size_bytes, {0, subtree.data.size_bytes}};
+    grammar = subtree.data.symbol;
+    error_cost = 0;
+    extra = subtree.data.extra;
+    missing = subtree.data.is_missing;
+  } else {
+    const SubtreeHeapData *data = subtree.ptr;
+    size = data->size;
+    grammar = data->symbol;
+    error_cost = data->error_cost;
+    extra = data->extra;
+    missing = data->is_missing;
+  }
+
+  // ts_subtree_error_cost reports a positive constant for a missing subtree
+  // regardless of the stored cost, so the recorded flag is the same predicate.
+  bool has_error = missing || error_cost > 0;
   TSSymbol raw_symbol = frame->alias ? frame->alias : grammar;
 #if SQ_INCLUDE_POINTS
   Length end = length_add(frame->position, size);
@@ -438,12 +500,11 @@ static bool emit(Builder *builder, const EmitNode *frame) {
     if (group_fits(builder, &slot->values, &base, &max)) {
       builder->base = base;
       builder->max = max;
-      slot->symbol = sq_encode_symbol(builder->tree, raw_symbol);
-      slot->grammar = sq_encode_symbol(builder->tree, grammar);
+      slot->symbol = encode_symbol(builder, raw_symbol);
+      slot->grammar = encode_symbol(builder, grammar);
       slot->field = frame->field;
-      slot->flags = (uint8_t)((!frame->later) | (ts_subtree_extra(subtree) << 1) |
-                              ((ts_subtree_error_cost(subtree) > 0) << 2) |
-                              (ts_subtree_missing(subtree) << 3));
+      slot->flags =
+          (uint8_t)((!frame->later) | (extra << 1) | (has_error << 2) | (missing << 3));
       slot->super = super;
       builder->count++;
       return true;
@@ -477,34 +538,46 @@ static bool init_frame(Builder *builder, Frame *frame, const Subtree *subtree_po
   Subtree subtree = *subtree_pointer;
   uint32_t count = ts_subtree_child_count(subtree);
   if (count) {
-    frame->structural = 0;
     frame->child_later = false;
     frame->children = ts_subtree_children(subtree);
     frame->aliases =
         ts_language_alias_sequence(builder->tree->language, subtree.ptr->production_id);
     if (count > 1 && !reserve_positions(builder, count, &frame->position_offset)) return false;
 
+    // Extents cannot be recovered by subtracting a multiline child's size, so
+    // every child start is computed here. One inline/heap test per child covers
+    // its padding, size, and extra flag.
+    uint32_t structural = 0;
+    PackPosition *positions = count == 1 ? &frame->inline_position
+                                         : builder->positions + frame->position_offset;
     for (uint32_t i = 0; i < count; i++) {
-      if (i) {
-#if SQ_INCLUDE_POINTS
-        position = length_add(position, ts_subtree_padding(frame->children[i]));
-#else
-        position += ts_subtree_padding(frame->children[i]).bytes;
-#endif
+      Subtree child = frame->children[i];
+      Length padding, size;
+      bool extra;
+      if (child.data.is_inline) {
+        padding = (Length){child.data.padding_bytes,
+                           {child.data.padding_rows, child.data.padding_columns}};
+        size = (Length){child.data.size_bytes, {0, child.data.size_bytes}};
+        extra = child.data.extra;
+      } else {
+        padding = child.ptr->padding;
+        size = child.ptr->size;
+        extra = child.ptr->extra;
       }
 
-      if (count == 1) {
-        frame->inline_position = position;
-      } else {
-        builder->positions[frame->position_offset + i] = position;
-      }
 #if SQ_INCLUDE_POINTS
-      position = length_add(position, ts_subtree_size(frame->children[i]));
+      if (i) position = length_add(position, padding);
+      positions[i] = position;
+      position = length_add(position, size);
 #else
-      position += ts_subtree_size(frame->children[i]).bytes;
+      if (i) position += padding.bytes;
+      positions[i] = position;
+      position += size.bytes;
 #endif
-      frame->structural += !ts_subtree_extra(frame->children[i]);
+      structural += !extra;
     }
+
+    frame->structural = structural;
 
     if (frame->structural && builder->tree->language->field_count) {
       const TSFieldMapEntry *map, *end;
@@ -579,8 +652,10 @@ SQTree *sq_tree_pack(const TSTree *tree, SQPackOptions options, SQError *error) 
     return NULL;
   }
 
-  Builder builder = {
-      .tree = result, .words = (result->supertype_count + 63) / 64, .error = error};
+  Builder builder = {.tree = result,
+                     .words = (result->supertype_count + 63) / 64,
+                     .symbol_space = sq_symbols(result),
+                     .error = error};
   size_t depth = 0, stack_capacity = 32;
   Frame *stack = malloc(stack_capacity * sizeof(Frame));
   uint32_t symbols = result->language->symbol_count + result->language->alias_count;
@@ -620,15 +695,16 @@ SQTree *sq_tree_pack(const TSTree *tree, SQPackOptions options, SQError *error) 
     if (frame->remaining) {
       uint32_t index = --frame->remaining;
       const Subtree *child = &frame->children[index];
-      bool extra = ts_subtree_extra(*child);
+      ChildFacts facts = child_facts(*child);
+      bool extra = facts.extra;
       if (!extra) {
         --frame->structural;
       }
 
       TSSymbol alias = extra || !frame->aliases ? 0 : frame->aliases[frame->structural];
-      bool visible = alias || ts_subtree_visible(*child);
+      bool visible = alias || facts.visible;
       bool later = frame->child_later || (!frame->visible && frame->node.later);
-      frame->child_later |= visible || ts_subtree_visible_child_count(*child) > 0;
+      frame->child_later |= visible || facts.visible_child_count > 0;
 
       // Hidden wrappers carry their incoming field; visible nodes start a new
       // child relationship. Extras interrupt field inheritance.
@@ -638,7 +714,7 @@ SQTree *sq_tree_pack(const TSTree *tree, SQPackOptions options, SQError *error) 
         if (direct) field = direct;
       }
 
-      uint32_t child_count = ts_subtree_child_count(*child);
+      uint32_t child_count = facts.child_count;
       if (!child_count && !visible) {
         continue;
       }
