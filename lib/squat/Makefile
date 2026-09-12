@@ -65,6 +65,10 @@ $(BUILD)/end255-bench: experiments/end255.c $(BUILD)/libtree-sitter-squat.a $(BU
 $(BUILD)/setup-bench: experiments/setup.c $(BUILD)/libtree-sitter-squat.a $(BUILD)/runtime.o
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) $^ -ldl -o $@
 
+# Repeated sq_tree_from_bytes over pre-serialized slabs: the persistence read path.
+$(BUILD)/load-bench: experiments/load.c $(BUILD)/libtree-sitter-squat.a $(BUILD)/runtime.o
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) $^ -ldl -o $@
+
 # GNU ld wrapping counts runtime and Squatter allocations without changing their
 # sizes. Prebuilt grammar-internal libc calls are outside this accounting.
 $(BUILD)/memory-bench: experiments/memory.c $(BUILD)/libtree-sitter-squat.a $(BUILD)/runtime.o

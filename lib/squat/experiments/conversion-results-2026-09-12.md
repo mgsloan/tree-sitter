@@ -128,7 +128,28 @@ Serialized bytes are identical on the same 212 cases. This measures warm repeate
 conversion of already-parsed trees; a real small-file workload also pays parsing
 and file I/O, which this does not measure.
 
-Reproduce a batch with `make -C lib/squat $BUILD/setup-bench` and
+### The load path gains more than packing
+
+`sq_tree_from_bytes` pays the same scan and nothing else of comparable size, so
+opening a cached slab improves more than converting a fresh one. Local medians
+over the same 300-file batches, best of nine repeats, `-O3`:
+
+| Grammar | Before | After | |
+|---|---:|---:|---|
+| typescript | 4.55 µs/file | 1.95 µs/file | −57% |
+| python | 4.89 µs/file | 3.12 µs/file | −36% |
+| cpp | 10.05 µs/file | 6.39 µs/file | −36% |
+| json | 3.65 µs/file | 3.67 µs/file | 0% |
+
+This is the operation the persistence design exists to perform. For the same
+TypeScript batch, parsing costs 15.7 µs/file, so a cache hit went from 3.4× to
+8.0× faster than parsing. Packing itself is only 9-17% of parse-plus-pack on
+these files, so the fresh-parse path gains far less: about 1.5-4% end to end.
+
+Reproduce the load path with `make -C lib/squat $BUILD/load-bench` and
+[load.c](load.c), which serializes each parsed file once and then times repeated
+`sq_tree_from_bytes` over the batch. Reproduce a packing batch with
+`make -C lib/squat $BUILD/setup-bench` and
 [setup.c](setup.c): it parses every listed file, then times repeated conversion of
 the whole batch. Pair two builds and alternate their order; one unalternated
 `-O2`-versus-`-O3` pair produced a convincing 5-12% phantom regression here.
