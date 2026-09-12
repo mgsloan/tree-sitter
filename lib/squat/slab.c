@@ -161,9 +161,16 @@ static SQTree *allocate_tree(const TSLanguage *language, uint32_t capacity, uint
   tree->size = payload_size;
 
   // Runtime metadata, including the supertype list, precedes the aligned payload.
+  // ts_language_symbol_metadata is an out-of-line call that only special-cases the
+  // two builtin error symbols, which this range never reaches. Read the array
+  // directly: this scan is proportional to the grammar, not the tree, so it
+  // otherwise dominates conversion of a small file. Keep ascending order, which
+  // fixes each supertype's bit position in the serialized column.
   tree->supertypes = (TSSymbol *)(tree + 1);
-  for (uint32_t symbol = 0; symbol < language->symbol_count + language->alias_count; symbol++) {
-    if (ts_language_symbol_metadata(language, (TSSymbol)symbol).supertype) {
+  const TSSymbolMetadata *metadata = language->symbol_metadata;
+  uint32_t symbols = (uint32_t)language->symbol_count + language->alias_count;
+  for (uint32_t symbol = 0; symbol < symbols; symbol++) {
+    if (metadata[symbol].supertype) {
       tree->supertypes[tree->supertype_count++] = (TSSymbol)symbol;
     }
   }

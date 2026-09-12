@@ -61,6 +61,10 @@ $(BUILD)/zero-base-bench: experiments/zero-base.c $(BUILD)/libtree-sitter-squat.
 $(BUILD)/end255-bench: experiments/end255.c $(BUILD)/libtree-sitter-squat.a $(BUILD)/runtime.o
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) $^ -ldl -o $@
 
+# Batches of already-parsed trees, so per-tree setup shows against per-node work.
+$(BUILD)/setup-bench: experiments/setup.c $(BUILD)/libtree-sitter-squat.a $(BUILD)/runtime.o
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) $^ -ldl -o $@
+
 # GNU ld wrapping counts runtime and Squatter allocations without changing their
 # sizes. Prebuilt grammar-internal libc calls are outside this accounting.
 $(BUILD)/memory-bench: experiments/memory.c $(BUILD)/libtree-sitter-squat.a $(BUILD)/runtime.o

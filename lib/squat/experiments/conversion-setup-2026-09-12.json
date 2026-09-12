@@ -1,0 +1,463 @@
+{
+  "build": {
+    "head": "927e822f974a56bb191edf4eab96cfb5a3c59f11",
+    "flags": "-O3 -g -fno-omit-frame-pointer; no LTO; points enabled; 16-slot groups",
+    "compiler": "gcc (GCC) 15.3.0",
+    "note": "large-input control for the supertype-scan change; the change targets per-tree setup",
+    "variants": {
+      "baseline": {
+        "source": "lib/squat at HEAD (956fc4850)",
+        "binary_sha256": "134f3e91f98bfd8f76fcb09f05af771e9a1c9fb7d92e1ffc680ac8976277d0ba",
+        "source_sha256": {
+          "slab.c": "83bf4d4043bf7b946514cfc22cb32399dd69c514388a5977450e0595f94f4b50",
+          "index.c": "08b1c158881d510a07ba2a7d03bab9820f9677efa29b96acc217a85c92cdd86f"
+        }
+      },
+      "candidate": {
+        "source": "direct symbol_metadata scan in allocate_tree and load_bytes",
+        "binary_sha256": "1d708c14febeed598d6b113d020bba0832bb8dfa37a6d6bb5a5ab31500d5c4fa",
+        "source_sha256": {
+          "slab.c": "78c4f3d2d4fc5020e04ad28917db289242f28dfe7ab517580853cf00b7c71644",
+          "index.c": "3dd89bc4d57986b0aa63bbbf30c5dd98b7eb524626eef1f626269f3fcc32be97"
+        }
+      }
+    }
+  },
+  "rows": [
+    {
+      "grammar": "typescript",
+      "size": "small",
+      "files": 300,
+      "bytes": 29515,
+      "listing": "/home/mgsloan/conv-scan/typescript-small.list",
+      "nodes": 6376,
+      "samples_ms": {
+        "baseline": [
+          1.301795,
+          1.305562,
+          1.302096,
+          1.265721,
+          1.269369
+        ],
+        "candidate": [
+          0.868762,
+          0.860617,
+          0.858153,
+          0.86674,
+          0.884208
+        ]
+      },
+      "medians_ms": {
+        "baseline": 1.301795,
+        "candidate": 0.86674
+      },
+      "ratio": 0.6658037555836364
+    },
+    {
+      "grammar": "typescript",
+      "size": "big",
+      "files": 16,
+      "bytes": 1616926,
+      "listing": "/home/mgsloan/conv-scan/typescript-big.list",
+      "nodes": 204767,
+      "samples_ms": {
+        "baseline": [
+          31.741381,
+          31.422327,
+          31.87449,
+          31.515157,
+          31.142996
+        ],
+        "candidate": [
+          31.54355,
+          31.501056,
+          31.38004,
+          31.26073,
+          31.367876
+        ]
+      },
+      "medians_ms": {
+        "baseline": 31.515157,
+        "candidate": 31.38004
+      },
+      "ratio": 0.9957126344000128
+    },
+    {
+      "grammar": "tsx",
+      "size": "small",
+      "files": 300,
+      "bytes": 57563,
+      "listing": "/home/mgsloan/conv-scan/tsx-small.list",
+      "nodes": 19710,
+      "samples_ms": {
+        "baseline": [
+          3.190402,
+          3.319802,
+          3.231177,
+          3.09685,
+          3.157751
+        ],
+        "candidate": [
+          2.631241,
+          2.829705,
+          2.720743,
+          2.719748,
+          2.786172
+        ]
+      },
+      "medians_ms": {
+        "baseline": 3.190402,
+        "candidate": 2.720743
+      },
+      "ratio": 0.8527900245799745
+    },
+    {
+      "grammar": "tsx",
+      "size": "big",
+      "files": 20,
+      "bytes": 3117945,
+      "listing": "/home/mgsloan/conv-scan/tsx-big.list",
+      "nodes": 999180,
+      "samples_ms": {
+        "baseline": [
+          158.20642,
+          156.206831,
+          157.555413,
+          157.379515,
+          157.585151
+        ],
+        "candidate": [
+          158.307779,
+          156.792997,
+          157.412661,
+          157.948199,
+          157.634269
+        ]
+      },
+      "medians_ms": {
+        "baseline": 157.555413,
+        "candidate": 157.634269
+      },
+      "ratio": 1.0005004969267544
+    },
+    {
+      "grammar": "python",
+      "size": "small",
+      "files": 300,
+      "bytes": 38259,
+      "listing": "/home/mgsloan/conv-scan/python-small.list",
+      "nodes": 13336,
+      "samples_ms": {
+        "baseline": [
+          2.217512,
+          2.095223,
+          2.039498,
+          2.294641,
+          2.204749
+        ],
+        "candidate": [
+          1.774402,
+          1.764232,
+          1.733042,
+          1.82409,
+          1.801572
+        ]
+      },
+      "medians_ms": {
+        "baseline": 2.204749,
+        "candidate": 1.774402
+      },
+      "ratio": 0.8048090735045123
+    },
+    {
+      "grammar": "python",
+      "size": "big",
+      "files": 20,
+      "bytes": 4241057,
+      "listing": "/home/mgsloan/conv-scan/python-big.list",
+      "nodes": 954575,
+      "samples_ms": {
+        "baseline": [
+          166.422083,
+          163.671835,
+          163.766246,
+          166.519985,
+          168.079528
+        ],
+        "candidate": [
+          165.801062,
+          166.699183,
+          167.230875,
+          164.229465,
+          165.207774
+        ]
+      },
+      "medians_ms": {
+        "baseline": 166.422083,
+        "candidate": 165.801062
+      },
+      "ratio": 0.9962683978664059
+    },
+    {
+      "grammar": "cpp",
+      "size": "small",
+      "files": 300,
+      "bytes": 164827,
+      "listing": "/home/mgsloan/conv-scan/cpp-small.list",
+      "nodes": 27147,
+      "samples_ms": {
+        "baseline": [
+          4.383321,
+          4.38172,
+          4.433116,
+          4.336519,
+          4.333007
+        ],
+        "candidate": [
+          3.582986,
+          3.597831,
+          3.658556,
+          3.739675,
+          3.662155
+        ]
+      },
+      "medians_ms": {
+        "baseline": 4.38172,
+        "candidate": 3.658556
+      },
+      "ratio": 0.8349588745971902
+    },
+    {
+      "grammar": "cpp",
+      "size": "big",
+      "files": 20,
+      "bytes": 6630912,
+      "listing": "/home/mgsloan/conv-scan/cpp-big.list",
+      "nodes": 1390379,
+      "samples_ms": {
+        "baseline": [
+          209.92411,
+          209.120665,
+          209.100296,
+          213.189653,
+          206.293742
+        ],
+        "candidate": [
+          210.356839,
+          211.002662,
+          208.308622,
+          209.828308,
+          208.881628
+        ]
+      },
+      "medians_ms": {
+        "baseline": 209.120665,
+        "candidate": 209.828308
+      },
+      "ratio": 1.0033838979997505
+    },
+    {
+      "grammar": "go",
+      "size": "small",
+      "files": 300,
+      "bytes": 336146,
+      "listing": "/home/mgsloan/conv-scan/go-small.list",
+      "nodes": 75064,
+      "samples_ms": {
+        "baseline": [
+          10.619287,
+          10.542368,
+          10.414201,
+          10.407492,
+          10.526531
+        ],
+        "candidate": [
+          10.267152,
+          10.258209,
+          10.101656,
+          10.213809,
+          10.459803
+        ]
+      },
+      "medians_ms": {
+        "baseline": 10.526531,
+        "candidate": 10.258209
+      },
+      "ratio": 0.9745099311444578
+    },
+    {
+      "grammar": "go",
+      "size": "big",
+      "files": 20,
+      "bytes": 3450774,
+      "listing": "/home/mgsloan/conv-scan/go-big.list",
+      "nodes": 868721,
+      "samples_ms": {
+        "baseline": [
+          120.467519,
+          121.583278,
+          120.010214,
+          120.007869,
+          121.221926
+        ],
+        "candidate": [
+          119.059866,
+          118.689213,
+          119.035493,
+          118.741421,
+          119.626412
+        ]
+      },
+      "medians_ms": {
+        "baseline": 120.467519,
+        "candidate": 119.035493
+      },
+      "ratio": 0.9881127625779361
+    },
+    {
+      "grammar": "json",
+      "size": "small",
+      "files": 300,
+      "bytes": 62835,
+      "listing": "/home/mgsloan/conv-scan/json-small.list",
+      "nodes": 20009,
+      "samples_ms": {
+        "baseline": [
+          1.842927,
+          1.91157,
+          1.954422,
+          1.803945,
+          1.842303
+        ],
+        "candidate": [
+          1.816191,
+          1.794142,
+          1.873238,
+          1.787801,
+          1.823164
+        ]
+      },
+      "medians_ms": {
+        "baseline": 1.842927,
+        "candidate": 1.816191
+      },
+      "ratio": 0.9854926429533021
+    },
+    {
+      "grammar": "json",
+      "size": "big",
+      "files": 19,
+      "bytes": 2569815,
+      "listing": "/home/mgsloan/conv-scan/json-big.list",
+      "nodes": 702923,
+      "samples_ms": {
+        "baseline": [
+          84.663417,
+          84.297393,
+          85.856666,
+          82.81105,
+          83.231282
+        ],
+        "candidate": [
+          84.695266,
+          84.042886,
+          84.153001,
+          83.103417,
+          83.219544
+        ]
+      },
+      "medians_ms": {
+        "baseline": 84.297393,
+        "candidate": 84.042886
+      },
+      "ratio": 0.9969808437610875
+    },
+    {
+      "grammar": "css",
+      "size": "small",
+      "files": 300,
+      "bytes": 65879,
+      "listing": "/home/mgsloan/conv-scan/css-small.list",
+      "nodes": 21474,
+      "samples_ms": {
+        "baseline": [
+          2.404544,
+          2.439618,
+          2.407097,
+          2.502071,
+          2.452384
+        ],
+        "candidate": [
+          2.242484,
+          2.427559,
+          2.307637,
+          2.33231,
+          2.25856
+        ]
+      },
+      "medians_ms": {
+        "baseline": 2.439618,
+        "candidate": 2.307637
+      },
+      "ratio": 0.9459009566251767
+    },
+    {
+      "grammar": "css",
+      "size": "big",
+      "files": 20,
+      "bytes": 5977689,
+      "listing": "/home/mgsloan/conv-scan/css-big.list",
+      "nodes": 1537316,
+      "samples_ms": {
+        "baseline": [
+          171.710601,
+          170.81902,
+          170.256,
+          171.4706,
+          171.874599
+        ],
+        "candidate": [
+          171.064507,
+          169.439504,
+          169.718452,
+          170.07834,
+          171.200954
+        ]
+      },
+      "medians_ms": {
+        "baseline": 171.4706,
+        "candidate": 170.07834
+      },
+      "ratio": 0.991880473970465
+    },
+    {
+      "grammar": "yaml",
+      "size": "small",
+      "files": 300,
+      "bytes": 17865,
+      "listing": "/home/mgsloan/conv-scan/yaml-small.list",
+      "nodes": 8778,
+      "samples_ms": {
+        "baseline": [
+          1.345537,
+          1.322873,
+          1.306988,
+          1.333822,
+          1.30739
+        ],
+        "candidate": [
+          0.976066,
+          1.027912,
+          1.01637,
+          0.999475,
+          0.990566
+        ]
+      },
+      "medians_ms": {
+        "baseline": 1.322873,
+        "candidate": 0.999475
+      },
+      "ratio": 0.7555335999752055
+    }
+  ]
+}

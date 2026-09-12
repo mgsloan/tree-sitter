@@ -360,8 +360,13 @@ static SQTree *load_bytes(const TSLanguage *language, const void *bytes, size_t 
     return NULL;
   }
 
-  for (uint32_t symbol = 0; symbol < language->symbol_count + language->alias_count; symbol++) {
-    supertype_count += ts_language_symbol_metadata(language, (TSSymbol)symbol).supertype;
+  // Same direct read as allocate_tree: the accessor's builtin-error special cases
+  // lie outside this range, and loading a small cached tree is otherwise dominated
+  // by this grammar-sized scan.
+  const TSSymbolMetadata *metadata = language->symbol_metadata;
+  uint32_t symbol_space = (uint32_t)language->symbol_count + language->alias_count;
+  for (uint32_t symbol = 0; symbol < symbol_space; symbol++) {
+    supertype_count += metadata[symbol].supertype;
   }
 
   if (supertype_count > 8) {

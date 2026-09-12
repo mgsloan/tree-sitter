@@ -305,8 +305,13 @@ what each round measured and what remains in the profile.
 
 Conversion is now instruction-bound rather than memory-bound: IPC is about 3.3
 and LLC load misses are roughly 0.19 per visible node. Prefetching and SIMD are
-therefore not the next step. Priority 6 — a reusable pack context owning
-grammar-derived metadata and scratch — remains, and matters most for the many
-small files that the persistence and ast-grep designs assume; the large-file
-benchmark here cannot show its effect, so it needs its own bounded-corpus
-measurement first.
+therefore not the next step.
+
+Priority 6's first half is done. `sq_allocate`'s per-tree supertype scan is still
+proportional to the grammar, but it now reads `symbol_metadata` directly instead
+of calling the accessor once per symbol, which is worth about 10% on batches of
+small files and nothing on large ones. `load_bytes` got the same change, so
+opening a cached slab benefits too. What remains of priority 6 is an explicit
+reusable pack context: it would drop the scan and the per-tree scratch entirely
+rather than making them cheaper, and it needs an API design covering language
+ownership, concurrent use, reset, and releasing oversized scratch.

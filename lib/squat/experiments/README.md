@@ -14,7 +14,9 @@ and updated allocation measurements.
 The [conversion report](conversion-results-2026-09-12.md) measures two rounds of
 format-preserving `sq_tree_pack` changes on the cloud VM: frame and staging
 rework, then decoding each raw subtree once. Together they reduce conversion time
-by about 14% on nine large inputs, with byte-identical slabs.
+by about 14% on nine large inputs, with byte-identical slabs. A third round
+removes a per-tree scan proportional to the grammar, worth about 10% on batches of
+small files and nothing on large ones; [setup.c](setup.c) is its harness.
 
 The [recorded run](results-2026-09-09.json) includes every source hash, grammar
 identity, input-level result, and tool snapshot hash. It covers 27 files in eleven

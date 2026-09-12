@@ -10,6 +10,10 @@ against `9d73c40ef`. Neither round changes the serialized representation.
 | 2 | [Single subtree decode, hoisted columns](conversion-decode-2026-09-12.json) | −4.2% | −3.8% |
 | | Compounded | −14.6% | −14.2% |
 
+Round 3 removes a cost proportional to the grammar rather than the tree, so it is
+invisible on those inputs and worth **−10.3% on batches of small files**. Its
+measurements are in [the setup record](conversion-setup-2026-09-12.json).
+
 Each round has its own freshly measured paired baseline, so the compounded
 figure is the product of two separate comparisons, not one measurement.
 
@@ -81,6 +85,53 @@ harness ignores by default were reported.
 
 Not yet checked for these changes: sanitizers, allocation-failure injection,
 big-endian, and byte-only builds.
+
+## Round 3: the grammar-sized scan per tree
+
+Rounds 1 and 2 targeted per-node work, which the large-input benchmark measures.
+A separate cost is proportional to the grammar rather than the tree: for every
+`sq_tree_pack`, `allocate_tree` walks all `symbol_count + alias_count` symbols to
+collect the supertype list. Sampling a one-line TypeScript file put 25.1% of
+conversion in `ts_language_symbol_metadata` and another 24.2% in `allocate_tree`
+itself — about half of a small-file conversion in that one scan.
+
+`ts_language_symbol_metadata` is an out-of-line call whose only special cases are
+the two builtin error symbols, 65535 and 65534, which this range never reaches.
+Reading `language->symbol_metadata[symbol].supertype` directly is equivalent, and
+ascending order is preserved because it fixes each supertype's bit position in the
+serialized column. `load_bytes` runs the same scan when a cached slab is opened,
+so it gets the same treatment; that is the read path the persistence design uses.
+
+Measured on the cloud VM against 2,400 small files (300 per grammar, under 2 KiB)
+from the 10,000-file corpus, with the largest files per grammar as a control.
+Five alternating pairs per batch; each measurement packs the whole batch of
+already-parsed trees, so parsing stays outside the timers.
+
+| Grammar | Symbols | Nodes/file | Small batch | Large batch |
+|---|---:|---:|---:|---:|
+| typescript | 383 | 21 | −33.4% | −0.4% |
+| yaml | 296 | 29 | −24.5% | — |
+| python | 274 | 44 | −19.5% | −0.4% |
+| cpp | 558 | 90 | −16.5% | +0.3% |
+| tsx | 400 | 65 | −14.7% | +0.1% |
+| css | 144 | 71 | −5.4% | −0.8% |
+| go | 219 | 250 | −2.6% | −1.2% |
+| json | 25 | 66 | −1.5% | −0.3% |
+| **Total** | | | **−10.3%** | **−0.3%** |
+
+The saving tracks grammar symbols divided by nodes per file, as a fixed per-tree
+cost should. Go's "small" files average 250 nodes and already amortize it. The
+nine large inputs from rounds 1 and 2 were rerun as a second control and moved by
+at most 1.0%, within this VM's run-to-run drift.
+
+Serialized bytes are identical on the same 212 cases. This measures warm repeated
+conversion of already-parsed trees; a real small-file workload also pays parsing
+and file I/O, which this does not measure.
+
+Reproduce a batch with `make -C lib/squat $BUILD/setup-bench` and
+[setup.c](setup.c): it parses every listed file, then times repeated conversion of
+the whole batch. Pair two builds and alternate their order; one unalternated
+`-O2`-versus-`-O3` pair produced a convincing 5-12% phantom regression here.
 
 ## Where the remaining time goes
 
