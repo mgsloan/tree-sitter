@@ -19,7 +19,11 @@ bool sq_build_presence(SQTree *tree, SQError *error) {
   uint64_t length = sq_presence_size(tree);
   uint32_t symbols = sq_symbols(tree), entry_bytes = (groups + 31) / 32 * 4;
   uint32_t entry_slots = entry_bytes / sizeof(uint32_t);
-  uint64_t scratch_size = (uint64_t)symbols * sizeof(uint32_t) + entry_bytes;
+
+  // Scratch holds per-symbol occurrence counts, the raw-to-public index table,
+  // and one bitmap used while promoting an entry.
+  uint64_t scratch_size =
+      (uint64_t)symbols * (sizeof(uint32_t) + sizeof(uint16_t)) + entry_bytes;
   if (scratch_size > SIZE_MAX) {
     sq_fail(error, SQ_ERROR_OVERFLOW);
     return false;
@@ -30,13 +34,26 @@ bool sq_build_presence(SQTree *tree, SQError *error) {
     return false;
   }
   uint32_t *counts = (uint32_t *)scratch;
-  uint8_t *bitmap = scratch + (size_t)symbols * sizeof(uint32_t);
+  uint16_t *public_index = (uint16_t *)(scratch + (size_t)symbols * sizeof(uint32_t));
+  uint8_t *bitmap = scratch + (size_t)symbols * (sizeof(uint32_t) + sizeof(uint16_t));
 
   uint32_t offset = tree->layout.end;
   if ((uint64_t)offset + length > tree->size) {
     sq_fail(error, SQ_ERROR_ARGUMENT);
     free(scratch);
     return false;
+  }
+
+  // Map each stored symbol to its public entry once, rather than calling the
+  // runtime accessor per slot. Encoded indexes are below sq_symbols, at most
+  // 65536, so they fit. The packer never stores ERROR_REPEAT, which is hidden and
+  // never an alias, and the public map has no entry for it.
+  for (uint32_t raw = 0; raw < symbols; raw++) {
+    TSSymbol symbol = sq_decode_symbol(tree, raw);
+    public_index[raw] =
+        symbol == ts_builtin_sym_error_repeat
+            ? (uint16_t)raw
+            : (uint16_t)sq_encode_symbol(tree, ts_language_public_symbol(tree->language, symbol));
   }
 
   uint8_t *next = tree->data;
@@ -46,21 +63,36 @@ bool sq_build_presence(SQTree *tree, SQError *error) {
   uint8_t *entries = next + offset + sq_column_size(symbols, 1);
   memset(entries, 0xff, (size_t)symbols * entry_bytes);
 
+  // Every packed column, including 8- and 16-bit widths, stores lane i of a word
+  // at shift i * bits under a native load (see sq_get_packed), so decode whole
+  // words and walk lanes downward instead of dividing per slot.
+  const uint8_t *symbol_column = next + tree->layout.symbol;
+  uint8_t bits = tree->layout.symbol_bits;
+  uint32_t lanes = 64 / bits;
+  uint64_t value_mask = (UINT64_C(1) << bits) - 1;
+
   // Physical slots descend in public preorder. Scan groups and their live
   // lanes in that order so sparse entries retain their serialized ordering.
-  // An entry promotes exactly when its next occurrence no longer fits.
+  // An entry promotes exactly when its next occurrence no longer fits; a count
+  // above entry_slots marks a promoted entry, mirroring its mode bit.
   for (uint32_t group = groups; group-- > 0;) {
     uint32_t first = group * SQ_GROUP_SIZE;
     uint32_t end = first + SQ_GROUP_SIZE - sq_group_waste(tree, group);
-    for (uint32_t slot = end; slot-- > first;) {
-      uint32_t raw = sq_get_packed(next, tree->layout.symbol, slot, tree->layout.symbol_bits);
-      TSSymbol symbol = ts_language_public_symbol(tree->language, sq_decode_symbol(tree, raw));
-      uint32_t symbol_index = sq_encode_symbol(tree, symbol);
+    if (end == first) continue;
+
+    uint32_t slot = end - 1;
+    uint32_t word_index = slot / lanes, lane = slot % lanes;
+    uint64_t word;
+    memcpy(&word, symbol_column + (uint64_t)word_index * 8, sizeof(word));
+    for (;;) {
+      uint32_t symbol_index = public_index[(word >> (lane * bits)) & value_mask];
       uint8_t *entry = entries + (size_t)symbol_index * entry_bytes;
-      if (sq_get_packed(next, offset, symbol_index, 1)) {
+      uint32_t count = counts[symbol_index];
+      if (count > entry_slots) {
         set_group(entry, group);
-      } else if (counts[symbol_index] < entry_slots) {
-        memcpy(entry + (size_t)counts[symbol_index]++ * sizeof(slot), &slot, sizeof(slot));
+      } else if (count < entry_slots) {
+        memcpy(entry + (size_t)count * sizeof(slot), &slot, sizeof(slot));
+        counts[symbol_index] = count + 1;
       } else {
         memset(bitmap, 0, entry_bytes);
         for (uint32_t i = 0; i < entry_slots; i++) {
@@ -71,6 +103,15 @@ bool sq_build_presence(SQTree *tree, SQError *error) {
         set_group(bitmap, group);
         memcpy(entry, bitmap, entry_bytes);
         sq_set_packed(next, offset, symbol_index, 1, 1);
+        counts[symbol_index] = entry_slots + 1;
+      }
+
+      if (slot == first) break;
+      slot--;
+      if (lane-- == 0) {
+        lane = lanes - 1;
+        word_index--;
+        memcpy(&word, symbol_column + (uint64_t)word_index * 8, sizeof(word));
       }
     }
   }
