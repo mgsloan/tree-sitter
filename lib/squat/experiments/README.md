@@ -11,6 +11,11 @@ The [version-4 storage report](storage-v4-results-2026-09-10.md) measures the
 It includes point-enabled/byte-only builds, both iterator types, compact packing,
 and updated allocation measurements.
 
+The [conversion report](conversion-results-2026-09-12.md) measures two rounds of
+format-preserving `sq_tree_pack` changes on the cloud VM: frame and staging
+rework, then decoding each raw subtree once. Together they reduce conversion time
+by about 14% on nine large inputs, with byte-identical slabs.
+
 The [recorded run](results-2026-09-09.json) includes every source hash, grammar
 identity, input-level result, and tool snapshot hash. It covers 27 files in eleven
 grammars, totaling 2,809,297 visible nodes. These are convenience samples, with

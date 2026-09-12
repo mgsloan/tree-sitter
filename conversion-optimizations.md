@@ -292,3 +292,21 @@ compaction, partial packed words, dictionary overflow, and allocation cleanup.
 The first implementation sequence should be scratch reuse and small masks,
 parent-mask hoisting, then emission-time symbol counts. Profile again before
 committing to SIMD, a new temporary layout, or a format change.
+
+## What has landed
+
+Priorities 1 through 5 are implemented, along with the bulk column copy during
+growth and compaction. Two later rounds removed whole-frame initialization, the
+per-node header chase in `distance`, the lane divisions and store-forwarding
+stall in staging, the repeated inline/heap tests in the `subtree.h` accessors,
+and the aliasing-forced reloads in `close_group`. See the
+[conversion report](lib/squat/experiments/conversion-results-2026-09-12.md) for
+what each round measured and what remains in the profile.
+
+Conversion is now instruction-bound rather than memory-bound: IPC is about 3.3
+and LLC load misses are roughly 0.19 per visible node. Prefetching and SIMD are
+therefore not the next step. Priority 6 — a reusable pack context owning
+grammar-derived metadata and scratch — remains, and matters most for the many
+small files that the persistence and ast-grep designs assume; the large-file
+benchmark here cannot show its effect, so it needs its own bounded-corpus
+measurement first.
