@@ -1,8 +1,8 @@
 # Conversion speedups — 2026-09-12
 
-Four rounds of format-preserving per-node changes to `sq_tree_pack` reduce
-cloud-measured conversion time on large inputs by **25.6% with default packing and
-25.0% with compact packing** against `9d73c40ef`. None changes the serialized
+Five rounds of format-preserving per-node changes to `sq_tree_pack` reduce
+cloud-measured conversion time on large inputs by **28.6% with default packing and
+27.9% with compact packing** against `9d73c40ef`. None changes the serialized
 representation.
 
 | Round | Change | Default packing | Compact packing |
@@ -11,14 +11,15 @@ representation.
 | 2 | [Single subtree decode, hoisted columns](conversion-decode-2026-09-12.json) | −4.2% | −3.8% |
 | 4 | [Presence index from whole symbol words](conversion-presence-2026-09-12.json) | −8.2% | −8.0% |
 | 5 | [Frameless descent through hidden wrappers](conversion-descent-2026-09-12.json) | −5.1% | −5.0% |
-| | Compounded | −25.6% | −25.0% |
+| 6 | Direct ID and flag writes (`c6b8ae461`) | −4.0% | −3.8% |
+| | Compounded | −28.6% | −27.9% |
 
 Round 3 removes a cost proportional to the grammar rather than the tree, so it is
 invisible on those inputs and worth **−10.3% on batches of small files**. Its
 measurements are in [the setup record](conversion-setup-2026-09-12.json).
 
 Each round has its own freshly measured paired baseline, so the compounded
-figure is the product of four separate comparisons, not one measurement.
+figure is the product of five separate comparisons, not one measurement.
 
 ## Method
 
@@ -218,7 +219,43 @@ The laptop disagreed with both — mixed, with YAML +7% — which is why the VM 
   these builds target it emulates unsigned min/max and executes more: 651.3M to
   666.9M instructions for a Python conversion under callgrind.
 
-## Where instructions go now
+## Round 6: direct ID and flag writes
+
+`c6b8ae461` moves packed symbol, grammar, and field writes to node acceptance,
+using advancing lane cursors; flags accumulate in the builder. `close_group`
+only needs staged coordinates, spans, and supertypes. It also caches language
+facts used by frame initialization. Against `cf4c63ed4`, the nine-file cloud
+comparison measured 615.88 to 591.32 ms default and 627.59 to 603.50 ms compact
+(five alternating pairs of seven-repeat medians). Python conversion instructions
+fell from 651.3M to 614.2M. Serialized output matched on 212 cases, forced growth
+matched on 53 files, and unit checks passed with points, without points, and with
+32- and 64-slot groups.
+
+## Current-head cloud sampling, 2026-09-13
+
+Software `cpu-clock:u` sampling at 997 Hz, pinned to CPU 0, default packing,
+points enabled. Hardware cycle events are unavailable on this VM. The existing
+`sharedlane-bench` matches current `pack.c` and `index.c`; its SHA-256 is
+`11620a05a93de7065b7bc527c44dd4b66fa01c7f6550e39f0de39c979061afbc`.
+Python `dict_huge.py` ran 99 timed conversions and TSX `worker-xquery.js` ran 60.
+No samples were lost. These are self percentages of all recorded user samples,
+not normalized pack-only percentages; startup/unattributed samples remain.
+
+| Function | Python (~4K samples) | TSX (~5K samples) |
+|---|---:|---:|
+| `init_frame` | 39.11% | 33.22% |
+| `emit` | 21.03% | 16.74% |
+| `sq_tree_pack` self | 15.29% | 17.38% |
+| `descend_hidden` | 4.85% | 8.62% |
+| `sq_build_presence` | 4.68% | 4.41% |
+| `close_group` | 5.39% | 4.18% |
+
+The latest group-writing change has reduced that target substantially. Frame
+initialization remains the largest function. The next experiment is reusable
+context on small-file batches, where fixed setup costs are more important than
+this large-file profile shows, followed by scalar fit checks and capacity data.
+
+## Historical instruction profile before round 6
 
 Exact callgrind counts inside `sq_tree_pack`, which do not vary with the
 laptop's core type or power state: about 714 instructions per visible node for
@@ -229,7 +266,7 @@ rest is spread thin over prologue, symbol encoding, flag assembly and staging.
 `builder->tree->language`. `close_group` spends about 15 instructions per slot per
 packed column on lane arithmetic.
 
-## Where the remaining time goes
+## Historical sampling after round 1
 
 Local sampling of a Python conversion after round 1, filtered to samples under
 `sq_tree_pack`: `init_frame` 33.6%, `emit` 25.2%, the packer's own loop 17.5%,
