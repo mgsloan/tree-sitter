@@ -74,3 +74,40 @@ separately from timed binaries. Apply the accompanying
 [instrumentation patch](conversion-diagnostics-2026-09-13.patch) to `0a439c1e2`
 to reproduce them. Fit counts are the first rejecting test in existing order,
 not independent attribution of overlapping constraints.
+
+## Capacity estimate: retain the 75% default
+
+[Capacity sweep](conversion-capacity-2026-09-13.json), after the scalar fit
+change: choosing initial capacity as `nodes * 100 / (group_size * percent) + 1`
+with percent 80 instead of 75 saves 5.5% retained bytes on the nine large files
+and measures 1.0% faster default packing. No large file grows under either
+estimate. Their actual occupancy ranges from 83.5% to nearly 100%.
+
+On the 2,400 small files it saves 3.0% retained bytes but measures 0.4% slower,
+and growth rises from 41 to 59 files: Go 34→46, C++ 4→8, Python 0→1, TSX 1→2,
+JSON unchanged at 2. Thus a universal increase trades additional growth for
+modest memory savings; the production default remains 75%.
+
+The allocation probe also measured construction peaks. Summed per-file peaks
+including mainline (not simultaneous batch peaks) fall from 520.46 to 515.06 MB
+for default construction and 589.36 to 583.95 MB compact. Compact retained bytes
+remain identical, 80.27 MB; default retained bytes fall 97.84→92.43 MB. These
+are requested allocation sizes, not RSS, and exclude the probe's accounting
+table and grammar mappings.
+
+Reproduce with `capacity-bench LIBRARY SYMBOL REPEATS SOURCE...`, setting
+`SQ_CAPACITY_PERCENT=75` or `80` and `SQ_BATCH_LOOPS=16` for small batches.
+The probe hashes canonical compact output outside timing to check semantic and
+serialized equivalence despite intentional capacity/layout differences.
+`memory-bench` accepts the same percentage setting. Timed samples include output
+deletion, exclude parsing and canonicalization, and alternate five pairs.
+
+## Conditional opportunities
+
+The large-input diagnostics find one nonempty hidden subtree with no visible
+children across the entire nine-file sample, and zero dictionary comparisons
+(the tested grammars use at most eight supertypes). Adding a pruning branch to
+every child, or a hash table for mask interning, has no demonstrated payoff on
+these workloads. Both remain conditional on other grammars or error-heavy
+inputs showing significant counts. No representation or default-presence change
+is justified by these results.

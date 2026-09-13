@@ -197,6 +197,10 @@ int main(int argc, char **argv) {
   Usage mainline = live;
   Usage parse_peak = peak;
   uint32_t nodes = ts_node_descendant_count(ts_tree_root_node(parsed));
+  unsigned occupancy = getenv("SQ_CAPACITY_PERCENT") ? (unsigned)atoi(getenv("SQ_CAPACITY_PERCENT")) : 75;
+  require(occupancy > 0 && occupancy <= 100, "invalid capacity occupancy percentage");
+  uint32_t initial_capacity = getenv("SQ_CAPACITY_PERCENT")
+      ? (uint32_t)((uint64_t)nodes * 100 / (SQ_GROUP_SIZE * occupancy) + 1) : 0;
   printf("{\"points\":%d,\"group_size\":%u,\"source_bytes\":%ld,\"nodes\":%u,", SQ_INCLUDE_POINTS,
          SQ_GROUP_SIZE, length, nodes);
   print_usage("mainline", mainline);
@@ -208,6 +212,7 @@ int main(int argc, char **argv) {
     peak = live;
     SQPackOptions options = sq_pack_options_default();
     options.repack = compact;
+    options.initial_group_capacity = initial_capacity;
     SQError error;
     SQTree *tree = sq_tree_pack(parsed, options, &error);
     require(tree != NULL, sq_error_string(error));
@@ -246,6 +251,7 @@ int main(int argc, char **argv) {
     require(ts_parser_set_language(parser, language), "incompatible grammar");
     SQPackOptions options = sq_pack_options_default();
     options.repack = compact;
+    options.initial_group_capacity = initial_capacity;
     SQError error;
     SQTree *tree = sq_tree_parse(parser, source, (uint32_t)length, options, &error);
     require(tree != NULL, sq_error_string(error));

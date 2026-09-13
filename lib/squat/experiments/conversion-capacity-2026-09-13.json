@@ -1,0 +1,2039 @@
+{
+  "method": "GCP CPU 0; scalar-fit candidate; 75% vs 80% initial occupancy estimates; 5 alternating pairs, median of 9 samples; small batches repeated 16 times/sample; default packing; compact canonical hashes checked; memory is requested allocation accounting, not RSS",
+  "timing": [
+    {
+      "sample": "small",
+      "grammar": "cpp",
+      "path": null,
+      "samples": {
+        "75": [
+          1.839568,
+          1.807955,
+          1.768207,
+          2.014884,
+          1.76713
+        ],
+        "80": [
+          1.782227,
+          1.738565,
+          1.734925,
+          1.924426,
+          1.892583
+        ]
+      },
+      "medians": {
+        "75": 1.807955,
+        "80": 1.782227
+      },
+      "results": {
+        "75": {
+          "occupancy_percent": 75,
+          "growth_trees": 4,
+          "retained_bytes": 961480,
+          "groups": 1930,
+          "capacity": 2440,
+          "hash": "19b28a98b45b57b0",
+          "files": 300,
+          "nodes": 27147,
+          "bytes": 164827,
+          "median_ms": 1.76713,
+          "ns_per_node": 65.095,
+          "us_per_file": 5.89
+        },
+        "80": {
+          "occupancy_percent": 80,
+          "growth_trees": 8,
+          "retained_bytes": 923696,
+          "groups": 1930,
+          "capacity": 2279,
+          "hash": "19b28a98b45b57b0",
+          "files": 300,
+          "nodes": 27147,
+          "bytes": 164827,
+          "median_ms": 1.892583,
+          "ns_per_node": 69.716,
+          "us_per_file": 6.309
+        }
+      },
+      "ratio": 0.9857695573175217
+    },
+    {
+      "sample": "small",
+      "grammar": "css",
+      "path": null,
+      "samples": {
+        "75": [
+          1.341165,
+          1.056268,
+          1.022737,
+          1.030968,
+          1.059062
+        ],
+        "80": [
+          1.043412,
+          1.08057,
+          1.155151,
+          1.241667,
+          1.059774
+        ]
+      },
+      "medians": {
+        "75": 1.056268,
+        "80": 1.08057
+      },
+      "results": {
+        "75": {
+          "occupancy_percent": 75,
+          "growth_trees": 0,
+          "retained_bytes": 560704,
+          "groups": 1526,
+          "capacity": 1978,
+          "hash": "01322b7e8fc857ff",
+          "files": 300,
+          "nodes": 21474,
+          "bytes": 65879,
+          "median_ms": 1.059062,
+          "ns_per_node": 49.318,
+          "us_per_file": 3.53
+        },
+        "80": {
+          "occupancy_percent": 80,
+          "growth_trees": 0,
+          "retained_bytes": 525536,
+          "groups": 1526,
+          "capacity": 1801,
+          "hash": "01322b7e8fc857ff",
+          "files": 300,
+          "nodes": 21474,
+          "bytes": 65879,
+          "median_ms": 1.059774,
+          "ns_per_node": 49.351,
+          "us_per_file": 3.533
+        }
+      },
+      "ratio": 1.0230074185718019
+    },
+    {
+      "sample": "small",
+      "grammar": "go",
+      "path": null,
+      "samples": {
+        "75": [
+          6.903072,
+          6.912407,
+          6.769824,
+          6.81474,
+          6.828288
+        ],
+        "80": [
+          6.934996,
+          6.890331,
+          6.946764,
+          6.816644,
+          6.770413
+        ]
+      },
+      "medians": {
+        "75": 6.828288,
+        "80": 6.890331
+      },
+      "results": {
+        "75": {
+          "occupancy_percent": 75,
+          "growth_trees": 34,
+          "retained_bytes": 1789600,
+          "groups": 5481,
+          "capacity": 6749,
+          "hash": "621eac805b909e44",
+          "files": 300,
+          "nodes": 75064,
+          "bytes": 336146,
+          "median_ms": 6.828288,
+          "ns_per_node": 90.966,
+          "us_per_file": 22.761
+        },
+        "80": {
+          "occupancy_percent": 80,
+          "growth_trees": 46,
+          "retained_bytes": 1773040,
+          "groups": 5481,
+          "capacity": 6676,
+          "hash": "621eac805b909e44",
+          "files": 300,
+          "nodes": 75064,
+          "bytes": 336146,
+          "median_ms": 6.770413,
+          "ns_per_node": 90.195,
+          "us_per_file": 22.568
+        }
+      },
+      "ratio": 1.0090861721122484
+    },
+    {
+      "sample": "small",
+      "grammar": "json",
+      "path": null,
+      "samples": {
+        "75": [
+          0.946748,
+          0.912728,
+          0.907109,
+          0.911255,
+          0.908568
+        ],
+        "80": [
+          0.910551,
+          0.923414,
+          0.904001,
+          0.900713,
+          0.901511
+        ]
+      },
+      "medians": {
+        "75": 0.911255,
+        "80": 0.904001
+      },
+      "results": {
+        "75": {
+          "occupancy_percent": 75,
+          "growth_trees": 2,
+          "retained_bytes": 440984,
+          "groups": 1427,
+          "capacity": 1819,
+          "hash": "1ad9d2cfd14c4b3c",
+          "files": 300,
+          "nodes": 20009,
+          "bytes": 62835,
+          "median_ms": 0.908568,
+          "ns_per_node": 45.408,
+          "us_per_file": 3.029
+        },
+        "80": {
+          "occupancy_percent": 80,
+          "growth_trees": 2,
+          "retained_bytes": 417376,
+          "groups": 1427,
+          "capacity": 1705,
+          "hash": "1ad9d2cfd14c4b3c",
+          "files": 300,
+          "nodes": 20009,
+          "bytes": 62835,
+          "median_ms": 0.901511,
+          "ns_per_node": 45.055,
+          "us_per_file": 3.005
+        }
+      },
+      "ratio": 0.9920395498515784
+    },
+    {
+      "sample": "small",
+      "grammar": "python",
+      "path": null,
+      "samples": {
+        "75": [
+          0.866244,
+          0.871483,
+          0.864292,
+          0.868985,
+          0.85458
+        ],
+        "80": [
+          0.871675,
+          0.86433,
+          0.864206,
+          0.876531,
+          0.863383
+        ]
+      },
+      "medians": {
+        "75": 0.866244,
+        "80": 0.86433
+      },
+      "results": {
+        "75": {
+          "occupancy_percent": 75,
+          "growth_trees": 0,
+          "retained_bytes": 523704,
+          "groups": 1030,
+          "capacity": 1324,
+          "hash": "79ed2b24658abf05",
+          "files": 300,
+          "nodes": 13336,
+          "bytes": 38259,
+          "median_ms": 0.85458,
+          "ns_per_node": 64.081,
+          "us_per_file": 2.849
+        },
+        "80": {
+          "occupancy_percent": 80,
+          "growth_trees": 1,
+          "retained_bytes": 506920,
+          "groups": 1030,
+          "capacity": 1251,
+          "hash": "79ed2b24658abf05",
+          "files": 300,
+          "nodes": 13336,
+          "bytes": 38259,
+          "median_ms": 0.863383,
+          "ns_per_node": 64.741,
+          "us_per_file": 2.878
+        }
+      },
+      "ratio": 0.9977904608863092
+    },
+    {
+      "sample": "small",
+      "grammar": "tsx",
+      "path": null,
+      "samples": {
+        "75": [
+          1.184961,
+          1.194308,
+          1.197412,
+          1.18472,
+          1.167177
+        ],
+        "80": [
+          1.185132,
+          1.170695,
+          1.17911,
+          1.192444,
+          1.156206
+        ]
+      },
+      "medians": {
+        "75": 1.184961,
+        "80": 1.17911
+      },
+      "results": {
+        "75": {
+          "occupancy_percent": 75,
+          "growth_trees": 1,
+          "retained_bytes": 729936,
+          "groups": 1426,
+          "capacity": 1826,
+          "hash": "bba2d10856cfe8fa",
+          "files": 300,
+          "nodes": 19710,
+          "bytes": 57563,
+          "median_ms": 1.167177,
+          "ns_per_node": 59.218,
+          "us_per_file": 3.891
+        },
+        "80": {
+          "occupancy_percent": 80,
+          "growth_trees": 2,
+          "retained_bytes": 710224,
+          "groups": 1426,
+          "capacity": 1741,
+          "hash": "bba2d10856cfe8fa",
+          "files": 300,
+          "nodes": 19710,
+          "bytes": 57563,
+          "median_ms": 1.156206,
+          "ns_per_node": 58.661,
+          "us_per_file": 3.854
+        }
+      },
+      "ratio": 0.9950622847502999
+    },
+    {
+      "sample": "small",
+      "grammar": "typescript",
+      "path": null,
+      "samples": {
+        "75": [
+          0.441015,
+          0.453366,
+          0.435889,
+          0.443323,
+          0.435607
+        ],
+        "80": [
+          0.440265,
+          0.441893,
+          0.442194,
+          0.43548,
+          0.43622
+        ]
+      },
+      "medians": {
+        "75": 0.441015,
+        "80": 0.440265
+      },
+      "results": {
+        "75": {
+          "occupancy_percent": 75,
+          "growth_trees": 0,
+          "retained_bytes": 437808,
+          "groups": 537,
+          "capacity": 670,
+          "hash": "2bd934ef7a908824",
+          "files": 300,
+          "nodes": 6376,
+          "bytes": 29515,
+          "median_ms": 0.435607,
+          "ns_per_node": 68.32,
+          "us_per_file": 1.452
+        },
+        "80": {
+          "occupancy_percent": 80,
+          "growth_trees": 0,
+          "retained_bytes": 431904,
+          "groups": 537,
+          "capacity": 645,
+          "hash": "2bd934ef7a908824",
+          "files": 300,
+          "nodes": 6376,
+          "bytes": 29515,
+          "median_ms": 0.43622,
+          "ns_per_node": 68.416,
+          "us_per_file": 1.454
+        }
+      },
+      "ratio": 0.9982993775721914
+    },
+    {
+      "sample": "small",
+      "grammar": "yaml",
+      "path": null,
+      "samples": {
+        "75": [
+          0.540932,
+          0.539084,
+          0.529501,
+          0.53397,
+          0.531209
+        ],
+        "80": [
+          0.537737,
+          0.544235,
+          0.540448,
+          0.540215,
+          0.553661
+        ]
+      },
+      "medians": {
+        "75": 0.53397,
+        "80": 0.540448
+      },
+      "results": {
+        "75": {
+          "occupancy_percent": 75,
+          "growth_trees": 0,
+          "retained_bytes": 434016,
+          "groups": 687,
+          "capacity": 931,
+          "hash": "3b81bf98c444596c",
+          "files": 300,
+          "nodes": 8833,
+          "bytes": 17865,
+          "median_ms": 0.531209,
+          "ns_per_node": 60.139,
+          "us_per_file": 1.771
+        },
+        "80": {
+          "occupancy_percent": 80,
+          "growth_trees": 0,
+          "retained_bytes": 415104,
+          "groups": 687,
+          "capacity": 843,
+          "hash": "3b81bf98c444596c",
+          "files": 300,
+          "nodes": 8833,
+          "bytes": 17865,
+          "median_ms": 0.553661,
+          "ns_per_node": 62.681,
+          "us_per_file": 1.846
+        }
+      },
+      "ratio": 1.0121317677023056
+    },
+    {
+      "sample": "large",
+      "grammar": "json",
+      "path": "/home/mgsloan/squatter-benchmark/large/corpus/test/Chart.js/node_modules/.pnpm/language-subtag-registry@0.3.23/node_modules/language-subtag-registry/data/json/registry.json",
+      "samples": {
+        "75": [
+          29.291605,
+          30.685066,
+          29.015454,
+          28.408594,
+          28.232734
+        ],
+        "80": [
+          28.561915,
+          28.702094,
+          28.177793,
+          28.673964,
+          28.850394
+        ]
+      },
+      "medians": {
+        "75": 29.015454,
+        "80": 28.673964
+      },
+      "results": {
+        "75": {
+          "occupancy_percent": 75,
+          "growth_trees": 0,
+          "retained_bytes": 8512800,
+          "groups": 30645,
+          "capacity": 40854,
+          "hash": "3070836aa4531407",
+          "files": 1,
+          "nodes": 490245,
+          "bytes": 1111658,
+          "median_ms": 28.232734,
+          "ns_per_node": 57.589,
+          "us_per_file": 28232.734
+        },
+        "80": {
+          "occupancy_percent": 80,
+          "growth_trees": 0,
+          "retained_bytes": 7987328,
+          "groups": 30645,
+          "capacity": 38301,
+          "hash": "3070836aa4531407",
+          "files": 1,
+          "nodes": 490245,
+          "bytes": 1111658,
+          "median_ms": 28.850394,
+          "ns_per_node": 58.849,
+          "us_per_file": 28850.394
+        }
+      },
+      "ratio": 0.988230754548938
+    },
+    {
+      "sample": "large",
+      "grammar": "tsx",
+      "path": "/home/mgsloan/squatter-benchmark/large/corpus/test/Chart.js/node_modules/.pnpm/prettier@2.8.8/node_modules/prettier/esm/parser-typescript.mjs",
+      "samples": {
+        "75": [
+          43.516017,
+          44.525879,
+          43.226957,
+          44.068257,
+          44.117537
+        ],
+        "80": [
+          43.613278,
+          43.237417,
+          45.367369,
+          44.928358,
+          43.715087
+        ]
+      },
+      "medians": {
+        "75": 44.068257,
+        "80": 43.715087
+      },
+      "results": {
+        "75": {
+          "occupancy_percent": 75,
+          "growth_trees": 0,
+          "retained_bytes": 11715560,
+          "groups": 38260,
+          "capacity": 42595,
+          "hash": "5253c87de6ff20ec",
+          "files": 1,
+          "nodes": 511131,
+          "bytes": 1256143,
+          "median_ms": 44.117537,
+          "ns_per_node": 86.314,
+          "us_per_file": 44117.537
+        },
+        "80": {
+          "occupancy_percent": 80,
+          "growth_trees": 0,
+          "retained_bytes": 11103664,
+          "groups": 38260,
+          "capacity": 39933,
+          "hash": "5253c87de6ff20ec",
+          "files": 1,
+          "nodes": 511131,
+          "bytes": 1256143,
+          "median_ms": 43.715087,
+          "ns_per_node": 85.526,
+          "us_per_file": 43715.087
+        }
+      },
+      "ratio": 0.9919858414186882
+    },
+    {
+      "sample": "large",
+      "grammar": "typescript",
+      "path": "/home/mgsloan/squatter-benchmark/large/corpus/test/act/pkg/runner/testdata/actions/node20/node_modules/@vercel/ncc/dist/ncc/loaders/typescript/lib/lib.dom.d.ts",
+      "samples": {
+        "75": [
+          14.788604,
+          14.423132,
+          15.373373,
+          14.811432,
+          14.657642
+        ],
+        "80": [
+          15.495414,
+          15.205143,
+          15.078923,
+          14.843603,
+          14.412233
+        ]
+      },
+      "medians": {
+        "75": 14.788604,
+        "80": 15.078923
+      },
+      "results": {
+        "75": {
+          "occupancy_percent": 75,
+          "growth_trees": 0,
+          "retained_bytes": 4250608,
+          "groups": 12644,
+          "capacity": 15834,
+          "hash": "5c59f86feb942615",
+          "files": 1,
+          "nodes": 190002,
+          "bytes": 1306131,
+          "median_ms": 14.657642,
+          "ns_per_node": 77.145,
+          "us_per_file": 14657.642
+        },
+        "80": {
+          "occupancy_percent": 80,
+          "growth_trees": 0,
+          "retained_bytes": 4023032,
+          "groups": 12644,
+          "capacity": 14844,
+          "hash": "5c59f86feb942615",
+          "files": 1,
+          "nodes": 190002,
+          "bytes": 1306131,
+          "median_ms": 14.412233,
+          "ns_per_node": 75.853,
+          "us_per_file": 14412.233
+        }
+      },
+      "ratio": 1.019631264722485
+    },
+    {
+      "sample": "large",
+      "grammar": "cpp",
+      "path": "/home/mgsloan/squatter-benchmark/large/corpus/test/entt/single_include/entt/entt.hpp",
+      "samples": {
+        "75": [
+          71.45576,
+          72.409712,
+          70.91006,
+          69.85869,
+          70.42069
+        ],
+        "80": [
+          68.221888,
+          68.536888,
+          68.138838,
+          66.964277,
+          67.648409
+        ]
+      },
+      "medians": {
+        "75": 70.91006,
+        "80": 68.138838
+      },
+      "results": {
+        "75": {
+          "occupancy_percent": 75,
+          "growth_trees": 0,
+          "retained_bytes": 17383608,
+          "groups": 48938,
+          "capacity": 59140,
+          "hash": "32228cd3919715fa",
+          "files": 1,
+          "nodes": 709679,
+          "bytes": 3613213,
+          "median_ms": 70.42069,
+          "ns_per_node": 99.229,
+          "us_per_file": 70420.69
+        },
+        "80": {
+          "occupancy_percent": 80,
+          "growth_trees": 0,
+          "retained_bytes": 16511480,
+          "groups": 48938,
+          "capacity": 55444,
+          "hash": "32228cd3919715fa",
+          "files": 1,
+          "nodes": 709679,
+          "bytes": 3613213,
+          "median_ms": 67.648409,
+          "ns_per_node": 95.323,
+          "us_per_file": 67648.409
+        }
+      },
+      "ratio": 0.9609191982068553
+    },
+    {
+      "sample": "large",
+      "grammar": "python",
+      "path": "/home/mgsloan/squatter-benchmark/large/corpus/train/black/profiling/dict_huge.py",
+      "samples": {
+        "75": [
+          36.890191,
+          37.778642,
+          38.638542,
+          39.162344,
+          39.360014
+        ],
+        "80": [
+          38.667293,
+          37.881713,
+          37.884062,
+          38.883443,
+          38.207102
+        ]
+      },
+      "medians": {
+        "75": 38.638542,
+        "80": 38.207102
+      },
+      "results": {
+        "75": {
+          "occupancy_percent": 75,
+          "growth_trees": 0,
+          "retained_bytes": 9716104,
+          "groups": 28497,
+          "capacity": 37985,
+          "hash": "d8f112dfab17b19e",
+          "files": 1,
+          "nodes": 455815,
+          "bytes": 1118824,
+          "median_ms": 39.360014,
+          "ns_per_node": 86.351,
+          "us_per_file": 39360.014
+        },
+        "80": {
+          "occupancy_percent": 80,
+          "growth_trees": 0,
+          "retained_bytes": 9170376,
+          "groups": 28497,
+          "capacity": 35611,
+          "hash": "d8f112dfab17b19e",
+          "files": 1,
+          "nodes": 455815,
+          "bytes": 1118824,
+          "median_ms": 38.207102,
+          "ns_per_node": 83.822,
+          "us_per_file": 38207.102
+        }
+      },
+      "ratio": 0.988833947202252
+    },
+    {
+      "sample": "large",
+      "grammar": "yaml",
+      "path": "/home/mgsloan/squatter-benchmark/large/corpus/train/nodebb/node_modules/@fortawesome/fontawesome-free/metadata/icon-families.yml",
+      "samples": {
+        "75": [
+          18.421655,
+          18.639306,
+          18.881567,
+          19.022636,
+          18.685156
+        ],
+        "80": [
+          18.475966,
+          18.274555,
+          18.596366,
+          18.433996,
+          19.079216
+        ]
+      },
+      "medians": {
+        "75": 18.685156,
+        "80": 18.475966
+      },
+      "results": {
+        "75": {
+          "occupancy_percent": 75,
+          "growth_trees": 0,
+          "retained_bytes": 4353416,
+          "groups": 14244,
+          "capacity": 17284,
+          "hash": "67a5c2d2a0a7e943",
+          "files": 1,
+          "nodes": 207403,
+          "bytes": 1142388,
+          "median_ms": 18.685156,
+          "ns_per_node": 90.091,
+          "us_per_file": 18685.156
+        },
+        "80": {
+          "occupancy_percent": 80,
+          "growth_trees": 0,
+          "retained_bytes": 4114648,
+          "groups": 14244,
+          "capacity": 16204,
+          "hash": "67a5c2d2a0a7e943",
+          "files": 1,
+          "nodes": 207403,
+          "bytes": 1142388,
+          "median_ms": 19.079216,
+          "ns_per_node": 91.991,
+          "us_per_file": 19079.216
+        }
+      },
+      "ratio": 0.9888044820177043
+    },
+    {
+      "sample": "large",
+      "grammar": "typescript",
+      "path": "/home/mgsloan/squatter-benchmark/large/corpus/train/nodebb/node_modules/@typescript/typescript-linux-x64/lib/lib.dom.d.ts",
+      "samples": {
+        "75": [
+          17.406295,
+          16.865654,
+          17.040224,
+          17.510185,
+          17.019675
+        ],
+        "80": [
+          16.986985,
+          17.304325,
+          16.949125,
+          17.368855,
+          17.302905
+        ]
+      },
+      "medians": {
+        "75": 17.040224,
+        "80": 17.302905
+      },
+      "results": {
+        "75": {
+          "occupancy_percent": 75,
+          "growth_trees": 0,
+          "retained_bytes": 4978288,
+          "groups": 16338,
+          "capacity": 18229,
+          "hash": "8a465014a20f709b",
+          "files": 1,
+          "nodes": 218742,
+          "bytes": 2349483,
+          "median_ms": 17.019675,
+          "ns_per_node": 77.807,
+          "us_per_file": 17019.675
+        },
+        "80": {
+          "occupancy_percent": 80,
+          "growth_trees": 0,
+          "retained_bytes": 4716432,
+          "groups": 16338,
+          "capacity": 17090,
+          "hash": "8a465014a20f709b",
+          "files": 1,
+          "nodes": 218742,
+          "bytes": 2349483,
+          "median_ms": 17.302905,
+          "ns_per_node": 79.102,
+          "us_per_file": 17302.905
+        }
+      },
+      "ratio": 1.015415349000107
+    },
+    {
+      "sample": "large",
+      "grammar": "tsx",
+      "path": "/home/mgsloan/squatter-benchmark/large/corpus/train/nodebb/node_modules/ace-builds/src/worker-xquery.js",
+      "samples": {
+        "75": [
+          86.703034,
+          87.944175,
+          88.527726,
+          87.996534,
+          87.570914
+        ],
+        "80": [
+          86.453494,
+          90.348207,
+          88.876517,
+          88.335025,
+          86.788674
+        ]
+      },
+      "medians": {
+        "75": 87.944175,
+        "80": 88.335025
+      },
+      "results": {
+        "75": {
+          "occupancy_percent": 75,
+          "growth_trees": 0,
+          "retained_bytes": 18815528,
+          "groups": 54423,
+          "capacity": 69949,
+          "hash": "3261513184fd5136",
+          "files": 1,
+          "nodes": 839376,
+          "bytes": 3502890,
+          "median_ms": 87.570914,
+          "ns_per_node": 104.329,
+          "us_per_file": 87570.914
+        },
+        "80": {
+          "occupancy_percent": 80,
+          "growth_trees": 0,
+          "retained_bytes": 17810536,
+          "groups": 54423,
+          "capacity": 65577,
+          "hash": "3261513184fd5136",
+          "files": 1,
+          "nodes": 839376,
+          "bytes": 3502890,
+          "median_ms": 86.788674,
+          "ns_per_node": 103.397,
+          "us_per_file": 86788.674
+        }
+      },
+      "ratio": 1.0044442966233977
+    },
+    {
+      "sample": "large",
+      "grammar": "json",
+      "path": "/home/mgsloan/squatter-benchmark/large/corpus/train/nodebb/node_modules/natural/lib/natural/sentiment/English/senticon_en.json",
+      "samples": {
+        "75": [
+          61.433183,
+          60.584221,
+          60.818962,
+          61.090181,
+          60.988443
+        ],
+        "80": [
+          60.437401,
+          61.285322,
+          60.890972,
+          60.163861,
+          59.943271
+        ]
+      },
+      "medians": {
+        "75": 60.988443,
+        "80": 60.437401
+      },
+      "results": {
+        "75": {
+          "occupancy_percent": 75,
+          "growth_trees": 0,
+          "retained_bytes": 18114880,
+          "groups": 65204,
+          "capacity": 86937,
+          "hash": "5a21d19664860296",
+          "files": 1,
+          "nodes": 1043241,
+          "bytes": 1896088,
+          "median_ms": 60.988443,
+          "ns_per_node": 58.461,
+          "us_per_file": 60988.443
+        },
+        "80": {
+          "occupancy_percent": 80,
+          "growth_trees": 0,
+          "retained_bytes": 16996544,
+          "groups": 65204,
+          "capacity": 81504,
+          "hash": "5a21d19664860296",
+          "files": 1,
+          "nodes": 1043241,
+          "bytes": 1896088,
+          "median_ms": 59.943271,
+          "ns_per_node": 57.459,
+          "us_per_file": 59943.271
+        }
+      },
+      "ratio": 0.9909648127924827
+    }
+  ],
+  "memory": [
+    {
+      "path": "test/Chart.js/node_modules/.pnpm/language-subtag-registry@0.3.23/node_modules/language-subtag-registry/data/json/registry.json",
+      "grammar": "json",
+      "values": {
+        "75": {
+          "points": 1,
+          "group_size": 16,
+          "source_bytes": 1111658,
+          "nodes": 490245,
+          "mainline": {
+            "requested": 26177936,
+            "usable": 26813200,
+            "allocations": 265360
+          },
+          "parse_peak": {
+            "requested": 26250600,
+            "usable": 26885928,
+            "allocations": 265389
+          },
+          "default": {
+            "retained": {
+              "requested": 8512800,
+              "usable": 8515568,
+              "allocations": 1
+            },
+            "pack_peak_with_mainline": {
+              "requested": 34700476,
+              "usable": 35338552,
+              "allocations": 265366
+            },
+            "slab_bytes": 8512624,
+            "groups": 30645,
+            "group_capacity": 40854
+          },
+          "compact": {
+            "retained": {
+              "requested": 6411472,
+              "usable": 6411480,
+              "allocations": 1
+            },
+            "pack_peak_with_mainline": {
+              "requested": 41004482,
+              "usable": 41639792,
+              "allocations": 265366
+            },
+            "slab_bytes": 6411296,
+            "groups": 30645,
+            "group_capacity": 30645
+          },
+          "default_parse_pack_peak": {
+            "requested": 34773140,
+            "usable": 35408536,
+            "allocations": 265395
+          },
+          "compact_parse_pack_peak": {
+            "requested": 41077146,
+            "usable": 41712552,
+            "allocations": 265395
+          },
+          "cleanup_zero": true
+        },
+        "80": {
+          "points": 1,
+          "group_size": 16,
+          "source_bytes": 1111658,
+          "nodes": 490245,
+          "mainline": {
+            "requested": 26177936,
+            "usable": 26813200,
+            "allocations": 265360
+          },
+          "parse_peak": {
+            "requested": 26250600,
+            "usable": 26885928,
+            "allocations": 265389
+          },
+          "default": {
+            "retained": {
+              "requested": 7987328,
+              "usable": 7991280,
+              "allocations": 1
+            },
+            "pack_peak_with_mainline": {
+              "requested": 34175004,
+              "usable": 34814264,
+              "allocations": 265366
+            },
+            "slab_bytes": 7987152,
+            "groups": 30645,
+            "group_capacity": 38301
+          },
+          "compact": {
+            "retained": {
+              "requested": 6411472,
+              "usable": 6411480,
+              "allocations": 1
+            },
+            "pack_peak_with_mainline": {
+              "requested": 40479010,
+              "usable": 41114320,
+              "allocations": 265366
+            },
+            "slab_bytes": 6411296,
+            "groups": 30645,
+            "group_capacity": 30645
+          },
+          "default_parse_pack_peak": {
+            "requested": 34247668,
+            "usable": 34883064,
+            "allocations": 265395
+          },
+          "compact_parse_pack_peak": {
+            "requested": 40551674,
+            "usable": 41187080,
+            "allocations": 265395
+          },
+          "cleanup_zero": true
+        }
+      }
+    },
+    {
+      "path": "test/Chart.js/node_modules/.pnpm/prettier@2.8.8/node_modules/prettier/esm/parser-typescript.mjs",
+      "grammar": "tsx",
+      "values": {
+        "75": {
+          "points": 1,
+          "group_size": 16,
+          "source_bytes": 1256143,
+          "nodes": 511131,
+          "mainline": {
+            "requested": 51311344,
+            "usable": 52454568,
+            "allocations": 550983
+          },
+          "parse_peak": {
+            "requested": 51342472,
+            "usable": 52485760,
+            "allocations": 551044
+          },
+          "default": {
+            "retained": {
+              "requested": 11715560,
+              "usable": 11718640,
+              "allocations": 1
+            },
+            "pack_peak_with_mainline": {
+              "requested": 63074324,
+              "usable": 64220672,
+              "allocations": 550989
+            },
+            "slab_bytes": 11714640,
+            "groups": 38260,
+            "group_capacity": 42595
+          },
+          "compact": {
+            "retained": {
+              "requested": 10719056,
+              "usable": 10719064,
+              "allocations": 1
+            },
+            "pack_peak_with_mainline": {
+              "requested": 71862960,
+              "usable": 73006232,
+              "allocations": 550989
+            },
+            "slab_bytes": 10718136,
+            "groups": 38260,
+            "group_capacity": 38260
+          },
+          "default_parse_pack_peak": {
+            "requested": 63105452,
+            "usable": 64248560,
+            "allocations": 551050
+          },
+          "compact_parse_pack_peak": {
+            "requested": 71894088,
+            "usable": 73037200,
+            "allocations": 551050
+          },
+          "cleanup_zero": true
+        },
+        "80": {
+          "points": 1,
+          "group_size": 16,
+          "source_bytes": 1256143,
+          "nodes": 511131,
+          "mainline": {
+            "requested": 51311344,
+            "usable": 52454568,
+            "allocations": 550983
+          },
+          "parse_peak": {
+            "requested": 51342472,
+            "usable": 52485760,
+            "allocations": 551044
+          },
+          "default": {
+            "retained": {
+              "requested": 11103664,
+              "usable": 11104240,
+              "allocations": 1
+            },
+            "pack_peak_with_mainline": {
+              "requested": 62462428,
+              "usable": 63606272,
+              "allocations": 550989
+            },
+            "slab_bytes": 11102744,
+            "groups": 38260,
+            "group_capacity": 39933
+          },
+          "compact": {
+            "retained": {
+              "requested": 10719056,
+              "usable": 10719064,
+              "allocations": 1
+            },
+            "pack_peak_with_mainline": {
+              "requested": 71251064,
+              "usable": 72394328,
+              "allocations": 550989
+            },
+            "slab_bytes": 10718136,
+            "groups": 38260,
+            "group_capacity": 38260
+          },
+          "default_parse_pack_peak": {
+            "requested": 62493556,
+            "usable": 63636672,
+            "allocations": 551050
+          },
+          "compact_parse_pack_peak": {
+            "requested": 71282192,
+            "usable": 72425296,
+            "allocations": 551050
+          },
+          "cleanup_zero": true
+        }
+      }
+    },
+    {
+      "path": "test/act/pkg/runner/testdata/actions/node20/node_modules/@vercel/ncc/dist/ncc/loaders/typescript/lib/lib.dom.d.ts",
+      "grammar": "typescript",
+      "values": {
+        "75": {
+          "points": 1,
+          "group_size": 16,
+          "source_bytes": 1306131,
+          "nodes": 190002,
+          "mainline": {
+            "requested": 17255632,
+            "usable": 17770816,
+            "allocations": 185320
+          },
+          "parse_peak": {
+            "requested": 17282688,
+            "usable": 17797944,
+            "allocations": 185365
+          },
+          "default": {
+            "retained": {
+              "requested": 4250608,
+              "usable": 4251632,
+              "allocations": 1
+            },
+            "pack_peak_with_mainline": {
+              "requested": 21522228,
+              "usable": 22038472,
+              "allocations": 185326
+            },
+            "slab_bytes": 4249720,
+            "groups": 12644,
+            "group_capacity": 15834
+          },
+          "compact": {
+            "retained": {
+              "requested": 3517312,
+              "usable": 3517320,
+              "allocations": 1
+            },
+            "pack_peak_with_mainline": {
+              "requested": 24425750,
+              "usable": 24940976,
+              "allocations": 185326
+            },
+            "slab_bytes": 3516424,
+            "groups": 12644,
+            "group_capacity": 12644
+          },
+          "default_parse_pack_peak": {
+            "requested": 21549284,
+            "usable": 22064648,
+            "allocations": 185371
+          },
+          "compact_parse_pack_peak": {
+            "requested": 24452806,
+            "usable": 24968200,
+            "allocations": 185371
+          },
+          "cleanup_zero": true
+        },
+        "80": {
+          "points": 1,
+          "group_size": 16,
+          "source_bytes": 1306131,
+          "nodes": 190002,
+          "mainline": {
+            "requested": 17255632,
+            "usable": 17770816,
+            "allocations": 185320
+          },
+          "parse_peak": {
+            "requested": 17282688,
+            "usable": 17797944,
+            "allocations": 185365
+          },
+          "default": {
+            "retained": {
+              "requested": 4023032,
+              "usable": 4026352,
+              "allocations": 1
+            },
+            "pack_peak_with_mainline": {
+              "requested": 21294652,
+              "usable": 21813192,
+              "allocations": 185326
+            },
+            "slab_bytes": 4022144,
+            "groups": 12644,
+            "group_capacity": 14844
+          },
+          "compact": {
+            "retained": {
+              "requested": 3517312,
+              "usable": 3517320,
+              "allocations": 1
+            },
+            "pack_peak_with_mainline": {
+              "requested": 24198174,
+              "usable": 24713408,
+              "allocations": 185326
+            },
+            "slab_bytes": 3516424,
+            "groups": 12644,
+            "group_capacity": 12644
+          },
+          "default_parse_pack_peak": {
+            "requested": 21321708,
+            "usable": 21837064,
+            "allocations": 185371
+          },
+          "compact_parse_pack_peak": {
+            "requested": 24225230,
+            "usable": 24740632,
+            "allocations": 185371
+          },
+          "cleanup_zero": true
+        }
+      }
+    },
+    {
+      "path": "test/entt/single_include/entt/entt.hpp",
+      "grammar": "cpp",
+      "values": {
+        "75": {
+          "points": 1,
+          "group_size": 16,
+          "source_bytes": 3613213,
+          "nodes": 709679,
+          "mainline": {
+            "requested": 49008056,
+            "usable": 50698968,
+            "allocations": 516045
+          },
+          "parse_peak": {
+            "requested": 49030176,
+            "usable": 50721176,
+            "allocations": 516133
+          },
+          "default": {
+            "retained": {
+              "requested": 17383608,
+              "usable": 17387504,
+              "allocations": 1
+            },
+            "pack_peak_with_mainline": {
+              "requested": 66425044,
+              "usable": 68119888,
+              "allocations": 516051
+            },
+            "slab_bytes": 17382368,
+            "groups": 48938,
+            "group_capacity": 59140
+          },
+          "compact": {
+            "retained": {
+              "requested": 14976296,
+              "usable": 14976296,
+              "allocations": 1
+            },
+            "pack_peak_with_mainline": {
+              "requested": 77964588,
+              "usable": 79655544,
+              "allocations": 516051
+            },
+            "slab_bytes": 14975056,
+            "groups": 48938,
+            "group_capacity": 48938
+          },
+          "default_parse_pack_peak": {
+            "requested": 66446748,
+            "usable": 68139840,
+            "allocations": 516133
+          },
+          "compact_parse_pack_peak": {
+            "requested": 77986292,
+            "usable": 79679328,
+            "allocations": 516133
+          },
+          "cleanup_zero": true
+        },
+        "80": {
+          "points": 1,
+          "group_size": 16,
+          "source_bytes": 3613213,
+          "nodes": 709679,
+          "mainline": {
+            "requested": 49008056,
+            "usable": 50698968,
+            "allocations": 516045
+          },
+          "parse_peak": {
+            "requested": 49030176,
+            "usable": 50721176,
+            "allocations": 516133
+          },
+          "default": {
+            "retained": {
+              "requested": 16511480,
+              "usable": 16515056,
+              "allocations": 1
+            },
+            "pack_peak_with_mainline": {
+              "requested": 65552916,
+              "usable": 67247440,
+              "allocations": 516051
+            },
+            "slab_bytes": 16510240,
+            "groups": 48938,
+            "group_capacity": 55444
+          },
+          "compact": {
+            "retained": {
+              "requested": 14976296,
+              "usable": 14976296,
+              "allocations": 1
+            },
+            "pack_peak_with_mainline": {
+              "requested": 77092460,
+              "usable": 78783416,
+              "allocations": 516051
+            },
+            "slab_bytes": 14975056,
+            "groups": 48938,
+            "group_capacity": 48938
+          },
+          "default_parse_pack_peak": {
+            "requested": 65574620,
+            "usable": 67267712,
+            "allocations": 516133
+          },
+          "compact_parse_pack_peak": {
+            "requested": 77114164,
+            "usable": 78807200,
+            "allocations": 516133
+          },
+          "cleanup_zero": true
+        }
+      }
+    },
+    {
+      "path": "train/black/profiling/dict_huge.py",
+      "grammar": "python",
+      "values": {
+        "75": {
+          "points": 1,
+          "group_size": 16,
+          "source_bytes": 1118824,
+          "nodes": 455815,
+          "mainline": {
+            "requested": 62652696,
+            "usable": 65304616,
+            "allocations": 704429
+          },
+          "parse_peak": {
+            "requested": 62921504,
+            "usable": 65577560,
+            "allocations": 704456
+          },
+          "default": {
+            "retained": {
+              "requested": 9716104,
+              "usable": 9719792,
+              "allocations": 1
+            },
+            "pack_peak_with_mainline": {
+              "requested": 72379496,
+              "usable": 75035136,
+              "allocations": 704435
+            },
+            "slab_bytes": 9715432,
+            "groups": 28497,
+            "group_capacity": 37985
+          },
+          "compact": {
+            "retained": {
+              "requested": 7535088,
+              "usable": 7535096,
+              "allocations": 1
+            },
+            "pack_peak_with_mainline": {
+              "requested": 78925660,
+              "usable": 81577624,
+              "allocations": 704435
+            },
+            "slab_bytes": 7534416,
+            "groups": 28497,
+            "group_capacity": 28497
+          },
+          "default_parse_pack_peak": {
+            "requested": 72648304,
+            "usable": 75300384,
+            "allocations": 704462
+          },
+          "compact_parse_pack_peak": {
+            "requested": 79194468,
+            "usable": 81846528,
+            "allocations": 704462
+          },
+          "cleanup_zero": true
+        },
+        "80": {
+          "points": 1,
+          "group_size": 16,
+          "source_bytes": 1118824,
+          "nodes": 455815,
+          "mainline": {
+            "requested": 62652696,
+            "usable": 65304616,
+            "allocations": 704429
+          },
+          "parse_peak": {
+            "requested": 62921504,
+            "usable": 65577560,
+            "allocations": 704456
+          },
+          "default": {
+            "retained": {
+              "requested": 9170376,
+              "usable": 9170928,
+              "allocations": 1
+            },
+            "pack_peak_with_mainline": {
+              "requested": 71833768,
+              "usable": 74486272,
+              "allocations": 704435
+            },
+            "slab_bytes": 9169704,
+            "groups": 28497,
+            "group_capacity": 35611
+          },
+          "compact": {
+            "retained": {
+              "requested": 7535088,
+              "usable": 7535096,
+              "allocations": 1
+            },
+            "pack_peak_with_mainline": {
+              "requested": 78379932,
+              "usable": 81031896,
+              "allocations": 704435
+            },
+            "slab_bytes": 7534416,
+            "groups": 28497,
+            "group_capacity": 28497
+          },
+          "default_parse_pack_peak": {
+            "requested": 72102576,
+            "usable": 74754656,
+            "allocations": 704462
+          },
+          "compact_parse_pack_peak": {
+            "requested": 78648740,
+            "usable": 81300816,
+            "allocations": 704462
+          },
+          "cleanup_zero": true
+        }
+      }
+    },
+    {
+      "path": "train/nodebb/node_modules/@fortawesome/fontawesome-free/metadata/icon-families.yml",
+      "grammar": "yaml",
+      "values": {
+        "75": {
+          "points": 1,
+          "group_size": 16,
+          "source_bytes": 1142388,
+          "nodes": 207403,
+          "mainline": {
+            "requested": 24405992,
+            "usable": 26158352,
+            "allocations": 304538
+          },
+          "parse_peak": {
+            "requested": 24418168,
+            "usable": 26170664,
+            "allocations": 304595
+          },
+          "default": {
+            "retained": {
+              "requested": 4353416,
+              "usable": 4354032,
+              "allocations": 1
+            },
+            "pack_peak_with_mainline": {
+              "requested": 28772772,
+              "usable": 30525776,
+              "allocations": 304543
+            },
+            "slab_bytes": 4352704,
+            "groups": 14244,
+            "group_capacity": 17284
+          },
+          "compact": {
+            "retained": {
+              "requested": 3681352,
+              "usable": 3681352,
+              "allocations": 1
+            },
+            "pack_peak_with_mainline": {
+              "requested": 31918880,
+              "usable": 33671272,
+              "allocations": 304543
+            },
+            "slab_bytes": 3680640,
+            "groups": 14244,
+            "group_capacity": 14244
+          },
+          "default_parse_pack_peak": {
+            "requested": 28784948,
+            "usable": 30537504,
+            "allocations": 304595
+          },
+          "compact_parse_pack_peak": {
+            "requested": 31931056,
+            "usable": 33683680,
+            "allocations": 304595
+          },
+          "cleanup_zero": true
+        },
+        "80": {
+          "points": 1,
+          "group_size": 16,
+          "source_bytes": 1142388,
+          "nodes": 207403,
+          "mainline": {
+            "requested": 24405992,
+            "usable": 26158352,
+            "allocations": 304538
+          },
+          "parse_peak": {
+            "requested": 24418168,
+            "usable": 26170664,
+            "allocations": 304595
+          },
+          "default": {
+            "retained": {
+              "requested": 4114648,
+              "usable": 4116464,
+              "allocations": 1
+            },
+            "pack_peak_with_mainline": {
+              "requested": 28534004,
+              "usable": 30288208,
+              "allocations": 304543
+            },
+            "slab_bytes": 4113936,
+            "groups": 14244,
+            "group_capacity": 16204
+          },
+          "compact": {
+            "retained": {
+              "requested": 3681352,
+              "usable": 3681352,
+              "allocations": 1
+            },
+            "pack_peak_with_mainline": {
+              "requested": 31680112,
+              "usable": 33432504,
+              "allocations": 304543
+            },
+            "slab_bytes": 3680640,
+            "groups": 14244,
+            "group_capacity": 14244
+          },
+          "default_parse_pack_peak": {
+            "requested": 28546180,
+            "usable": 30298736,
+            "allocations": 304595
+          },
+          "compact_parse_pack_peak": {
+            "requested": 31692288,
+            "usable": 33444912,
+            "allocations": 304595
+          },
+          "cleanup_zero": true
+        }
+      }
+    },
+    {
+      "path": "train/nodebb/node_modules/@typescript/typescript-linux-x64/lib/lib.dom.d.ts",
+      "grammar": "typescript",
+      "values": {
+        "75": {
+          "points": 1,
+          "group_size": 16,
+          "source_bytes": 2349483,
+          "nodes": 218742,
+          "mainline": {
+            "requested": 19982888,
+            "usable": 20587352,
+            "allocations": 214919
+          },
+          "parse_peak": {
+            "requested": 20010256,
+            "usable": 20614800,
+            "allocations": 214966
+          },
+          "default": {
+            "retained": {
+              "requested": 4978288,
+              "usable": 4980720,
+              "allocations": 1
+            },
+            "pack_peak_with_mainline": {
+              "requested": 24988888,
+              "usable": 25595824,
+              "allocations": 214925
+            },
+            "slab_bytes": 4977400,
+            "groups": 16338,
+            "group_capacity": 18229
+          },
+          "compact": {
+            "retained": {
+              "requested": 4543568,
+              "usable": 4543576,
+              "allocations": 1
+            },
+            "pack_peak_with_mainline": {
+              "requested": 28741102,
+              "usable": 29345608,
+              "allocations": 214925
+            },
+            "slab_bytes": 4542680,
+            "groups": 16338,
+            "group_capacity": 16338
+          },
+          "default_parse_pack_peak": {
+            "requested": 25016256,
+            "usable": 25620896,
+            "allocations": 214972
+          },
+          "compact_parse_pack_peak": {
+            "requested": 28768470,
+            "usable": 29373152,
+            "allocations": 214972
+          },
+          "cleanup_zero": true
+        },
+        "80": {
+          "points": 1,
+          "group_size": 16,
+          "source_bytes": 2349483,
+          "nodes": 218742,
+          "mainline": {
+            "requested": 19982888,
+            "usable": 20587352,
+            "allocations": 214919
+          },
+          "parse_peak": {
+            "requested": 20010256,
+            "usable": 20614800,
+            "allocations": 214966
+          },
+          "default": {
+            "retained": {
+              "requested": 4716432,
+              "usable": 4718576,
+              "allocations": 1
+            },
+            "pack_peak_with_mainline": {
+              "requested": 24727032,
+              "usable": 25333680,
+              "allocations": 214925
+            },
+            "slab_bytes": 4715544,
+            "groups": 16338,
+            "group_capacity": 17090
+          },
+          "compact": {
+            "retained": {
+              "requested": 4543568,
+              "usable": 4543576,
+              "allocations": 1
+            },
+            "pack_peak_with_mainline": {
+              "requested": 28479246,
+              "usable": 29083752,
+              "allocations": 214925
+            },
+            "slab_bytes": 4542680,
+            "groups": 16338,
+            "group_capacity": 16338
+          },
+          "default_parse_pack_peak": {
+            "requested": 24754400,
+            "usable": 25359040,
+            "allocations": 214972
+          },
+          "compact_parse_pack_peak": {
+            "requested": 28506614,
+            "usable": 29111296,
+            "allocations": 214972
+          },
+          "cleanup_zero": true
+        }
+      }
+    },
+    {
+      "path": "train/nodebb/node_modules/ace-builds/src/worker-xquery.js",
+      "grammar": "tsx",
+      "values": {
+        "75": {
+          "points": 1,
+          "group_size": 16,
+          "source_bytes": 3502890,
+          "nodes": 839376,
+          "mainline": {
+            "requested": 119597208,
+            "usable": 123857368,
+            "allocations": 1293701
+          },
+          "parse_peak": {
+            "requested": 120136304,
+            "usable": 124400608,
+            "allocations": 1293763
+          },
+          "default": {
+            "retained": {
+              "requested": 18815528,
+              "usable": 18817008,
+              "allocations": 1
+            },
+            "pack_peak_with_mainline": {
+              "requested": 138607072,
+              "usable": 142868752,
+              "allocations": 1293707
+            },
+            "slab_bytes": 18814608,
+            "groups": 54423,
+            "group_capacity": 69949
+          },
+          "compact": {
+            "retained": {
+              "requested": 15246528,
+              "usable": 15246536,
+              "allocations": 1
+            },
+            "pack_peak_with_mainline": {
+              "requested": 151109120,
+              "usable": 155369320,
+              "allocations": 1293707
+            },
+            "slab_bytes": 15245608,
+            "groups": 54423,
+            "group_capacity": 54423
+          },
+          "default_parse_pack_peak": {
+            "requested": 139146168,
+            "usable": 143406616,
+            "allocations": 1293769
+          },
+          "compact_parse_pack_peak": {
+            "requested": 151648216,
+            "usable": 155908616,
+            "allocations": 1293769
+          },
+          "cleanup_zero": true
+        },
+        "80": {
+          "points": 1,
+          "group_size": 16,
+          "source_bytes": 3502890,
+          "nodes": 839376,
+          "mainline": {
+            "requested": 119597208,
+            "usable": 123857368,
+            "allocations": 1293701
+          },
+          "parse_peak": {
+            "requested": 120136304,
+            "usable": 124400608,
+            "allocations": 1293763
+          },
+          "default": {
+            "retained": {
+              "requested": 17810536,
+              "usable": 17813488,
+              "allocations": 1
+            },
+            "pack_peak_with_mainline": {
+              "requested": 137602080,
+              "usable": 141865232,
+              "allocations": 1293707
+            },
+            "slab_bytes": 17809616,
+            "groups": 54423,
+            "group_capacity": 65577
+          },
+          "compact": {
+            "retained": {
+              "requested": 15246528,
+              "usable": 15246536,
+              "allocations": 1
+            },
+            "pack_peak_with_mainline": {
+              "requested": 150104128,
+              "usable": 154364328,
+              "allocations": 1293707
+            },
+            "slab_bytes": 15245608,
+            "groups": 54423,
+            "group_capacity": 54423
+          },
+          "default_parse_pack_peak": {
+            "requested": 138141176,
+            "usable": 142401608,
+            "allocations": 1293769
+          },
+          "compact_parse_pack_peak": {
+            "requested": 150643224,
+            "usable": 154903656,
+            "allocations": 1293769
+          },
+          "cleanup_zero": true
+        }
+      }
+    },
+    {
+      "path": "train/nodebb/node_modules/natural/lib/natural/sentiment/English/senticon_en.json",
+      "grammar": "json",
+      "values": {
+        "75": {
+          "points": 1,
+          "group_size": 16,
+          "source_bytes": 1896088,
+          "nodes": 1043241,
+          "mainline": {
+            "requested": 51863896,
+            "usable": 53056168,
+            "allocations": 521621
+          },
+          "parse_peak": {
+            "requested": 52001632,
+            "usable": 53198040,
+            "allocations": 521648
+          },
+          "default": {
+            "retained": {
+              "requested": 18114880,
+              "usable": 18116592,
+              "allocations": 1
+            },
+            "pack_peak_with_mainline": {
+              "requested": 69992068,
+              "usable": 71186096,
+              "allocations": 521627
+            },
+            "slab_bytes": 18114704,
+            "groups": 65204,
+            "group_capacity": 86937
+          },
+          "compact": {
+            "retained": {
+              "requested": 13641472,
+              "usable": 13641480,
+              "allocations": 1
+            },
+            "pack_peak_with_mainline": {
+              "requested": 83405114,
+              "usable": 84597448,
+              "allocations": 521627
+            },
+            "slab_bytes": 13641296,
+            "groups": 65204,
+            "group_capacity": 65204
+          },
+          "default_parse_pack_peak": {
+            "requested": 70129804,
+            "usable": 71322240,
+            "allocations": 521654
+          },
+          "compact_parse_pack_peak": {
+            "requested": 83542850,
+            "usable": 84735264,
+            "allocations": 521654
+          },
+          "cleanup_zero": true
+        },
+        "80": {
+          "points": 1,
+          "group_size": 16,
+          "source_bytes": 1896088,
+          "nodes": 1043241,
+          "mainline": {
+            "requested": 51863896,
+            "usable": 53056168,
+            "allocations": 521621
+          },
+          "parse_peak": {
+            "requested": 52001632,
+            "usable": 53198040,
+            "allocations": 521648
+          },
+          "default": {
+            "retained": {
+              "requested": 16996544,
+              "usable": 16998384,
+              "allocations": 1
+            },
+            "pack_peak_with_mainline": {
+              "requested": 68873732,
+              "usable": 70067888,
+              "allocations": 521627
+            },
+            "slab_bytes": 16996368,
+            "groups": 65204,
+            "group_capacity": 81504
+          },
+          "compact": {
+            "retained": {
+              "requested": 13641472,
+              "usable": 13641480,
+              "allocations": 1
+            },
+            "pack_peak_with_mainline": {
+              "requested": 82286778,
+              "usable": 83479112,
+              "allocations": 521627
+            },
+            "slab_bytes": 13641296,
+            "groups": 65204,
+            "group_capacity": 65204
+          },
+          "default_parse_pack_peak": {
+            "requested": 69011468,
+            "usable": 70203904,
+            "allocations": 521654
+          },
+          "compact_parse_pack_peak": {
+            "requested": 82424514,
+            "usable": 83616928,
+            "allocations": 521654
+          },
+          "cleanup_zero": true
+        }
+      }
+    }
+  ]
+}
