@@ -1,0 +1,867 @@
+{
+  "baseline": "2891d5e98",
+  "machine": "GCP squatter-benchmark e2-standard-2, CPU 0",
+  "compiler": "GCC 15.3.0 -O3 -g -fno-omit-frame-pointer, points enabled, 16-slot groups",
+  "method": "5 alternating process pairs; small: median of 9 samples, each 16 full-batch conversions divided by 16, context setup excluded; large: median of 7 conversions, serialized hashes checked on every pair",
+  "hashes": "66f1aca3ae3b197fecb81dae55304fc6ec7e343535762ffcf8c85bf652e694dc  build/conv-next/base/bench\n38d237d00107026ff5487ad855f04b7c6e4e8ed28382b0246d45dbf4687fe8a1  build/conv-next/base/setup-bench\n1cd8d20e94aa321060ba358e9939e253787c4b07caf80a459f19d3b81e30806b  build/conv-next/base/context-check\n7fe0ccd9b2baf563e9ec240b761f98fdee73f689686d69719a5ba3bcfc721f25  lib/squat/pack.c\nad48e3f9f83c1cdc1cba6368e12b9f8cbe9f2df56e6c0c38bb91d17ba3c0ef8e  lib/squat/slab.c\n6e8f6f36eff651b7e4879e0a1737fd037d3c5c467484cef81352b0f6fc93a6ce  lib/squat/index.c\n",
+  "small": [
+    {
+      "grammar": "cpp",
+      "files": 300,
+      "nodes": 27147,
+      "samples": {
+        "ordinary": [
+          1.937156,
+          1.819427,
+          1.873882,
+          1.842349,
+          1.756329
+        ],
+        "context": [
+          1.606388,
+          1.833132,
+          1.618498,
+          1.898293,
+          1.593854
+        ]
+      },
+      "medians": {
+        "ordinary": 1.842349,
+        "context": 1.618498
+      },
+      "ratio": 0.8784969623019309
+    },
+    {
+      "grammar": "css",
+      "files": 300,
+      "nodes": 21474,
+      "samples": {
+        "ordinary": [
+          1.066742,
+          1.080574,
+          1.070791,
+          1.069071,
+          1.085888
+        ],
+        "context": [
+          0.994628,
+          0.988063,
+          0.995003,
+          0.998765,
+          0.992981
+        ]
+      },
+      "medians": {
+        "ordinary": 1.070791,
+        "context": 0.994628
+      },
+      "ratio": 0.9288722075549757
+    },
+    {
+      "grammar": "go",
+      "files": 300,
+      "nodes": 75064,
+      "samples": {
+        "ordinary": [
+          6.9313,
+          6.847967,
+          6.816506,
+          6.701499,
+          6.749568
+        ],
+        "context": [
+          6.453366,
+          6.499836,
+          6.681257,
+          6.596671,
+          6.608118
+        ]
+      },
+      "medians": {
+        "ordinary": 6.816506,
+        "context": 6.596671
+      },
+      "ratio": 0.9677496066166449
+    },
+    {
+      "grammar": "json",
+      "files": 300,
+      "nodes": 20009,
+      "samples": {
+        "ordinary": [
+          0.944867,
+          0.949554,
+          0.94231,
+          0.944121,
+          0.946359
+        ],
+        "context": [
+          0.882768,
+          0.891434,
+          0.901256,
+          0.883836,
+          0.889655
+        ]
+      },
+      "medians": {
+        "ordinary": 0.944867,
+        "context": 0.889655
+      },
+      "ratio": 0.9415663791835253
+    },
+    {
+      "grammar": "python",
+      "files": 300,
+      "nodes": 13336,
+      "samples": {
+        "ordinary": [
+          0.894431,
+          0.902918,
+          0.894389,
+          0.886899,
+          0.902054
+        ],
+        "context": [
+          0.782156,
+          0.786148,
+          0.777716,
+          0.788578,
+          0.772506
+        ]
+      },
+      "medians": {
+        "ordinary": 0.894431,
+        "context": 0.782156
+      },
+      "ratio": 0.8744732684801846
+    },
+    {
+      "grammar": "tsx",
+      "files": 300,
+      "nodes": 19710,
+      "samples": {
+        "ordinary": [
+          1.207976,
+          1.207942,
+          1.221167,
+          1.220879,
+          1.203938
+        ],
+        "context": [
+          1.068618,
+          1.06574,
+          1.059175,
+          1.080095,
+          1.154353
+        ]
+      },
+      "medians": {
+        "ordinary": 1.207976,
+        "context": 1.068618
+      },
+      "ratio": 0.884635125201163
+    },
+    {
+      "grammar": "typescript",
+      "files": 300,
+      "nodes": 6376,
+      "samples": {
+        "ordinary": [
+          0.456029,
+          0.457475,
+          0.450613,
+          0.448334,
+          0.458815
+        ],
+        "context": [
+          0.330113,
+          0.329689,
+          0.331086,
+          0.329126,
+          0.335277
+        ]
+      },
+      "medians": {
+        "ordinary": 0.456029,
+        "context": 0.330113
+      },
+      "ratio": 0.7238859809354229
+    },
+    {
+      "grammar": "yaml",
+      "files": 300,
+      "nodes": 8833,
+      "samples": {
+        "ordinary": [
+          0.555337,
+          0.558909,
+          0.562084,
+          0.565327,
+          0.559121
+        ],
+        "context": [
+          0.471614,
+          0.477062,
+          0.488799,
+          0.475868,
+          0.476497
+        ]
+      },
+      "medians": {
+        "ordinary": 0.559121,
+        "context": 0.476497
+      },
+      "ratio": 0.852225189180875
+    }
+  ],
+  "large": [
+    {
+      "path": "test/Chart.js/node_modules/.pnpm/language-subtag-registry@0.3.23/node_modules/language-subtag-registry/data/json/registry.json",
+      "grammar": "json",
+      "repack": 0,
+      "samples": {
+        "baseline": [
+          30.579696,
+          29.493765,
+          29.721306,
+          29.658525,
+          29.429335
+        ],
+        "ordinary": [
+          30.016665,
+          29.510415,
+          29.259776,
+          29.179786,
+          29.667265
+        ],
+        "context": [
+          29.423265,
+          29.496984,
+          29.870886,
+          29.243525,
+          29.939956
+        ]
+      },
+      "medians": {
+        "baseline": 29.658525,
+        "ordinary": 29.510415,
+        "context": 29.496984
+      },
+      "groups": 30645,
+      "capacity": 40854,
+      "nodes": 490245
+    },
+    {
+      "path": "test/Chart.js/node_modules/.pnpm/prettier@2.8.8/node_modules/prettier/esm/parser-typescript.mjs",
+      "grammar": "tsx",
+      "repack": 0,
+      "samples": {
+        "baseline": [
+          44.209897,
+          44.583068,
+          43.443976,
+          43.910318,
+          44.469897
+        ],
+        "ordinary": [
+          44.111888,
+          46.206769,
+          44.652138,
+          44.622047,
+          45.746599
+        ],
+        "context": [
+          45.161679,
+          47.11598,
+          44.898188,
+          43.539876,
+          44.493117
+        ]
+      },
+      "medians": {
+        "baseline": 44.209897,
+        "ordinary": 44.652138,
+        "context": 44.898188
+      },
+      "groups": 38260,
+      "capacity": 42595,
+      "nodes": 511131
+    },
+    {
+      "path": "test/act/pkg/runner/testdata/actions/node20/node_modules/@vercel/ncc/dist/ncc/loaders/typescript/lib/lib.dom.d.ts",
+      "grammar": "typescript",
+      "repack": 0,
+      "samples": {
+        "baseline": [
+          14.697343,
+          14.845582,
+          15.259503,
+          15.625813,
+          15.067773
+        ],
+        "ordinary": [
+          15.700723,
+          15.044373,
+          14.923412,
+          15.318442,
+          15.420112
+        ],
+        "context": [
+          15.270573,
+          14.475993,
+          14.400372,
+          16.040003,
+          14.811282
+        ]
+      },
+      "medians": {
+        "baseline": 15.067773,
+        "ordinary": 15.318442,
+        "context": 14.811282
+      },
+      "groups": 12644,
+      "capacity": 15834,
+      "nodes": 190002
+    },
+    {
+      "path": "test/entt/single_include/entt/entt.hpp",
+      "grammar": "cpp",
+      "repack": 0,
+      "samples": {
+        "baseline": [
+          70.635811,
+          72.415783,
+          72.099442,
+          71.21837,
+          72.345102
+        ],
+        "ordinary": [
+          70.414901,
+          73.346923,
+          72.317001,
+          71.705471,
+          72.108021
+        ],
+        "context": [
+          70.07495,
+          69.99905,
+          70.3655,
+          68.510889,
+          69.044829
+        ]
+      },
+      "medians": {
+        "baseline": 72.099442,
+        "ordinary": 72.108021,
+        "context": 69.99905
+      },
+      "groups": 48938,
+      "capacity": 59140,
+      "nodes": 709679
+    },
+    {
+      "path": "train/black/profiling/dict_huge.py",
+      "grammar": "python",
+      "repack": 0,
+      "samples": {
+        "baseline": [
+          38.093922,
+          38.603013,
+          38.941133,
+          39.334914,
+          40.601335
+        ],
+        "ordinary": [
+          39.218173,
+          38.948893,
+          39.739824,
+          38.582263,
+          40.136765
+        ],
+        "context": [
+          38.484413,
+          40.429504,
+          36.694681,
+          38.214853,
+          37.922853
+        ]
+      },
+      "medians": {
+        "baseline": 38.941133,
+        "ordinary": 39.218173,
+        "context": 38.214853
+      },
+      "groups": 28497,
+      "capacity": 37985,
+      "nodes": 455815
+    },
+    {
+      "path": "train/nodebb/node_modules/@fortawesome/fontawesome-free/metadata/icon-families.yml",
+      "grammar": "yaml",
+      "repack": 0,
+      "samples": {
+        "baseline": [
+          19.122646,
+          18.992906,
+          18.607906,
+          19.350787,
+          18.589866
+        ],
+        "ordinary": [
+          19.741096,
+          18.857977,
+          19.006277,
+          19.805487,
+          19.454086
+        ],
+        "context": [
+          19.237896,
+          18.532716,
+          18.687276,
+          19.346746,
+          18.655135
+        ]
+      },
+      "medians": {
+        "baseline": 18.992906,
+        "ordinary": 19.454086,
+        "context": 18.687276
+      },
+      "groups": 14244,
+      "capacity": 17284,
+      "nodes": 207403
+    },
+    {
+      "path": "train/nodebb/node_modules/@typescript/typescript-linux-x64/lib/lib.dom.d.ts",
+      "grammar": "typescript",
+      "repack": 0,
+      "samples": {
+        "baseline": [
+          17.419625,
+          17.563635,
+          17.528245,
+          17.455924,
+          17.553505
+        ],
+        "ordinary": [
+          17.590935,
+          17.556485,
+          18.214345,
+          17.212814,
+          17.509235
+        ],
+        "context": [
+          17.286535,
+          17.012135,
+          17.860236,
+          16.855625,
+          16.943305
+        ]
+      },
+      "medians": {
+        "baseline": 17.528245,
+        "ordinary": 17.556485,
+        "context": 17.012135
+      },
+      "groups": 16338,
+      "capacity": 18229,
+      "nodes": 218742
+    },
+    {
+      "path": "train/nodebb/node_modules/ace-builds/src/worker-xquery.js",
+      "grammar": "tsx",
+      "repack": 0,
+      "samples": {
+        "baseline": [
+          80.261088,
+          80.329409,
+          81.21335,
+          79.364438,
+          83.06507
+        ],
+        "ordinary": [
+          81.964259,
+          81.494429,
+          82.49976,
+          81.3358,
+          85.926634
+        ],
+        "context": [
+          79.484518,
+          81.59297,
+          79.499048,
+          81.93827,
+          82.752971
+        ]
+      },
+      "medians": {
+        "baseline": 80.329409,
+        "ordinary": 81.964259,
+        "context": 81.59297
+      },
+      "groups": 54423,
+      "capacity": 69949,
+      "nodes": 839376
+    },
+    {
+      "path": "train/nodebb/node_modules/natural/lib/natural/sentiment/English/senticon_en.json",
+      "grammar": "json",
+      "repack": 0,
+      "samples": {
+        "baseline": [
+          60.762983,
+          59.41603,
+          62.158133,
+          61.099203,
+          60.228921
+        ],
+        "ordinary": [
+          60.377042,
+          60.303511,
+          60.523862,
+          60.283441,
+          60.954872
+        ],
+        "context": [
+          60.27371,
+          59.906641,
+          61.709942,
+          59.321601,
+          59.19639
+        ]
+      },
+      "medians": {
+        "baseline": 60.762983,
+        "ordinary": 60.377042,
+        "context": 59.906641
+      },
+      "groups": 65204,
+      "capacity": 86937,
+      "nodes": 1043241
+    },
+    {
+      "path": "test/Chart.js/node_modules/.pnpm/language-subtag-registry@0.3.23/node_modules/language-subtag-registry/data/json/registry.json",
+      "grammar": "json",
+      "repack": 1,
+      "samples": {
+        "baseline": [
+          30.440046,
+          30.464116,
+          30.575287,
+          30.735427,
+          31.492837
+        ],
+        "ordinary": [
+          31.368537,
+          30.154155,
+          30.544246,
+          31.453157,
+          32.070987
+        ],
+        "context": [
+          30.541386,
+          29.838165,
+          30.304796,
+          30.912807,
+          35.055461
+        ]
+      },
+      "medians": {
+        "baseline": 30.575287,
+        "ordinary": 31.368537,
+        "context": 30.541386
+      },
+      "groups": 30645,
+      "capacity": 30645,
+      "nodes": 490245
+    },
+    {
+      "path": "test/Chart.js/node_modules/.pnpm/prettier@2.8.8/node_modules/prettier/esm/parser-typescript.mjs",
+      "grammar": "tsx",
+      "repack": 1,
+      "samples": {
+        "baseline": [
+          46.416579,
+          44.707509,
+          45.367878,
+          46.145949,
+          44.505967
+        ],
+        "ordinary": [
+          45.060159,
+          46.42204,
+          45.059288,
+          44.938478,
+          45.640488
+        ],
+        "context": [
+          47.230671,
+          44.816678,
+          44.707188,
+          44.623129,
+          44.303289
+        ]
+      },
+      "medians": {
+        "baseline": 45.367878,
+        "ordinary": 45.060159,
+        "context": 44.707188
+      },
+      "groups": 38260,
+      "capacity": 38260,
+      "nodes": 511131
+    },
+    {
+      "path": "test/act/pkg/runner/testdata/actions/node20/node_modules/@vercel/ncc/dist/ncc/loaders/typescript/lib/lib.dom.d.ts",
+      "grammar": "typescript",
+      "repack": 1,
+      "samples": {
+        "baseline": [
+          17.206805,
+          17.508956,
+          17.550464,
+          17.795855,
+          18.277676
+        ],
+        "ordinary": [
+          17.713484,
+          17.573875,
+          18.176196,
+          17.677435,
+          18.568306
+        ],
+        "context": [
+          17.941005,
+          17.652115,
+          17.802685,
+          18.301795,
+          17.938946
+        ]
+      },
+      "medians": {
+        "baseline": 17.550464,
+        "ordinary": 17.713484,
+        "context": 17.938946
+      },
+      "groups": 12644,
+      "capacity": 12644,
+      "nodes": 190002
+    },
+    {
+      "path": "test/entt/single_include/entt/entt.hpp",
+      "grammar": "cpp",
+      "repack": 1,
+      "samples": {
+        "baseline": [
+          70.11696,
+          71.241311,
+          70.663571,
+          70.166709,
+          71.593451
+        ],
+        "ordinary": [
+          85.594274,
+          71.21647,
+          71.232231,
+          71.391241,
+          71.579831
+        ],
+        "context": [
+          68.498617,
+          71.10208,
+          70.225381,
+          71.628231,
+          72.467252
+        ]
+      },
+      "medians": {
+        "baseline": 70.663571,
+        "ordinary": 71.391241,
+        "context": 71.10208
+      },
+      "groups": 48938,
+      "capacity": 48938,
+      "nodes": 709679
+    },
+    {
+      "path": "train/black/profiling/dict_huge.py",
+      "grammar": "python",
+      "repack": 1,
+      "samples": {
+        "baseline": [
+          39.414783,
+          39.794324,
+          39.740924,
+          39.001503,
+          39.987994
+        ],
+        "ordinary": [
+          39.489014,
+          39.010093,
+          39.003423,
+          40.024134,
+          40.478364
+        ],
+        "context": [
+          40.207945,
+          39.368834,
+          39.235583,
+          40.391634,
+          40.230214
+        ]
+      },
+      "medians": {
+        "baseline": 39.740924,
+        "ordinary": 39.489014,
+        "context": 40.207945
+      },
+      "groups": 28497,
+      "capacity": 28497,
+      "nodes": 455815
+    },
+    {
+      "path": "train/nodebb/node_modules/@fortawesome/fontawesome-free/metadata/icon-families.yml",
+      "grammar": "yaml",
+      "repack": 1,
+      "samples": {
+        "baseline": [
+          18.694576,
+          18.695426,
+          18.911837,
+          19.264248,
+          19.211677
+        ],
+        "ordinary": [
+          18.811606,
+          19.079017,
+          19.491217,
+          19.424206,
+          19.587686
+        ],
+        "context": [
+          19.315246,
+          19.052725,
+          19.297226,
+          19.597356,
+          19.455297
+        ]
+      },
+      "medians": {
+        "baseline": 18.911837,
+        "ordinary": 19.424206,
+        "context": 19.315246
+      },
+      "groups": 14244,
+      "capacity": 14244,
+      "nodes": 207403
+    },
+    {
+      "path": "train/nodebb/node_modules/@typescript/typescript-linux-x64/lib/lib.dom.d.ts",
+      "grammar": "typescript",
+      "repack": 1,
+      "samples": {
+        "baseline": [
+          18.197135,
+          19.228156,
+          17.851936,
+          17.542895,
+          17.758024
+        ],
+        "ordinary": [
+          18.809986,
+          18.079906,
+          17.989816,
+          17.715725,
+          18.215525
+        ],
+        "context": [
+          17.279235,
+          17.766965,
+          18.198795,
+          17.897666,
+          17.943376
+        ]
+      },
+      "medians": {
+        "baseline": 17.851936,
+        "ordinary": 18.079906,
+        "context": 17.897666
+      },
+      "groups": 16338,
+      "capacity": 16338,
+      "nodes": 218742
+    },
+    {
+      "path": "train/nodebb/node_modules/ace-builds/src/worker-xquery.js",
+      "grammar": "tsx",
+      "repack": 1,
+      "samples": {
+        "baseline": [
+          81.048989,
+          84.701122,
+          83.740941,
+          83.197542,
+          80.086499
+        ],
+        "ordinary": [
+          83.886051,
+          84.482222,
+          85.659133,
+          85.713004,
+          83.528131
+        ],
+        "context": [
+          82.84955,
+          84.873712,
+          81.66856,
+          88.223335,
+          83.541762
+        ]
+      },
+      "medians": {
+        "baseline": 83.197542,
+        "ordinary": 84.482222,
+        "context": 83.541762
+      },
+      "groups": 54423,
+      "capacity": 54423,
+      "nodes": 839376
+    },
+    {
+      "path": "train/nodebb/node_modules/natural/lib/natural/sentiment/English/senticon_en.json",
+      "grammar": "json",
+      "repack": 1,
+      "samples": {
+        "baseline": [
+          59.31753,
+          61.579412,
+          61.313812,
+          63.629534,
+          62.115013
+        ],
+        "ordinary": [
+          62.453074,
+          63.492694,
+          61.159113,
+          64.177005,
+          63.220734
+        ],
+        "context": [
+          63.044503,
+          63.114565,
+          62.405283,
+          63.500054,
+          65.749146
+        ]
+      },
+      "medians": {
+        "baseline": 61.579412,
+        "ordinary": 63.220734,
+        "context": 63.114565
+      },
+      "groups": 65204,
+      "capacity": 65204,
+      "nodes": 1043241
+    }
+  ]
+}

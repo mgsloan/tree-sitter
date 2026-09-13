@@ -91,6 +91,53 @@ impl Default for PackOptions {
 
 /// Owns a slab and retains its language; independent of the original tree.
 pub struct Tree(NonNull<c_void>);
+
+/// Reuses grammar metadata and scratch across conversions of one language.
+/// Output trees do not borrow the context. Calls require exclusive access;
+/// separate contexts can be used concurrently.
+pub struct PackContext(NonNull<c_void>);
+// Moving the exclusively owned scratch is safe; shared concurrent use is not.
+unsafe impl Send for PackContext {}
+impl PackContext {
+    pub fn new(language: &Language) -> Result<Self, Error> {
+        let raw_language = language.clone().into_raw();
+        let mut status = 0;
+        let raw = unsafe { ffi::sq_pack_context_new(raw_language.cast(), &mut status) };
+        drop(unsafe { Language::from_raw(raw_language) });
+        NonNull::new(raw).map(Self).ok_or_else(|| error(status))
+    }
+
+    pub fn pack(&mut self, tree: &tree_sitter::Tree) -> Result<Tree, Error> {
+        self.pack_with_options(tree, PackOptions::default())
+    }
+
+    pub fn pack_with_options(
+        &mut self,
+        tree: &tree_sitter::Tree,
+        options: PackOptions,
+    ) -> Result<Tree, Error> {
+        let mut status = 0;
+        let raw = unsafe {
+            ffi::sq_pack_context_pack(
+                self.0.as_ptr(),
+                tree.root_node().into_raw().tree.cast(),
+                options,
+                &mut status,
+            )
+        };
+        NonNull::new(raw).map(Tree).ok_or_else(|| error(status))
+    }
+
+    /// Release high-water scratch while retaining grammar lookup tables.
+    pub fn trim(&mut self) {
+        unsafe { ffi::sq_pack_context_trim(self.0.as_ptr()) }
+    }
+}
+impl Drop for PackContext {
+    fn drop(&mut self) {
+        unsafe { ffi::sq_pack_context_delete(self.0.as_ptr()) }
+    }
+}
 /// Validated view of externally owned immutable slab bytes.
 ///
 /// Dereferencing exposes the read-only tree APIs. Nodes and query executions
@@ -686,6 +733,15 @@ mod ffi {
             options: PackOptions,
             error: *mut i32,
         ) -> *mut c_void;
+        pub fn sq_pack_context_new(language: *const c_void, error: *mut i32) -> *mut c_void;
+        pub fn sq_pack_context_pack(
+            context: *mut c_void,
+            tree: *const c_void,
+            options: PackOptions,
+            error: *mut i32,
+        ) -> *mut c_void;
+        pub fn sq_pack_context_trim(context: *mut c_void);
+        pub fn sq_pack_context_delete(context: *mut c_void);
         pub fn sq_tree_from_bytes(
             language: *const c_void,
             bytes: *const c_void,

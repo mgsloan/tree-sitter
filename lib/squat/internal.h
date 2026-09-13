@@ -344,6 +344,8 @@ static inline uint32_t sq_position_group(const SQTree *tree, uint32_t group) {
 
 SQNode sq_null(void);
 SQTree *sq_allocate(const TSLanguage *, uint32_t, SQError *);
+bool sq_language_compatible(const TSLanguage *);
+SQTree *sq_allocate_cached(const TSLanguage *, uint32_t, const TSSymbol *, uint32_t, SQError *);
 
 // Builder operations may move a colocated descriptor. Refresh the caller's
 // pointer before reading it again; finalized public trees never move.
@@ -354,6 +356,7 @@ bool sq_resize(SQTree **, uint32_t, SQError *);
 bool sq_prepare_final(SQTree **, uint32_t capacity, uint32_t trailing_size, SQError *);
 bool sq_grow_data(SQTree **, uint32_t, SQError *);
 bool sq_build_presence(SQTree *, SQError *);
+bool sq_build_presence_cached(SQTree *, const uint16_t *, uint8_t **, size_t *, SQError *);
 bool sq_append_dictionary(SQTree *, const uint64_t *, uint32_t, SQError *);
 uint64_t sq_presence_size(const SQTree *);
 static inline uint32_t sq_presence_offset(const SQTree *tree) {

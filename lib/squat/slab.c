@@ -121,16 +121,17 @@ size_t sq_runtime_size(const TSLanguage *language) {
   return (bytes + SQ_COLUMN_ALIGNMENT - 1) & ~(size_t)(SQ_COLUMN_ALIGNMENT - 1);
 }
 
-static bool compatible_language(const TSLanguage *language) {
+bool sq_language_compatible(const TSLanguage *language) {
   return language && language->abi_version >= TREE_SITTER_MIN_COMPATIBLE_LANGUAGE_VERSION &&
          language->abi_version <= TREE_SITTER_LANGUAGE_VERSION &&
          (uint64_t)language->symbol_count + language->alias_count <= ts_builtin_sym_error_repeat;
 }
 
 static SQTree *allocate_tree(const TSLanguage *language, uint32_t capacity, uint32_t payload_size,
-                             SQStorage storage, SQError *error) {
+                             SQStorage storage, const TSSymbol *supertypes,
+                             uint32_t supertype_count, SQError *error) {
   sq_fail(error, SQ_OK);
-  if (!compatible_language(language)) {
+  if (!sq_language_compatible(language)) {
     sq_fail(error, SQ_ERROR_LANGUAGE);
     return NULL;
   }
@@ -167,11 +168,16 @@ static SQTree *allocate_tree(const TSLanguage *language, uint32_t capacity, uint
   // otherwise dominates conversion of a small file. Keep ascending order, which
   // fixes each supertype's bit position in the serialized column.
   tree->supertypes = (TSSymbol *)(tree + 1);
-  const TSSymbolMetadata *metadata = language->symbol_metadata;
-  uint32_t symbols = (uint32_t)language->symbol_count + language->alias_count;
-  for (uint32_t symbol = 0; symbol < symbols; symbol++) {
-    if (metadata[symbol].supertype) {
-      tree->supertypes[tree->supertype_count++] = (TSSymbol)symbol;
+  if (supertypes) {
+    memcpy(tree->supertypes, supertypes, supertype_count * sizeof(TSSymbol));
+    tree->supertype_count = supertype_count;
+  } else {
+    const TSSymbolMetadata *metadata = language->symbol_metadata;
+    uint32_t symbols = (uint32_t)language->symbol_count + language->alias_count;
+    for (uint32_t symbol = 0; symbol < symbols; symbol++) {
+      if (metadata[symbol].supertype) {
+        tree->supertypes[tree->supertype_count++] = (TSSymbol)symbol;
+      }
     }
   }
 
@@ -190,7 +196,12 @@ static SQTree *allocate_tree(const TSLanguage *language, uint32_t capacity, uint
 }
 
 SQTree *sq_allocate(const TSLanguage *language, uint32_t capacity, SQError *error) {
-  SQTree *tree = allocate_tree(language, capacity, 0, SQ_STORAGE_COLOCATED, error);
+  return sq_allocate_cached(language, capacity, NULL, 0, error);
+}
+
+SQTree *sq_allocate_cached(const TSLanguage *language, uint32_t capacity,
+                           const TSSymbol *supertypes, uint32_t count, SQError *error) {
+  SQTree *tree = allocate_tree(language, capacity, 0, SQ_STORAGE_COLOCATED, supertypes, count, error);
   if (tree) {
     *sq_header(tree) =
         (SQHeader){.format_flags = SQ_VERSION | SQ_LAYOUT_FLAGS, .group_capacity = capacity};
@@ -202,7 +213,7 @@ SQTree *sq_allocate(const TSLanguage *language, uint32_t capacity, SQError *erro
 SQTree *sq_allocate_loaded(const TSLanguage *language, uint32_t capacity, const void *bytes,
                            uint32_t length, bool borrowed, SQError *error) {
   SQTree *tree = allocate_tree(language, capacity, length,
-                               borrowed ? SQ_STORAGE_BORROWED : SQ_STORAGE_COPIED, error);
+                               borrowed ? SQ_STORAGE_BORROWED : SQ_STORAGE_COPIED, NULL, 0, error);
   if (tree) {
     if (borrowed) {
       // This storage is only read. Mutable helpers reject borrowed descriptors.

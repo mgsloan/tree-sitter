@@ -11,6 +11,15 @@ static void set_group(uint8_t *entry, uint32_t group) {
 }
 
 bool sq_build_presence(SQTree *tree, SQError *error) {
+  uint8_t *scratch = NULL;
+  size_t capacity = 0;
+  bool ok = sq_build_presence_cached(tree, NULL, &scratch, &capacity, error);
+  free(scratch);
+  return ok;
+}
+
+bool sq_build_presence_cached(SQTree *tree, const uint16_t *cached_index,
+                               uint8_t **scratch_pointer, size_t *capacity, SQError *error) {
   uint32_t groups = sq_tree_group_count(tree);
   if (groups <= 32) {
     return true;
@@ -28,11 +37,17 @@ bool sq_build_presence(SQTree *tree, SQError *error) {
     sq_fail(error, SQ_ERROR_OVERFLOW);
     return false;
   }
-  uint8_t *scratch = calloc(1, (size_t)scratch_size);
-  if (!scratch) {
-    sq_fail(error, SQ_ERROR_ALLOCATION);
-    return false;
+  if (scratch_size > *capacity) {
+    uint8_t *next = realloc(*scratch_pointer, (size_t)scratch_size);
+    if (!next) {
+      sq_fail(error, SQ_ERROR_ALLOCATION);
+      return false;
+    }
+    *scratch_pointer = next;
+    *capacity = (size_t)scratch_size;
   }
+  uint8_t *scratch = *scratch_pointer;
+  memset(scratch, 0, (size_t)symbols * sizeof(uint32_t));
   uint32_t *counts = (uint32_t *)scratch;
   uint16_t *public_index = (uint16_t *)(scratch + (size_t)symbols * sizeof(uint32_t));
   uint8_t *bitmap = scratch + (size_t)symbols * (sizeof(uint32_t) + sizeof(uint16_t));
@@ -40,7 +55,6 @@ bool sq_build_presence(SQTree *tree, SQError *error) {
   uint32_t offset = tree->layout.end;
   if ((uint64_t)offset + length > tree->size) {
     sq_fail(error, SQ_ERROR_ARGUMENT);
-    free(scratch);
     return false;
   }
 
@@ -48,13 +62,14 @@ bool sq_build_presence(SQTree *tree, SQError *error) {
   // runtime accessor per slot. Encoded indexes are below sq_symbols, at most
   // 65536, so they fit. The packer never stores ERROR_REPEAT, which is hidden and
   // never an alias, and the public map has no entry for it.
-  for (uint32_t raw = 0; raw < symbols; raw++) {
+  for (uint32_t raw = 0; !cached_index && raw < symbols; raw++) {
     TSSymbol symbol = sq_decode_symbol(tree, raw);
     public_index[raw] =
         symbol == ts_builtin_sym_error_repeat
             ? (uint16_t)raw
             : (uint16_t)sq_encode_symbol(tree, ts_language_public_symbol(tree->language, symbol));
   }
+  const uint16_t *indexes = cached_index ? cached_index : public_index;
 
   uint8_t *next = tree->data;
   memset(next + offset, 0, (size_t)length);
@@ -85,7 +100,7 @@ bool sq_build_presence(SQTree *tree, SQError *error) {
     uint64_t word;
     memcpy(&word, symbol_column + (uint64_t)word_index * 8, sizeof(word));
     for (;;) {
-      uint32_t symbol_index = public_index[(word >> (lane * bits)) & value_mask];
+      uint32_t symbol_index = indexes[(word >> (lane * bits)) & value_mask];
       uint8_t *entry = entries + (size_t)symbol_index * entry_bytes;
       uint32_t count = counts[symbol_index];
       if (count > entry_slots) {
@@ -116,7 +131,6 @@ bool sq_build_presence(SQTree *tree, SQError *error) {
     }
   }
 
-  free(scratch);
   return true;
 }
 

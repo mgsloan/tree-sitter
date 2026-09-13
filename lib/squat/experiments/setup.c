@@ -66,21 +66,32 @@ int main(int argc, char **argv) {
   ts_parser_delete(parser);
   if (!parsed) return 2;
 
+  SQError context_error;
+  SQPackContext *context = getenv("SQ_REUSE_CONTEXT")
+      ? sq_pack_context_new(language(), &context_error) : NULL;
+  if (getenv("SQ_REUSE_CONTEXT") && !context) return 1;
+  int loops = getenv("SQ_BATCH_LOOPS") ? atoi(getenv("SQ_BATCH_LOOPS")) : 1;
+  if (loops < 1 || loops > 1000) return 2;
+
   double timings[99];
   for (int repeat = 0; repeat < repeats; repeat++) {
     double start = now();
-    for (int i = 0; i < parsed; i++) {
-      SQError error;
-      SQTree *packed = sq_tree_pack(trees[i], sq_pack_options_default(), &error);
-      if (!packed) {
-        fprintf(stderr, "%s\n", sq_error_string(error));
-        return 1;
-      }
+    for (int loop = 0; loop < loops; loop++) {
+      for (int i = 0; i < parsed; i++) {
+        SQError error;
+        SQTree *packed = context
+            ? sq_pack_context_pack(context, trees[i], sq_pack_options_default(), &error)
+            : sq_tree_pack(trees[i], sq_pack_options_default(), &error);
+        if (!packed) {
+          fprintf(stderr, "%s\n", sq_error_string(error));
+          return 1;
+        }
 
-      sq_tree_delete(packed);
+        sq_tree_delete(packed);
+      }
     }
 
-    timings[repeat] = (now() - start) * 1000;
+    timings[repeat] = (now() - start) * 1000 / loops;
   }
 
   qsort(timings, (size_t)repeats, sizeof(double), compare_double);
@@ -90,6 +101,7 @@ int main(int argc, char **argv) {
          timings[repeats / 2] * 1e6 / (double)nodes, timings[repeats / 2] * 1e3 / parsed);
   for (int i = 0; i < parsed; i++) ts_tree_delete(trees[i]);
   free(trees);
+  sq_pack_context_delete(context);
   dlclose(library);
   return 0;
 }

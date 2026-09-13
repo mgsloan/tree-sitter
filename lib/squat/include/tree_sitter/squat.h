@@ -63,6 +63,18 @@ const char *sq_error_string(SQError);
 SQPackOptions sq_pack_options_default(void);
 SQTree *sq_tree_pack(const TSTree *, SQPackOptions, SQError *);
 
+// Reuse grammar metadata and scratch across conversions of one language.
+// A context retains the language (native grammar libraries must remain loaded).
+// Calls reset transient state automatically, including after a failed pack.
+// One context may be used by only one thread at a time; separate contexts may
+// run concurrently. Packed trees own their storage and outlive the context.
+typedef struct SQPackContext SQPackContext;
+SQPackContext *sq_pack_context_new(const TSLanguage *, SQError *);
+SQTree *sq_pack_context_pack(SQPackContext *, const TSTree *, SQPackOptions, SQError *);
+// Release high-water scratch while retaining grammar metadata. NULL is allowed.
+void sq_pack_context_trim(SQPackContext *);
+void sq_pack_context_delete(SQPackContext *);
+
 // Parse without an old tree, pack, then release the mainline tree.
 SQTree *sq_tree_parse(TSParser *, const char *, uint32_t, SQPackOptions, SQError *);
 void sq_tree_delete(SQTree *);

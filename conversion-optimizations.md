@@ -311,7 +311,9 @@ Priority 6's first half is done. `sq_allocate`'s per-tree supertype scan is stil
 proportional to the grammar, but it now reads `symbol_metadata` directly instead
 of calling the accessor once per symbol, which is worth about 10% on batches of
 small files and nothing on large ones. `load_bytes` got the same change, so
-opening a cached slab benefits too. What remains of priority 6 is an explicit
-reusable pack context: it would drop the scan and the per-tree scratch entirely
-rather than making them cheaper, and it needs an API design covering language
-ownership, concurrent use, reset, and releasing oversized scratch.
+opening a cached slab benefits too. An explicit reusable pack context is now
+implemented in C and Rust. It retains grammar tables and traversal scratch,
+resets transient state on every call, requires exclusive access, and offers
+trimming to release oversized scratch. The remaining part of priority 6 is
+capacity tuning. See the
+[follow-up report](lib/squat/experiments/conversion-results-2026-09-13.md).

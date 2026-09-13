@@ -65,6 +65,10 @@ $(BUILD)/end255-bench: experiments/end255.c $(BUILD)/libtree-sitter-squat.a $(BU
 $(BUILD)/setup-bench: experiments/setup.c $(BUILD)/libtree-sitter-squat.a $(BUILD)/runtime.o
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) $^ -ldl -o $@
 
+$(BUILD)/context-check: tests/context.c $(BUILD)/libtree-sitter-squat.a $(BUILD)/runtime.o
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) $^ -ldl \
+	  -Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc -o $@
+
 # Repeated sq_tree_from_bytes over pre-serialized slabs: the persistence read path.
 $(BUILD)/load-bench: experiments/load.c $(BUILD)/libtree-sitter-squat.a $(BUILD)/runtime.o
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) $^ -ldl -o $@

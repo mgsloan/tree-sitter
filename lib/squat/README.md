@@ -27,6 +27,23 @@ if (packed) {
 Link the library before mainline Tree-sitter. Public declarations are in
 [`include/tree_sitter/squat.h`](include/tree_sitter/squat.h).
 
+For batches using one grammar, create an `SQPackContext` with
+`sq_pack_context_new(language, &error)` and call
+`sq_pack_context_pack(context, parsed_tree, options, &error)`. It retains the
+language, grammar lookup tables, and scratch allocations across files. Each call
+resets traversal state, including after an error; a tree from another language
+is rejected with `SQ_ERROR_LANGUAGE`. Output trees own their storage and remain
+valid after context reuse, trimming, or deletion. `sq_pack_context_trim(context)`
+releases high-water scratch while keeping grammar tables; finish with
+`sq_pack_context_delete(context)`. Use separate contexts for concurrent calls,
+and keep native grammar libraries loaded while any context or tree uses them.
+The original `sq_tree_pack` remains available for independent conversions.
+
+`context-check` checks output equality, reuse, trimming, and ownership; setting
+`CONTEXT_FAILURES=1` also injects failure at every pack allocation and checks
+recovery. `setup-bench` accepts `SQ_REUSE_CONTEXT=1` and `SQ_BATCH_LOOPS=16` for
+paired small-file measurements with sufficient work per timed sample.
+
 `make -C lib/squat check` checks column packing and value-preserving growth and
 compaction, including nine-bit lane realignment. For grammar comparisons:
 

@@ -104,6 +104,25 @@ typedef struct {
   bool visible, child_later;
 } Frame;
 
+struct SQPackContext {
+  const TSLanguage *language;
+  TSSymbol *supertypes;
+  uint32_t supertype_count;
+  uint16_t *public_index;
+  // Retain only storage, never pending nodes or pointers into a completed slab.
+  struct {
+    PackPosition *positions;
+    TSFieldId *fields;
+    uint64_t *masks, *dictionary;
+    uint16_t *supertype_indexes;
+    uint32_t position_capacity, field_capacity, mask_capacity, dictionary_capacity;
+  } scratch;
+  Frame *stack;
+  size_t stack_capacity;
+  uint8_t *presence;
+  size_t presence_capacity;
+};
+
 // The traversal reads several fields of every raw subtree, and each subtree.h
 // accessor repeats the inline/heap test. Decode the needed fields once.
 typedef struct {
@@ -707,10 +726,75 @@ static void descend_hidden(const Builder *builder, const TSLanguage *language, u
   } while (!descent->visible && descent->child_count == 1);
 }
 
-SQTree *sq_tree_pack(const TSTree *tree, SQPackOptions options, SQError *error) {
+void sq_pack_context_trim(SQPackContext *context) {
+  if (!context) return;
+  free(context->stack);
+  free(context->scratch.positions);
+  free(context->scratch.fields);
+  free(context->scratch.masks);
+  free(context->scratch.dictionary);
+  free(context->presence);
+  uint16_t *indexes = context->scratch.supertype_indexes;
+  memset(&context->scratch, 0, sizeof(context->scratch));
+  context->scratch.supertype_indexes = indexes;
+  context->stack = NULL;
+  context->stack_capacity = 0;
+  context->presence = NULL;
+  context->presence_capacity = 0;
+}
+
+void sq_pack_context_delete(SQPackContext *context) {
+  if (!context) return;
+  sq_pack_context_trim(context);
+  ts_language_delete(context->language);
+  free(context->supertypes);
+  free(context);
+}
+
+SQPackContext *sq_pack_context_new(const TSLanguage *language, SQError *error) {
+  sq_fail(error, SQ_OK);
+  if (!sq_language_compatible(language)) {
+    sq_fail(error, SQ_ERROR_LANGUAGE);
+    return NULL;
+  }
+  SQPackContext *context = calloc(1, sizeof(SQPackContext));
+  if (!context) goto allocation;
+  context->language = ts_language_copy(language);
+  uint32_t symbols = language->symbol_count + language->alias_count;
+  size_t space = (size_t)symbols + 2;
+  context->supertypes = calloc(3 * space, sizeof(uint16_t));
+  if (!context->supertypes) {
+    sq_pack_context_delete(context);
+    goto allocation;
+  }
+  context->scratch.supertype_indexes = context->supertypes + space;
+  context->public_index = context->supertypes + 2 * space;
+  for (uint32_t symbol = 0; symbol < symbols; symbol++) {
+    if (language->symbol_metadata[symbol].supertype) {
+      context->supertypes[context->supertype_count++] = (TSSymbol)symbol;
+      context->scratch.supertype_indexes[symbol] = (uint16_t)context->supertype_count;
+    }
+    TSSymbol public = ts_language_public_symbol(language, (TSSymbol)symbol);
+    context->public_index[symbol] = public == ts_builtin_sym_error ? symbols
+        : public == ts_builtin_sym_error_repeat ? symbols + 1 : public;
+  }
+  context->public_index[symbols] = (uint16_t)symbols;
+  context->public_index[symbols + 1] = (uint16_t)(symbols + 1);
+  return context;
+allocation:
+  sq_fail(error, SQ_ERROR_ALLOCATION);
+  return NULL;
+}
+
+static SQTree *pack_tree(SQPackContext *context, const TSTree *tree,
+                         SQPackOptions options, SQError *error) {
   sq_fail(error, SQ_OK);
   if (!tree) {
     sq_fail(error, SQ_ERROR_ARGUMENT);
+    return NULL;
+  }
+  if (context && context->language != ts_tree_language(tree)) {
+    sq_fail(error, SQ_ERROR_LANGUAGE);
     return NULL;
   }
 
@@ -722,7 +806,10 @@ SQTree *sq_tree_pack(const TSTree *tree, SQPackOptions options, SQError *error) 
     capacity = ts_node_descendant_count(root) / expected_nodes_per_group + 1;
   }
 
-  SQTree *result = sq_allocate(ts_tree_language(tree), capacity, error);
+  SQTree *result = context
+      ? sq_allocate_cached(context->language, capacity, context->supertypes,
+                           context->supertype_count, error)
+      : sq_allocate(ts_tree_language(tree), capacity, error);
   if (!result) {
     return NULL;
   }
@@ -736,17 +823,31 @@ SQTree *sq_tree_pack(const TSTree *tree, SQPackOptions options, SQError *error) 
                      .small_supertypes = result->supertype_count <= 8,
                      .error = error};
   size_t depth = 0, stack_capacity = 32;
-  Frame *stack = malloc(stack_capacity * sizeof(Frame));
+  Frame *stack = NULL;
+  if (context) {
+    builder.positions = context->scratch.positions;
+    builder.position_capacity = context->scratch.position_capacity;
+    builder.fields = context->scratch.fields;
+    builder.field_capacity = context->scratch.field_capacity;
+    builder.masks = context->scratch.masks;
+    builder.mask_capacity = context->scratch.mask_capacity;
+    builder.dictionary = context->scratch.dictionary;
+    builder.dictionary_capacity = context->scratch.dictionary_capacity;
+    builder.supertype_indexes = context->scratch.supertype_indexes;
+    stack = context->stack;
+    if (stack) stack_capacity = context->stack_capacity;
+  }
+  if (!stack) stack = malloc(stack_capacity * sizeof(Frame));
   const TSLanguage *language = result->language;
   uint32_t symbols = language->symbol_count + language->alias_count;
-  if (builder.words) {
+  if (builder.words && !context) {
     builder.supertype_indexes = calloc(symbols, sizeof(uint16_t));
   }
   if (!stack || (builder.words && !builder.supertype_indexes)) {
     sq_fail(error, SQ_ERROR_ALLOCATION);
     goto failure;
   }
-  for (uint32_t i = 0; i < result->supertype_count; i++) {
+  for (uint32_t i = 0; !context && i < result->supertype_count; i++) {
     builder.supertype_indexes[result->supertypes[i]] = (uint16_t)(i + 1);
   }
 
@@ -890,8 +991,12 @@ SQTree *sq_tree_pack(const TSTree *tree, SQPackOptions options, SQError *error) 
     goto failure;
   }
 
-  if (options.symbol_presence && !sq_build_presence(builder.tree, error)) {
-    goto failure;
+  if (options.symbol_presence) {
+    bool ok = context
+        ? sq_build_presence_cached(builder.tree, context->public_index,
+                                   &context->presence, &context->presence_capacity, error)
+        : sq_build_presence(builder.tree, error);
+    if (!ok) goto failure;
   }
 
   if (builder.tree->supertype_count > 8 &&
@@ -899,22 +1004,45 @@ SQTree *sq_tree_pack(const TSTree *tree, SQPackOptions options, SQError *error) 
     goto failure;
   }
 
-  free(stack);
-  free(builder.positions);
-  free(builder.fields);
-  free(builder.masks);
-  free(builder.supertype_indexes);
-  free(builder.dictionary);
-  return builder.tree;
+  goto cleanup;
 failure:
-  free(stack);
-  free(builder.positions);
-  free(builder.fields);
-  free(builder.masks);
-  free(builder.supertype_indexes);
-  free(builder.dictionary);
   sq_tree_delete(builder.tree);
-  return NULL;
+  builder.tree = NULL;
+cleanup:
+  result = builder.tree;
+  if (context) {
+    context->scratch.positions = builder.positions;
+    context->scratch.position_capacity = builder.position_capacity;
+    context->scratch.fields = builder.fields;
+    context->scratch.field_capacity = builder.field_capacity;
+    context->scratch.masks = builder.masks;
+    context->scratch.mask_capacity = builder.mask_capacity;
+    context->scratch.dictionary = builder.dictionary;
+    context->scratch.dictionary_capacity = builder.dictionary_capacity;
+    context->stack = stack;
+    context->stack_capacity = stack_capacity;
+  } else {
+    free(stack);
+    free(builder.positions);
+    free(builder.fields);
+    free(builder.masks);
+    free(builder.supertype_indexes);
+    free(builder.dictionary);
+  }
+  return result;
+}
+
+SQTree *sq_tree_pack(const TSTree *tree, SQPackOptions options, SQError *error) {
+  return pack_tree(NULL, tree, options, error);
+}
+
+SQTree *sq_pack_context_pack(SQPackContext *context, const TSTree *tree,
+                             SQPackOptions options, SQError *error) {
+  if (!context) {
+    sq_fail(error, SQ_ERROR_ARGUMENT);
+    return NULL;
+  }
+  return pack_tree(context, tree, options, error);
 }
 
 SQTree *sq_tree_parse(TSParser *parser, const char *source, uint32_t length, SQPackOptions options,
