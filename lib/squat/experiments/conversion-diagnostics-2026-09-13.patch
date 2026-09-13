@@ -1,0 +1,113 @@
+--- a/lib/squat/pack.c
++++ b/lib/squat/pack.c
+@@ -1,5 +1,7 @@
+ #include "internal.h"
+-#include "../src/tree.h"
++#include "tree.h"
++#include <stdio.h>
++static _Thread_local struct { uint64_t fit[7], grows, growth_bytes, position_visits, positions, frames, empty_hidden, raw_children, dictionary_comparisons; } stats;
+ 
+ // Only the current group's absolute values are staged. Frame coordinates are
+ // computed once left-to-right, then consumed right-to-left (columns cannot be
+@@ -168,6 +170,7 @@
+     builder->position_capacity = capacity;
+   }
+ 
++  if (needed > stats.positions) stats.positions = needed;
+   *offset = builder->position_count;
+   builder->position_count += count;
+   return true;
+@@ -292,6 +295,7 @@
+ static bool open_group(Builder *builder) {
+   SQHeader *header = sq_header(builder->tree);
+   if (header->group_count == header->group_capacity) {
++    stats.grows++; stats.growth_bytes += builder->tree->layout.end;
+     uint32_t capacity = header->group_capacity;
+     if (capacity > UINT32_MAX / 2 || !sq_resize(&builder->tree, capacity * 2, builder->error)) {
+       return false;
+@@ -388,6 +392,7 @@
+ 
+   size_t bytes = (size_t)builder->words * 8;
+   for (uint32_t i = 0; i < builder->dictionary_count; i++) {
++    stats.dictionary_comparisons++;
+     if (!memcmp(builder->dictionary + (size_t)i * builder->words, mask, bytes)) {
+       *result = (uint8_t)i;
+       return true;
+@@ -436,27 +441,20 @@
+   }
+ 
+   if (!extend_range(value->span, builder->base.span, builder->max.span, UINT8_MAX, &base->span,
+-                    &max->span))
+-    return false;
++                    &max->span)) { stats.fit[0]++; return false; }
+   if (!extend_range(value->start_byte, builder->base.start_byte, builder->max.start_byte, UINT8_MAX,
+-                    &base->start_byte, &max->start_byte))
+-    return false;
++                    &base->start_byte, &max->start_byte)) { stats.fit[1]++; return false; }
+   if (!extend_range(value->end_byte, builder->base.end_byte, builder->max.end_byte, UINT16_MAX,
+-                    &base->end_byte, &max->end_byte))
+-    return false;
++                    &base->end_byte, &max->end_byte)) { stats.fit[2]++; return false; }
+ #if SQ_INCLUDE_POINTS
+   if (!extend_range(value->start_row, builder->base.start_row, builder->max.start_row, UINT8_MAX,
+-                    &base->start_row, &max->start_row))
+-    return false;
++                    &base->start_row, &max->start_row)) { stats.fit[3]++; return false; }
+   if (!extend_range(value->end_row, builder->base.end_row, builder->max.end_row, UINT8_MAX,
+-                    &base->end_row, &max->end_row))
+-    return false;
++                    &base->end_row, &max->end_row)) { stats.fit[4]++; return false; }
+   if (!extend_range(value->start_column, builder->base.start_column, builder->max.start_column,
+-                    UINT8_MAX, &base->start_column, &max->start_column))
+-    return false;
++                    UINT8_MAX, &base->start_column, &max->start_column)) { stats.fit[5]++; return false; }
+   if (!extend_range(value->end_column, builder->base.end_column, builder->max.end_column, UINT8_MAX,
+-                    &base->end_column, &max->end_column))
+-    return false;
++                    &base->end_column, &max->end_column)) { stats.fit[6]++; return false; }
+ #endif
+   return true;
+ }
+@@ -565,6 +563,7 @@
+ static bool init_frame(Builder *builder, Frame *frame, const Subtree *subtree_pointer,
+                        PackPosition position, TSSymbol alias, TSFieldId field, bool visible,
+                        bool later, uint64_t mask, uint32_t mask_offset) {
++  stats.frames++;
+   frame->node.subtree = subtree_pointer;
+   frame->node.position = position;
+   frame->node.mask = mask;
+@@ -597,6 +596,7 @@
+     PackPosition *positions = count == 1 ? &frame->inline_position
+                                          : builder->positions + frame->position_offset;
+     for (uint32_t i = 0; i < count; i++) {
++      stats.position_visits++;
+       Subtree child = frame->children[i];
+       Length padding, size;
+       bool extra;
+@@ -788,6 +788,7 @@
+ 
+ static SQTree *pack_tree(SQPackContext *context, const TSTree *tree,
+                          SQPackOptions options, SQError *error) {
++  memset(&stats, 0, sizeof(stats));
+   sq_fail(error, SQ_OK);
+   if (!tree) {
+     sq_fail(error, SQ_ERROR_ARGUMENT);
+@@ -884,6 +885,8 @@
+ 
+       TSSymbol alias = extra || !frame->aliases ? 0 : frame->aliases[frame->structural];
+       bool visible = alias || facts.visible;
++      stats.raw_children++;
++      stats.empty_hidden += !visible && facts.child_count && !facts.visible_child_count;
+       bool later = frame->child_later || (!frame->visible && frame->node.later);
+       frame->child_later |= visible || facts.visible_child_count > 0;
+ 
+@@ -1010,6 +1013,9 @@
+   builder.tree = NULL;
+ cleanup:
+   result = builder.tree;
++  if (result) fprintf(stderr, "{\"fit\":[%llu,%llu,%llu,%llu,%llu,%llu,%llu],\"grows\":%llu,\"growth_bytes\":%llu,\"positions\":%llu,\"position_visits\":%llu,\"frames\":%llu,\"empty_hidden\":%llu,\"raw_children\":%llu,\"dictionary_comparisons\":%llu,\"dictionary_count\":%u,\"initial_capacity\":%u}\n",
++    (unsigned long long)stats.fit[0], (unsigned long long)stats.fit[1], (unsigned long long)stats.fit[2], (unsigned long long)stats.fit[3], (unsigned long long)stats.fit[4], (unsigned long long)stats.fit[5], (unsigned long long)stats.fit[6],
++    (unsigned long long)stats.grows, (unsigned long long)stats.growth_bytes, (unsigned long long)stats.positions, (unsigned long long)stats.position_visits, (unsigned long long)stats.frames, (unsigned long long)stats.empty_hidden, (unsigned long long)stats.raw_children, (unsigned long long)stats.dictionary_comparisons, builder.dictionary_count, capacity);
+   if (context) {
+     context->scratch.positions = builder.positions;
+     context->scratch.position_capacity = builder.position_capacity;

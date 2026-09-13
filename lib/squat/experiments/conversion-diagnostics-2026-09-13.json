@@ -1,0 +1,335 @@
+[
+  {
+    "path": "test/Chart.js/node_modules/.pnpm/language-subtag-registry@0.3.23/node_modules/language-subtag-registry/data/json/registry.json",
+    "grammar": "json",
+    "counts": {
+      "fit": [
+        1,
+        1,
+        0,
+        0,
+        0,
+        0,
+        3
+      ],
+      "grows": 0,
+      "growth_bytes": 0,
+      "positions": 72,
+      "position_visits": 559941,
+      "frames": 206643,
+      "empty_hidden": 0,
+      "raw_children": 559941,
+      "dictionary_comparisons": 0,
+      "dictionary_count": 0,
+      "initial_capacity": 40854
+    },
+    "packed": {
+      "parse_ms": 118.098391,
+      "nodes": 490245,
+      "times_ms": [
+        33.265828
+      ],
+      "groups": 30645,
+      "capacity": 40854,
+      "bytes": 8512624,
+      "supertypes": 1,
+      "hash": "1f6b1f83558c3928"
+    }
+  },
+  {
+    "path": "test/Chart.js/node_modules/.pnpm/prettier@2.8.8/node_modules/prettier/esm/parser-typescript.mjs",
+    "grammar": "tsx",
+    "counts": {
+      "fit": [
+        4322,
+        61,
+        0,
+        0,
+        0,
+        23,
+        3992
+      ],
+      "grows": 0,
+      "growth_bytes": 0,
+      "positions": 402,
+      "position_visits": 595439,
+      "frames": 233923,
+      "empty_hidden": 0,
+      "raw_children": 595439,
+      "dictionary_comparisons": 0,
+      "dictionary_count": 0,
+      "initial_capacity": 42595
+    },
+    "packed": {
+      "parse_ms": 247.980911,
+      "nodes": 511131,
+      "times_ms": [
+        55.029328
+      ],
+      "groups": 38260,
+      "capacity": 42595,
+      "bytes": 11714640,
+      "supertypes": 7,
+      "hash": "0c2fcfb286242df2"
+    }
+  },
+  {
+    "path": "test/act/pkg/runner/testdata/actions/node20/node_modules/@vercel/ncc/dist/ncc/loaders/typescript/lib/lib.dom.d.ts",
+    "grammar": "typescript",
+    "counts": {
+      "fit": [
+        572,
+        813,
+        0,
+        0,
+        0,
+        12,
+        27
+      ],
+      "grows": 0,
+      "growth_bytes": 0,
+      "positions": 146,
+      "position_visits": 217636,
+      "frames": 97681,
+      "empty_hidden": 0,
+      "raw_children": 217636,
+      "dictionary_comparisons": 0,
+      "dictionary_count": 0,
+      "initial_capacity": 15834
+    },
+    "packed": {
+      "parse_ms": 90.892496,
+      "nodes": 190002,
+      "times_ms": [
+        18.332716
+      ],
+      "groups": 12644,
+      "capacity": 15834,
+      "bytes": 4249720,
+      "supertypes": 7,
+      "hash": "d14cbfd23045e203"
+    }
+  },
+  {
+    "path": "test/entt/single_include/entt/entt.hpp",
+    "grammar": "cpp",
+    "counts": {
+      "fit": [
+        5196,
+        1434,
+        0,
+        0,
+        0,
+        8,
+        43
+      ],
+      "grows": 0,
+      "growth_bytes": 0,
+      "positions": 397,
+      "position_visits": 801357,
+      "frames": 341236,
+      "empty_hidden": 0,
+      "raw_children": 801357,
+      "dictionary_comparisons": 0,
+      "dictionary_count": 0,
+      "initial_capacity": 59140
+    },
+    "packed": {
+      "parse_ms": 520.045625,
+      "nodes": 709679,
+      "times_ms": [
+        88.216305
+      ],
+      "groups": 48938,
+      "capacity": 59140,
+      "bytes": 17382368,
+      "supertypes": 7,
+      "hash": "40a8752a536b6a28"
+    }
+  },
+  {
+    "path": "train/black/profiling/dict_huge.py",
+    "grammar": "python",
+    "counts": {
+      "fit": [
+        9,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "grows": 0,
+      "growth_bytes": 0,
+      "positions": 62,
+      "position_visits": 621558,
+      "frames": 290058,
+      "empty_hidden": 0,
+      "raw_children": 621558,
+      "dictionary_comparisons": 0,
+      "dictionary_count": 0,
+      "initial_capacity": 37985
+    },
+    "packed": {
+      "parse_ms": 210.974931,
+      "nodes": 455815,
+      "times_ms": [
+        46.90328
+      ],
+      "groups": 28497,
+      "capacity": 37985,
+      "bytes": 9715432,
+      "supertypes": 4,
+      "hash": "3b2f8b571e284a97"
+    }
+  },
+  {
+    "path": "train/nodebb/node_modules/@fortawesome/fontawesome-free/metadata/icon-families.yml",
+    "grammar": "yaml",
+    "counts": {
+      "fit": [
+        1654,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "grows": 0,
+      "growth_bytes": 0,
+      "positions": 71,
+      "position_visits": 250641,
+      "frames": 166403,
+      "empty_hidden": 1,
+      "raw_children": 250641,
+      "dictionary_comparisons": 0,
+      "dictionary_count": 0,
+      "initial_capacity": 17284
+    },
+    "packed": {
+      "parse_ms": 79.454288,
+      "nodes": 207403,
+      "times_ms": [
+        23.278359
+      ],
+      "groups": 14244,
+      "capacity": 17284,
+      "bytes": 4352704,
+      "supertypes": 0,
+      "hash": "ce44cd47c763a427"
+    }
+  },
+  {
+    "path": "train/nodebb/node_modules/@typescript/typescript-linux-x64/lib/lib.dom.d.ts",
+    "grammar": "typescript",
+    "counts": {
+      "fit": [
+        827,
+        4110,
+        0,
+        0,
+        0,
+        21,
+        53
+      ],
+      "grows": 0,
+      "growth_bytes": 0,
+      "positions": 344,
+      "position_visits": 249989,
+      "frames": 111443,
+      "empty_hidden": 0,
+      "raw_children": 249989,
+      "dictionary_comparisons": 0,
+      "dictionary_count": 0,
+      "initial_capacity": 18229
+    },
+    "packed": {
+      "parse_ms": 109.410863,
+      "nodes": 218742,
+      "times_ms": [
+        21.734709
+      ],
+      "groups": 16338,
+      "capacity": 18229,
+      "bytes": 4977400,
+      "supertypes": 7,
+      "hash": "fdc4ec7a48ec9bd0"
+    }
+  },
+  {
+    "path": "train/nodebb/node_modules/ace-builds/src/worker-xquery.js",
+    "grammar": "tsx",
+    "counts": {
+      "fit": [
+        2458,
+        2,
+        0,
+        0,
+        0,
+        19,
+        16
+      ],
+      "grows": 0,
+      "growth_bytes": 0,
+      "positions": 2471,
+      "position_visits": 1326909,
+      "frames": 603618,
+      "empty_hidden": 0,
+      "raw_children": 1326909,
+      "dictionary_comparisons": 0,
+      "dictionary_count": 0,
+      "initial_capacity": 69949
+    },
+    "packed": {
+      "parse_ms": 543.66985,
+      "nodes": 839376,
+      "times_ms": [
+        97.773364
+      ],
+      "groups": 54423,
+      "capacity": 69949,
+      "bytes": 18814608,
+      "supertypes": 7,
+      "hash": "53fd8c4d1adae576"
+    }
+  },
+  {
+    "path": "train/nodebb/node_modules/natural/lib/natural/sentiment/English/senticon_en.json",
+    "grammar": "json",
+    "counts": {
+      "fit": [
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "grows": 0,
+      "growth_bytes": 0,
+      "positions": 57,
+      "position_visits": 1167433,
+      "frames": 422262,
+      "empty_hidden": 0,
+      "raw_children": 1167433,
+      "dictionary_comparisons": 0,
+      "dictionary_count": 0,
+      "initial_capacity": 86937
+    },
+    "packed": {
+      "parse_ms": 233.948727,
+      "nodes": 1043241,
+      "times_ms": [
+        90.648056
+      ],
+      "groups": 65204,
+      "capacity": 86937,
+      "bytes": 18114704,
+      "supertypes": 1,
+      "hash": "f0f9f8ba53b4aa4d"
+    }
+  }
+]

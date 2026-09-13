@@ -31,6 +31,19 @@ int main(int argc, char **argv) {
   const TSLanguage *(*language_fn)(void) = (const TSLanguage *(*)(void))dlsym(library, argv[2]);
   assert(language_fn);
   const TSLanguage *language = language_fn();
+  TSLanguage synthetic = *language;
+  TSSymbolMetadata *synthetic_metadata = NULL;
+  if (getenv("CONTEXT_SUPERTYPES")) {
+    unsigned count = (unsigned)atoi(getenv("CONTEXT_SUPERTYPES"));
+    uint32_t symbols = language->symbol_count + language->alias_count;
+    assert(count <= symbols);
+    synthetic_metadata = malloc(symbols * sizeof(TSSymbolMetadata));
+    assert(synthetic_metadata);
+    memcpy(synthetic_metadata, language->symbol_metadata, symbols * sizeof(TSSymbolMetadata));
+    for (uint32_t i = 0; i < symbols; i++) synthetic_metadata[i].supertype = i < count;
+    synthetic.symbol_metadata = synthetic_metadata;
+    language = &synthetic;
+  }
   SQPackContext *context = sq_pack_context_new(language, &error);
   assert(context && error == SQ_OK);
   TSParser *parser = ts_parser_new();
@@ -127,6 +140,7 @@ int main(int argc, char **argv) {
   }
   sq_pack_context_delete(context);
   ts_parser_delete(parser);
+  free(synthetic_metadata);
   dlclose(library);
   printf("context: %d files passed\n", argc - 3);
 }

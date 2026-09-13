@@ -429,7 +429,7 @@ static bool extend_range(uint32_t value, uint32_t previous_base, uint32_t previo
 
 static bool group_fits(const Builder *builder, const PackValues *value, PackValues *base,
                        PackValues *max) {
-  if (builder->count == SQ_GROUP_SIZE) return false;
+  // emit closes a full group before staging the candidate.
   if (!builder->count) {
     *base = *max = *value;
     return true;
@@ -438,16 +438,19 @@ static bool group_fits(const Builder *builder, const PackValues *value, PackValu
   if (!extend_range(value->span, builder->base.span, builder->max.span, UINT8_MAX, &base->span,
                     &max->span))
     return false;
-  if (!extend_range(value->start_byte, builder->base.start_byte, builder->max.start_byte, UINT8_MAX,
-                    &base->start_byte, &max->start_byte))
-    return false;
+  // Reverse preorder visits later siblings before earlier ones, then their
+  // parent. Starts therefore never increase, including empty/missing nodes.
+  // The candidate is the new minimum and the first accepted start stays maximal.
+  base->start_byte = value->start_byte;
+  max->start_byte = builder->max.start_byte;
+  if (max->start_byte - base->start_byte > UINT8_MAX) return false;
   if (!extend_range(value->end_byte, builder->base.end_byte, builder->max.end_byte, UINT16_MAX,
                     &base->end_byte, &max->end_byte))
     return false;
 #if SQ_INCLUDE_POINTS
-  if (!extend_range(value->start_row, builder->base.start_row, builder->max.start_row, UINT8_MAX,
-                    &base->start_row, &max->start_row))
-    return false;
+  base->start_row = value->start_row;
+  max->start_row = builder->max.start_row;
+  if (max->start_row - base->start_row > UINT8_MAX) return false;
   if (!extend_range(value->end_row, builder->base.end_row, builder->max.end_row, UINT8_MAX,
                     &base->end_row, &max->end_row))
     return false;

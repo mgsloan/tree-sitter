@@ -1,0 +1,493 @@
+{
+  "baseline": "0a439c1e2",
+  "method": "GCP CPU 0; five alternating pairs of seven-repeat medians; points enabled; default 16-slot groups; exact output hashes checked",
+  "hashes": "ce3b7e327f8fed8a980aa06574e957be165865a7566255a8b781394f532f9244  build/conv-next/fit/bench\n716a425438d7ef734fc18b846d4e081e7e309c635eef8af83cbae675117cf053  lib/squat/pack.c\n",
+  "rows": [
+    {
+      "path": "test/Chart.js/node_modules/.pnpm/language-subtag-registry@0.3.23/node_modules/language-subtag-registry/data/json/registry.json",
+      "grammar": "json",
+      "repack": 0,
+      "nodes": 490245,
+      "samples_ms": {
+        "context": [
+          29.379205,
+          29.814726,
+          29.585745,
+          30.032026,
+          29.383305
+        ],
+        "fit": [
+          28.129704,
+          27.997473,
+          28.279794,
+          28.165354,
+          27.764414
+        ]
+      },
+      "medians_ms": {
+        "context": 29.585745,
+        "fit": 28.129704
+      },
+      "ratio": 0.9507857246792332
+    },
+    {
+      "path": "test/Chart.js/node_modules/.pnpm/prettier@2.8.8/node_modules/prettier/esm/parser-typescript.mjs",
+      "grammar": "tsx",
+      "repack": 0,
+      "nodes": 511131,
+      "samples_ms": {
+        "context": [
+          45.2018,
+          44.332778,
+          45.64505,
+          44.385078,
+          45.064879
+        ],
+        "fit": [
+          44.115638,
+          43.640528,
+          43.473557,
+          43.065457,
+          43.233507
+        ]
+      },
+      "medians_ms": {
+        "context": 45.064879,
+        "fit": 43.473557
+      },
+      "ratio": 0.9646881998728989
+    },
+    {
+      "path": "test/act/pkg/runner/testdata/actions/node20/node_modules/@vercel/ncc/dist/ncc/loaders/typescript/lib/lib.dom.d.ts",
+      "grammar": "typescript",
+      "repack": 0,
+      "nodes": 190002,
+      "samples_ms": {
+        "context": [
+          14.857074,
+          14.640572,
+          14.538643,
+          15.294703,
+          14.984003
+        ],
+        "fit": [
+          14.680533,
+          14.961622,
+          14.980523,
+          14.725223,
+          14.830292
+        ]
+      },
+      "medians_ms": {
+        "context": 14.857074,
+        "fit": 14.830292
+      },
+      "ratio": 0.9981973570300585
+    },
+    {
+      "path": "test/entt/single_include/entt/entt.hpp",
+      "grammar": "cpp",
+      "repack": 0,
+      "nodes": 709679,
+      "samples_ms": {
+        "context": [
+          69.49429,
+          71.950151,
+          70.047769,
+          70.6432,
+          71.818761
+        ],
+        "fit": [
+          70.15478,
+          70.010109,
+          70.22296,
+          70.7448,
+          70.81701
+        ]
+      },
+      "medians_ms": {
+        "context": 70.6432,
+        "fit": 70.22296
+      },
+      "ratio": 0.9940512321072659
+    },
+    {
+      "path": "train/black/profiling/dict_huge.py",
+      "grammar": "python",
+      "repack": 0,
+      "nodes": 455815,
+      "samples_ms": {
+        "context": [
+          40.436214,
+          39.259894,
+          39.518283,
+          39.687244,
+          39.890645
+        ],
+        "fit": [
+          37.132532,
+          36.509562,
+          37.876312,
+          37.395723,
+          38.772144
+        ]
+      },
+      "medians_ms": {
+        "context": 39.687244,
+        "fit": 37.395723
+      },
+      "ratio": 0.9422605157465708
+    },
+    {
+      "path": "train/nodebb/node_modules/@fortawesome/fontawesome-free/metadata/icon-families.yml",
+      "grammar": "yaml",
+      "repack": 0,
+      "nodes": 207403,
+      "samples_ms": {
+        "context": [
+          19.475426,
+          18.890036,
+          18.529386,
+          18.530186,
+          18.425815
+        ],
+        "fit": [
+          19.388737,
+          18.612325,
+          18.912577,
+          18.006486,
+          18.455955
+        ]
+      },
+      "medians_ms": {
+        "context": 18.530186,
+        "fit": 18.612325
+      },
+      "ratio": 1.0044327131956472
+    },
+    {
+      "path": "train/nodebb/node_modules/@typescript/typescript-linux-x64/lib/lib.dom.d.ts",
+      "grammar": "typescript",
+      "repack": 0,
+      "nodes": 218742,
+      "samples_ms": {
+        "context": [
+          17.388365,
+          16.981915,
+          17.938926,
+          17.379444,
+          17.776686
+        ],
+        "fit": [
+          17.139185,
+          17.099714,
+          16.633854,
+          17.271295,
+          17.607244
+        ]
+      },
+      "medians_ms": {
+        "context": 17.388365,
+        "fit": 17.139185
+      },
+      "ratio": 0.9856697280049045
+    },
+    {
+      "path": "train/nodebb/node_modules/ace-builds/src/worker-xquery.js",
+      "grammar": "tsx",
+      "repack": 0,
+      "nodes": 839376,
+      "samples_ms": {
+        "context": [
+          81.95134,
+          81.127649,
+          80.231358,
+          79.939707,
+          81.867879
+        ],
+        "fit": [
+          78.692238,
+          80.077388,
+          77.095225,
+          81.24869,
+          79.229668
+        ]
+      },
+      "medians_ms": {
+        "context": 81.127649,
+        "fit": 79.229668
+      },
+      "ratio": 0.9766050042939122
+    },
+    {
+      "path": "train/nodebb/node_modules/natural/lib/natural/sentiment/English/senticon_en.json",
+      "grammar": "json",
+      "repack": 0,
+      "nodes": 1043241,
+      "samples_ms": {
+        "context": [
+          61.314143,
+          59.910011,
+          60.191682,
+          61.298143,
+          59.95081
+        ],
+        "fit": [
+          58.001289,
+          59.375012,
+          58.89634,
+          58.145809,
+          58.33908
+        ]
+      },
+      "medians_ms": {
+        "context": 60.191682,
+        "fit": 58.33908
+      },
+      "ratio": 0.9692216276660952
+    },
+    {
+      "path": "test/Chart.js/node_modules/.pnpm/language-subtag-registry@0.3.23/node_modules/language-subtag-registry/data/json/registry.json",
+      "grammar": "json",
+      "repack": 1,
+      "nodes": 490245,
+      "samples_ms": {
+        "context": [
+          29.718275,
+          29.716045,
+          30.399466,
+          30.570416,
+          30.894467
+        ],
+        "fit": [
+          28.764374,
+          30.271706,
+          29.555825,
+          28.988396,
+          28.764964
+        ]
+      },
+      "medians_ms": {
+        "context": 30.399466,
+        "fit": 28.988396
+      },
+      "ratio": 0.9535824083225672
+    },
+    {
+      "path": "test/Chart.js/node_modules/.pnpm/prettier@2.8.8/node_modules/prettier/esm/parser-typescript.mjs",
+      "grammar": "tsx",
+      "repack": 1,
+      "nodes": 511131,
+      "samples_ms": {
+        "context": [
+          45.278409,
+          45.047788,
+          44.165607,
+          45.176599,
+          44.810598
+        ],
+        "fit": [
+          44.558178,
+          42.845837,
+          43.519917,
+          43.220686,
+          44.776538
+        ]
+      },
+      "medians_ms": {
+        "context": 45.047788,
+        "fit": 43.519917
+      },
+      "ratio": 0.9660833291081907
+    },
+    {
+      "path": "test/act/pkg/runner/testdata/actions/node20/node_modules/@vercel/ncc/dist/ncc/loaders/typescript/lib/lib.dom.d.ts",
+      "grammar": "typescript",
+      "repack": 1,
+      "nodes": 190002,
+      "samples_ms": {
+        "context": [
+          18.377855,
+          18.407085,
+          18.746356,
+          18.398466,
+          18.440146
+        ],
+        "fit": [
+          17.961266,
+          18.546995,
+          18.411246,
+          17.980436,
+          17.875995
+        ]
+      },
+      "medians_ms": {
+        "context": 18.407085,
+        "fit": 17.980436
+      },
+      "ratio": 0.9768214793379834
+    },
+    {
+      "path": "test/entt/single_include/entt/entt.hpp",
+      "grammar": "cpp",
+      "repack": 1,
+      "nodes": 709679,
+      "samples_ms": {
+        "context": [
+          69.297979,
+          69.977199,
+          69.813339,
+          70.62591,
+          70.41167
+        ],
+        "fit": [
+          69.078728,
+          71.79459,
+          68.976088,
+          69.016159,
+          67.658578
+        ]
+      },
+      "medians_ms": {
+        "context": 69.977199,
+        "fit": 69.016159
+      },
+      "ratio": 0.986266383711643
+    },
+    {
+      "path": "train/black/profiling/dict_huge.py",
+      "grammar": "python",
+      "repack": 1,
+      "nodes": 455815,
+      "samples_ms": {
+        "context": [
+          39.148813,
+          39.018333,
+          39.799305,
+          39.511553,
+          40.441184
+        ],
+        "fit": [
+          38.105183,
+          37.297432,
+          37.799292,
+          37.085552,
+          37.185781
+        ]
+      },
+      "medians_ms": {
+        "context": 39.511553,
+        "fit": 37.297432
+      },
+      "ratio": 0.9439626936455776
+    },
+    {
+      "path": "train/nodebb/node_modules/@fortawesome/fontawesome-free/metadata/icon-families.yml",
+      "grammar": "yaml",
+      "repack": 1,
+      "nodes": 207403,
+      "samples_ms": {
+        "context": [
+          19.226327,
+          19.285746,
+          20.731868,
+          20.296288,
+          19.449426
+        ],
+        "fit": [
+          19.427487,
+          19.101497,
+          19.321137,
+          19.919077,
+          18.684366
+        ]
+      },
+      "medians_ms": {
+        "context": 19.449426,
+        "fit": 19.321137
+      },
+      "ratio": 0.9934039698652289
+    },
+    {
+      "path": "train/nodebb/node_modules/@typescript/typescript-linux-x64/lib/lib.dom.d.ts",
+      "grammar": "typescript",
+      "repack": 1,
+      "nodes": 218742,
+      "samples_ms": {
+        "context": [
+          17.673805,
+          17.541765,
+          17.234445,
+          17.186996,
+          17.025024
+        ],
+        "fit": [
+          17.926366,
+          17.363036,
+          16.653214,
+          17.345133,
+          17.033575
+        ]
+      },
+      "medians_ms": {
+        "context": 17.234445,
+        "fit": 17.345133
+      },
+      "ratio": 1.0064224870600706
+    },
+    {
+      "path": "train/nodebb/node_modules/ace-builds/src/worker-xquery.js",
+      "grammar": "tsx",
+      "repack": 1,
+      "nodes": 839376,
+      "samples_ms": {
+        "context": [
+          83.228801,
+          82.517971,
+          82.34255,
+          82.53509,
+          82.15288
+        ],
+        "fit": [
+          81.893009,
+          80.44268,
+          80.606698,
+          80.507078,
+          81.896929
+        ]
+      },
+      "medians_ms": {
+        "context": 82.517971,
+        "fit": 80.606698
+      },
+      "ratio": 0.97683809990917
+    },
+    {
+      "path": "train/nodebb/node_modules/natural/lib/natural/sentiment/English/senticon_en.json",
+      "grammar": "json",
+      "repack": 1,
+      "nodes": 1043241,
+      "samples_ms": {
+        "context": [
+          61.767254,
+          60.280971,
+          62.094333,
+          61.895293,
+          61.884123
+        ],
+        "fit": [
+          60.269432,
+          60.86505,
+          59.07052,
+          58.74161,
+          60.420151
+        ]
+      },
+      "medians_ms": {
+        "context": 61.884123,
+        "fit": 60.269432
+      },
+      "ratio": 0.973907830931045
+    }
+  ]
+}
