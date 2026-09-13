@@ -906,7 +906,9 @@ static SQTree *pack_tree(SQPackContext *context, const TSTree *tree,
       PackPosition position = frame->position_offset != SQ_NONE
                                   ? builder.positions[frame->position_offset + index]
                                   : frame->inline_position;
-      uint64_t child_mask = frame->child_mask;
+      // Only the one-word mode initializes this value. Other modes carry no
+      // mask, or use child_mask_offset in the arena.
+      uint64_t child_mask = builder.words == 1 ? frame->child_mask : 0;
       uint32_t child_mask_offset = frame->child_mask_offset;
 
       if (!visible && child_count == 1 && builder.words <= 1) {
