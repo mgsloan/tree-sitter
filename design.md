@@ -51,7 +51,7 @@ point columns, their group bases, packing constraints, cache lanes, and
 point APIs and snapshot members. Byte positions and byte-range APIs remain.
 The layout below describes the default build with points enabled.
 
-The 16-byte version-5 header has a format/flags word. Readers reject other
+The 16-byte version-6 header has a format/flags word. Readers reject other
 versions, point modes, group sizes, alignments, and unknown flags. Old slabs
 must be regenerated.
 
@@ -120,7 +120,7 @@ struct Group {
 }
 ```
 
-`SlabHeader` is a real struct but `Group` and `Node` are not. Instead the values for each field are stored contiguously (struct-of-arrays style). The header's counts, capacity, and flags, together with the matching grammar and representation version, determine the layout. Group and node columns appear in the order above. Each column and each slab section starts at an eight-byte boundary; column lengths are computed from their capacities, with trailing alignment padding. Bools and `u4` values are packed into 64-bit words, and `VarBits` uses the word layout described below. The grammar determines symbol/field widths and the supertype count. Derived column offsets point to their first physical entry; unused capacity follows the active entries.
+`SlabHeader` is a real struct but `Group` and `Node` are not. Instead the values for each field are stored contiguously (struct-of-arrays style). The header's counts, capacity, and flags, together with the matching grammar and representation version, determine the layout. After the header, columns appear in this order: group waste, start-byte base and values, end-byte base and values, span base and values, display symbol, grammar symbol, field, supertype, the last/extra/error/missing flag bitmaps, start-point base and values, end-point base and values. Each column and each slab section starts at an eight-byte boundary; column lengths are computed from their capacities, with trailing alignment padding. Bools and `u4` values are packed into 64-bit words, and `VarBits` uses the word layout described below. The grammar determines symbol/field widths and the supertype count. Derived column offsets point to their first physical entry; unused capacity follows the active entries.
 
 `corpus-analysis memory-pareto` was used to determine that `u16` should be used
 for `end_byte_sub`. This results in `~13.6B/node` whereas `u8` was `15.6B/node`.
@@ -145,7 +145,7 @@ fields on ERROR parents. Mainline's lookup API can instead inherit through an
 alias-visible wrapper and return a grandchild whose field is absent from the
 parent's visible children. Tests count these as expected mismatches only when
 squat agrees with mainline's visible-child cursor. Other field mismatches fail.
-The sparse field-exception section remains removed. Version 5 uses a 16-byte
+The sparse field-exception section remains removed. Version 6 uses a 16-byte
 header and reverse-preorder physical slots; the loader rejects earlier formats.
 
 Public symbol is mapped from raw display symbol at read time.

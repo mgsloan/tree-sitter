@@ -4,7 +4,7 @@
 
 - [ ] specialization for 8-bit symbol or field case? Round 6 or 7 up to 8?
 
-- [ ] Benchmark vs no packing
+- [ ] Benchmark vs no compaction
 
 - [ ] Better to put groups right after their node data! This way page fault etc
   has better locality
@@ -22,3 +22,7 @@
 - [ ] Persistence should do age based deletion
 
 - [ ] API that allows reuse of scratch buffers.  Also share lookup tables derived from grammar
+
+- [ ] Accumulate occupancy estimate during parsing?
+
+- [ ] Rust impl for better LTO - or just have Rust-side implementations for small ops

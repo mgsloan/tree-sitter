@@ -104,6 +104,13 @@ Flags, u8/u16 deltas, and u32/u64 bases have explicit typed reads and writes;
 byte positions within native packed words are adjusted on big-endian hosts.
 Only variable-width IDs and group waste use the non-straddling bit decoder.
 
+After the header and per-group waste column, columns are ordered: start byte,
+end byte, span, symbol, grammar symbol, field, supertype, flag bitmaps (`last`,
+`extra`, `error`, `missing`), start point, end point. Each group-base column
+immediately precedes its corresponding node-value column, with alignment padding
+where needed. The supertype dictionary and optional symbol-presence index follow
+the columns.
+
 Subtree-span and start-column bases are zero when every live value in the group
 fits in u8; otherwise they use the actual minimum. The packer chooses these bases
 after closing the group, preserving group boundaries. End columns keep their
@@ -118,7 +125,7 @@ stored symmetrically as one u64 key, with the row in the high word. The payload
 still uses four bytes per node and 16 bytes per group before column padding,
 while lexicographic point comparisons now use one integer key.
 
-The version-5 serialized header is 16 bytes: a format/flags word, live group
+The version-6 serialized header is 16 bytes: a format/flags word, live group
 count, allocated group capacity, and supertype-dictionary count. Column and
 auxiliary-section offsets are derived from the exact grammar, capacity, and
 feature flags. The symbol-presence index has an explicit presence flag. All
@@ -329,7 +336,7 @@ Point methods and attribute fields are omitted from Rust as well. Configure Rust
 through Cargo features; a generated C assertion prevents incompatible CFLAGS
 from silently changing the FFI snapshot layout.
 
-The 16-byte version-5 header records point support in `format_flags`. Each build
+The 16-byte version-6 header records point support in `format_flags`. Each build
 rejects the other mode before interpreting columns. Regenerate older slabs and
 slabs from another point mode; they are incompatible with this format.
 

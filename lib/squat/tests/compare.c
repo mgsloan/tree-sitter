@@ -618,9 +618,9 @@ static void exercise(const TSLanguage *language, const char *source, uint32_t le
         error == SQ_ERROR_ARGUMENT);
   CHECK(!sq_tree_from_bytes(language, bytes, size - 1, &error) && error == SQ_ERROR_INVALID_SLAB);
 
-  // Reject all three earlier format versions even
+  // Reject all earlier format versions even
   // when the rest of this buffer describes a valid current tree.
-  for (unsigned version = 1; version <= 3; version++) {
+  for (unsigned version = 1; version <= 5; version++) {
     unaligned[1] = (uint8_t)((((const uint8_t *)bytes)[0] & 0x0f) | (version << 4));
     CHECK(!sq_tree_from_bytes(language, unaligned + 1, size, &error) &&
           error == SQ_ERROR_INVALID_SLAB);

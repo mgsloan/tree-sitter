@@ -26,13 +26,13 @@ _Static_assert(SQ_ITERATOR_UNPACK_SLOTS >= SQ_GROUP_SIZE &&
 _Static_assert(SQ_COLUMN_ALIGNMENT == 8 || SQ_COLUMN_ALIGNMENT == 64,
                "supported experimental column alignments");
 #define SQ_VERSION                                                                                 \
-  (UINT32_C(0x53510050) |                                                                          \
+  (UINT32_C(0x53510060) |                                                                          \
    (SQ_GROUP_SIZE == 32   ? 2u                                                                     \
     : SQ_GROUP_SIZE == 64 ? 4u                                                                     \
                           : 0u) |                                                                  \
    (SQ_COLUMN_ALIGNMENT == 64 ? 8u : 0u))
 
-// Version 5: point rows and columns share lexicographically ordered fields.
+// Version 6: each group-base column immediately precedes its node values.
 #define SQ_LAYOUT_FLAGS (SQ_INCLUDE_POINTS ? 0u : 0x100u)
 #define SQ_PRESENCE 0x200u
 #define SQ_NONE UINT32_MAX
@@ -48,31 +48,28 @@ _Static_assert(sizeof(SQHeader) == 16, "slab header size");
 #define SQ_WASTE_BITS (SQ_GROUP_SIZE == 16 ? 4u : SQ_GROUP_SIZE == 32 ? 5u : 6u)
 
 typedef struct {
-  // Per-group columns: packed waste followed by native fixed-width bases.
+  // Slab offsets in persisted order; group bases precede their node values.
   uint32_t waste;
-  uint32_t span_base;
   uint32_t start_byte_base;
+  uint32_t start_byte_delta;
   uint32_t end_byte_base;
-#if SQ_INCLUDE_POINTS
-  uint32_t start_point_base;
-  uint32_t end_point_base;
-#endif
-  // Per-node columns, in their persisted order. These are slab offsets.
+  uint32_t end_byte_delta;
+  uint32_t span_base;
+  uint32_t span_delta;
+  uint32_t symbol;
+  uint32_t grammar_symbol;
+  uint32_t field;
+  uint32_t supertype;
   uint32_t last;
   uint32_t extra;
   uint32_t error;
   uint32_t missing;
-  uint32_t span_delta;
-  uint32_t start_byte_delta;
-  uint32_t end_byte_delta;
 #if SQ_INCLUDE_POINTS
+  uint32_t start_point_base;
   uint32_t start_point;
+  uint32_t end_point_base;
   uint32_t end_point;
 #endif
-  uint32_t supertype;
-  uint32_t symbol;
-  uint32_t grammar_symbol;
-  uint32_t field;
   uint32_t end;
   uint8_t symbol_bits, field_bits;
 } SQLayout;

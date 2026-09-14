@@ -65,6 +65,10 @@ $(BUILD)/end255-bench: experiments/end255.c $(BUILD)/libtree-sitter-squat.a $(BU
 $(BUILD)/setup-bench: experiments/setup.c $(BUILD)/libtree-sitter-squat.a $(BUILD)/runtime.o
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) $^ -ldl -o $@
 
+# Calibrated batches expose layout effects on trees from files up to 1 KiB.
+$(BUILD)/tiny-layout-bench: experiments/tiny-layout.c $(BUILD)/libtree-sitter-squat.a $(BUILD)/runtime.o
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) $^ -ldl -o $@
+
 $(BUILD)/capacity-bench: experiments/capacity.c $(BUILD)/libtree-sitter-squat.a $(BUILD)/runtime.o
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) $^ -ldl -o $@
 

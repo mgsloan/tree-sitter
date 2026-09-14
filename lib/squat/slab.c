@@ -62,28 +62,26 @@ bool sq_layout(const TSLanguage *language, uint32_t capacity, SQLayout *layout) 
   uint64_t next =
       (sizeof(SQHeader) + SQ_COLUMN_ALIGNMENT - 1) & ~(uint64_t)(SQ_COLUMN_ALIGNMENT - 1);
   layout->waste = column_offset(&next, sq_column_size(capacity, SQ_WASTE_BITS));
-  layout->span_base = column_offset(&next, sq_array_size(capacity, 4));
   layout->start_byte_base = column_offset(&next, sq_array_size(capacity, 4));
+  layout->start_byte_delta = column_offset(&next, sq_array_size(slots, 1));
   layout->end_byte_base = column_offset(&next, sq_array_size(capacity, 4));
-#if SQ_INCLUDE_POINTS
-  layout->start_point_base = column_offset(&next, sq_array_size(capacity, 8));
-  layout->end_point_base = column_offset(&next, sq_array_size(capacity, 8));
-#endif
+  layout->end_byte_delta = column_offset(&next, sq_array_size(slots, 2));
+  layout->span_base = column_offset(&next, sq_array_size(capacity, 4));
+  layout->span_delta = column_offset(&next, sq_array_size(slots, 1));
+  layout->symbol = column_offset(&next, sq_column_size(slots, layout->symbol_bits));
+  layout->grammar_symbol = column_offset(&next, sq_column_size(slots, layout->symbol_bits));
+  layout->field = column_offset(&next, sq_column_size(slots, layout->field_bits));
+  layout->supertype = column_offset(&next, sq_array_size(slots, 1));
   layout->last = column_offset(&next, sq_column_size(slots, 1));
   layout->extra = column_offset(&next, sq_column_size(slots, 1));
   layout->error = column_offset(&next, sq_column_size(slots, 1));
   layout->missing = column_offset(&next, sq_column_size(slots, 1));
-  layout->span_delta = column_offset(&next, sq_array_size(slots, 1));
-  layout->start_byte_delta = column_offset(&next, sq_array_size(slots, 1));
-  layout->end_byte_delta = column_offset(&next, sq_array_size(slots, 2));
 #if SQ_INCLUDE_POINTS
+  layout->start_point_base = column_offset(&next, sq_array_size(capacity, 8));
   layout->start_point = column_offset(&next, sq_array_size(slots, 2));
+  layout->end_point_base = column_offset(&next, sq_array_size(capacity, 8));
   layout->end_point = column_offset(&next, sq_array_size(slots, 2));
 #endif
-  layout->supertype = column_offset(&next, sq_array_size(slots, 1));
-  layout->symbol = column_offset(&next, sq_column_size(slots, layout->symbol_bits));
-  layout->grammar_symbol = column_offset(&next, sq_column_size(slots, layout->symbol_bits));
-  layout->field = column_offset(&next, sq_column_size(slots, layout->field_bits));
 
   // Accumulate in u64 and reject overflow before exposing any offsets.
   if (next > UINT32_MAX) return false;
@@ -325,39 +323,37 @@ static bool resize_tree(SQTree **tree_pointer, uint32_t capacity, uint32_t trail
   // packed lane phase across growth. Copy their used words, including padding.
   uint32_t groups = old.group_count, slots = groups * SQ_GROUP_SIZE;
   memcpy(data + next.waste, tree->data + tree->layout.waste, sq_column_size(groups, SQ_WASTE_BITS));
-  memcpy(data + next.span_base, tree->data + tree->layout.span_base, sq_array_size(groups, 4));
   memcpy(data + next.start_byte_base, tree->data + tree->layout.start_byte_base,
          sq_array_size(groups, 4));
-  memcpy(data + next.end_byte_base, tree->data + tree->layout.end_byte_base,
-         sq_array_size(groups, 4));
-#if SQ_INCLUDE_POINTS
-  memcpy(data + next.start_point_base, tree->data + tree->layout.start_point_base,
-         sq_array_size(groups, 8));
-  memcpy(data + next.end_point_base, tree->data + tree->layout.end_point_base,
-         sq_array_size(groups, 8));
-#endif
-  memcpy(data + next.last, tree->data + tree->layout.last, sq_column_size(slots, 1));
-  memcpy(data + next.extra, tree->data + tree->layout.extra, sq_column_size(slots, 1));
-  memcpy(data + next.error, tree->data + tree->layout.error, sq_column_size(slots, 1));
-  memcpy(data + next.missing, tree->data + tree->layout.missing, sq_column_size(slots, 1));
-  memcpy(data + next.span_delta, tree->data + tree->layout.span_delta, sq_array_size(slots, 1));
   memcpy(data + next.start_byte_delta, tree->data + tree->layout.start_byte_delta,
          sq_array_size(slots, 1));
+  memcpy(data + next.end_byte_base, tree->data + tree->layout.end_byte_base,
+         sq_array_size(groups, 4));
   memcpy(data + next.end_byte_delta, tree->data + tree->layout.end_byte_delta,
          sq_array_size(slots, 2));
-#if SQ_INCLUDE_POINTS
-  memcpy(data + next.start_point, tree->data + tree->layout.start_point,
-         sq_array_size(slots, 2));
-  memcpy(data + next.end_point, tree->data + tree->layout.end_point,
-         sq_array_size(slots, 2));
-#endif
-  memcpy(data + next.supertype, tree->data + tree->layout.supertype, sq_array_size(slots, 1));
+  memcpy(data + next.span_base, tree->data + tree->layout.span_base, sq_array_size(groups, 4));
+  memcpy(data + next.span_delta, tree->data + tree->layout.span_delta, sq_array_size(slots, 1));
   memcpy(data + next.symbol, tree->data + tree->layout.symbol,
          sq_column_size(slots, next.symbol_bits));
   memcpy(data + next.grammar_symbol, tree->data + tree->layout.grammar_symbol,
          sq_column_size(slots, next.symbol_bits));
   memcpy(data + next.field, tree->data + tree->layout.field,
          sq_column_size(slots, next.field_bits));
+  memcpy(data + next.supertype, tree->data + tree->layout.supertype, sq_array_size(slots, 1));
+  memcpy(data + next.last, tree->data + tree->layout.last, sq_column_size(slots, 1));
+  memcpy(data + next.extra, tree->data + tree->layout.extra, sq_column_size(slots, 1));
+  memcpy(data + next.error, tree->data + tree->layout.error, sq_column_size(slots, 1));
+  memcpy(data + next.missing, tree->data + tree->layout.missing, sq_column_size(slots, 1));
+#if SQ_INCLUDE_POINTS
+  memcpy(data + next.start_point_base, tree->data + tree->layout.start_point_base,
+         sq_array_size(groups, 8));
+  memcpy(data + next.start_point, tree->data + tree->layout.start_point,
+         sq_array_size(slots, 2));
+  memcpy(data + next.end_point_base, tree->data + tree->layout.end_point_base,
+         sq_array_size(groups, 8));
+  memcpy(data + next.end_point, tree->data + tree->layout.end_point,
+         sq_array_size(slots, 2));
+#endif
   if (preserve_trailing) {
     memcpy(data + next.end, tree->data + tree->layout.end, trailing_size);
   }
