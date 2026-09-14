@@ -21,8 +21,10 @@ impl Drop for Permit {
 }
 
 struct Snapshot {
-    raw: NonNull<lmdb_sys::MDB_txn>,
-    // Keeps the environment open until after abort, and releases admission last.
+    // Heed owns the environment and aborts on drop. This 'static lifetime is
+    // supplied by its owning API, never extended from a borrowed transaction.
+    tx: heed::RoTxn<'static, heed::WithoutTls>,
+    // Field order releases the transaction before its admission permit.
     _permit: Permit,
 }
 impl Snapshot {
@@ -34,54 +36,11 @@ impl Snapshot {
             })
             .ok()?;
         let permit = Permit(store.clone());
-        let mut raw = std::ptr::null_mut();
-        // Store opens with MDB_NOTLS. Read-only transactions may move between
-        // threads if their calls are serialized. This handle is private and is
-        // only called through exclusive construction access, then once at drop.
-        let status = unsafe {
-            lmdb_sys::mdb_txn_begin(
-                store.env.env(),
-                std::ptr::null_mut(),
-                lmdb_sys::MDB_RDONLY,
-                &mut raw,
-            )
-        };
-        if status != 0 {
-            return None;
-        }
+        let tx = store.env.clone().static_read_txn().ok()?;
         Some(Self {
-            raw: NonNull::new(raw).expect("LMDB returned a null successful transaction"),
+            tx,
             _permit: permit,
         })
-    }
-
-    fn get(&mut self, db: lmdb::Database, key: &[u8]) -> Option<&[u8]> {
-        let mut key = lmdb_sys::MDB_val {
-            mv_size: key.len(),
-            mv_data: key.as_ptr().cast_mut().cast(),
-        };
-        let mut value = lmdb_sys::MDB_val {
-            mv_size: 0,
-            mv_data: std::ptr::null_mut(),
-        };
-        // LMDB does not modify input keys. Returned read-only storage lives until
-        // this transaction ends; the returned borrow prevents concurrent calls.
-        let status =
-            unsafe { lmdb_sys::mdb_get(self.raw.as_ptr(), db.dbi(), &mut key, &mut value) };
-        if status != 0 {
-            return None;
-        }
-        if value.mv_size == 0 {
-            return Some(&[]);
-        }
-        Some(unsafe { std::slice::from_raw_parts(value.mv_data.cast(), value.mv_size) })
-    }
-}
-impl Drop for Snapshot {
-    fn drop(&mut self) {
-        // No descriptor/borrow can remain: Snapshot is owned exclusively by the
-        // StableSlab, which BackedTree drops after its native descriptor.
-        unsafe { lmdb_sys::mdb_txn_abort(self.raw.as_ptr()) };
     }
 }
 
@@ -92,7 +51,9 @@ struct SnapshotSlab {
 }
 // After construction, no LMDB calls occur until exclusive final destruction.
 // Readers only inspect immutable mapped pages pinned by this read transaction.
-// MDB_NOTLS permits final abort on another thread. The environment is retained
+// Heed's RoTxn<WithoutTls> is Send, but intentionally not Sync: sharing the
+// transaction API is not allowed. Only this sealed owner is Sync, with no calls
+// after construction except exclusive final drop. The environment is retained
 // and never resized; neither a transaction pointer nor mutable bytes are exposed.
 unsafe impl Send for SnapshotSlab {}
 unsafe impl Sync for SnapshotSlab {}
@@ -108,13 +69,21 @@ pub(crate) fn get(
     source: &[u8],
     grammar: &Grammar,
 ) -> Option<BackedTree> {
-    let mut snapshot = Snapshot::open(store)?;
-    if snapshot.get(store.paths, &request.source_key[..32])? != request.path
-        || snapshot.get(store.sources, &request.source_key)? != source
+    let snapshot = Snapshot::open(store)?;
+    if store
+        .paths
+        .get(&snapshot.tx, &request.source_key[..32])
+        .ok()??
+        != request.path
+        || store
+            .sources
+            .get(&snapshot.tx, &request.source_key)
+            .ok()??
+            != source
     {
         return None;
     }
-    let slab = request.decode(snapshot.get(store.trees, &request.tree_key)?)?;
+    let slab = request.decode(store.trees.get(&snapshot.tx, &request.tree_key).ok()??)?;
     let pointer = NonNull::new(slab.as_ptr().cast_mut())?;
     let length = slab.len();
     let owner = SnapshotSlab {

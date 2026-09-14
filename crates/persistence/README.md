@@ -4,6 +4,10 @@ Initial implementation of [the persistence design](../../tree-squatter-persisten
 The database format is a development prototype, not a released compatibility
 contract. Built on Pareto commit `7734a5741`.
 
+Uses heed 0.22.1 (pinned, default serialization features disabled), with
+`Database<Bytes, Bytes>` and the explicit cache encodings. Cargo.lock pins
+lmdb-master-sys 0.2.6; no direct sys-level transaction/cursor calls remain.
+
 ```rust,no_run
 use std::path::Path;
 use tree_squatter_persistence::{Grammar, Options, Persistence};
@@ -45,7 +49,9 @@ Implemented:
   discovery via `Persistence::sweep_missing`, and explicit stale-reader checks.
   Cleanup revalidates its target and cancellation rolls back the active batch.
 - One process-lifetime environment per directory inode on Unix (canonical path
-  elsewhere). No slab temporary files. Linux directory anchoring via retained fd.
+  elsewhere). No slab temporary files. Retained directory handles anchor Linux
+  application-side checks/sidecar access, but heed canonicalizes the environment
+  path before LMDB opens it: LMDB file opening is not directory-handle anchored.
 
 Remaining before the full design is implemented:
 
@@ -73,3 +79,14 @@ Saving CRLF files does not necessarily make them eligible.
 
 Run `cargo test -p tree-squatter-persistence` for lifecycle, codec, cooperation,
 and maintenance tests.
+
+The backend migration preserves schema version 2 and its byte encodings. A Linux
+cross-backend probe verified old-backend writes read by heed, then heed writes
+read by the old backend, using separate processes with matching runtime identity.
+This is not a cross-platform or mixed-engine simultaneous-locking guarantee.
+To repeat it, retain the old `load` test executable and run:
+
+```sh
+TSQ_LEGACY_LOAD_TEST_BIN=/absolute/path/to/old-load-test \
+  cargo test -p tree-squatter-persistence --test load legacy_backend_round_trip -- --ignored
+```

@@ -7,12 +7,14 @@ use std::{
 };
 
 use crate::identity::{Grammar, Request};
-use lmdb::{Database, DatabaseFlags, Environment, EnvironmentFlags, Transaction, WriteFlags};
+use heed::{Env, EnvOpenOptions, WithoutTls, types::Bytes};
+
+pub(crate) type Database = heed::Database<Bytes, Bytes>;
 
 const SCHEMA: &[u8] = b"tree-squatter-persistence owned prototype 2";
 
 pub(crate) struct Store {
-    pub(crate) env: Environment,
+    pub(crate) env: Env<WithoutTls>,
     pub(crate) paths: Database,
     pub(crate) sources: Database,
     pub(crate) trees: Database,
@@ -20,7 +22,8 @@ pub(crate) struct Store {
     pub(crate) writer: Mutex<File>,
     pub(crate) backed_readers: AtomicUsize,
     work: crate::work::WorkLocks,
-    // Retain the directory behind /proc/self/fd when opening on Linux.
+    // Retain application-side directory identity/sidecar access. Heed canonicalizes
+    // its open path, so this does not anchor LMDB's own pathname resolution.
     _directory: File,
 }
 
@@ -45,7 +48,7 @@ mod tests {
             .repack()
             .unwrap();
         let request = Request::new(b"test.json".to_vec(), b"[1]", &grammar, true);
-        let before = store.env.begin_ro_txn().unwrap();
+        let before = store.env.read_txn().unwrap();
         assert_eq!(
             store
                 .publish(&request, b"[1]", &tree, &grammar, || false)
@@ -53,31 +56,31 @@ mod tests {
             WriteOutcome::Published
         );
         assert_eq!(
-            before.get(store.sources, &request.source_key),
-            Err(lmdb::Error::NotFound)
+            store.sources.get(&before, &request.source_key).unwrap(),
+            None
         );
+        assert_eq!(store.trees.get(&before, &request.tree_key).unwrap(), None);
+        let after = store.env.read_txn().unwrap();
         assert_eq!(
-            before.get(store.trees, &request.tree_key),
-            Err(lmdb::Error::NotFound)
+            store.sources.get(&after, &request.source_key).unwrap(),
+            Some(b"[1]".as_slice())
         );
-        let after = store.env.begin_ro_txn().unwrap();
-        assert_eq!(
-            after.get(store.sources, &request.source_key).unwrap(),
-            b"[1]"
+        assert!(
+            store
+                .trees
+                .get(&after, &request.tree_key)
+                .unwrap()
+                .is_some()
         );
-        assert!(after.get(store.trees, &request.tree_key).is_ok());
         drop(after);
         drop(before);
 
         let guard = gate(&store.writer).unwrap().unwrap();
-        let mut tx = store.env.begin_rw_txn().unwrap();
-        tx.put(
-            store.trees,
-            &request.tree_key,
-            &b"broken",
-            WriteFlags::empty(),
-        )
-        .unwrap();
+        let mut tx = store.env.write_txn().unwrap();
+        store
+            .trees
+            .put(&mut tx, &request.tree_key, b"broken")
+            .unwrap();
         tx.commit().unwrap();
         drop(guard);
         assert!(store.get(&request, b"[1]", &grammar).is_none());
@@ -98,12 +101,38 @@ mod tests {
         );
         drop(guard);
     }
+
+    #[test]
+    fn heed_keeps_durable_locking_and_shares_environment_aliases() {
+        let root = tempfile::tempdir().unwrap();
+        let store = Store::open(root.path(), 1024 * 1024).unwrap();
+        let flags = store.env.flags().unwrap().unwrap();
+        assert!(!flags.intersects(
+            heed::EnvFlags::NO_SYNC
+                | heed::EnvFlags::NO_META_SYNC
+                | heed::EnvFlags::NO_LOCK
+                | heed::EnvFlags::WRITE_MAP
+                | heed::EnvFlags::MAP_ASYNC
+        ));
+        let other = Store::open(&root.path().join("."), 1024 * 1024).unwrap();
+        assert!(Arc::ptr_eq(&store, &other));
+        #[cfg(unix)]
+        {
+            let alias_root = tempfile::tempdir().unwrap();
+            let alias = alias_root.path().join("alias");
+            std::os::unix::fs::symlink(root.path(), &alias).unwrap();
+            assert!(Arc::ptr_eq(
+                &store,
+                &Store::open(&alias, 1024 * 1024).unwrap()
+            ));
+        }
+    }
 }
 
 #[derive(Debug)]
 pub enum CacheError {
     Io(io::Error),
-    Database(lmdb::Error),
+    Database(heed::Error),
     IncompatibleSchema,
     PathCollision,
     Cancelled,
@@ -120,8 +149,8 @@ impl From<io::Error> for CacheError {
         Self::Io(error)
     }
 }
-impl From<lmdb::Error> for CacheError {
-    fn from(error: lmdb::Error) -> Self {
+impl From<heed::Error> for CacheError {
+    fn from(error: heed::Error) -> Self {
         Self::Database(error)
     }
 }
@@ -246,32 +275,34 @@ impl Store {
             );
         };
         let existed = anchor.join("data.mdb").exists();
-        let env = Environment::new()
-            .set_max_dbs(5)
-            .set_max_readers(256)
-            .set_map_size(map_size)
-            .set_flags(EnvironmentFlags::NO_TLS)
-            .open(&anchor)?;
-        let meta = match env.open_db(Some("meta")) {
-            Ok(db) => db,
-            Err(lmdb::Error::NotFound) if !existed => {
-                env.create_db(Some("meta"), DatabaseFlags::empty())?
-            }
-            Err(lmdb::Error::NotFound) => return Err(CacheError::IncompatibleSchema),
-            Err(error) => return Err(error.into()),
+        // Cooperating writers, trusted local directory, native locking/sync,
+        // one retained environment per inode, and no resizing of live mappings.
+        let env = unsafe {
+            EnvOpenOptions::new()
+                .read_txn_without_tls()
+                .max_dbs(5)
+                .max_readers(256)
+                .map_size(map_size)
+                .open(&anchor)?
         };
-        let mut tx = env.begin_rw_txn()?;
-        match tx.get(meta, &b"schema") {
-            Ok(value) if value == SCHEMA => (),
-            Ok(_) => return Err(CacheError::IncompatibleSchema),
-            Err(lmdb::Error::NotFound) => tx.put(meta, &b"schema", &SCHEMA, WriteFlags::empty())?,
-            Err(error) => return Err(error.into()),
+        // Open all handles and initialize schema in one admitted transaction.
+        // Committing also publishes DBI metadata for subsequent transactions.
+        let mut tx = env.write_txn()?;
+        let meta: Database = match env.open_database(&tx, Some("meta"))? {
+            Some(db) => db,
+            None if !existed => env.create_database(&mut tx, Some("meta"))?,
+            None => return Err(CacheError::IncompatibleSchema),
+        };
+        match meta.get(&tx, b"schema")? {
+            Some(value) if value == SCHEMA => (),
+            Some(_) => return Err(CacheError::IncompatibleSchema),
+            None => meta.put(&mut tx, b"schema", SCHEMA)?,
         }
+        let paths = env.create_database(&mut tx, Some("paths"))?;
+        let sources = env.create_database(&mut tx, Some("sources"))?;
+        let trees = env.create_database(&mut tx, Some("trees"))?;
+        let current = env.create_database(&mut tx, Some("current"))?;
         tx.commit()?;
-        let paths = env.create_db(Some("paths"), DatabaseFlags::empty())?;
-        let sources = env.create_db(Some("sources"), DatabaseFlags::empty())?;
-        let trees = env.create_db(Some("trees"), DatabaseFlags::empty())?;
-        let current = env.create_db(Some("current"), DatabaseFlags::empty())?;
         directory.sync_all()?;
         drop(guard);
         let store = Arc::new(Self {
@@ -299,13 +330,13 @@ impl Store {
         source: &[u8],
         grammar: &Grammar,
     ) -> Option<tree_sitter_squatter::Tree> {
-        let tx = self.env.begin_ro_txn().ok()?;
-        if tx.get(self.paths, &&request.source_key[..32]).ok()? != request.path
-            || tx.get(self.sources, &request.source_key).ok()? != source
+        let tx = self.env.read_txn().ok()?;
+        if self.paths.get(&tx, &request.source_key[..32]).ok()?? != request.path
+            || self.sources.get(&tx, &request.source_key).ok()?? != source
         {
             return None;
         }
-        let value = tx.get(self.trees, &request.tree_key).ok()?;
+        let value = self.trees.get(&tx, &request.tree_key).ok()??;
         let slab = request.decode(value)?;
         // Safety validation does not reconstruct auxiliary index membership.
         let tree =
@@ -338,34 +369,21 @@ impl Store {
         if self.get(request, source, grammar).is_some() {
             return Ok(WriteOutcome::AlreadyPresent);
         }
-        let mut tx = self.env.begin_rw_txn()?;
-        match tx.get(self.paths, &&request.source_key[..32]) {
-            Ok(path) if path != request.path => return Err(CacheError::PathCollision),
-            Ok(_) | Err(lmdb::Error::NotFound) => (),
-            Err(error) => return Err(error.into()),
+        let mut tx = self.env.write_txn()?;
+        if let Some(path) = self.paths.get(&tx, &request.source_key[..32])?
+            && path != request.path
+        {
+            return Err(CacheError::PathCollision);
         }
-        tx.put(
-            self.paths,
-            &&request.source_key[..32],
-            &request.path,
-            WriteFlags::empty(),
-        )?;
-        // The three records become visible in the same durable transaction.
-        if tx.get(self.sources, &request.source_key).ok() != Some(source) {
-            tx.put(
-                self.sources,
-                &request.source_key,
-                &source,
-                WriteFlags::empty(),
-            )?;
+        self.paths
+            .put(&mut tx, &request.source_key[..32], &request.path)?;
+        // All records become visible in the same durable transaction.
+        if self.sources.get(&tx, &request.source_key)? != Some(source) {
+            self.sources.put(&mut tx, &request.source_key, source)?;
         }
-        tx.put(self.trees, &request.tree_key, &value, WriteFlags::empty())?;
-        tx.put(
-            self.current,
-            &&request.source_key[..32],
-            &request.source_key,
-            WriteFlags::empty(),
-        )?;
+        self.trees.put(&mut tx, &request.tree_key, &value)?;
+        self.current
+            .put(&mut tx, &request.source_key[..32], &request.source_key)?;
         if cancelled() {
             return Err(CacheError::Cancelled);
         }

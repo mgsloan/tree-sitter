@@ -9,8 +9,7 @@ publish = false
 tree-sitter.workspace = true
 tree-sitter-squatter = { path = "../squatter" }
 blake3 = "1.8"
-lmdb = "0.8"
-lmdb-sys = "0.8"
+heed = { version = "=0.22.1", default-features = false }
 libc = "0.2"
 
 [build-dependencies]

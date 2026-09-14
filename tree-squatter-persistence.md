@@ -63,6 +63,12 @@ open independent LMDB environments for the same files. Retain the environment as
 long as any read owner exists. Configure named databases and reader-slot capacity
 before opening, and coordinate first-time creation/schema initialization.
 
+The implementation uses heed 0.22.1 with serialization features disabled, raw-byte
+database codecs, and owning no-TLS read transactions. Its path canonicalization
+means retained Linux directory handles do not anchor LMDB's own file opening;
+the trusted/stable-directory limitation below remains essential. Keep the
+application inode registry and separate work/writer-admission locks.
+
 Require supported local filesystems. Do not use network filesystems or MDB_NOLOCK.
 A cache open/permission/schema failure disables caching for the request; do not
 automatically delete or overwrite an unknown/corrupt environment.

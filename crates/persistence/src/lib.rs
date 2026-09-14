@@ -29,7 +29,8 @@ use store::Store;
 
 #[derive(Clone, Debug)]
 pub struct Options {
-    /// Fixed LMDB map ceiling. Full maps cause write fallback, never forced resize.
+    /// Fixed LMDB map ceiling, a multiple of the system page size. Full maps cause
+    /// write fallback, never forced resize. Invalid options disable caching.
     pub map_size: usize,
     pub symbol_presence: bool,
     /// Maximum cooperative wait in synchronous loads; zero allows duplicate work immediately.
@@ -225,13 +226,7 @@ impl Persistence {
         let Some(store) = &self.store else {
             return Ok(0);
         };
-        let mut dead = 0;
-        // The shared environment remains open; LMDB owns reader-table locking.
-        let status = unsafe { lmdb_sys::mdb_reader_check(store.env.env(), &mut dead) };
-        if status != 0 {
-            return Err(lmdb::Error::from_err_code(status).into());
-        }
-        Ok(dead as usize)
+        Ok(store.env.clear_stale_readers()?)
     }
     /// Construct optional cleanup for a deleted source. Every batch rechecks
     /// absence; a recreated file or newer publication stops the task.

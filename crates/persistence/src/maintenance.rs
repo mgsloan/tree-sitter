@@ -1,9 +1,9 @@
 use crate::{
     CacheError,
     identity::Request,
-    store::{Store, gate},
+    store::{Database, Store, gate},
 };
-use lmdb::{Cursor, Database, Transaction};
+use heed::RoTxn;
 use std::{
     path::PathBuf,
     sync::{
@@ -49,27 +49,19 @@ pub struct MaintenanceProgress {
 }
 
 pub(crate) fn first_key(
-    tx: &impl Transaction,
+    tx: &RoTxn<'_>,
     db: Database,
     start: &[u8],
     prefix: &[u8],
 ) -> Result<Option<Vec<u8>>, CacheError> {
-    let cursor = tx.open_ro_cursor(db)?;
-    let positioned = if start.is_empty() {
-        cursor.get(None, None, lmdb_sys::MDB_FIRST)
+    let entry = if start.is_empty() {
+        db.first(tx)?
     } else {
-        cursor.get(Some(start), None, lmdb_sys::MDB_SET_RANGE)
+        db.get_greater_than_or_equal_to(tx, start)?
     };
-    match positioned {
-        Ok(_) => (),
-        Err(lmdb::Error::NotFound) => return Ok(None),
-        Err(error) => return Err(error.into()),
-    }
-    match cursor.get(None, None, lmdb_sys::MDB_GET_CURRENT) {
-        Ok((Some(key), _)) if key.starts_with(prefix) => Ok(Some(key.to_vec())),
-        Ok(_) | Err(lmdb::Error::NotFound) => Ok(None),
-        Err(error) => Err(error.into()),
-    }
+    Ok(entry
+        .filter(|(key, _)| key.starts_with(prefix))
+        .map(|(key, _)| key.to_vec()))
 }
 
 /// Finds cache paths that no longer exist, without requiring another load of them.
@@ -121,12 +113,17 @@ impl MissingSweep {
             }
             return Ok(result);
         }
-        let tx = self.store.env.begin_ro_txn()?;
+        let tx = self.store.env.read_txn()?;
         let Some(key) = first_key(&tx, self.store.paths, &self.next, &[])? else {
             self.complete = true;
             return Ok(progress(MaintenanceState::Complete, 0));
         };
-        let encoded = tx.get(self.store.paths, &key)?.to_vec();
+        let encoded = self
+            .store
+            .paths
+            .get(&tx, &key)?
+            .expect("key exists in this snapshot")
+            .to_vec();
         drop(tx);
         if let Some(path) = decode_path(&encoded) {
             let absolute = self.root.join(path);
@@ -181,13 +178,12 @@ impl Maintenance {
         absolute: PathBuf,
     ) -> Result<Option<Self>, CacheError> {
         let path_id = crate::identity::digest("tree-squatter path v1", &path);
-        let tx = store.env.begin_ro_txn()?;
-        let expected_current = match tx.get(store.current, &path_id) {
-            Ok(value) if value.len() == 72 => value.to_vec(),
-            Ok(_) | Err(lmdb::Error::NotFound) => return Ok(None),
-            Err(error) => return Err(error.into()),
+        let tx = store.env.read_txn()?;
+        let expected_current = match store.current.get(&tx, &path_id)? {
+            Some(value) if value.len() == 72 => value.to_vec(),
+            _ => return Ok(None),
         };
-        if tx.get(store.paths, &path_id)? != path {
+        if store.paths.get(&tx, &path_id)? != Some(path.as_slice()) {
             return Err(CacheError::PathCollision);
         }
         drop(tx);
@@ -247,9 +243,9 @@ impl Maintenance {
         let Some(_guard) = gate(&self.store.writer)? else {
             return Ok(progress(MaintenanceState::Busy, 0, 0));
         };
-        let mut tx = self.store.env.begin_rw_txn()?;
-        if tx.get(self.store.current, &self.path_id).ok() != Some(self.expected_current.as_slice())
-            || tx.get(self.store.paths, &self.path_id).ok() != Some(self.path.as_slice())
+        let mut tx = self.store.env.write_txn()?;
+        if self.store.current.get(&tx, &self.path_id)? != Some(self.expected_current.as_slice())
+            || self.store.paths.get(&tx, &self.path_id)? != Some(self.path.as_slice())
         {
             self.phase = Phase::Done;
             return Ok(progress(MaintenanceState::Superseded, 0, 0));
@@ -289,7 +285,7 @@ impl Maintenance {
                     let referenced = phase == Phase::Sources
                         && first_key(&tx, self.store.trees, &key, &key)?.is_some();
                     if !retain && !referenced {
-                        tx.del(db, &key, None)?;
+                        db.delete(&mut tx, &key)?;
                         deleted += 1;
                     }
                     next = key;
@@ -302,8 +298,8 @@ impl Maintenance {
                         && first_key(&tx, self.store.sources, &self.path_id, &self.path_id)?
                             .is_none()
                     {
-                        tx.del(self.store.current, &self.path_id, None)?;
-                        tx.del(self.store.paths, &self.path_id, None)?;
+                        self.store.current.delete(&mut tx, &self.path_id)?;
+                        self.store.paths.delete(&mut tx, &self.path_id)?;
                     }
                     phase = Phase::Done;
                 }
