@@ -151,7 +151,10 @@ def main():
     parser.add_argument('--cases', default='')
     parser.add_argument('--tag', default='sweep')
     parser.add_argument('--micro', action='store_true')
-    args = parser.parse_args(); out = args.output.resolve(); out.mkdir(parents=True, exist_ok=True)
+    parser.add_argument('--end-to-end', action='store_true', help='Include cursor/iterator walks and structural/field queries')
+    args = parser.parse_args()
+    if args.end_to_end: os.environ['SQ_END_TO_END'] = '1'
+    out = args.output.resolve(); out.mkdir(parents=True, exist_ok=True)
     points = list(map(int, args.points.split(','))); variants = args.variants.split(',')
     if args.prepare: prepare(out, points, variants, args.revision); return
     if args.build: build(out, points, variants); return
@@ -159,7 +162,9 @@ def main():
     cases = [c for c in manifest['cases'] if not args.cases or c['name'] in args.cases.split(',')]
     records = []; output = out / (args.tag + '.json')
     assert not output.exists(), 'use a fresh --tag'
-    meta = dict(manifest_sha256=digest(out/'manifest.json'), cpu=args.cpu, started=time.time(), records=records,
+    meta = dict(end_to_end='SQ_END_TO_END' in os.environ,
+                harness_sha256=digest(out/'source/lib/squat/experiments/byte-rounding.c'),
+                manifest_sha256=digest(out/'manifest.json'), cpu=args.cpu, started=time.time(), records=records,
                 policies={v: VARIANTS[v] for v in variants},
                 binaries={f'{v}-p{p}': digest(out/f'{v}-p{p}'/'bench') for p in points for v in variants})
     if args.micro:

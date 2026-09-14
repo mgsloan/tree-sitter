@@ -81,8 +81,9 @@ def main():
         output['p'+str(point)] = result
     if args.output: args.output.write_text(json.dumps(output, indent=2)+'\n')
     for points, variants in output.items():
-        print(points, 'variant  pack   attrs cached random  scans queries retained')
+        modes = list(next(iter(variants.values()))['grammar_geomean'])
+        print(points, 'variant', *modes, 'retained')
         for variant, result in variants.items():
-            print(f'{variant:8}', ' '.join(f'{result["grammar_geomean"][m]:6.3f}' for m in ['pack','attributes','cached','random_ids','scans','queries']), f'{result["grammar_mean_retained_ratio"]:7.3f}')
+            print(f'{variant:8}', ' '.join(f'{result["grammar_geomean"][m]:6.3f}' for m in modes), f'{result["grammar_mean_retained_ratio"]:7.3f}')
 
 if __name__ == '__main__': main()

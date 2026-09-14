@@ -8,6 +8,8 @@
 #include <time.h>
 
 static volatile uint64_t sink;
+static bool end_to_end;
+static unsigned query_kind;
 static double now(void) {
   struct timespec t;
   clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &t);
@@ -43,7 +45,7 @@ typedef struct {
   SQNode *nodes;
   uint32_t count, symbol;
   TSFieldId field;
-  SQQuery *query;
+  SQQuery *query[3];
   SQQueryCursor *query_cursor;
 } Input;
 typedef struct { Input *inputs; unsigned count; } Batch;
@@ -78,10 +80,11 @@ static uint64_t attributes(void *arg) {
   }
   return sum;
 }
+static bool use_cache = true;
 static uint64_t cached(void *arg) {
   Batch *b = arg; uint64_t sum = 0;
   for (unsigned i = 0; i < b->count; i++) {
-    SQNodeIterator *it = sq_node_iterator_new(sq_tree_root_node(b->inputs[i].tree), true);
+    SQNodeIterator *it = sq_node_iterator_new(sq_tree_root_node(b->inputs[i].tree), use_cache);
     assert(it);
     while (sq_node_iterator_next(it).tree) {
       SQCursorAttributes a;
@@ -89,6 +92,26 @@ static uint64_t cached(void *arg) {
       sum += attributes_sum(a);
     }
     sq_node_iterator_delete(it);
+  }
+  return sum;
+}
+static uint64_t uncached(void *arg) {
+  use_cache = false; uint64_t sum = cached(arg); use_cache = true; return sum;
+}
+static uint64_t cursor_walk(void *arg) {
+  Batch *b = arg; uint64_t sum = 0;
+  for (unsigned i = 0; i < b->count; i++) {
+    SQCursor *cursor = sq_cursor_new(sq_tree_root_node(b->inputs[i].tree));
+    assert(cursor);
+    for (;;) {
+      SQCursorAttributes a; sq_cursor_attributes(cursor, &a); sum += attributes_sum(a);
+      if (sq_cursor_goto_first_child(cursor)) continue;
+      while (!sq_cursor_goto_next_sibling(cursor)) {
+        if (!sq_cursor_goto_parent(cursor)) goto finished;
+      }
+    }
+finished:
+    sq_cursor_delete(cursor);
   }
   return sum;
 }
@@ -119,7 +142,7 @@ static uint64_t queries(void *arg) {
   Batch *b = arg; uint64_t sum = 0;
   for (unsigned i = 0; i < b->count; i++) {
     Input *in = &b->inputs[i];
-    sq_query_cursor_exec(in->query_cursor, in->query, sq_tree_root_node(in->tree));
+    sq_query_cursor_exec(in->query_cursor, in->query[query_kind], sq_tree_root_node(in->tree));
     SQQueryMatch m; uint32_t capture;
     while (sq_query_cursor_next_capture(in->query_cursor, &m, &capture)) {
       sum += 1 + (uint64_t)sq_node_start_byte(m.captures[capture].node) + m.pattern_index;
@@ -127,6 +150,49 @@ static uint64_t queries(void *arg) {
     assert(sq_query_cursor_error(in->query_cursor) == SQ_QUERY_OK);
   }
   return sum;
+}
+
+static uint64_t structural_queries(void *arg) {
+  query_kind = 1; uint64_t sum = queries(arg); query_kind = 0; return sum;
+}
+static uint64_t field_queries(void *arg) {
+  query_kind = 2; uint64_t sum = queries(arg); query_kind = 0; return sum;
+}
+// Count up to 512 distinct named parent/child relationships and select the top twelve.
+// Field queries use real field names; fieldless grammars reuse structural patterns.
+static void structural_source(Input *in, char *source, size_t capacity, bool fields) {
+  struct Pattern { char text[512]; uint32_t count; } patterns[512] = {0};
+  unsigned count = 0;
+  TSTreeCursor cursor = ts_tree_cursor_new(ts_tree_root_node(in->parsed));
+  for (;;) {
+    TSNode child = ts_tree_cursor_current_node(&cursor), parent = ts_node_parent(child);
+    const char *field = ts_tree_cursor_current_field_name(&cursor);
+    if (!ts_node_is_null(parent) && ts_node_is_named(parent) && ts_node_is_named(child) &&
+        !ts_node_is_error(parent) && !ts_node_is_error(child) && (!fields || field)) {
+      char pattern[512];
+      int n = snprintf(pattern, sizeof(pattern), "(%s %s%s(%s) @child) @parent\n",
+          ts_node_type(parent), fields ? field : "", fields ? ": " : "", ts_node_type(child));
+      assert(n > 0 && (size_t)n < sizeof(pattern));
+      unsigned j = 0;
+      while (j < count && strcmp(patterns[j].text, pattern)) j++;
+      if (j < count) patterns[j].count++;
+      else if (count < 512) { strcpy(patterns[count].text, pattern); patterns[count++].count = 1; }
+    }
+    if (ts_tree_cursor_goto_first_child(&cursor)) continue;
+    while (!ts_tree_cursor_goto_next_sibling(&cursor)) {
+      if (!ts_tree_cursor_goto_parent(&cursor)) goto finished_patterns;
+    }
+  }
+finished_patterns:
+  ts_tree_cursor_delete(&cursor); source[0] = 0;
+  for (unsigned k = 0; k < 12 && k < count; k++) {
+    unsigned best = 0;
+    for (unsigned j = 1; j < count; j++) if (patterns[j].count > patterns[best].count) best = j;
+    assert(strlen(source) + strlen(patterns[best].text) < capacity);
+    strcat(source, patterns[best].text); patterns[best].count = 0;
+  }
+  if (!count && fields) structural_source(in, source, capacity, false);
+  else if (!count) strcpy(source, "(_) @hit");
 }
 
 static void prepare_query(Input *in, const TSLanguage *language) {
@@ -153,24 +219,29 @@ static void prepare_query(Input *in, const TSLanguage *language) {
     used += (size_t)written; counts[best] = 0;
   }
   if (!used) strcpy(source, "(_) @hit");
-  uint32_t offset; TSQueryError error;
-  in->query = sq_query_new(language, source, (uint32_t)strlen(source), &offset, &error);
-  assert(in->query);
-  TSQuery *mainline = ts_query_new(language, source, (uint32_t)strlen(source), &offset, &error);
-  assert(mainline);
-  TSQueryCursor *cursor = ts_query_cursor_new(); in->query_cursor = sq_query_cursor_new();
-  assert(cursor && in->query_cursor);
-  ts_query_cursor_exec(cursor, mainline, ts_tree_root_node(in->parsed));
-  sq_query_cursor_exec(in->query_cursor, in->query, sq_tree_root_node(in->tree));
-  TSQueryMatch a; SQQueryMatch b; uint32_t ai, bi;
-  while (ts_query_cursor_next_capture(cursor, &a, &ai)) {
-    assert(sq_query_cursor_next_capture(in->query_cursor, &b, &bi));
-    assert(a.pattern_index == b.pattern_index && a.captures[ai].index == b.captures[bi].index);
-    assert(ts_node_start_byte(a.captures[ai].node) == sq_node_start_byte(b.captures[bi].node));
-    assert(ts_node_end_byte(a.captures[ai].node) == sq_node_end_byte(b.captures[bi].node));
+  for (query_kind = 0; query_kind < (end_to_end ? 3u : 1u); query_kind++) {
+    if (query_kind) structural_source(in, source, sizeof(source), query_kind == 2);
+    uint32_t offset; TSQueryError error;
+    in->query[query_kind] = sq_query_new(language, source, (uint32_t)strlen(source), &offset, &error);
+    assert(in->query[query_kind]);
+    TSQuery *mainline = ts_query_new(language, source, (uint32_t)strlen(source), &offset, &error);
+    assert(mainline);
+    TSQueryCursor *cursor = ts_query_cursor_new();
+    if (!in->query_cursor) in->query_cursor = sq_query_cursor_new();
+    assert(cursor && in->query_cursor);
+    ts_query_cursor_exec(cursor, mainline, ts_tree_root_node(in->parsed));
+    sq_query_cursor_exec(in->query_cursor, in->query[query_kind], sq_tree_root_node(in->tree));
+    TSQueryMatch a; SQQueryMatch b; uint32_t ai, bi;
+    while (ts_query_cursor_next_capture(cursor, &a, &ai)) {
+      assert(sq_query_cursor_next_capture(in->query_cursor, &b, &bi));
+      assert(a.pattern_index == b.pattern_index && a.captures[ai].index == b.captures[bi].index);
+      assert(ts_node_start_byte(a.captures[ai].node) == sq_node_start_byte(b.captures[bi].node));
+      assert(ts_node_end_byte(a.captures[ai].node) == sq_node_end_byte(b.captures[bi].node));
+    }
+    assert(!sq_query_cursor_next_capture(in->query_cursor, &b, &bi));
+    ts_query_cursor_delete(cursor); ts_query_delete(mainline);
   }
-  assert(!sq_query_cursor_next_capture(in->query_cursor, &b, &bi));
-  ts_query_cursor_delete(cursor); ts_query_delete(mainline); free(counts); free(fields);
+  query_kind = 0; free(counts); free(fields);
 }
 
 // Standalone column probes cover widths unavailable in the real grammar sample.
@@ -234,6 +305,7 @@ static void micro(unsigned repeats) {
 
 int main(int argc, char **argv) {
   if (argc == 3 && !strcmp(argv[1], "--micro")) { micro((unsigned)atoi(argv[2])); return 0; }
+  end_to_end = getenv("SQ_END_TO_END") != NULL;
   assert(argc >= 5);
   void *library = dlopen(argv[1], RTLD_NOW | RTLD_LOCAL); assert(library);
   const TSLanguage *(*fn)(void) = (const TSLanguage *(*)(void))dlsym(library, argv[2]); assert(fn);
@@ -262,18 +334,22 @@ int main(int argc, char **argv) {
     prepare_query(in, language);
   }
   assert(attributes(&batch) == cached(&batch));
-  const char *names[] = {"pack", "attributes", "cached", "random_ids", "scans", "queries"};
-  Operation ops[] = {pack, attributes, cached, random_ids, scans, queries};
+  assert(attributes(&batch) == uncached(&batch));
+  assert(attributes(&batch) == cursor_walk(&batch));
+  const char *names[] = {"pack", "attributes", "cached", "random_ids", "scans", "queries", "cursor_walk", "uncached", "structural_queries", "field_queries"};
+  Operation ops[] = {pack, attributes, cached, random_ids, scans, queries, cursor_walk, uncached, structural_queries, field_queries};
   printf("{\"files\":%u,\"nodes\":%llu,\"slab_bytes\":%llu,\"retained_bytes\":%llu,\"compact_bytes\":%llu,"
          "\"symbol_bits\":%u,\"field_bits\":%u,\"modes\":{", batch.count,
          (unsigned long long)nodes, (unsigned long long)slab, (unsigned long long)retained,
          (unsigned long long)compact, batch.inputs[0].tree->layout.symbol_bits, batch.inputs[0].tree->layout.field_bits);
-  for (unsigned op = 0; op < 6; op++) {
+  for (unsigned op = 0; op < (end_to_end ? 10u : 6u); op++) {
     printf("%s\"%s\":", op ? "," : "", names[op]); measure(ops[op], &batch, repeats, .008);
   }
   puts("}}");
   for (unsigned i = 0; i < batch.count; i++) {
-    Input *in = &batch.inputs[i]; sq_query_cursor_delete(in->query_cursor); sq_query_delete(in->query);
+    Input *in = &batch.inputs[i];
+    sq_query_cursor_delete(in->query_cursor);
+    for (unsigned q = 0; q < (end_to_end ? 3u : 1u); q++) sq_query_delete(in->query[q]);
     free(in->nodes); sq_tree_delete(in->tree); ts_tree_delete(in->parsed);
   }
   free(batch.inputs); ts_parser_delete(parser); dlclose(library);
