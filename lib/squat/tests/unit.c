@@ -188,8 +188,6 @@ static void exercise_columns(SQTree *tree, bool fill) {
 #endif
   exercise_column(tree, tree->layout.supertype, 8, SQ_GROUP_SIZE, tag++, fill);
   exercise_column(tree, tree->layout.symbol, tree->layout.symbol_bits, SQ_GROUP_SIZE, tag++, fill);
-  exercise_column(tree, tree->layout.grammar_symbol, tree->layout.symbol_bits, SQ_GROUP_SIZE, tag++,
-                  fill);
   exercise_column(tree, tree->layout.field, tree->layout.field_bits, SQ_GROUP_SIZE, tag++, fill);
   // Verify cached layout constants after initial allocation and every resize.
   assert(tree->layout.symbol_lanes == 64 / tree->layout.symbol_bits);
@@ -198,8 +196,7 @@ static void exercise_columns(SQTree *tree, bool fill) {
     SQNode node = {tree, slot};
     assert(sq_node_symbol_id(node) == sq_get_packed(tree->data, tree->layout.symbol,
                                                   slot, tree->layout.symbol_bits));
-    assert(sq_node_grammar_id(node) == sq_get_packed(tree->data, tree->layout.grammar_symbol,
-                                                   slot, tree->layout.symbol_bits));
+    assert(sq_node_grammar_id(node) == sq_node_symbol_id(node));
     assert(sq_node_field_value(node) == sq_get_packed(tree->data, tree->layout.field,
                                                     slot, tree->layout.field_bits));
   }
@@ -240,7 +237,78 @@ static void fixed_width_write_tests(void) {
   }
 }
 
+static void sparse_grammar_tests(bool dictionary) {
+  TSSymbolMetadata metadata[16] = {0};
+  for (unsigned i = 0; dictionary && i < 9; i++) metadata[i].supertype = true;
+  TSLanguage language = {.abi_version = TREE_SITTER_LANGUAGE_VERSION,
+                         .symbol_count = 16, .symbol_metadata = metadata};
+  SQError error;
+  const uint32_t groups = (130 + SQ_GROUP_SIZE - 1) / SQ_GROUP_SIZE;
+  SQTree *tree = sq_allocate(&language, groups + 3, &error);
+  assert(tree);
+  sq_header(tree)->group_count = groups;
+  sq_set_packed(tree->data, tree->layout.waste, groups - 1, SQ_WASTE_BITS,
+                groups * SQ_GROUP_SIZE - 130);
+  // 129 leaf siblings followed physically by their root.
+  sq_set_bit(tree->data, tree->layout.last, 0, true);
+  sq_set_bit(tree->data, tree->layout.last, 129, true);
+  sq_set_u8(tree->data, tree->layout.span_delta, 129, 129);
+  const uint32_t slots[] = {0, 63, 64, 127, 128, 129};
+  const uint32_t count = sizeof(slots) / sizeof(slots[0]);
+  uint32_t bytes = (uint32_t)sq_grammar_size(tree, count);
+  assert(sq_prepare_final(&tree, groups + 3, bytes + (dictionary ? 8 : 0), &error));
+  if (dictionary) {
+    uint64_t empty_mask = 0;
+    assert(sq_append_dictionary(tree, &empty_mask, 1, &error));
+  }
+  uint32_t offset = sq_grammar_offset(tree), words = sq_grammar_words(tree);
+  uint32_t bitmap = offset + 8, ranks = bitmap + words * 8;
+  uint32_t values = ranks + (uint32_t)sq_array_size(words, 4);
+  memset(tree->data + offset, 0, bytes);
+  sq_set_u32(tree->data, offset, 0, count);
+  for (uint32_t i = 0; i < count; i++) {
+    sq_set_bit(tree->data, bitmap, slots[i], true);
+    sq_set_packed(tree->data, values, i, tree->layout.symbol_bits, i + 1);
+  }
+  // Known ranks at the word boundaries, independent of the reader's popcount.
+  sq_set_u32(tree->data, ranks, 0, 0);
+  sq_set_u32(tree->data, ranks, 1, 2);
+  sq_set_u32(tree->data, ranks, 2, 4);
+  sq_header(tree)->format_flags |= SQ_GRAMMAR_OVERRIDES;
+  SQTree *loaded = sq_tree_from_bytes(&language, tree->data, tree->size, &error);
+  assert(loaded && error == SQ_OK);
+  sq_tree_delete(loaded);
+  const uint32_t capacities[] = {groups + 7, groups, groups + 1};
+  for (unsigned pass = 0; pass < sizeof(capacities) / sizeof(capacities[0]); pass++) {
+    assert(sq_resize(&tree, capacities[pass], &error));
+    for (uint32_t slot = 0; slot < 130; slot++) {
+      uint32_t expected = 0;
+      for (uint32_t i = 0; i < count; i++) if (slots[i] == slot) expected = i + 1;
+      assert(sq_node_grammar_id((SQNode){tree, slot}) == expected);
+    }
+    for (uint32_t group = 0; group < groups; group++) {
+      for (uint32_t symbol = 0; symbol < 8; symbol++) {
+        uint64_t expected = 0;
+        for (uint32_t lane = 0; lane < SQ_GROUP_SIZE; lane++) {
+          uint32_t slot = group * SQ_GROUP_SIZE + lane;
+          if (slot >= 130) continue;
+          uint32_t grammar = 0;
+          for (uint32_t i = 0; i < count; i++) if (slots[i] == slot) grammar = i + 1;
+          if (grammar == symbol) expected |= UINT64_C(1) << lane;
+        }
+        assert(sq_tree_group_grammar_symbol_equal(tree, group, symbol) == expected);
+      }
+    }
+    loaded = sq_tree_repack(tree, &error);
+    assert(loaded && sq_tree_group_capacity(loaded) == groups);
+    sq_tree_delete(loaded);
+  }
+  sq_tree_delete(tree);
+}
+
 int main(void) {
+  sparse_grammar_tests(false);
+  sparse_grammar_tests(true);
   equality_tests();
   read_tests();
   fixed_width_write_tests();
@@ -274,6 +342,6 @@ int main(void) {
     free(metadata);
   }
 
-  puts("ok: packed-column decoding, stable physical lanes, colocated growth, compaction, overflow");
+  puts("ok: sparse grammar IDs, packed-column decoding, stable physical lanes, colocated growth, compaction, overflow");
   return 0;
 }

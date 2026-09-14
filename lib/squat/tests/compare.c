@@ -459,6 +459,59 @@ static void reject_index_mutation(const SQTree *tree, uint8_t *bytes) {
   memcpy(bytes, tree->data, tree->size);
 }
 
+static void check_grammar_validation(const SQTree *tree) {
+  if (!(sq_header(tree)->format_flags & SQ_GRAMMAR_OVERRIDES)) return;
+  uint8_t *bytes = sq_allocate_data(tree->size);
+  CHECK(bytes);
+  memcpy(bytes, tree->data, tree->size);
+  uint32_t offset = sq_grammar_offset(tree), words = sq_grammar_words(tree);
+  uint32_t bitmap = offset + 8, ranks = bitmap + words * 8;
+  uint32_t values = ranks + (uint32_t)sq_array_size(words, 4);
+  uint32_t count = sq_get_u32(bytes, offset, 0);
+  sq_set_u32(bytes, offset, 0, UINT32_MAX);
+  reject_index_mutation(tree, bytes);
+  sq_set_u32(bytes, offset, 1, 1);
+  reject_index_mutation(tree, bytes);
+  sq_set_u32(bytes, ranks, 0, 1);
+  reject_index_mutation(tree, bytes);
+  sq_set_u32(bytes, ranks, words - 1, count + 1);
+  reject_index_mutation(tree, bytes);
+  if (sq_symbols(tree) <= tree->layout.symbol_mask) {
+    sq_set_packed(bytes, values, 0, tree->layout.symbol_bits, sq_symbols(tree));
+    reject_index_mutation(tree, bytes);
+  }
+  for (uint32_t i = 0; i < words; i++) {
+    uint64_t word = sq_get_u64(bytes, bitmap, i);
+    if (!word) continue;
+    uint32_t slot = i * 64 + (uint32_t)__builtin_ctzll(word);
+    sq_set_packed(bytes, values, 0, tree->layout.symbol_bits,
+                  sq_node_symbol_id((SQNode){tree, slot}));
+    reject_index_mutation(tree, bytes);
+    sq_set_bit(bytes, bitmap, slot, false);
+    reject_index_mutation(tree, bytes);
+    break;
+  }
+  // Includes wasted physical slots and bitmap tail bits.
+  for (uint32_t slot = 0; slot < words * 64; slot++) {
+    if (sq_tree_node_at_slot(tree, slot).tree) continue;
+    sq_set_bit(bytes, bitmap, slot, true);
+    reject_index_mutation(tree, bytes);
+    break;
+  }
+  if (words % 2) {
+    sq_set_u32(bytes, ranks, words, 1);
+    reject_index_mutation(tree, bytes);
+  }
+  unsigned tail_bits = (count % tree->layout.symbol_lanes) * tree->layout.symbol_bits;
+  if (tail_bits) {
+    uint32_t last = count / tree->layout.symbol_lanes;
+    sq_set_u64(bytes, values, last,
+                sq_get_u64(bytes, values, last) | (UINT64_C(1) << tail_bits));
+    reject_index_mutation(tree, bytes);
+  }
+  free(bytes);
+}
+
 static void check_presence_validation(const SQTree *tree) {
   uint32_t offset = sq_presence_offset(tree);
   if (!offset) return;
@@ -572,7 +625,10 @@ static void exercise(const TSLanguage *language, const char *source, uint32_t le
   CHECK(compact && error == SQ_OK);
   CHECK(compact->storage == SQ_STORAGE_COLOCATED);
   CHECK(compact->data == (uint8_t *)compact + sq_runtime_size(language));
-  if (length <= 4096) check_presence_validation(compact);
+  if (length <= 4096) {
+    check_presence_validation(compact);
+    check_grammar_validation(compact);
+  }
 
   // Repacking changes capacity and addresses, but never physical slot IDs.
   SQNode before = sq_tree_root_node(packed), after = sq_tree_root_node(compact);

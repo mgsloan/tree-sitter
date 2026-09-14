@@ -58,6 +58,25 @@ TSSymbol sq_node_symbol(SQNode node) {
   return node.tree ? ts_language_public_symbol(node.tree->language, raw_symbol(node)) : 0;
 }
 
+uint32_t sq_node_grammar_id_with_symbol(SQNode node, uint32_t symbol) {
+  const SQTree *tree = node.tree;
+  if (!(sq_header(tree)->format_flags & SQ_GRAMMAR_OVERRIDES)) return symbol;
+  uint32_t bitmap = sq_grammar_offset(tree) + 8;
+  uint64_t word = sq_get_u64(tree->data, bitmap, node.slot / 64);
+  uint64_t bit = UINT64_C(1) << (node.slot % 64);
+  if (!(word & bit)) return symbol;
+  uint32_t words = sq_grammar_words(tree), ranks = bitmap + words * 8;
+  uint32_t rank = sq_get_u32(tree->data, ranks, node.slot / 64) +
+                  (uint32_t)__builtin_popcountll(word & (bit - 1));
+  return sq_get_packed_cached(tree->data, ranks + (uint32_t)sq_array_size(words, 4), rank,
+                              tree->layout.symbol_bits, tree->layout.symbol_lanes,
+                              tree->layout.symbol_mask);
+}
+
+uint32_t sq_node_grammar_id(SQNode node) {
+  return sq_node_grammar_id_with_symbol(node, sq_node_symbol_id(node));
+}
+
 TSSymbol sq_node_grammar_symbol(SQNode node) {
   return node.tree ? sq_decode_symbol(node.tree, sq_node_grammar_id(node)) : 0;
 }

@@ -26,15 +26,16 @@ _Static_assert(SQ_ITERATOR_UNPACK_SLOTS >= SQ_GROUP_SIZE &&
 _Static_assert(SQ_COLUMN_ALIGNMENT == 8 || SQ_COLUMN_ALIGNMENT == 64,
                "supported experimental column alignments");
 #define SQ_VERSION                                                                                 \
-  (UINT32_C(0x53510060) |                                                                          \
+  (UINT32_C(0x53510070) |                                                                          \
    (SQ_GROUP_SIZE == 32   ? 2u                                                                     \
     : SQ_GROUP_SIZE == 64 ? 4u                                                                     \
                           : 0u) |                                                                  \
    (SQ_COLUMN_ALIGNMENT == 64 ? 8u : 0u))
 
-// Version 6: each group-base column immediately precedes its node values.
+// Version 7: grammar IDs use an optional sparse override section.
 #define SQ_LAYOUT_FLAGS (SQ_INCLUDE_POINTS ? 0u : 0x100u)
 #define SQ_PRESENCE 0x200u
+#define SQ_GRAMMAR_OVERRIDES 0x800u
 #define SQ_NONE UINT32_MAX
 
 typedef struct {
@@ -57,7 +58,6 @@ typedef struct {
   uint32_t span_base;
   uint32_t span_delta;
   uint32_t symbol;
-  uint32_t grammar_symbol;
   uint32_t field;
   uint32_t supertype;
   uint32_t last;
@@ -312,11 +312,8 @@ static inline uint32_t sq_node_symbol_id(SQNode node) {
                               node.tree->layout.symbol_mask);
 }
 
-static inline uint32_t sq_node_grammar_id(SQNode node) {
-  return sq_get_packed_cached(node.tree->data, node.tree->layout.grammar_symbol, node.slot,
-                              node.tree->layout.symbol_bits, node.tree->layout.symbol_lanes,
-                              node.tree->layout.symbol_mask);
-}
+uint32_t sq_node_grammar_id(SQNode);
+uint32_t sq_node_grammar_id_with_symbol(SQNode, uint32_t symbol);
 
 static inline uint32_t sq_node_field_value(SQNode node) {
   return sq_get_packed_cached(node.tree->data, node.tree->layout.field, node.slot,
@@ -391,6 +388,24 @@ static inline uint32_t sq_dictionary_offset(const SQTree *tree) {
   return sq_header(tree)->supertype_dictionary_count
              ? tree->layout.end + (sq_presence_offset(tree) ? (uint32_t)sq_presence_size(tree) : 0)
              : 0;
+}
+
+// Optional suffix after presence and supertype data. Header: count, reserved;
+// then a live-slot bitmap, u32 ranks per 64 slots, and packed grammar IDs.
+static inline uint32_t sq_grammar_offset(const SQTree *tree) {
+  return tree->layout.end +
+         (sq_presence_offset(tree) ? (uint32_t)sq_presence_size(tree) : 0) +
+         sq_header(tree)->supertype_dictionary_count * ((tree->supertype_count + 63) / 64) * 8;
+}
+
+static inline uint32_t sq_grammar_words(const SQTree *tree) {
+  return (uint32_t)(((uint64_t)sq_tree_slot_count(tree) + 63) / 64);
+}
+
+static inline uint64_t sq_grammar_size(const SQTree *tree, uint32_t count) {
+  uint32_t words = sq_grammar_words(tree);
+  return 8 + (uint64_t)words * 8 + sq_array_size(words, 4) +
+         sq_column_size(count, tree->layout.symbol_bits);
 }
 
 static inline void sq_fail(SQError *error, SQError value) {

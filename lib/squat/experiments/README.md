@@ -3,7 +3,7 @@
 The historical layout, query, and cursor measurements below used version 2,
 including its field-lookup exception section. Version 3 removes that section and
 returned to a 32-byte header. Version 4 introduced a 16-byte header and
-reverse-preorder physical slots; the current runtime is version 6. Historical
+reverse-preorder physical slots; version 7 replaces the dense grammar-symbol column with sparse overrides. Historical
 measurements have not been rewritten.
 See the current [field-lookup policy](field-lookup-review.md).
 

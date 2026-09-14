@@ -73,7 +73,6 @@ bool sq_layout(const TSLanguage *language, uint32_t capacity, SQLayout *layout) 
   layout->span_base = column_offset(&next, sq_array_size(capacity, 4));
   layout->span_delta = column_offset(&next, sq_array_size(slots, 1));
   layout->symbol = column_offset(&next, sq_column_size(slots, layout->symbol_bits));
-  layout->grammar_symbol = column_offset(&next, sq_column_size(slots, layout->symbol_bits));
   layout->field = column_offset(&next, sq_column_size(slots, layout->field_bits));
   layout->supertype = column_offset(&next, sq_array_size(slots, 1));
   layout->last = column_offset(&next, sq_column_size(slots, 1));
@@ -338,8 +337,6 @@ static bool resize_tree(SQTree **tree_pointer, uint32_t capacity, uint32_t trail
   memcpy(data + next.span_base, tree->data + tree->layout.span_base, sq_array_size(groups, 4));
   memcpy(data + next.span_delta, tree->data + tree->layout.span_delta, sq_array_size(slots, 1));
   memcpy(data + next.symbol, tree->data + tree->layout.symbol,
-         sq_column_size(slots, next.symbol_bits));
-  memcpy(data + next.grammar_symbol, tree->data + tree->layout.grammar_symbol,
          sq_column_size(slots, next.symbol_bits));
   memcpy(data + next.field, tree->data + tree->layout.field,
          sq_column_size(slots, next.field_bits));

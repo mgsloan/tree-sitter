@@ -21,7 +21,6 @@ typedef struct {
 #endif
 #endif
   uint16_t symbol[SQ_ITERATOR_UNPACK_SLOTS];
-  uint16_t grammar_symbol[SQ_ITERATOR_UNPACK_SLOTS];
   uint16_t field[SQ_ITERATOR_UNPACK_SLOTS];
 } UnpackCache;
 
@@ -167,8 +166,6 @@ static void fill_attributes(SQNodeIterator *iterator, UnpackCache *cache) {
   uint32_t count = cache_slot_count(tree, cache);
   cache->unpack(tree->data + tree->layout.symbol, first, count, tree->layout.symbol_bits,
                 cache->symbol);
-  cache->unpack(tree->data + tree->layout.grammar_symbol, first, count, tree->layout.symbol_bits,
-                cache->grammar_symbol);
 #if SQ_ITERATOR_CACHE_ALL == 2
   fill_coordinate(tree, cache, tree->layout.start_byte_delta, tree->layout.start_byte_base, 8,
                   false, cache->start_byte);
@@ -218,12 +215,12 @@ void sq_node_iterator_attributes(SQNodeIterator *iterator, SQCursorAttributes *o
   out->is_missing = sq_node_missing_flag(node);
   out->has_error = sq_node_error_flag(node);
 #else
-  sq_attributes_with_ids(node, cache->symbol[lane], cache->grammar_symbol[lane], cache->field[lane],
+  sq_attributes_with_ids(node, cache->symbol[lane], sq_node_grammar_id_with_symbol(node, cache->symbol[lane]), cache->field[lane],
                          out);
   return;
 #endif
 #if SQ_ITERATOR_CACHE_ALL != 0
-  sq_attributes_finish(node, cache->symbol[lane], cache->grammar_symbol[lane], cache->field[lane],
+  sq_attributes_finish(node, cache->symbol[lane], sq_node_grammar_id_with_symbol(node, cache->symbol[lane]), cache->field[lane],
                        out);
 #endif
 }

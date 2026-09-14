@@ -88,9 +88,21 @@ uint64_t sq_tree_group_symbol_equal(const SQTree *tree, uint32_t group, uint32_t
 }
 
 uint64_t sq_tree_group_grammar_symbol_equal(const SQTree *tree, uint32_t group, uint32_t value) {
-  return tree ? group_equal(tree, group, tree->layout.grammar_symbol, tree->layout.symbol_bits,
-                            value)
-              : 0;
+  uint64_t matches = sq_tree_group_symbol_equal(tree, group, value);
+  if (!tree || group >= sq_tree_group_count(tree) ||
+      !(sq_header(tree)->format_flags & SQ_GRAMMAR_OVERRIDES)) return matches;
+  uint32_t first = group * SQ_GROUP_SIZE;
+  uint64_t overrides = sq_get_u64(tree->data, sq_grammar_offset(tree) + 8, first / 64)
+                       >> (first % 64);
+  overrides &= UINT64_MAX >> (64 - SQ_GROUP_SIZE);
+  while (overrides) {
+    unsigned lane = (unsigned)__builtin_ctzll(overrides);
+    uint64_t bit = UINT64_C(1) << lane;
+    matches &= ~bit;
+    if (sq_node_grammar_id((SQNode){tree, first + lane}) == value) matches |= bit;
+    overrides &= overrides - 1;
+  }
+  return matches;
 }
 
 uint64_t sq_tree_group_field_equal(const SQTree *tree, uint32_t group, uint32_t value) {

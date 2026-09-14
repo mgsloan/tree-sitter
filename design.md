@@ -101,9 +101,6 @@ struct Node {
   /// Raw symbol after aliasing; public-symbol mapping happens on read.
   display_symbol: VarBits,
 
-  /// Original grammar symbol before aliasing.
-  grammar_symbol: VarBits,
-
   field: VarBits,
 }
 
@@ -120,7 +117,7 @@ struct Group {
 }
 ```
 
-`SlabHeader` is a real struct but `Group` and `Node` are not. Instead the values for each field are stored contiguously (struct-of-arrays style). The header's counts, capacity, and flags, together with the matching grammar and representation version, determine the layout. After the header, columns appear in this order: group waste, start-byte base and values, end-byte base and values, span base and values, display symbol, grammar symbol, field, supertype, the last/extra/error/missing flag bitmaps, start-point base and values, end-point base and values. Each column and each slab section starts at an eight-byte boundary; column lengths are computed from their capacities, with trailing alignment padding. Bools and `u4` values are packed into 64-bit words, and `VarBits` uses the word layout described below. The grammar determines symbol/field widths and the supertype count. Derived column offsets point to their first physical entry; unused capacity follows the active entries.
+`SlabHeader` is a real struct but `Group` and `Node` are not. Instead the values for each field are stored contiguously (struct-of-arrays style). The header's counts, capacity, and flags, together with the matching grammar and representation version, determine the layout. After the header, columns appear in this order: group waste, start-byte base and values, end-byte base and values, span base and values, display symbol, field, supertype, the last/extra/error/missing flag bitmaps, start-point base and values, end-point base and values. Each column and each slab section starts at an eight-byte boundary; column lengths are computed from their capacities, with trailing alignment padding. Bools and `u4` values are packed into 64-bit words, and `VarBits` uses the word layout described below. The grammar determines symbol/field widths and the supertype count. Derived column offsets point to their first physical entry; unused capacity follows the active entries.
 
 `corpus-analysis memory-pareto` was used to determine that `u16` should be used
 for `end_byte_sub`. This results in `~13.6B/node` whereas `u8` was `15.6B/node`.
@@ -145,14 +142,30 @@ fields on ERROR parents. Mainline's lookup API can instead inherit through an
 alias-visible wrapper and return a grandchild whose field is absent from the
 parent's visible children. Tests count these as expected mismatches only when
 squat agrees with mainline's visible-child cursor. Other field mismatches fail.
-The sparse field-exception section remains removed. Version 6 uses a 16-byte
+The sparse field-exception section remains removed. Version 7 uses a 16-byte
 header and reverse-preorder physical slots; the loader rejects earlier formats.
 
 Public symbol is mapped from raw display symbol at read time.
 
 `is_named` is looked up based on the raw `display_symbol`.
 
-EXPERIMENT: store grammar_symbol in a sparse index (only used for aliases). Fast to know from grammar if a display symbol might have a different grammar symbol.
+Original grammar IDs are sparse overrides of raw `display_symbol`. The
+`SQ_GRAMMAR_OVERRIDES` header flag indicates an optional section after the
+symbol-presence index and supertype dictionary. Trees without differing IDs
+omit the section entirely. It contains an eight-byte header (`u32` override
+count and a zero reserved word), a bitmap over live physical slot extent
+(including zero bits for waste), an array of `u32` prefix ranks for each 64-slot
+bitmap word, and packed grammar IDs in ascending physical-slot order. Bitmap,
+ranks, and values are each padded to eight bytes; all padding is zero. The
+section depends on group count, not allocated capacity, so repacking preserves
+it verbatim. The loader validates bounds, ranks, slot membership, IDs, and padding
+before exposing nodes.
+
+Grammar access checks the bitmap and uses a checkpoint plus `popcount` to
+locate an override, falling back to the raw display ID. Iterator attribute
+access resolves this per node; grammar IDs are not bulk-unpacked or cached.
+Display-symbol scans retain their dense column; grammar-symbol scans correct
+the display equality mask at override slots.
 
 EXPERIMENT: try field interspersal
 
