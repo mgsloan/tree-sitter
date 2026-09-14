@@ -97,6 +97,8 @@ SQTree *sq_tree_from_bytes_safety_checked(const TSLanguage *, const void *, size
 // to 8 bytes (64 with the experimental column-alignment build). Deletion frees
 // only the runtime descriptor; the caller retains ownership of the bytes.
 SQTree *sq_tree_from_bytes_borrowed(const TSLanguage *, const void *, size_t, SQError *);
+// Same lifetime/alignment contract, with the safety-checked validation policy.
+SQTree *sq_tree_from_bytes_borrowed_safety_checked(const TSLanguage *, const void *, size_t, SQError *);
 
 // Returns an independent compact copy; nodes in the original remain valid.
 SQTree *sq_tree_repack(const SQTree *, SQError *);

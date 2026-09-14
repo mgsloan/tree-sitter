@@ -490,6 +490,11 @@ SQTree *sq_tree_from_bytes_borrowed(const TSLanguage *language, const void *byte
   return load_bytes(language, bytes, length, true, true, error);
 }
 
+SQTree *sq_tree_from_bytes_borrowed_safety_checked(const TSLanguage *language, const void *bytes,
+                                                  size_t length, SQError *error) {
+  return load_bytes(language, bytes, length, true, false, error);
+}
+
 SQTree *sq_tree_repack(const SQTree *tree, SQError *error) {
   if (!tree) {
     sq_fail(error, SQ_ERROR_ARGUMENT);

@@ -458,6 +458,10 @@ static void reject_index_mutation(const SQTree *tree, uint8_t *bytes) {
         error == SQ_ERROR_INVALID_SLAB);
   SQTree *safety = sq_tree_from_bytes_safety_checked(tree->language, bytes, tree->size, &error);
   CHECK(safety && error == SQ_OK);
+  SQTree *borrowed =
+      sq_tree_from_bytes_borrowed_safety_checked(tree->language, bytes, tree->size, &error);
+  CHECK(borrowed && error == SQ_OK && borrowed->data == bytes);
+  sq_tree_delete(borrowed);
   // Mutated auxiliary values are data, not addresses. Exercise both modes with
   // every valid group/symbol before releasing the owned copy.
   for (uint32_t group = 0; group < sq_tree_group_count(safety); group++) {

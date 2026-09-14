@@ -1,4 +1,72 @@
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+};
 use tree_sitter_squatter::{PackOptions, Query, QueryCursor, Tree};
+
+struct TrackedSlab {
+    storage: Box<[u64]>,
+    offset: usize,
+    length: usize,
+    drops: Arc<AtomicUsize>,
+}
+impl Drop for TrackedSlab {
+    fn drop(&mut self) {
+        self.drops.fetch_add(1, Ordering::Relaxed);
+    }
+}
+// Heap allocation is stable across owner moves and never mutated after creation.
+unsafe impl tree_sitter_squatter::StableSlab for TrackedSlab {
+    fn bytes(&self) -> &[u8] {
+        unsafe {
+            std::slice::from_raw_parts(
+                self.storage.as_ptr().cast::<u8>().add(self.offset),
+                self.length,
+            )
+        }
+    }
+}
+fn tracked(bytes: &[u8], misaligned: bool, drops: Arc<AtomicUsize>) -> TrackedSlab {
+    let alignment = ((tree_sitter_squatter::representation_id() >> 40) & 0xff) as usize;
+    let mut storage = vec![0u64; (bytes.len() + alignment + 8).div_ceil(8)].into_boxed_slice();
+    let offset = storage.as_ptr().cast::<u8>().align_offset(alignment) + usize::from(misaligned);
+    unsafe {
+        std::ptr::copy_nonoverlapping(
+            bytes.as_ptr(),
+            storage.as_mut_ptr().cast::<u8>().add(offset),
+            bytes.len(),
+        );
+    }
+    TrackedSlab {
+        storage,
+        offset,
+        length: bytes.len(),
+        drops,
+    }
+}
+
+#[test]
+fn owned_slab_retains_storage_and_releases_it_on_all_outcomes() {
+    let language = language();
+    let tree = pack(&language, "[42]", false);
+    let drops = Arc::new(AtomicUsize::new(0));
+    let owner = tracked(tree.as_bytes(), false, drops.clone());
+    let address = tree_sitter_squatter::StableSlab::bytes(&owner).as_ptr();
+    let backed = Tree::from_owned_slab(&language, owner).unwrap();
+    assert_eq!(backed.as_bytes().as_ptr(), address);
+    assert_eq!(drops.load(Ordering::Relaxed), 0);
+    let detached = backed.detach().unwrap();
+    assert_ne!(detached.as_bytes().as_ptr(), address);
+    drop(backed);
+    assert_eq!(drops.load(Ordering::Relaxed), 1);
+    assert_eq!(detached.root_node().kind(), "document");
+    assert!(
+        Tree::from_owned_slab(&language, tracked(tree.as_bytes(), true, drops.clone())).is_err()
+    );
+    assert_eq!(drops.load(Ordering::Relaxed), 2);
+    assert!(Tree::from_owned_slab(&language, tracked(b"invalid", false, drops.clone())).is_err());
+    assert_eq!(drops.load(Ordering::Relaxed), 3);
+}
 
 fn language() -> tree_sitter::Language {
     unsafe { tree_sitter::Language::from_raw(tree_sitter_json::LANGUAGE.into_raw()().cast()) }

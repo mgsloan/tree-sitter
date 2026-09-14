@@ -169,10 +169,86 @@ impl Deref for BorrowedTree<'_> {
     }
 }
 
+/// Ownership of immutable storage whose address survives moves of its owner.
+///
+/// # Safety
+/// Every call must return the same slice (address and length). Its allocation
+/// must remain alive and immutable until the owner is dropped, even when the
+/// owner is moved or accessed from another thread. No external party may resize,
+/// unmap, or mutate it. Inline arrays and mutable mappings do not meet this
+/// contract. Alignment is checked by the loader, not required by this trait.
+pub unsafe trait StableSlab: Send + Sync + 'static {
+    fn bytes(&self) -> &[u8];
+}
+
+/// A validated descriptor retaining the owner of its immutable slab storage.
+/// Nodes borrow this wrapper; the native descriptor is destroyed before storage.
+///
+/// ```compile_fail
+/// use tree_sitter_squatter::{Node, StableSlab, Tree};
+/// fn dangling(language: &tree_sitter::Language, owner: impl StableSlab) -> Node<'static> {
+///     Tree::from_owned_slab(language, owner).unwrap().root_node()
+/// }
+/// ```
+pub struct BackedTree {
+    // Declaration order is important: fields drop in this order.
+    tree: Tree,
+    _owner: Box<dyn StableSlab>,
+}
+impl BackedTree {
+    /// Copy into owned aligned storage without checking auxiliary semantics.
+    pub fn detach(&self) -> Result<Tree, Error> {
+        let bytes = self.as_bytes();
+        let mut status = 0;
+        // This descriptor keeps its language and storage alive throughout the
+        // call; the new native descriptor independently retains the language.
+        let raw = unsafe {
+            ffi::sq_tree_from_bytes_safety_checked(
+                ffi::sq_tree_language(self.tree.0.as_ptr()),
+                bytes.as_ptr().cast(),
+                bytes.len(),
+                &mut status,
+            )
+        };
+        NonNull::new(raw).map(Tree).ok_or_else(|| error(status))
+    }
+}
+impl Deref for BackedTree {
+    type Target = Tree;
+    fn deref(&self) -> &Tree {
+        &self.tree
+    }
+}
+
 // The C slab is immutable and retains a thread-safe Tree-sitter language.
 unsafe impl Send for Tree {}
 unsafe impl Sync for Tree {}
 impl Tree {
+    /// Safety-validates an aligned slab and retains its owner without copying.
+    /// Misaligned input returns `Error::InvalidArgument`. On failure the owner
+    /// is dropped. No lifetime extension or exposed raw descriptor is involved.
+    pub fn from_owned_slab(
+        language: &Language,
+        owner: impl StableSlab,
+    ) -> Result<BackedTree, Error> {
+        let raw_language = language.clone().into_raw();
+        let bytes = owner.bytes();
+        let mut status = 0;
+        let raw = unsafe {
+            ffi::sq_tree_from_bytes_borrowed_safety_checked(
+                raw_language.cast(),
+                bytes.as_ptr().cast(),
+                bytes.len(),
+                &mut status,
+            )
+        };
+        drop(unsafe { Language::from_raw(raw_language) });
+        let tree = NonNull::new(raw).map(Self).ok_or_else(|| error(status))?;
+        Ok(BackedTree {
+            tree,
+            _owner: Box::new(owner),
+        })
+    }
     pub fn pack(tree: &tree_sitter::Tree) -> Result<Self, Error> {
         Self::pack_with_options(tree, PackOptions::default())
     }
@@ -790,8 +866,15 @@ mod ffi {
             length: usize,
             error: *mut i32,
         ) -> *mut c_void;
+        pub fn sq_tree_from_bytes_borrowed_safety_checked(
+            language: *const c_void,
+            bytes: *const c_void,
+            length: usize,
+            error: *mut i32,
+        ) -> *mut c_void;
         pub fn sq_tree_repack(tree: *const c_void, error: *mut i32) -> *mut c_void;
         pub fn sq_tree_data(tree: *const c_void, length: *mut u32) -> *const c_void;
+        pub fn sq_tree_language(tree: *const c_void) -> *const c_void;
         pub fn sq_tree_delete(tree: *mut c_void);
         pub fn sq_tree_root_node(tree: *const c_void) -> RawNode;
         pub fn sq_tree_node_at_slot(tree: *const c_void, slot: u32) -> RawNode;
