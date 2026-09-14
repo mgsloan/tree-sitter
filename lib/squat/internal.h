@@ -72,6 +72,9 @@ typedef struct {
 #endif
   uint32_t end;
   uint8_t symbol_bits, field_bits;
+  // Grammar-wide decoder constants; runtime-only, never serialized.
+  uint8_t symbol_lanes, field_lanes;
+  uint32_t symbol_mask, field_mask;
 } SQLayout;
 
 typedef enum { SQ_STORAGE_COLOCATED, SQ_STORAGE_COPIED, SQ_STORAGE_BORROWED } SQStorage;
@@ -200,6 +203,27 @@ static inline uint32_t sq_get_packed(const uint8_t *data, uint32_t offset, uint3
   return (uint32_t)((word >> (index % lanes * bits)) & ((UINT64_C(1) << bits) - 1));
 }
 
+// Variable-width IDs reuse constants computed when the tree layout is created.
+// Keep fixed-width loads and constant-width callers on their existing paths.
+static inline uint32_t sq_get_packed_cached(const uint8_t *data, uint32_t offset,
+                                           uint32_t index, uint8_t bits,
+                                           uint8_t lanes, uint32_t mask) {
+  switch (bits) {
+  case 1:
+    return sq_get_bit(data, offset, index);
+  case 8:
+    return sq_get_u8(data, offset, index);
+  case 16:
+    return sq_get_u16(data, offset, index);
+  case 32:
+    return sq_get_u32(data, offset, index);
+  }
+
+  uint64_t word;
+  memcpy(&word, data + offset + (uint64_t)(index / lanes) * 8, sizeof(word));
+  return (uint32_t)(word >> (index % lanes * bits)) & mask;
+}
+
 void sq_set_packed(uint8_t *, uint32_t offset, uint32_t index, uint8_t bits, uint32_t);
 
 static inline uint32_t sq_group_waste(const SQTree *tree, uint32_t group) {
@@ -283,18 +307,21 @@ static inline uint32_t sq_node_supertype(SQNode node) {
 }
 
 static inline uint32_t sq_node_symbol_id(SQNode node) {
-  return sq_get_packed(node.tree->data, node.tree->layout.symbol, node.slot,
-                       node.tree->layout.symbol_bits);
+  return sq_get_packed_cached(node.tree->data, node.tree->layout.symbol, node.slot,
+                              node.tree->layout.symbol_bits, node.tree->layout.symbol_lanes,
+                              node.tree->layout.symbol_mask);
 }
 
 static inline uint32_t sq_node_grammar_id(SQNode node) {
-  return sq_get_packed(node.tree->data, node.tree->layout.grammar_symbol, node.slot,
-                       node.tree->layout.symbol_bits);
+  return sq_get_packed_cached(node.tree->data, node.tree->layout.grammar_symbol, node.slot,
+                              node.tree->layout.symbol_bits, node.tree->layout.symbol_lanes,
+                              node.tree->layout.symbol_mask);
 }
 
 static inline uint32_t sq_node_field_value(SQNode node) {
-  return sq_get_packed(node.tree->data, node.tree->layout.field, node.slot,
-                       node.tree->layout.field_bits);
+  return sq_get_packed_cached(node.tree->data, node.tree->layout.field, node.slot,
+                              node.tree->layout.field_bits, node.tree->layout.field_lanes,
+                              node.tree->layout.field_mask);
 }
 
 // Unpack native-endian, non-straddling fields of 1..16 bits. The caller

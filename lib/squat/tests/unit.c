@@ -40,6 +40,8 @@ static void read_tests(void) {
     for (uint32_t index = 0; index < 16 * lanes; index++) {
       uint32_t expected = (uint32_t)((words[1 + index / lanes] >> (index % lanes * bits)) & mask);
       assert(sq_get_packed((const uint8_t *)words, 8, index, bits) == expected);
+      assert(sq_get_packed_cached((const uint8_t *)words, 8, index, bits,
+                                  (uint8_t)lanes, (uint32_t)mask) == expected);
     }
   }
 }
@@ -189,6 +191,18 @@ static void exercise_columns(SQTree *tree, bool fill) {
   exercise_column(tree, tree->layout.grammar_symbol, tree->layout.symbol_bits, SQ_GROUP_SIZE, tag++,
                   fill);
   exercise_column(tree, tree->layout.field, tree->layout.field_bits, SQ_GROUP_SIZE, tag++, fill);
+  // Verify cached layout constants after initial allocation and every resize.
+  assert(tree->layout.symbol_lanes == 64 / tree->layout.symbol_bits);
+  assert(tree->layout.field_lanes == 64 / tree->layout.field_bits);
+  for (uint32_t slot = 0; slot < 2 * SQ_GROUP_SIZE; slot++) {
+    SQNode node = {tree, slot};
+    assert(sq_node_symbol_id(node) == sq_get_packed(tree->data, tree->layout.symbol,
+                                                  slot, tree->layout.symbol_bits));
+    assert(sq_node_grammar_id(node) == sq_get_packed(tree->data, tree->layout.grammar_symbol,
+                                                   slot, tree->layout.symbol_bits));
+    assert(sq_node_field_value(node) == sq_get_packed(tree->data, tree->layout.field,
+                                                    slot, tree->layout.field_bits));
+  }
 }
 
 static void fixed_width_write_tests(void) {

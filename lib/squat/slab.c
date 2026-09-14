@@ -58,6 +58,10 @@ bool sq_layout(const TSLanguage *language, uint32_t capacity, SQLayout *layout) 
   if (!capacity || capacity > UINT32_MAX / SQ_GROUP_SIZE) return false;
   layout->symbol_bits = sq_width(language->symbol_count + language->alias_count + 1);
   layout->field_bits = sq_width(language->field_count);
+  layout->symbol_lanes = (uint8_t)(64 / layout->symbol_bits);
+  layout->field_lanes = (uint8_t)(64 / layout->field_bits);
+  layout->symbol_mask = (uint32_t)((UINT64_C(1) << layout->symbol_bits) - 1);
+  layout->field_mask = (uint32_t)((UINT64_C(1) << layout->field_bits) - 1);
   uint32_t slots = capacity * SQ_GROUP_SIZE;
   uint64_t next =
       (sizeof(SQHeader) + SQ_COLUMN_ALIGNMENT - 1) & ~(uint64_t)(SQ_COLUMN_ALIGNMENT - 1);
