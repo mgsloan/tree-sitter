@@ -1,7 +1,7 @@
 use std::{
     collections::HashMap,
     fs::{self, File, OpenOptions},
-    io,
+    io::{self, Write},
     path::{Path, PathBuf},
     sync::{Arc, Mutex, MutexGuard, OnceLock, atomic::AtomicUsize},
 };
@@ -43,12 +43,56 @@ mod tests {
         let mut parser = tree_sitter::Parser::new();
         parser.set_language(&language).unwrap();
         let native = parser.parse(b"[1]", None).unwrap();
-        let tree = tree_sitter_squatter::Tree::pack(&native)
-            .unwrap()
-            .repack()
-            .unwrap();
+        let tree = tree_sitter_squatter::Tree::pack_with_options(
+            &native,
+            tree_sitter_squatter::PackOptions {
+                initial_group_capacity: 128,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(tree.group_capacity() > tree.group_count());
+        let original = tree.as_bytes().to_vec();
         let request = Request::new(b"test.json".to_vec(), b"[1]", &grammar, true);
+        // Cancel after the reservation has been filled, immediately before
+        // commit: no source, tree, path, or current-generation record may escape.
+        let checks = std::cell::Cell::new(0);
+        assert!(matches!(
+            store.publish(&request, b"[1]", &tree, &grammar, || {
+                checks.set(checks.get() + 1);
+                checks.get() == 2
+            }),
+            Err(CacheError::Cancelled)
+        ));
         let before = store.env.read_txn().unwrap();
+        assert!(
+            store
+                .sources
+                .get(&before, &request.source_key)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            store
+                .trees
+                .get(&before, &request.tree_key)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            store
+                .paths
+                .get(&before, &request.source_key[..32])
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            store
+                .current
+                .get(&before, &request.source_key[..32])
+                .unwrap()
+                .is_none()
+        );
         assert_eq!(
             store
                 .publish(&request, b"[1]", &tree, &grammar, || false)
@@ -61,6 +105,12 @@ mod tests {
         );
         assert_eq!(store.trees.get(&before, &request.tree_key).unwrap(), None);
         let after = store.env.read_txn().unwrap();
+        let stored = request
+            .decode(store.trees.get(&after, &request.tree_key).unwrap().unwrap())
+            .unwrap();
+        assert_eq!(stored, tree.repack().unwrap().as_bytes());
+        assert!(stored.len() < original.len());
+        assert_eq!(tree.as_bytes(), original);
         assert_eq!(
             store.sources.get(&after, &request.source_key).unwrap(),
             Some(b"[1]".as_slice())
@@ -359,7 +409,11 @@ impl Store {
         grammar: &Grammar,
         cancelled: impl Fn() -> bool,
     ) -> Result<WriteOutcome, CacheError> {
-        let value = request.encode(tree.as_bytes());
+        let slab_size = tree.compact_size();
+        let prefix_size = request.header.len() + 8;
+        let value_size = prefix_size
+            .checked_add(slab_size)
+            .ok_or_else(|| io::Error::other("cache entry size overflow"))?;
         if cancelled() {
             return Err(CacheError::Cancelled);
         }
@@ -381,7 +435,19 @@ impl Store {
         if self.sources.get(&tx, &request.source_key)? != Some(source) {
             self.sources.put(&mut tx, &request.source_key, source)?;
         }
-        self.trees.put(&mut tx, &request.tree_key, &value)?;
+        self.trees
+            .put_reserved(&mut tx, &request.tree_key, value_size, |reserved| {
+                reserved.write_all(&request.header)?;
+                reserved.write_all(&(slab_size as u64).to_le_bytes())?;
+                tree.copy_compact_into(&mut reserved.as_uninit_mut()[prefix_size..])
+                    .map_err(io::Error::other)?;
+                // The envelope writes and successful compact copy initialized the
+                // entire reservation. No LMDB operation occurs while it is borrowed.
+                unsafe {
+                    reserved.assume_written(value_size);
+                }
+                Ok(())
+            })?;
         self.current
             .put(&mut tx, &request.source_key[..32], &request.source_key)?;
         if cancelled() {

@@ -480,7 +480,9 @@ impl PendingLoad {
         let packed = tree_sitter_squatter::Tree::pack_with_options(
             &tree,
             tree_sitter_squatter::PackOptions {
-                repack: true,
+                // Retain transient capacity for the caller. Publication compacts
+                // directly into reserved LMDB storage, off the parse path.
+                repack: false,
                 symbol_presence: self.symbol_presence,
                 initial_group_capacity: 0,
             },

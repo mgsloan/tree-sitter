@@ -402,19 +402,26 @@ The verified path:
 3. Return an owned or transaction-backed hit according to policy, or close the
    miss snapshot and enter cooperation. Never wait for another writer's result
    while retaining an old read snapshot.
-4. Reset/configure the parser, parse completely, and pack compactly. Return the
-   exact source and tree; disabled/deferred writes do no contents publication.
+4. Reset/configure the parser, parse completely, and pack without eager capacity
+   compaction. Return the exact source and tree; disabled/deferred writes do no
+   contents publication or publication-only compaction.
 5. Inline/deferred PendingWrite executes the transaction below. Failure is optional
    cache work failure; the returned pair remains usable.
 
 Publication:
 
-1. Finish hashing/packing/envelope preparation outside any write transaction.
+1. Finish hashing/packing and calculate the compact slab/envelope size outside
+   any write transaction. Do not materialize an intermediate compact slab or
+   combined envelope-plus-slab buffer.
    Pending work must not pin an unrelated read snapshot while queued.
 2. Obtain writer admission; begin a write transaction and recheck full identities.
    If a valid matching tree exists, discard the duplicate candidate.
-3. Insert/reuse source bytes, insert the complete
-   slab, and update generation/path records atomically. All these are LMDB values.
+3. Insert/reuse source bytes. Reserve the final tree value through heed's
+   `put_reserved` (`MDB_RESERVE`), write the envelope, and compact directly into
+   the reserved bytes: copy used columns to compact offsets, adjust the capacity
+   header, initialize alignment gaps, and copy the presence/dictionary tail.
+   The original tree and its nodes remain unchanged. Update generation/path
+   records atomically. All these are LMDB values.
    A source record removed by earlier cleanup is reinserted in this transaction.
 4. Check cancellation before commit; abort the whole transaction if requested or
    if any put fails. Limit each normal publication to one complete source/tree
@@ -423,7 +430,7 @@ Publication:
    Once commit begins it is a noninterruptible native operation; cancellation
    cannot undo a completed commit.
 
-MDB_RESERVE may reduce intermediate buffers, but reserved memory must be completely
+Reserved memory must be completely
 initialized before the next update/commit and cannot escape the write transaction.
 It is not a place to perform a long parse. Bound bytes written per task and measure
 the unavoidable single-record copy/commit latency honestly.

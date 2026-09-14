@@ -30,6 +30,10 @@ Implemented:
 - Exact owned disk-byte capture and source hashing; path validation.
 - LMDB metadata, source contents, and compact slabs published in one synchronous
   transaction. Source generations and packing/grammar variants coexist.
+- Publication compacts used columns directly into heed `put_reserved` storage,
+  including envelope and initialized padding, without an intermediate compact
+  tree or combined value buffer. Misses retain spare capacity until publication;
+  deferred/disabled writes avoid eager compaction. The caller's tree is unchanged.
 - Owned cache hits; shared `LoadedFile` values survive publication and cache drops.
 - Opt-in `Options::read = ReadPolicy::PreferTransactionBacked` retains an LMDB
   snapshot for aligned cache slabs. Misaligned hits and local reader pressure use

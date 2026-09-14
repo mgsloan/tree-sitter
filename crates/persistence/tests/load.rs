@@ -36,8 +36,14 @@ fn miss_hit_and_old_reader_survives_update() {
     let cache = Persistence::open(root.path(), Options::default()).unwrap();
     let first = load(&cache);
     assert!(!first.cache_hit());
+    assert!(first.tree().group_capacity() > first.tree().group_count());
     let reader = load(&cache);
     assert!(reader.cache_hit());
+    assert_eq!(reader.tree().group_capacity(), reader.tree().group_count());
+    assert_eq!(
+        reader.tree().as_bytes(),
+        first.tree().repack().unwrap().as_bytes()
+    );
     assert_eq!(reader.source(), b"{\"old\": [1, 2]}\r\n");
     fs::write(root.path().join("input.json"), b"[false, true]").unwrap();
     let new = load(&cache);

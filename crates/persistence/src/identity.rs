@@ -92,6 +92,7 @@ impl Request {
         }
     }
 
+    #[cfg(test)]
     pub fn encode(&self, slab: &[u8]) -> Vec<u8> {
         let mut value = self.header.clone();
         value.extend_from_slice(&(slab.len() as u64).to_le_bytes());
