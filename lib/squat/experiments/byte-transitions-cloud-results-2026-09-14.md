@@ -1,5 +1,7 @@
 # Individual byte-width transitions on GCP — 2026-09-14
 
+For real highlighting and tags query timings, see the [follow-up benchmark](highlight-tags-cloud-results-2026-09-14.md), which also reports each width transition separately.
+
 The 8-bit and 16-bit thresholds are independent decisions. Each row below describes exactly one required-width → stored-width transition. These are new paired analyses of the existing GCP query and full-tree-walk measurements, not additional benchmark runs.
 
 ## How to read the results

@@ -1,5 +1,7 @@
 # Byte rounding on GCP: queries and complete tree walks — 2026-09-14
 
+For real highlighting and tags query timings, see the [follow-up benchmark](highlight-tags-cloud-results-2026-09-14.md), which also reports each width transition separately.
+
 This follow-up makes query execution and complete tree walks the primary evidence. Isolated reads, unpacking, and scans from the [earlier local experiment](byte-rounding-results-2026-09-14.md) are supporting evidence only. The production layout remains unchanged.
 
 ## Individual transitions
