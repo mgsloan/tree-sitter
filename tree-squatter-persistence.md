@@ -1,924 +1,625 @@
 # tree-squatter-persistence MVP design
 
-Status: implementation design, 2026-09-11.
+Status: revised 2026-09-13. Storage decision: LMDB for all persistent metadata,
+source contents, and packed trees. SQLite, external slab files, per-source cache
+directories, generation marker files, and per-entry rename publication are removed.
+Fingerprint policy remains open as noted below. Source input is raw disk bytes;
+Zed participates only when loading does not change those bytes.
 
-## Scope
+## Scope and guarantees
 
-`tree-squatter-persistence` is a Rust library for loading a source file and its
-Squatter tree together. Given a project root, a relative source path, and the
-grammar to use, its simple API performs one operation:
+This synchronous Rust library captures a regular source file and returns its
+matching Squatter tree. The caller supplies project root, relative path, and
+grammar. Cache lookup and publication use one project-local LMDB environment.
+Concurrent callers cooperate to avoid duplicate parsing where practical.
 
-```text
-load source bytes
-  → derive VER from the grammar and Squatter configuration
-  → use .tree-squatter/PATH/VER.squat when it exactly matches
-  → otherwise parse, pack, publish it, and retire stale source generations
-  → return the captured source and matching tree
-```
+The current source mode is exact disk bytes: no decoding, BOM removal, newline
+normalization, editor edits, stdin, injected-language trees, query results, or
+incremental parse state. There is no normalized source mode in this crate.
 
-For a source at `./PATH`, the cache directory is:
+Persist source bytes inside LMDB alongside trees, sharing one captured generation
+among grammar variants for that path. The simple loader still reads/hashes disk:
+stored contents and mtime do not prove the file is unchanged. Returned immutable
+source is the exact input used to parse or confirm the tree. A concurrent rewrite
+can produce a mixed capture; the API promises correspondence to the captured
+bytes, not an atomic snapshot of concurrent source-file writes.
 
-```text
-./.tree-squatter/PATH/
-```
+Only complete parses may be packed/published. Cache loading checks full identity
+and memory safety, without an integrity checksum over source records, envelopes,
+or slabs. BLAKE3 remains for source/implementation identities. Safety-valid semantic
+corruption can go undetected; identity matching does not independently prove a
+stored tree was produced by parsing the named source. No universal corruption
+detection guarantee is implied.
 
-Examples:
+Cache reads, cooperation, publication, and cleanup are optional. Writes and cleanup
+can be deferred, cancelled, or omitted. A cache failure never invalidates an already
+obtained pair. There is no async runtime, background thread, daemon, global object
+store, external source snapshot file, or external slab file.
 
-```text
-./src/main.rs       → ./.tree-squatter/src/main.rs/v1_<token>.squat
-./templates/a.html  → ./.tree-squatter/templates/a.html/v1_<token>.squat
-./Makefile          → ./.tree-squatter/Makefile/v1_<token>.squat
-```
+Use LMDB's normal durable transactions for process-crash and power-loss resilience.
+Recovery must expose a complete old or new transaction, never half-published
+source/tree records, assuming supported storage honors synchronization guarantees.
 
-The MVP is project-local and Rust-only. It caches regular files already present
-on disk. It does not cache stdin, editor buffers, injected-language subtrees,
-query results, or incremental parse state. It has no database, content-addressed
-object store, source-reference table, global cache, daemon, reader lease, or
-background garbage collector. Cache updates perform bounded-scope cleanup in the
-one source directory they update.
+## Environment and filesystem boundary
 
-The source bytes returned by `load` are the exact bytes used to validate or build
-the returned tree. Cache availability never affects matching correctness: any
-cache error falls back to parsing the captured source.
-
-An advanced split-phase API may expose a cache tree tentatively when source length
-and mtime match, then validate it against a concurrently loaded and hashed source.
-The tentative result is explicitly fallible and never weakens the guarantees of
-the simple `load` operation.
-
-## Decisions on language selection and grammar identity
-
-### Language selection stays with the caller
-
-The persistence library should not contain an extension-to-language registry.
-The caller resolves a path to a grammar and passes that grammar to `load`.
-
-Language selection is application policy rather than persistence policy:
-
-- Extensions can be ambiguous or overridden by configuration.
-- Some tools use filenames, compound extensions, shebangs, or file contents.
-- ast-grep supports built-in and dynamically loaded grammars.
-- Two tools can intentionally parse the same path differently.
-
-The normal call site is therefore:
-
-```rust
-let grammar = language_registry.resolve(&relative_path, &configuration)?;
-let loaded = persistence.load(&relative_path, &grammar, &mut parser)?;
-```
-
-This remains one persistence operation. The registry lookup is a small tool-layer
-decision made before it. A higher-level application wrapper may combine resolution
-and loading for convenience without moving the registry into this crate.
-
-Grammar choice contributes to the variant filename. A tool can therefore look up
-its exact expected variant without opening a file produced by another grammar.
-Variants made from the same source bytes coexist: a cache built with grammar A is
-still useful to a later invocation using grammar A even though grammar B cannot
-consume it. A source-content change makes every existing variant stale, at which
-point the next writer removes them without interpreting their grammar identities.
-
-### Compare generated grammar fingerprints
-
-Pointer equality, language name, Tree-sitter ABI version, node-kind lists, crate
-version, and `TSLanguageMetadata` semantic version are insufficient proofs that
-two grammars parse identically. Metadata is useful for diagnostics and quick
-rejection, but two parser tables or external scanners can differ while those
-values remain the same.
-
-Use a 32-byte `GrammarFingerprint` derived from the actual grammar implementation:
+Use one environment at:
 
 ```text
-BLAKE3(
-  "tree-squatter grammar fingerprint v1" ||
-  length(parser.c) || parser.c ||
-  each external scanner source in canonical name order ||
-  generation/build inputs that can alter parser behavior
-)
+PROJECT/.tree-squatter/
+  data.mdb          # all source, tree, and metadata records
+  lock.mdb          # LMDB-managed coordination
+  cooperation.lock  # application work/writer-admission locks; no cached contents
 ```
 
-The exact canonical encoding must be length-delimited and covered by fixtures.
-For a generated Rust grammar crate, compute the digest at build or release time
-and expose it as a constant beside the language constructor. Comparing grammars
-during `load` then costs one 32-byte comparison; grammar source or machine code is
-not hashed per source file.
+The application sidecar is only for OS-released coordination; LMDB owns all stored
+content and metadata. Never manipulate LMDB's lock table/file directly. Do not
+truncate, unlink, replace, compact in place, or reopen an environment behind active
+handles. Ordinary maintenance changes records through transactions.
 
-For bundled grammars that do not yet export fingerprints, the consuming build can
-generate a manifest from their packaged `parser.c`, scanner sources, and relevant
-compile definitions. A crate name/version is acceptable as an additional namespace
-but not as the fingerprint itself. A grammar upgrade changes the fingerprint even
-when its language name and ABI version do not.
+Share one environment handle per underlying environment per process through a
+process-wide registry, including aliases and independently opened Persistence
+instances. Select/audit a Rust binding that supports this ownership model; do not
+open independent LMDB environments for the same files. Retain the environment as
+long as any read owner exists. Configure named databases and reader-slot capacity
+before opening, and coordinate first-time creation/schema initialization.
 
-For a dynamically loaded grammar, prefer a signed or packaged manifest containing
-the same artifact digest. Otherwise hash the actual dynamic-library file once when
-loading it and memoize the result for that loaded-library handle. Do not hash the
-library for every source file.
+Require supported local filesystems. Do not use network filesystems or MDB_NOLOCK.
+A cache open/permission/schema failure disables caching for the request; do not
+automatically delete or overwrite an unknown/corrupt environment.
 
-The persistence library cannot derive this exact digest from an opaque
-`tree_sitter::Language`; the caller supplies a language and its matching digest as
-one `Grammar` value:
+Accept nonempty project-relative source paths and reject parent traversal,
+absolute/platform-prefixed paths, and the cache namespace itself. Normalize dot
+components consistently; preserve non-UTF-8 Unix names and lossless Windows path
+units. Record the platform path encoding. Case aliases may have separate entries
+in the MVP; they must not cause identity confusion. Require regular source handles.
+Permitted source symlinks can be read, but only cache targets within the root.
 
-```rust
-#[derive(Clone)]
-pub struct Grammar {
-    language: tree_sitter::Language,
-    fingerprint: GrammarFingerprint,
-}
-```
+There is no longer a filesystem namespace collision between source names such as
+.source and metadata: source paths are database values. Cache-root substitution
+still matters. Retain/validate directory handles and use handle-relative no-follow
+operations for application files. Audit the binding's pathname-based LMDB open:
+checking a path and then passing it to LMDB does not itself provide race-free
+resolution of data.mdb/lock.mdb. Use a proven platform opening strategy or disable
+caching where its assumptions cannot be met. The supported environment assumes
+cooperating processes, not an adversary able to rewrite mapped database files or
+move open directories arbitrarily. Never claim directory checks create a sandbox.
 
-Supplying a truthful pairing is part of the grammar-provider contract. Squatter's
-checked loader can reject many incompatible grammars, but it cannot prove that a
-caller associated a `Language` with the right artifact digest.
+## Language selection and identity
 
-In addition to the grammar fingerprint, store a `RepresentationFingerprint`
-provided by `tree-sitter-squatter`. It changes when the slab format or required
-interpretation changes, including native byte order, point-column mode, alignment,
-Tree-sitter runtime compatibility, or other layout-affecting features. Grammar and
-representation identity are separate so persistence-only changes do not invalidate
-trees.
+Language selection remains caller policy. A `Grammar` couples
+`tree_sitter::Language` with a 32-byte `GrammarFingerprint`; truthful pairing is
+a provider contract. An opaque language cannot supply an exact fingerprint.
 
-Per-tree Squatter packing flags are a separate canonical fixed-width value. A flag
-change must produce a different variant even when the representation format can
-decode both forms. Parse options that affect the tree, such as included ranges,
-must likewise enter the identity before they are supported. All parse-option bits
-are zero for the whole-file MVP.
+Pointer equality, name, ABI, node-kind lists, crate version, and semantic version
+are insufficient. The proposed grammar fingerprint is BLAKE3 over a domain-
+separated, length-delimited canonical manifest of generated parser.c, scanner
+sources and included dependencies, and behavior-affecting build/generation inputs.
+Freeze canonical names/order and encoding with fixtures. Generate a constant at
+build/release time; never hash grammar artifacts per source file.
 
-### Variant token
+Bundled grammars may use consumer-generated manifests. A dynamic grammar may use a
+packaged manifest or a digest of the loaded artifact, computed once and bound to
+its handle. Account for behavior supplied by dynamically linked dependencies; a
+library-file digest alone need not cover those. Scanner behavior is assumed
+deterministic for the declared inputs.
 
-`VER` is an opaque, filename-safe lookup token rather than a semantic version:
+### Runtime and representation fingerprints: options
+
+Runtime changes can affect parsing without changing grammar tables or slab ABI.
+Identity must cover parsing behavior as well as representation compatibility.
+
+1. Conservative artifact/build fingerprints for grammar, runtime, and Squatter:
+   straightforward invalidation, but unrelated changes can destroy reuse.
+2. Separate grammar fingerprint, parse-runtime compatibility epoch, and
+   representation epoch/configuration: better reuse, but maintainers must bump
+   epochs correctly for relevant fixes.
+3. Hybrid: explicit compatibility epochs for releases, conservative source/build
+   fingerprints for development builds without a declared epoch.
+
+Recommendation for discussion: the hybrid, keeping grammar, parse-runtime, and
+representation identities separate. Runtime ABI compatibility alone does not
+establish identical parsing.
+
+Squatter must export identity from its actual compiled C layout: slab version,
+endianness, group size, alignment, points mode, and other interpretation switches.
+Cargo feature names alone are insufficient. Output-preserving optimization kernels
+need not change a compatibility epoch.
+
+Persisted packing differences enter variant identity. Allocation hints such as
+initial_group_capacity need not do so if mandatory compaction erases their effect.
+Symbol-presence data and other persisted differences do. Specify this split
+against the existing PackOptions before freezing the encoding.
+
+Whole-file raw-byte parsing is the only mode. Canonical parse-option bits are zero;
+included ranges and source transformations require a later design.
+
+### Variant database key
+
+Proposed canonical derivation, pending the identity choices above:
 
 ```text
 variant_digest = BLAKE3(
   "tree-squatter cache variant v1" ||
-  GrammarFingerprint ||
-  RepresentationFingerprint ||
-  canonical Squatter packing flags ||
+  GrammarFingerprint || ParseRuntimeFingerprint ||
+  RepresentationFingerprint || canonical persisted packing options ||
   canonical parse options
 )
-
-VER = "v1_" || base32_lower_no_padding(first_128_bits(variant_digest))
+VariantId = full_256_bits(variant_digest)
 ```
 
-The result has a three-character algorithm prefix and 26 Base32 characters, for
-example `v1_k3j5...7m.squat`. The prefix versions token derivation; it is not the
-grammar's human-readable version. Source contents are deliberately absent, so an
-edit atomically replaces the same variant pathname.
+Widths, byte order, and length delimiters are explicit. Store full identities and
+variant digest in the envelope. Use the full digest in database keys; no filename token or Base32 encoding is
+needed. Source identity is separate and participates in entry keys below.
 
-The envelope stores the full grammar and representation fingerprints, all flags,
-and parse options. The 128-bit pathname token is only a lookup hint. A truncated
-hash collision therefore produces an envelope mismatch and rebuild, never an
-incorrect hit. Neither lookup nor cleanup parses tokens belonging to other
-versions of this library.
+## Named databases and record schema
 
-## Public API
+Use a small fixed set of named databases, opened once. Encode keys and records
+explicitly with versions, fixed-width integers, lengths, and canonical byte order.
+Do not serialize Rust struct memory or depend on LMDB integer comparators'
+native-endian layout. Query the actual LMDB maximum key size during initialization.
 
-The primary API is deliberately small and synchronous:
+Proposed logical schema, to freeze with fixtures:
+
+| Database | Key | Value |
+| --- | --- | --- |
+| meta | fixed schema/configuration keys | schema version and maintenance progress |
+| paths | PathId | lossless canonical relative path and advisory current disk generation/stamp |
+| sources | PathId + DiskGeneration | captured raw bytes and their length/digest |
+| trees | PathId + DiskGeneration + VariantId | envelope plus complete compact Squatter slab |
+| generations | PathId + DiskGeneration | advisory creation/use metadata and resumable retirement state |
+
+PathId is a domain-separated 256-bit hash of platform tag plus canonical relative
+path encoding. Long paths belong in values, not LMDB's size-limited keys. Compare
+the stored full path before reuse or mutation. If a hash resolves to a different
+path, bypass persistence for that request; never overwrite the other path record.
+DiskGeneration contains full captured length and BLAKE3-256 digest. All tree
+envelopes repeat the full requested identities for validation.
+
+Trees reference the exact captured bytes in sources. Source records are scoped
+to a path/generation, not globally deduplicated; this avoids reference counting
+across unrelated paths. No second normalized source representation is stored.
+
+Creating the source records, tree, generation metadata, and updating the
+advisory current pointer is one write transaction. A generation can contain many
+grammar/representation variants. No stale deletion is necessary to add one.
+Keep all authoritative references self-consistent within each committed snapshot.
+A late writer may update the advisory pointer to an older captured generation;
+verified lookup uses the actual captured digest, so this affects usefulness only.
+
+## Public API and ownership choices
+
+Names and exact signatures remain provisional:
 
 ```rust
-pub struct Persistence {
-    root: PathBuf,
-    cache_root: PathBuf,
-    squatter_options: SquatterOptions,
-}
-
-pub struct Grammar {
-    language: tree_sitter::Language,
-    fingerprint: GrammarFingerprint,
-}
-
-pub struct LoadedFile {
-    source: Arc<[u8]>,
-    tree: LoadedTree,
-    cache_outcome: CacheOutcome,
-}
-
+pub struct Persistence { /* shared environment + options */ }
+pub struct LoadedFile { /* exact immutable source + tree owner */ }
 pub enum LoadedTree {
-    Mapped(MappedTree),
+    Database(DatabaseTree),
     Owned(tree_sitter_squatter::Tree),
 }
-
-pub enum CacheOutcome {
-    Hit,
-    Miss(MissReason),
+pub struct PendingWrite { /* owned/shared source, complete slab, identities */ }
+pub struct PendingLoad { /* opaque request and retry state */ }
+pub struct Maintenance { /* logical continuation key; no parked transaction */ }
+pub enum LoadStep {
+    Ready { file: LoadedFile, write: Option<PendingWrite> },
+    Deferred(PendingLoad),
 }
-
-impl Persistence {
-    pub fn open(
-        root: impl Into<PathBuf>,
-        squatter_options: SquatterOptions,
-    ) -> Result<Self, Error>;
-
-    pub fn load(
-        &self,
-        relative_path: &Path,
-        grammar: &Grammar,
-        parser: &mut tree_sitter::Parser,
-    ) -> Result<LoadedFile, LoadError>;
-}
-
-impl LoadedFile {
-    pub fn source(&self) -> &[u8];
-    pub fn tree(&self) -> &tree_sitter_squatter::Tree;
-    pub fn cache_outcome(&self) -> &CacheOutcome;
-}
+pub enum ReadStorage { Owned, TransactionBacked }
 ```
 
-The caller supplies a parser so existing tools can retain their parser pools,
-timeouts, cancellation setup, and thread-local reuse. `load` sets or verifies the
-requested language before parsing. The initial cache contract supports a normal
-whole-file parse with no included ranges. Add parse options to the cache identity
-before supporting other parser configurations.
-
-`SquatterOptions` is owned configuration with a canonical encoding supplied by
-Squatter. `Persistence::open` derives its representation and flag identity once;
-every `load` combines those values with the requested grammar to derive `VER`.
-
-`LoadedTree::Mapped` owns an mmap-backed descriptor. `LoadedTree::Owned` is the
-freshly packed result from a miss or from a cache-publication failure. Returning
-the owned result on a miss avoids dropping it merely to reopen and revalidate the
-file just written. Subsequent processes can map the published entry.
-
-`LoadError` represents failure to obtain a source/tree pair: invalid path, source
-open/read failure, parser cancellation, or packing failure. Cache open, decode,
-write, rename, and cleanup failures are recorded in `CacheOutcome` or optional
-diagnostics and do not make `load` fail after parsing succeeds.
-
-Do not expose untyped lookup, publish, retire, maintain, or clear methods in the
-MVP. The advanced API uses opaque tickets so only the library can validate or
-publish a tentative load. This prevents callers from accidentally converting a
-tentative tree into a verified source/tree pair.
-
-## Tentative, executor-neutral API
-
-The persistence crate should not depend on Tokio, GPUI, or another executor, and
-it should not spawn threads. Use a split-phase synchronous API that a caller can
-place on its own executor:
-
-```rust
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct FileStamp {
-    pub len: u64,
-    pub mtime: PortableMtime,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct PortableMtime {
-    pub seconds: i64,
-    pub nanoseconds: u32,
-}
-
-pub trait SourceChunks: Send + Sync + 'static {
-    fn len(&self) -> usize;
-
-    /// Returns a nonempty slice beginning at `byte_offset`, or an empty slice at
-    /// end of input. The returned bytes remain immutable for `self`'s lifetime.
-    fn chunk_at(&self, byte_offset: usize) -> &[u8];
-}
-
-pub struct SourceIdentity {
-    pub len: u64,
-    pub digest: [u8; 32],
-}
-
-pub struct TentativeFile {
-    tree: Arc<MappedTree>,
-    ticket: ValidationTicket,
-}
-
-pub struct SourceSnapshot<S> {
-    storage: S,
-    identity: SourceIdentity,
-    observed_file: Option<FileStamp>,
-}
-
-pub struct VerifiedFile<S> {
-    source: SourceSnapshot<S>,
-    tree: LoadedTree,
-    cache_outcome: CacheOutcome,
-}
-
-pub struct Rebuild<S> {
-    // Opaque rejected-load state, including SourceSnapshot<S>.
-}
-
-pub enum TentativeProbe {
-    Hit(TentativeFile),
-    Miss(TentativeMissReason),
-}
-
-pub enum Verification<S> {
-    Confirmed(VerifiedFile<S>),
-    Rejected(Rebuild<S>),
-}
-
-pub enum Validation<S> {
-    Confirmed(VerifiedFile<S>),
-    Corrected {
-        file: VerifiedFile<S>,
-        reason: TentativeMismatch,
-    },
-}
-
-impl Persistence {
-    pub fn load_tentative(
-        &self,
-        relative_path: &Path,
-        observed: FileStamp,
-        grammar: &Grammar,
-    ) -> Result<TentativeProbe, PathError>;
-
-    pub fn verify<S: SourceChunks>(
-        &self,
-        ticket: ValidationTicket,
-        source: SourceSnapshot<S>,
-    ) -> Result<Verification<S>, VerificationError>;
-
-    pub fn rebuild<S: SourceChunks>(
-        &self,
-        rejected: Rebuild<S>,
-        parser: &mut tree_sitter::Parser,
-    ) -> Result<VerifiedFile<S>, LoadError>;
-
-    pub fn validate<S: SourceChunks>(
-        &self,
-        ticket: ValidationTicket,
-        source: SourceSnapshot<S>,
-        parser: &mut tree_sitter::Parser,
-    ) -> Result<Validation<S>, LoadError>;
-
-    pub fn load_from_source<S: SourceChunks>(
-        &self,
-        relative_path: &Path,
-        grammar: &Grammar,
-        source: SourceSnapshot<S>,
-        parser: &mut tree_sitter::Parser,
-    ) -> Result<VerifiedFile<S>, LoadError>;
-}
-```
-
-Names are provisional, but the separation is intentional:
-
-- `load` remains the safe, simple operation that owns file I/O and returns only a
-  verified source/tree pair.
-- `load_tentative` performs no source read. It compares the supplied length and
-  mtime with advisory metadata in the exact `VER.squat`, maps the tree, and returns
-  an opaque validation ticket. `TentativeFile::tree()` is visibly tentative in the
-  type system. Missing, incompatible, or malformed cache data produces
-  `TentativeProbe::Miss`; only an invalid path/request is an error.
-- The caller can split `TentativeFile` into an `Arc<MappedTree>` for immediate use
-  and its `ValidationTicket` for a background task. The tree remains alive while
-  either side owns it.
-- `verify` compares the tentative entry with the exact source identity. A matching
-  full digest returns `Confirmed`. A mismatch immediately returns `Rejected`, which
-  both tells the caller to stop using the tentative tree and carries everything
-  `rebuild` needs to parse and publish the same immutable chunks.
-- `validate` is a convenience that performs `verify` followed by `rebuild` and
-  reports `Confirmed` or `Corrected`. Interactive callers may prefer the two-step
-  form so rejection can reach the UI before a potentially long parse finishes.
-- `load_from_source` is the non-speculative chunked equivalent used when
-  `load_tentative` misses. It hashes, validates or parses, and publishes while
-  preserving the caller's source storage.
-
-`PortableMtime` has checked conversions to and from `SystemTime` and lets adapters
-such as Zed's `MTime` avoid exposing platform structs in the cache format. The
-existing concrete `LoadedFile` remains the return type of `load`; it has the same
-verified semantics as `VerifiedFile<Arc<[u8]>>` without forcing current callers to
-adopt generics.
-
-Failure to load or hash the source leaves the tree *unverified*, not *incorrect*.
-`Rejected` and `TentativeMismatch` are reported only after a successful full hash
-comparison. Once `verify` returns `Rejected`, a later rebuild failure cannot blur
-that verdict: callers must stop using the tentative tree even when no replacement
-is available.
-
-`SourceSnapshot<S>` couples immutable chunk storage, its exact byte length and
-digest, and an optional `FileStamp`. Its normal constructor computes the digest by
-walking `chunk_at` from zero. A `SourceHashBuilder` also supports callers that build
-a rope or other storage incrementally: feed it the exact parser-visible bytes as
-they are produced, then use its result to construct the snapshot without a second
-hash pass. A precomputed digest constructor is a caller correctness contract, but
-not `unsafe`, because violating it cannot break Rust memory safety.
-
-`SourceChunks::chunk_at` deliberately matches Tree-sitter's chunk callback. Add
-implementations or small adapters for `Arc<[u8]>`, a memory map, and rope snapshots.
-The parser can consume those chunks directly on a correction instead of flattening
-a rope into a contiguous allocation. Hash and parse must observe the same immutable
-logical byte stream; for an editor this is the decoded, normalized buffer text,
-while `FileStamp::len` still describes the on-disk file.
-
-This shape fits custom executors without embedding executor policy:
-
-```rust
-let TentativeProbe::Hit(tentative) =
-    cache.load_tentative(path, file_stamp, &grammar)?
-else {
-    return schedule_normal_chunked_load();
-};
-let (tree_for_ui, ticket) = tentative.split();
-
-let verification = cx.background_spawn(async move {
-    let source = load_rope_and_stream_hash(file).await?;
-    cache.verify(ticket, source)
-});
-```
-
-The application owns cancellation and decides whether a rejection or completed
-correction is still relevant. Zed, for example, should associate the verification
-and rebuild tasks with its buffer version, stop publishing results from a rejected
-tree, and install a corrected tree only if the path, language, and buffer version
-still match. The persistence crate should not know about GPUI entities, tasks,
-ropes, or version vectors.
-
-Work derived from a tentative tree should carry the same application-level token.
-It is suitable for provisional highlighting or navigation that can be replaced;
-persisted diagnostics, edits, or refactors should wait for `Confirmed` or use the
-corrected tree.
-
-Returning `(TentativeFile, impl Future<...>)` from the library would look compact,
-but the future cannot begin concurrently until something spawns or polls it and it
-couples the library to the caller's source-loading future. A callback or event
-stream has the same executor and cancellation problem. The split-phase ticket is
-the recommended API.
-
-## Path mapping
-
-`Persistence::open(root, squatter_options)` captures an absolute project root and
-defines `root/.tree-squatter` as the cache root. `load` accepts a relative path
-with at least one normal component. Reject absolute paths, `..`, platform prefixes,
-an empty path, and paths whose first component is `.tree-squatter`.
-
-Preserve every source-path component, including the final filename, and treat the
-result as a per-source cache directory. Place the expected variant directly inside
-it as `VER.squat`: `a.rs` becomes `a.rs/v1_<token>.squat`. Thus `a`, `a.rs`, and
-`a.squat` remain distinct, and finding the expected variant requires no directory
-scan.
-
-Prefer this layout to `PATH.VER_squat`. The suffix layout mixes variants for every
-source in the same parent directory and makes cleanup identify which arbitrary
-names belong to one source. The per-source directory gives direct O(1) lookup of
-the expected pathname and an O(k) scan only on a source-generation change, where
-`k` is the number of variants and temporary files for that source.
-
-The source-directory namespace has this permanent compatibility contract:
-
-- Every direct regular file whose name ends in `.squat` is a disposable cache
-  variant, regardless of the preceding filename syntax.
-- `.source` defines the source generation shared by every named variant.
-- A variant whose envelope names that same source generation may coexist with any
-  other grammar or Squatter configuration for that generation.
-- When `.source` differs from the captured source, every `*.squat` is stale and
-  cleanup need not parse its `VER`, envelope, flags, or format.
-- Cleanup does not recurse, follow links, or delete unknown non-`.squat` entries.
-
-Different grammar and Squatter identities are incompatible variants, not stale
-ones. They remain useful to the tools that created them. Only a source-generation
-change retires the complete set. The envelope's own source digest remains the
-final correctness check even though `.source` maintains the directory-level
-cleanup invariant.
-
-The MVP does not guess that a same-source variant is abandoned merely because a
-different one exists. That would require an age, size-budget, or explicit usage
-policy and belongs in a later optional cleanup mechanism.
-
-Future library versions must preserve the `.source` format and this contract. They
-may use arbitrary new `VER` syntax; an older library can still determine from
-`.source` that all variants are stale and collect them by suffix. Any future
-non-disposable metadata must use a name without the `.squat` suffix.
-
-A typical directory during a version transition is:
-
-```text
-.tree-squatter/src/main.rs/
-  .update.lock
-  .source
-  v1_k3j5...7m.squat
-  future-format-that-v1-does-not-understand.squat
-  .tmp.<128-bit-random>
-```
-
-`.update.lock` is the permanent advisory-lock pathname for this protocol and is
-never treated as a variant. `.source` is a small, stable generation marker
-containing a magic value, source byte length, and full BLAKE3-256 source digest.
-It is independent of `VER` and the Squatter envelope format. If a cache path cannot
-be represented safely because an unexpected file, directory, symlink, or reparse
-point occupies an internal pathname, parse without persistence rather than
-modifying an ambiguous entry.
-
-Require the source handle to refer to a regular file. A symlinked source may be
-read if the application permits it, but only cache it when the resolved target is
-inside the project root; otherwise parse without persistence. Never follow a
-symlink or reparse point for a cache entry or temporary file. If the cache root or
-one of its parent components is unexpectedly redirected, disable caching for that
-load rather than risk writing outside the project.
-
-Tools that walk the project must exclude `.tree-squatter` explicitly. Repositories
-using the cache should add `/.tree-squatter/` to their ignore rules, but the library
-does not edit `.gitignore`.
-
-If `load` is called for a path whose source no longer exists, it may best-effort
-remove direct variant files in the corresponding source cache directory before
-returning the source error. Cache directories for deleted or renamed paths that
-are never loaded again can remain; deleting the entire `.tree-squatter` directory
-while no participating tools are using it is the simple project-level cleanup
-mechanism outside the library API.
-
-## Source generation marker
-
-`.source` has a deliberately permanent, minimal format so libraries that disagree
-about every `VER` can still agree on whether the directory is stale. Version 1 is
-a fixed 56-byte little-endian record:
-
-```text
-8 bytes   magic "TSQSRC01"
-2 bytes   marker format version = 1
-2 bytes   record length = 56
-4 bytes   reserved zero
-8 bytes   source byte length
-32 bytes  BLAKE3-256 source digest
-```
-
-Unknown version, length, or nonzero required fields make the marker mismatched;
-they never make a cache hit. Write a new marker completely under a random temp
-name and atomically replace `.source`. `VER` formats may evolve independently, but
-a future library must continue writing this marker format if it wants old versions
-to preserve same-source variants. Changing the source-generation protocol requires
-a separately designed migration.
-
-## Cache file format
-
-Each `.squat` file contains a small persistence envelope followed by one compact
-Squatter slab. The fixed envelope contains:
-
-- Magic and persistence format version.
-- Fixed-header length and total envelope length.
-- Source byte length and BLAKE3-256 digest of the captured source.
-- Optional advisory on-disk `FileStamp` containing byte length and mtime.
-- `GrammarFingerprint`.
-- `RepresentationFingerprint`.
-- Canonical Squatter packing flags and parse options.
-- The full 256-bit variant digest used to derive the abbreviated pathname token.
-- Optional language name, ABI version, and semantic version for diagnostics.
-- Slab offset, slab length, required alignment, and payload checksum.
-
-`FileStamp` is only permission to return a tentative tree. It is never proof of a
-verified hit. The simple loader records a stamp only when metadata sampled before
-and after its source read has identical length and mtime. The chunked API accepts a
-stamp when the caller asserts that it describes the supplied logical source
-snapshot. Cache publication still stores and later checks the full source digest.
-
-Define integer byte order and exact offsets explicitly. Do not serialize Rust
-struct memory or use a general serialization format. Check every conversion,
-addition, alignment, and range before constructing a slice. Unknown versions,
-unknown required flags, duplicate fields, a length mismatch, or trailing ambiguous
-data are cache misses.
-
-Align the slab to 64 bytes within the file and map the file from offset zero. This
-satisfies ordinary mmap offset constraints while preserving Squatter's internal
-alignment. Write the compact representation with unused growth capacity removed.
-
-The checksum catches corruption that still happens to form a structurally valid
-slab. On an MVP hit, verify it and then call Squatter's checked borrowed loader.
-Both operations touch most or all slab pages, so the MVP must not claim demand-
-paged selective I/O during opening. A future lazy-safe loader can change this
-without changing the path-based cache model.
-
-## Tentative fast path
-
-`load_tentative` follows this path:
-
-1. Accept a caller-supplied `FileStamp`, normally obtained from a `stat` already
-   performed by a worktree or file-watcher layer.
-2. Derive the exact `VER.squat`, open it, and map it once.
-3. Read the envelope from that mapping and reject unless grammar, representation,
-   flags, parse options, on-disk length, and mtime all match.
-4. Return the mapped tree and `ValidationTicket` without reading or hashing source
-   contents.
-
-Do not create a metadata sidecar for each `VER` and do not make a separate mapping
-just for the envelope. On the expected-hit path the tree mapping is needed anyway;
-reading its first page supplies the metadata. A small `pread` before mapping saves
-a mapping on tentative misses but adds another operation to expected hits. Measure
-both approaches, with map-once as the initial implementation.
-
-The hoped-for application-visible latency is therefore an existing or fresh source
-`stat`, opening the exact cache path, one `mmap`, and faults for the envelope and
-actually accessed tree pages. `mmap` itself does not read the entire file. Path
-lookup, opening the cache file, and minimal envelope checks still exist, so describe
-benchmarks as “no source read or hash before tentative access” rather than literally
-only two system calls.
-
-This latency target conflicts with the current checked Squatter loader and whole-
-payload checksum, both of which scan the slab before returning. A tentative API may
-return early only after Squatter has a memory-safe constant-time open followed by
-checked-on-access or lazily validated columns. Skipping structural checks around
-unsafe native access merely because `.tree-squatter` is local is not acceptable.
-Until that prerequisite exists, the API shape can be implemented and measured,
-but tentative opening will still touch most slab pages.
-
-### Source mmap experiment
-
-An mmap-backed source can implement `SourceChunks` by returning a suffix beginning
-at Tree-sitter's requested byte offset. This is worth benchmarking for command-line
-tools: hashing walks the mapping sequentially, and a correction parse can use the
-same bytes through `Parser::parse_with` without another contiguous copy. Because a
-full hash touches every source page and Tree-sitter normally lexes the entire file,
-this primarily tests copy, allocation, and syscall reductions rather than less
-physical I/O.
-
-It is a weaker fit for Zed. Zed must still decode the file, normalize it into its
-rope representation, and display all text. More seriously, a private file mapping
-is not an immutable snapshot of a file another process may rewrite or truncate;
-on Unix, accessing pages beyond a new end of file can raise `SIGBUS`. A before/after
-metadata check detects some races but does not make accesses safe or ensure that
-hashing and parsing observed identical bytes.
-
-Keep source mmap as an opt-in experiment for files assumed stable. The correctness
-path reads or decodes into owned immutable storage, then lets hashing and
-Tree-sitter consume that same `SourceChunks` value. For Zed, a rope adapter plus a
-streaming hash during rope construction is the preferred experiment.
-
-## Load algorithm
-
-`load` performs these steps:
-
-1. Validate the relative path; derive the source cache directory, complete variant
-   identity, and exact `VER.squat` path.
-2. Open the source as a regular file, sample handle metadata, and read it once into
-   the buffer that will be returned while computing BLAKE3. Sample the same handle
-   again; retain an advisory `FileStamp` only if length and mtime were stable.
-3. Try to open the exact variant read-only. Do not read `.source` or enumerate the
-   directory on the hit path. On Windows request sharing modes that permit
-   replacement/deletion while handles are live.
-4. Read and validate the variant envelope. Compare source length/digest, grammar
-   fingerprint, representation fingerprint, packing flags, and parse options with
-   the current request.
-5. If they match, mmap the cache file, verify the payload checksum, and construct
-   a checked owning Squatter tree with the supplied `Language`. Return the captured
-   source and mapped tree.
-6. On any cache miss, configure the supplied parser with the requested language,
-   parse the captured source, and pack a compact Squatter tree.
-7. Write an envelope and the packed bytes to a uniquely named temporary file in
-   the destination cache directory. Flush and close the writable handle.
-8. Acquire the source directory's cross-process update lock and re-read `.source`.
-   If it now matches, recheck the expected entry: another writer may have published
-   it while this process parsed. If that entry validates, discard the temp and use
-   it. Other valid variants for this same source remain untouched.
-9. If `.source` does not match, stream the directory entries once and delete every
-   direct regular `*.squat` file. Ignore the names and envelopes, do not sort or
-   accumulate the listing, and never recurse or follow links. If any variant cannot
-   be deleted, leave `.source` unchanged, skip publication, release the lock, and
-   return the owned tree. This preserves an unambiguous generation for retry.
-10. After successfully clearing an old generation, atomically replace `.source`
-    with a complete marker for the captured source. A crash before this point
-    leaves the old marker and causes cleanup to retry; a crash after it merely
-    leaves a current generation with no variant for this identity.
-11. Atomically replace the expected variant path with the completed temp. If this
-    fails, remove the temp best-effort, release the lock, and return the owned tree.
-    Do not delete other variants when `.source` already matched.
-12. Release the lock and return the same captured source and freshly owned tree.
-
-Never use size or mtime as proof that the source is unchanged. `load` must read the
-source to return it anyway, so hashing that same stream is both exact and cheap
-relative to a parse. If another process modifies the source during the read, the
-tree still corresponds to the exact buffer returned. A later load hashes its own
-captured bytes and will reject a cache entry for a different snapshot.
-
-Identity mismatch, malformed envelope, checksum failure, or Squatter validation
-failure all follow the same miss path. A successful replacement repairs the
-expected entry. A source-generation transition also cleans every prior variant.
-Preserve a detailed internal miss reason for benchmarks and debug logging, but
-callers should not need recovery logic.
-
-## Publication and concurrent readers
-
-Write every candidate completely under a random sibling name such as:
-
-```text
-.tree-squatter/src/main.rs/.tmp.<128-bit-random>
-```
-
-The temp and destination must be on the same filesystem. Close writable handles
-before publication. Use the platform's atomic replacement operation; never write,
-truncate, or punch holes in the discoverable `.squat` file.
-
-On Unix, replacing the pathname detaches the old inode while existing file handles
-and mappings continue to reference it. Readers can fault untouched old pages after
-replacement. The old storage becomes reclaimable after the final handle/mapping is
-released. This directly solves automatic deletion of the prior cached generation:
-replacement of the same `VER` removes its old name. Deleting an obsolete variant
-after a source change has the same lifetime behavior. Variants with another `VER`
-and the same source generation remain named.
-
-On Windows, open cache readers with read and delete sharing and attempt the native
-replacement operation. If an existing mapping, foreign handle, filesystem, or
-scanner prevents replacement, leave the old cache file intact, delete the temp if
-possible, and return the fresh owned tree. No reader is disrupted. A later load
-can retry after the blocking handle disappears. Old-generation deletion can also
-fail while a mapped Windows reader is active. Leave `.source` unchanged and skip
-publication of the new generation; a later load retries after the reader exits.
-
-Readers never take the update lock. Writers parse and create their temp files
-before acquiring it, so the serialized section contains only revalidation,
-publication, and one small directory scan. Use an advisory lock whose ownership
-the OS releases on process exit, stored as a fixed non-`.squat` entry in the source
-cache directory. If locking is unsupported or fails, skip publication and cleanup
-and return the valid owned result.
-
-The interoperable lock name and operation are part of the path protocol. On Unix,
-open `.update.lock` without following links and take an exclusive `flock`. On
-Windows, open the same file with cooperative sharing and take an exclusive
-`LockFileEx` lock over its first byte; initialize the file to at least one byte.
-Future implementations must use this same lock before publishing or deleting a
-variant, even when they use a different `VER` algorithm.
-
-The lock serializes `.source` transitions with variant publication. Writers that
-captured the same source generation add or replace their own variants without
-deleting one another. Writers that captured different generations cannot
-interleave deletion, marker replacement, and publication. The final writer can
-still have captured a source snapshot that is no longer on disk, but its envelope
-names those exact bytes and a later load detects and repairs that state.
-
-The hit path opens `VER.squat` directly and does not need `.source`. A new grammar
-or flag variant reads `.source` under the update lock but publishes without
-enumeration when the source generation is unchanged. Directory enumeration happens
-only when `.source` proves that every old variant is stale, and examines the one
-source directory. Its cost is small beside the parse, pack, and write already
-required by that source change. Streaming the listing makes memory use constant
-even if the directory is unexpectedly large.
-
-A crash before replacement leaves a temp file, and a crash after replacement
-leaves a complete cache entry. Source-generation cleanup may also remove sibling
-temps matching the library's exact naming pattern. Temp cleanup is best-effort and
-never follows links. The whole cache remains disposable.
-
-## Mmap and tree ownership
-
-The current `tree-sitter-squatter::BorrowedTree<'a>` safely borrows slab bytes but
-cannot be stored beside the mmap it borrows using ordinary safe Rust. Add an
-owning-byte abstraction to Squatter rather than fabricating a `'static` lifetime
-in persistence or ast-grep:
-
-```rust
-pub struct OwnedTree<B> {
-    tree: Tree,        // destroyed first
-    owner: Pin<Box<B>>,
-}
-
-impl<B: ImmutableBytes> OwnedTree<B> {
-    pub fn from_owner(language: &Language, owner: B) -> Result<Self, Error>;
-    pub fn tree(&self) -> &Tree;
-    pub fn owner(&self) -> &B;
-}
-```
-
-`ImmutableBytes` must be sealed or have an explicitly audited unsafe contract: the
-byte address and length remain stable and contents remain immutable for the tree's
-lifetime. Pin the mapping owner before calling `sq_tree_from_bytes_borrowed`.
-Declare fields or implement `Drop` so the runtime tree descriptor is destroyed
-before unmapping and closing its file.
-
-Persistence then defines `MappedTree` around `OwnedTree<MappedFile>`. Nodes and
-cursors borrow the tree normally, so they cannot outlive the mapping in safe Rust.
-Dropping `Persistence` does not affect already returned `LoadedFile` values.
-
-## Crate layout and dependencies
-
-Keep the implementation in one new workspace crate:
-
-```text
-crates/persistence/
-  Cargo.toml
-  src/
-    lib.rs          # public load API and result types
-    grammar.rs      # fingerprints and Grammar
-    variant.rs      # canonical identity and concise VER derivation
-    source.rs       # stable .source generation marker
-    format.rs       # canonical envelope codec
-    mapping.rs      # mmap owner and MappedTree construction
-    path.rs         # validated source/cache path mapping
-    load.rs         # single load state machine
-    publish.rs      # writer lock, generation changes, and publication
-    platform.rs     # small Unix/Windows differences
-  tests/
-    format.rs
-    load.rs
-    lifecycle.rs
-```
-
-Directly depend on the workspace's exact `tree-sitter` and
-`tree-sitter-squatter` crates. Cargo's `links = "tree-sitter"` constraint keeps one
-Tree-sitter native provider in the dependency graph. Likely supporting crates are
-`blake3`, an mmap crate, and small audited platform bindings for Windows sharing
-and replacement. Avoid pulling in a database, async runtime, generic serializer,
-file watcher, or global cache-directory abstraction.
-
-Before publishing independently, package Squatter's C sources and headers inside
-`tree-sitter-squatter`; its current build reaches outside its crate and the package
-is marked `publish = false`.
-
-## Tests
-
-Format tests use fixed binary fixtures for the `.source` marker, source digest,
-grammar fingerprint, representation fingerprint, packing flags, variant
-digest/token, envelope bytes, alignment padding, and malformed lengths. Fuzz
-envelope decoding and every checked arithmetic boundary.
-
-Path tests cover nested files, extensionless files, existing `.squat` suffixes,
-per-source directories, arbitrary unfamiliar variant names, non-UTF-8 Unix paths,
-Windows separators/prefixes, `.` and `..`, symlinks, cache-root redirection,
-case-sensitive/case-insensitive filesystems, and source paths inside
-`.tree-squatter`.
-
-Differential tests load the same corpus through native Tree-sitter, freshly packed
-Squatter, cache miss, and mmap hit. Compare node kinds, grammar symbols, fields,
-flags, byte/point ranges, traversal order, errors, and ast-grep match/output results.
-
-Use deterministic subprocess barriers for lifecycle tests:
-
-1. Reader A maps a cache entry and pauses before touching coordinate columns.
-   Writer B loads changed source and atomically replaces the entry. Reader A then
-   reads cold pages and completes with its original source/tree pair.
-2. A reader races replacement between open and mmap and obtains either a complete
-   old entry, a complete new entry, or a miss—never partial bytes.
-3. Two writers for the same variant publish different captured snapshots. The
-   final cache contains one complete snapshot; a subsequent load validates against
-   current source and repairs a stale winner.
-4. Two grammars with the same name/ABI/semantic version but different parser tables
-   have different fingerprints and variant paths and never reuse one another's
-   entry. Both variants remain reusable while the source digest is unchanged.
-5. Changing only external scanner code invalidates the entry. Reusing the same
-   grammar constant across many files performs no per-file grammar hashing.
-6. Crash during temp write leaves the discoverable entry unchanged. A crash after
-   old-generation deletion but before `.source` replacement retries cleanup. A
-   crash after marker replacement but before variant publication leaves a valid
-   empty generation. OS lock ownership is released in every case.
-7. Windows replacement succeeds with cooperative sharing where supported; when a
-   mapped or foreign handle blocks it, the writer returns a valid owned tree and a
-   later load retries without disrupting the reader.
-8. Source changes with unchanged size and restored mtime, corrupt checksum,
-   checksum-valid malformed slab, incompatible representation, full disk, and
-   unwritable cache all return the correct source/tree or a source-level error.
-9. Changing only Squatter packing flags changes `VER`. The new and old variants
-   both remain and each produces a hit for its own configuration while source bytes
-   remain unchanged.
-10. A source change makes `.source` mismatch. Under the writer lock, the update
-    streams the directory and deletes every direct regular `*.squat`, including an
-    arbitrary filename that the current version cannot parse. It ignores
-    subdirectories and non-`.squat` files.
-11. Concurrent same-generation writers retain both different variants. Writers
-    for different source generations cannot interleave cleanup and publication. A
-    Windows deletion blocked by an old mapping leaves `.source` unchanged, skips
-    publication, and is retried on a later update.
-12. A valid hit opens the exact `VER.squat` without reading `.source` or enumerating
-    its directory. Adding a variant for unchanged source reads the marker but still
-    avoids enumeration.
-13. A file rewritten with different bytes but identical length and restored mtime
-    produces a tentative hit followed by `Verification::Rejected`; rebuilding from
-    the supplied chunks returns the correct tree. A genuine match returns
-    `Confirmed` without parsing.
-14. Source-load failure leaves the tentative state unverified. A rebuild failure
-    after rejection never reports the tentative tree as confirmed.
-15. `Arc<[u8]>` and rope adapters produce identical hashes and trees across empty,
-    one-byte, Unicode, CRLF-normalized, and adversarial chunk boundaries. A digest
-    accumulated during source construction matches a later chunk walk.
-16. Tentative loading uses the caller's supplied `FileStamp`, performs no source
-    read, and issues no directory enumeration. Executor integration tests run the
-    same ticket on GPUI or a minimal test executor without a persistence dependency
-    on either runtime.
-
-Measure source read/hash, `.source` check, envelope check, mmap, checksum, Squatter
-validation, parse, pack, temp write, generation cleanup, and replacement separately.
-Compare hits and misses to ast-grep's current parser reuse. Because checked opening
-scans the slab, report it honestly; selective page-in is a later milestone.
-
-## Implementation sequence
-
-1. Add `GrammarFingerprint` and a generated fixture for one grammar. Add a stable
-   `RepresentationFingerprint` and owning-byte tree API to Squatter.
-2. Freeze the `.source` marker, envelope, variant-token algorithm, per-source
-   directory contract, and path mapping with fixtures and fuzzed decoding.
-3. Implement `Persistence::load` using ordinary owned reads/trees, then add mmap
-   hits without changing the public operation.
-4. Add `SourceChunks`, `SourceSnapshot`, streaming hashing, and the split-phase
-   tentative/verify/rebuild API without taking a dependency on an async executor.
-5. Implement the per-source update lock, source-generation transition, atomic
-   replacement, opaque stale-variant cleanup, and old-reader lifecycle tests on
-   Linux and macOS.
-6. Implement Windows locking, sharing, replacement/deletion behavior, and fallback
-   tests.
-7. Integrate ast-grep's language registry and thread-local parsers at the CLI file-
-   loading boundary. Exclude `.tree-squatter` from traversal.
-8. Prototype Zed integration with GPUI-owned tasks and a rope `SourceChunks`
-   adapter. Benchmark map-once versus header-`pread` tentative probing and owned
-   source reads versus source mmap.
-9. Run semantic differential tests and end-to-end performance measurements before
-   enabling the cache by default.
-
-The MVP is complete when one `load` call always returns matching source/tree data,
-repeat loads directly hit `./.tree-squatter/PATH/VER.squat`, grammar or Squatter
-flag changes select another reusable `VER`, source changes retire every old-source
-variant without interpreting its name, Unix readers survive replacement/deletion
-while accessing cold pages, Windows readers are never disrupted, and all cache
-failures fall back to parsing. The advanced API additionally reports tentative
-trees distinctly, confirms or rejects them using the exact chunk-stream digest,
-and leaves task scheduling to the caller's executor.
+LoadedFile exposes source() and tree(). The simple load wrapper defaults to owned
+hits with short read transactions; TransactionBacked is an explicit option for
+callers accepting snapshot retention. Misaligned slabs fall back to owned storage
+even when transaction-backed reads are requested. This is one LMDB backend with
+two in-memory ownership policies, not a fallback external-file backend.
+
+Writing policy is disabled, inline, or deferred. A step-based API lets executors
+schedule retries without blocking their workers; settle the wrapper's exact shape
+for returning PendingWrite. PendingWrite owns/shares source and packed bytes and
+never retains a parser borrow or LMDB write transaction. Dropping it performs no
+unbounded I/O. Return the freshly packed owned tree on a miss, without reopening
+the just-published record.
+
+Publication status stays out of LoadedFile. An explicitly executed write task
+may report completion/deferred/cancelled/error to its scheduler; observing that is
+optional. Initial hit/miss metrics may remain available. LoadError means failure
+to obtain the pair, including invalid path/grammar, source I/O, cancellation, or
+parse/packing failure. Never expose publication of arbitrary caller-supplied slabs.
+
+## Parser completion and cancellation
+
+The current bindings use per-call ParseOptions::progress_callback. Returning
+ControlFlow::Break(()) requests cancellation, for example when a caller observes a
+cancellation token, deadline, superseded request, or shutdown. Passing a reusable
+parser alone does not install that callback. Parser::parse passes no progress
+callback; there is no implicit timer to inherit in this API.
+
+Before every fresh parse, call Parser::reset(), set the requested language, and
+set included ranges to the whole file. Document these mutations. Pass no old tree.
+Tree-sitter otherwise retains resumable state after cancellation; a new load must
+not resume another document's work.
+
+Accept per-load cancellation/progress control separately from the reusable parser.
+An interrupted parse yields no completed tree: reset state, release cooperation
+ownership, and create neither a packed result nor a pending write. Never persist
+a partial parse. A completed error-recovering tree containing ERROR/missing nodes
+is cacheable; syntax errors are not cancellation.
+
+An input callback must not return premature EOF to signal cancellation: that could
+look like successfully parsing shorter input. Validate chunk-provider progress.
+Check cancellation between bounded source reads, waits, writes, and cleanup steps.
+Existing noninterruptible packing cannot promise immediate cancellation. Once a
+complete pair exists, cancellation of cache work need not discard it. Cancellation
+after commit cannot undo publication.
+
+## Safety-only validation and ownership
+
+Do not add an envelope/slab integrity checksum. BLAKE3 remains for source and
+implementation identity, not verification of serialized-tree integrity.
+
+Add a safety-only loader to Squatter. Before unchecked native operations, establish
+all their safety prerequisites: arithmetic overflow checks, allocation/slice bounds,
+column extents/alignment, bit widths/shifts, node/group/dictionary indexes,
+language-table indexes, and source ranges used for slicing. Include traversal
+invariants necessary to prevent invalid accesses or malformed unbounded walks.
+A slab-within-file bounds check alone is insufficient.
+
+Do not reparse or prove semantic equivalence. Do not reconstruct indexes merely
+to verify their semantic accuracy. Audit current checked loading to distinguish
+safety prerequisites from semantic checks; do not blindly remove node validation.
+Fuzz loading followed by tree/cursor/traversal/query operations on malformed slabs.
+
+Safety-only does not imply constant-time opening. Eager validation may still scan
+nodes/columns. Lazy opening needs checked-on-access operations or lazily validated
+columns with safe failure propagation before exposing unchecked accessors. Measure
+pages touched and opening cost honestly.
+
+### LMDB value alignment and transaction ownership
+
+LMDB owns the mapping; do not mmap data.mdb independently or interpret database
+page internals. Fetch source and tree records from the same read transaction.
+A borrowed value is valid only while that transaction and environment remain
+alive. No transaction reset, renewal, abort, environment resize, or close may
+invalidate an exposed slice.
+
+For owned hits, copy the slab into properly aligned owned memory, retain the
+captured source, and end the transaction promptly. Use Squatter's safety-only
+loader on that storage. Stored source bytes are still available to tentative or
+snapshot-oriented APIs; they never replace disk validation in the simple loader.
+
+For transaction-backed hits, an opaque read owner retains the read-only transaction
+and environment for the full tree/source lifetime. Squatter's owning-byte API must
+destroy its descriptor before releasing that owner. Nodes/cursors borrow the tree
+normally. No fabricated static lifetime or exposed raw transaction is permitted.
+If current disk bytes have already been captured, they can remain the returned
+source; cached source views are explicitly tied to the same transaction owner.
+
+A value's slab offset divisible by 64 does not prove its actual pointer is aligned.
+Validate the address and extent on every open. Do not assume LMDB values satisfy
+8- or 64-byte slab alignment, including after page moves or compact copies.
+The initial correct path copies misaligned values. Any later zero-copy encoding
+using reserved values/padding must prove alignment across reopen/relocation and
+initialize all padding; it cannot rely on accidental allocator behavior.
+
+Use MDB_NOTLS if read owners can move between threads. Audit the binding's Send,
+Sync, transaction-use, and drop rules; the flag is not blanket permission for
+concurrent LMDB API calls on one transaction. Synchronize transaction operations
+and final destruction. Immutable tree access must have a separately justified
+safety contract. Never reset a transaction while any tree/source borrow exists.
+
+### Long-lived snapshots and capacity
+
+A borrowed tree pins an LMDB snapshot, which may delay reuse of pages retired by
+unrelated writes across the environment. This is an accepted opt-in tradeoff, not
+per-entry file retention. Default owned hits avoid that cost. An explicit detach
+operation can produce an owned copy; it cannot revoke existing aliases or free
+their snapshot until the final owner drops.
+
+Bound configured map capacity, reader slots, and newly granted borrowed owners.
+Track oldest local read age and map usage for optional diagnostics. On pressure,
+prefer owned reads for new requests and skip/defer writes that cannot fit.
+Never invalidate live readers to reclaim space. Run mdb_reader_check during
+bounded maintenance to clear crashed-reader slots; it cannot clear live readers
+merely because they are old.
+
+Start with an agreed configurable map ceiling suitable for the platform. Do not
+resize behind active local transactions or exported references. On MDB_MAP_FULL,
+abort the write and defer/skip; retain the valid pair. A controlled later growth
+operation requires local quiescence and cross-process resize coordination.
+On MDB_MAP_RESIZED, adopt the size only after local owners have drained; otherwise
+bypass caching. Fixed-capacity operation is an acceptable first implementation.
+Avoid giant virtual reservations on unsupported address-space/platform targets.
+
+## Cooperation and writer admission
+
+A parse miss first checks for work already in progress for PathId, generation,
+and variant. OS-released work ownership is separate from LMDB
+transactions: never hold the sole write transaction while parsing.
+
+The Linux prototype uses 256 one-byte OFD work locks in cooperation.lock at offsets
+1 through 256, selected by the first BLAKE3 byte of the full tree key. Writer
+admission uses a separate whole-file flock, independent of OFD locks on supported
+local Linux filesystems. Hash collisions cause only extra bounded waiting. Use
+nonblocking OS lock operations and an in-process ownership registry. Other
+platforms currently bypass parse-work coordination; their interoperable lock
+protocol and close semantics still need auditing. Keep the sidecar handle
+stable and never unlink/recreate it during operation. This avoids unbounded files
+or stale persistent claim rows. Never lock byte ranges inside LMDB-managed files.
+
+State machine:
+
+1. Capture/hash source and try a short read transaction for an exact entry.
+2. On miss, try work ownership nonblocking and recheck with a fresh read transaction.
+3. The owner parses. Contenders return Deferred or perform bounded cancellable
+   retry/backoff, opening a fresh snapshot on each cache recheck.
+4. Owner death/cancellation releases the OS lock. Live-stalled owners are handled
+   by wait budgets; callers can continue deferring or parse independently.
+5. Inline writing retains work ownership until publication finishes. Deferred
+   writing releases it when returning the pending item, accepting possible
+   duplicate parses until publication. Every writer rechecks before inserting.
+
+No PID or lock-file existence proves ownership. No lease/heartbeat/fencing protocol
+is necessary for this advisory optimization. A late independent writer still
+publishes only its exact captured identity.
+
+Every application write transaction, including initialization and maintenance,
+first obtains the nonblocking writer-admission lock. This avoids entering LMDB's
+blocking single-writer acquisition behind another cooperating process. LMDB retains
+its own native locking and atomicity. Never acquire work ownership while holding
+writer admission. Foreign clients ignoring this protocol can still block native
+LMDB acquisition: support only participating writers, and document that cancellation
+cannot interrupt arbitrary blocked native calls. Unsupported coordination disables
+publication/cooperation, not source parsing.
+
+## Envelope and source encoding
+
+Each tree value has magic/schema version, header lengths, disk source
+identity, grammar/runtime/representation identities, canonical
+persisted options, full variant digest, slab offset/length, and required alignment.
+Optional diagnostics do not establish matching. There is no integrity checksum,
+source marker file, abbreviated filename token, or per-entry metadata sidecar.
+
+Source values have explicit versions and byte lengths followed by contents.
+Check all conversions, offsets, extents, flags, source bounds, and total lengths.
+Reject ambiguous trailing bytes and unsupported required versions/options.
+Do not trust lengths from metadata when constructing slices. Always use actual
+MDB_val lengths; then perform Squatter safety validation.
+
+## Load and deferred atomic publication
+
+The verified path:
+
+1. Open/read the regular source into immutable storage while hashing. Sample the
+   same handle before/after; retain advisory length/mtime only if stable.
+2. Derive full request keys. Open a read transaction; validate path, source
+   relationships, full tree envelope identities, and memory safety.
+3. Return an owned or transaction-backed hit according to policy, or close the
+   miss snapshot and enter cooperation. Never wait for another writer's result
+   while retaining an old read snapshot.
+4. Reset/configure the parser, parse completely, and pack compactly. Return the
+   exact source and tree; disabled/deferred writes do no contents publication.
+5. Inline/deferred PendingWrite executes the transaction below. Failure is optional
+   cache work failure; the returned pair remains usable.
+
+Publication:
+
+1. Finish hashing/packing/envelope preparation outside any write transaction.
+   Pending work must not pin an unrelated read snapshot while queued.
+2. Obtain writer admission; begin a write transaction and recheck full identities.
+   If a valid matching tree exists, discard the duplicate candidate.
+3. Insert/reuse source bytes, insert the complete
+   slab, and update generation/path records atomically. All these are LMDB values.
+   A source record removed by earlier cleanup is reinserted in this transaction.
+4. Check cancellation before commit; abort the whole transaction if requested or
+   if any put fails. Limit each normal publication to one complete source/tree
+   request. Enforce size budgets; do not split a visible tree across transactions.
+5. Commit using normal synchronous durability, then release writer/work ownership.
+   Once commit begins it is a noninterruptible native operation; cancellation
+   cannot undo a completed commit.
+
+MDB_RESERVE may reduce intermediate buffers, but reserved memory must be completely
+initialized before the next update/commit and cannot escape the write transaction.
+It is not a place to perform a long parse. Bound bytes written per task and measure
+the unavoidable single-record copy/commit latency honestly.
+
+## Crash and power-loss resilience
+
+Use normal synchronous LMDB commits with a read-only mapping: do not enable
+MDB_NOSYNC, MDB_NOMETASYNC, MDB_MAPASYNC, MDB_WRITEMAP, or MDB_NOLOCK. Audit the
+selected LMDB build's platform synchronization behavior, including macOS storage
+flushing, rather than assuming all compile-time configurations provide the same
+guarantee. Environment bootstrap must also persist necessary directory entries.
+
+An interrupted uncommitted transaction cannot publish only the source or only the
+tree. After recovery readers see a complete committed snapshot. A commit error
+may leave its durability outcome uncertain; treat it as optional cache failure,
+and validate normally next time. No external rename/marker ordering is required.
+
+LMDB manages free/retired pages, metadata pages, and its lock file. Never repair
+a failed cache by deleting lock.mdb or replacing data.mdb under readers. Unknown
+schema or detected database errors disable cache use pending separate maintenance.
+Safety validation applies to retrieved slabs; it does not turn LMDB into a safe
+parser for arbitrary maliciously rewritten database files.
+
+Process-kill tests are insufficient for power-loss claims: test filesystem/VM
+failure at commit boundaries with volatile caches discarded. The guarantee assumes
+working storage barriers. No checksum is added to detect arbitrary safety-valid
+media corruption.
+
+## Optional, bounded maintenance
+
+Cleanup is a separate resumable operation using short read transactions to discover
+candidates and bounded write transactions to revalidate/delete them. Persist or
+return logical continuation keys, never a cursor/transaction across executor waits.
+The writer-admission gate applies. Cancellation aborts the current batch without
+undoing previously committed batches. No publication depends on a complete sweep.
+
+Maintenance can retire obsolete generations, abandoned variants by explicit
+age/space policy, and paths whose source no longer exists. Filesystem checks occur
+outside write transactions; errors such as permission denial are not deletion.
+Recheck database identities before deleting. Source recreation can still race;
+at worst a disposable entry is lost and subsequently rebuilt. Never modify source.
+
+Delete tree records in bounded prefix batches; remove source/generation
+records only once their referencing trees are gone in the current write snapshot.
+A concurrent late publisher atomically restores all records it needs. Check any
+advisory current pointer before removing its target and clear/update it atomically.
+Metadata deletion is separate from physical page reuse: live readers can retain
+old pages even after records disappear from current snapshots.
+
+Free pages are reused by LMDB; record deletion does not promise the database file
+shrinks. Automatic online compaction or replacement of the environment is out of
+scope. Disk quotas, map ceilings, and optional later offline compact-copy
+maintenance must respect live readers. Run crashed-reader checks without treating
+live-stalled transactions as dead.
+
+Deleted/renamed paths never loaded again are discovered by optional whole-cache
+sweeps. Never running maintenance consumes space, not correctness. Avoid writes
+on every cache hit just to record recency; sample/defer accounting if needed.
+
+### Temporary files
+
+Normal capture, publication, and record cleanup create no application temp files:
+source contents and slabs are prepared in memory and written through LMDB
+transactions. Aborted transactions leave LMDB-managed pages, not orphan slab files.
+data.mdb, lock.mdb, and cooperation.lock are persistent environment files and must
+never be swept as temps.
+
+Any future spill/export/compact-copy operation outside an OS-managed temporary
+facility must include orphan cleanup from its first implementation. Use exclusively
+created, never-reused session directories, with an OS-held owner lock registered
+under a permanent short registry lock. Create and acquire owner locks while holding
+that registry lock; cleanup opens/tries them nonblocking under the same lock and
+skips live owners. Failed attempts close handles immediately. Reclaim only recognized
+regular files with handle-relative no-follow operations, in cancellable batches.
+Retire an empty session and its owner-lock inode under the registry lock so no
+participant can adopt a deleted lock. Missing-owner sessions are interrupted
+registration and are checked under the same registry lock. Do not use PID or age
+alone to decide abandonment.
+
+Include bounded startup/scheduled orphan sweeps when that optional facility exists,
+even if original source paths are never revisited. Maintenance can be deferred or
+disabled, but later execution must reclaim crash leftovers. /tmp placement alone
+does not prove automatic cleanup. There is no need to implement a temp-session
+registry in the initial no-temp LMDB workflow.
+
+## Tentative and chunked API
+
+Retain TentativeFile, opaque ValidationTicket, SourceSnapshot, verify, Rebuild, and
+validate phases. Apply the same cooperation/deferred-write policies to rebuilds.
+
+Tentative lookup uses paths' advisory generation/stamp and fetches contents plus
+the requested tree in one read snapshot. A matching stamp authorizes tentative
+access only; source bytes loaded from LMDB are also tentative relative to disk.
+The simple loader never treats cached contents as proof of the current disk file.
+Apply ownership/alignment policy and safety checks before exposing tentative data.
+
+Full comparison with a freshly captured disk source confirms or rejects the
+ticket. Source-read/hash failure leaves it unverified; rejection occurs before
+rebuild and cannot be reversed by a later rebuild failure. Tickets bind environment,
+path, grammar/configuration, and the immutable tree snapshot. A later
+database deletion/replacement does not invalidate a live transaction-backed ticket.
+
+SourceChunks returns consistent immutable bytes at arbitrary requested offsets,
+with empty output only at/beyond EOF. Validate hash-walk progress, lengths, and
+native offset limits. Constructors normally compute the hash; streaming hashing
+can avoid a second pass. Precomputed identities are caller correctness contracts,
+never authority for unchecked memory access.
+
+Provisional UI may use tentative results. Edits/refactors and persisted diagnostics
+wait for confirmation. Applications manage superseded request/buffer versions.
+
+### Zed compatibility: unchanged-load-only participation
+
+The persistence crate stores raw disk bytes and trees parsed from those bytes.
+Zed reuses or publishes an entry only when its parser-visible input is exactly the
+captured disk bytes, and grammar/representation identities also match. Track actual
+byte transformations during Zed's existing load: encoding conversion, BOM removal,
+and CRLF/lone-CR normalization make the buffer ineligible. Transformation detection
+does not replace the full source identity comparison or application buffer-version
+checks. A loader taking a normalization path that changes no bytes remains eligible.
+
+BOM-free UTF-8/LF files can participate without transformation. Zed retains
+line-ending/encoding preferences and can write CRLF again on save; saving does not
+guarantee a future load is byte-preserving. For transformed inputs, Zed parses its
+buffer normally and neither confirms a raw cache tree for that buffer nor publishes
+the buffer tree under the raw-source key. No coordinate translation or normalized
+variants are implemented in persistence. A cache tree shown tentatively before
+loading must be discarded for buffer use if a transformation is then detected.
+
+See [Zed's load/save code](https://github.com/zed-industries/zed/blob/main/crates/worktree/src/worktree.rs).
+
+## Implementation and tests
+
+Implementation has begun in crates/persistence. The first owned-read milestone
+implements atomic sources/trees/path records, deferred writes, parser reset and
+cancellation, actual compiled representation identity, and process/thread writer
+admission. It deliberately retains Squatter's stricter validator pending the
+safety-only audit. The next milestone adds Linux parse-work cooperation with
+bounded waits/resumable deferral, optional bounded obsolete-generation and
+deleted-path cleanup, and explicit stale-reader checks. The prototype stores the
+advisory generation pointer in a separate `current` named database; schema version
+2 is intentionally incompatible with prototype 1 and does not migrate it.
+Transaction-backed reads, capacity/age eviction, other-platform work locks, and
+power-loss qualification remain pending. See the crate README for scope.
+
+
+Use one crates/persistence workspace crate with modules for identity, schema/codec,
+environment ownership, source capture, transaction-backed trees, load/cooperation,
+publication, maintenance, and platform integration. Depend on the exact workspace
+Tree-sitter/Squatter, BLAKE3, an audited LMDB binding, and minimal platform locking.
+Do not add SQLite or an independent slab-mmap/file backend. Independent packaging
+also requires Squatter's C sources/headers and publish=false to be addressed.
+
+Sequence:
+
+1. Freeze named DB schema/key encodings and cooperation ranges; choose/audit LMDB
+   binding, per-process environment registry, durability, capacity, and reader policy.
+   Fingerprint details remain explicitly open.
+2. Add Squatter safety-only loading and owning-byte API; implement owned LMDB hits
+   first, then transaction-backed hits with verified alignment and lifetime rules.
+3. Implement exact-byte capture, parser reset/cancellation, and atomic LMDB
+   source/tree publication with disabled/inline/deferred policies.
+4. Add bounded cooperation, maintenance, capacity/reader-pressure handling, and
+   deterministic multiprocess lifecycle tests.
+5. Add tentative/chunked integration; validate power-loss behavior on supported
+   platforms and benchmark before default enablement.
+
+Required tests:
+
+- Fixed schema/key/envelope/identity fixtures; malformed lengths/indexes/flags and
+  downstream tree/cursor/query fuzzing under safety-only validation.
+- Native versus fresh-packed versus owned/transaction-backed LMDB hit semantics.
+- Source contents stored once per path/generation across variants; no partial
+  source/tree publication; full path collision checks and long/non-UTF-8 path values.
+- Cancellation then parser reuse on another document; no partial parse publication,
+  but complete syntax-error trees remain cacheable.
+- Misaligned values copy safely; aligned borrowed trees retain transaction/environment;
+  final descriptor/source drop order; no invalidation by resize/reset/close.
+- Old reader touches cold pages after updates/deletions of its records; unrelated
+  write churn demonstrates snapshot-retention cost and map-pressure fallback.
+- Multiple Persistence instances/aliases share one environment; reader-slot exhaustion,
+  crashed-reader cleanup, live-stalled readers, MAP_FULL/MAP_RESIZED, and no forced
+  detachment of exposed references.
+- Contender deferral, owner death, stripe collisions, bounded waiting, duplicate late
+  publication, writer-admission ordering, and no write transaction during parsing.
+- Disabled/deferred publication returns usable pairs; dropped queued work holds no
+  write transaction and creates no application temp files.
+- Process and power-loss injection before/during commit, including multi-record
+  publication and maintenance; normal recovery never exposes a partial pair.
+- Cleanup cancellation/resumption, source deletion/recreation, late writers restoring
+  removed source records, pointer consistency, and physical retention under readers.
+- Tentative cached contents remain unverified until disk capture; restored mtime/size
+  does not authorize confirmed reuse; rejection before failed rebuild.
+- Raw CRLF/BOM/invalid-UTF-8 bytes preserved; unchanged Zed loads eligible and
+  transformed loads excluded from both cache reuse and publication.
+- Normal operations never create slab/marker temps; any future disk-temp operation
+  includes owner-registration/cleanup crash tests and never deletes LMDB files.
+
+Measure capture/hash, LMDB begin/get/copy/commit, safety validation/pages touched,
+cooperation waits, parse/pack, cleanup, source/slab storage, reader ages, map growth,
+and retained pages under long-lived readers. Compare owned and transaction-backed
+hits. No checksum pass, filesystem slab rename, or SQL checkpoint is involved.
+
+LMDB implementation reference:
+[official API and caveats](https://github.com/LMDB/lmdb/blob/mdb.master/libraries/liblmdb/lmdb.h).
