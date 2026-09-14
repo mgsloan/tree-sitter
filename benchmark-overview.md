@@ -1,5 +1,10 @@
 # Squatter vs. mainline: current status
 
+The walk numbers below use the historical bulk-attribute workload, including
+child counts. Current walk benchmarks read O(1) bulk snapshots with counts
+removed; these historical numbers do not describe that workload.
+See the [current cloud O(1) bulk and cached-iterator measurements](lib/squat/experiments/bulk-walk-results-2026-09-13.md).
+
 Snapshot at `2891d5e98`, measured today on `squatter-benchmark` (GCP
 e2-standard-2, Intel Xeon Broadwell 2.20 GHz, pinned to CPU 0). Every number
 here is from **one consistent configuration**: `SQ_INCLUDE_POINTS=0` (no

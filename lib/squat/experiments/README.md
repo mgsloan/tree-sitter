@@ -2,9 +2,15 @@
 
 The historical layout, query, and cursor measurements below used version 2,
 including its field-lookup exception section. Version 3 removes that section and
-returned to a 32-byte header. The current version 4 uses a 16-byte header and
-reverse-preorder physical slots; historical measurements have not been rewritten.
+returned to a 32-byte header. Version 4 introduced a 16-byte header and
+reverse-preorder physical slots; the current runtime is version 6. Historical
+measurements have not been rewritten.
 See the current [field-lookup policy](field-lookup-review.md).
+
+The [current O(1) bulk-walk report](bulk-walk-results-2026-09-13.md) compares
+individual/bulk getters and cached iterators, profiles the remaining hotspots,
+and measures scalar decoder-parameter caching on the small cloud VM. Active
+follow-up work is in [performance-next.md](../../../performance-next.md).
 
 The [version-4 storage report](storage-v4-results-2026-09-10.md) measures the
 16-byte header, colocated runtime, and reverse-preorder change on the cloud VM.

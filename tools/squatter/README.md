@@ -62,11 +62,17 @@ selection, mutations, and seek positions. All repeats use identical bytes.
 
 ## Measurement contract
 
-Cold parse always includes a fresh parser; squat additionally converts its parsed
-tree. Other benchmarks run each backend over a whole batch before switching;
+Explicit `cold-parse` runs include a fresh parser and one-shot conversion on
+every repeat. Runs without that selector reuse one `PackContext` per grammar
+across files and batches; their prerequisite parse/conversion timing is recorded
+as `setup-parse`, with context creation outside timing. Run metadata records
+`parse_benchmark` and `reuse_pack_context`; summaries also accept older manifests
+whose prerequisite rows were always called `cold-parse`.
+
+Other benchmarks run each backend over a whole batch before switching;
 the first backend alternates by batch and repeat. Visible preorder ordinals
 identify nodes across representations. Comparison and identity-map setup are
-outside timed regions. Walk timings include recording the supported attributes.
+outside timed regions. Walk timings include recording O(1) node attributes.
 
 Seek differences are counted but ignored by default at the human's request;
 `--strict-seeks` makes them fail again.
@@ -156,13 +162,24 @@ The forward workloads separate navigation from attribute decoding:
 | Selector | Work timed |
 |---|---|
 | `cursor-forward` | Native traversal and node identities |
-| `walk-forward` | Traversal and all supported attributes |
+| `walk-forward` | Traversal and O(1) node attributes |
 
 Both use the ordinary `Cursor` and compare against mainline on identical bytes.
-Cursor creation, destruction, and result collection are timed. The attribute
-walk uses one bulk FFI call per node; it should not be compared directly with
-older measurements using separate node accessor calls. Cached cursors and
-reverse traversal workloads have been removed.
+Cursor creation, destruction, and result collection are timed. Attribute walks
+use constant-time bulk snapshots for byte/point coordinates, symbols, names, and
+flags. Child, named-child, and descendant counts are separate APIs because they
+can scan children or packed groups. Fields and depth are excluded from the Rust
+snapshot (the native bulk call also reads the constant-time field ID).
+Counts are compared in sampled, untimed relationship checks;
+cursor fields and depths are checked at every visited node outside timing.
+Historical bulk-attribute timings use a different workload and are not directly
+comparable. Cached cursors and reverse traversal workloads have been removed.
+
+For the smaller C attribute set (coordinates, symbol, named/error flags), build
+`make -C lib/squat ../../build/squat/walk-bench` and run
+`walk-bench LIBRARY SYMBOL SOURCE REPEATS 0`. Set `SQ_SQUAT_FIRST=0` or `1` to
+alternate the first measured backend between processes. The zero argument
+disables the optional seek workload.
 
 ```sh
 python3 tools/squatter/run.py --output build/squat-cursors \
@@ -176,19 +193,18 @@ output directory.
 
 ## Iterator comparisons
 
-`walk-iterator` and `walk-iterator-cached` record the same attributes, field IDs,
-and preorder depths as `walk-forward`. The native iterator needs no depth stack;
-these benchmark adapters recover depth from the descendant counts already in
-each snapshot. `iterator-forward` and `iterator-forward-cached` measure node
-identity traversal alone, alongside `cursor-forward`. Mainline uses its ordinary
+`walk-iterator` and `walk-iterator-cached` record the same O(1) node attributes
+as `walk-forward`, using the iterator's constant-time bulk attribute API. They do
+not reconstruct depth. `iterator-forward` and `iterator-forward-cached` measure
+node identity traversal alone, alongside `cursor-forward`. Mainline uses its ordinary
 forward cursor for all corresponding workloads. All four new selectors are in
 the default benchmark set. Iterator creation and destruction are timed.
 
-Compare the cached/uncached Squat rows directly to isolate the optional cache.
-The default cache stores three variable-width IDs as u16 and reconstructs six
-absolute coordinate columns as u32 with SIMD broadcast-base arithmetic. No
-unpacking occurs in navigation-only workloads. Source identities and the selected build
-flags must accompany kernel or group-size ablations. Group size changes the slab
+The optional unpack cache is exercised by `walk-iterator-cached`; it remains idle
+in navigation-only workloads. The default cache stores three variable-width IDs
+as u16 and reconstructs six absolute coordinate columns as u32 with SIMD
+broadcast-base arithmetic. Source identities and selected build flags must
+accompany kernel or group-size ablations. Group size changes the slab
 layout too, so those comparisons are not isolated unpack-kernel comparisons.
 
 ## Running uploaded binaries on a benchmark VM
@@ -351,3 +367,26 @@ Check `systemctl is-enabled squatter-idle.timer` and
 `/etc/tmpfiles.d/squatter-benchmark.conf` contains
 `d /run/squatter-benchmark 0755 mgsloan mgsloan -`, so jobs can start before the
 first timer tick after reboot. The timestamp is replaced atomically.
+
+### Isolated O(1) attribute walks
+
+Build `make -C lib/squat ../../build/squat/attributes-bench` and run
+`build/squat/attributes-bench GRAMMAR.so tree_sitter_LANGUAGE 7 SOURCE...`.
+Use a distinct `BUILD` directory and `CFLAGS` containing
+`-DSQ_INCLUDE_POINTS=0` for a byte-only build. The JSON contains calibrated
+whole-batch CPU times for mainline, individual getters, cursor/node bulk getters,
+and individual/uncached-bulk/cached-bulk preorder iterators. All modes consume
+identical O(1) attributes; counts, fields, and depth are excluded from the
+checksum. C bulk snapshots still decode their O(1) field ID. Complete strings
+and snapshots are compared outside timing; timing consumes only the first byte
+of each type string. Parsing and packing are excluded, cursor/iterator creation
+and deletion are included. This probe excludes the Rust benchmark's observation
+allocation and collection costs.
+
+`SQ_ROTATION` changes the first mode; subsequent samples rotate automatically.
+For profiling, `SQ_PROFILE_MODE=0..6` and `SQ_PROFILE_ROUNDS=N` repeat one mode
+after the common validation and calibration. Profile output includes those
+setup phases, so inspect the dominant symbols rather than treating percentages
+as exact steady-state attribution.
+
+See the [cloud bulk-walk and decoder-cache results](../../lib/squat/experiments/bulk-walk-results-2026-09-13.md).

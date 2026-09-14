@@ -1,0 +1,151 @@
+--- a/lib/squat/pack.c
++++ b/lib/squat/pack.c
+@@ -2,9 +2,9 @@
+ #include "../src/tree.h"
+ 
+ // Only the current group's absolute values are staged. Frame coordinates are
+-// computed once left-to-right, then consumed right-to-left when points are
+-// enabled (multiline extents lose the starting column). Byte-only frames
+-// subtract child lengths while traversing instead. No recursive C calls.
++// computed left-to-right for rows/columns, then consumed right-to-left.
++// Byte offsets always subtract child sizes/padding during reverse traversal;
++// the point scratch stores no byte offsets. No recursive C calls.
+ typedef struct {
+   uint32_t span;
+   uint32_t start_byte;
+@@ -52,7 +52,7 @@
+   PackValues base, max;
+   uint64_t *dictionary;
+   uint32_t dictionary_count, dictionary_capacity, words;
+-  PackPosition *positions;
++  TSPoint *positions;
+   uint32_t position_count, position_capacity;
+   TSFieldId *fields;
+   const DirectFieldSlice *production_fields;
+@@ -102,10 +102,9 @@
+   const Subtree *children;
+   const TSSymbol *aliases;
+ #if SQ_INCLUDE_POINTS
+-  PackPosition inline_position;
+-#else
++  TSPoint inline_position;
++#endif
+   uint32_t child_end_byte;
+-#endif
+   uint64_t child_mask;
+ #if SQ_INCLUDE_POINTS
+   uint32_t position_mark, position_offset;
+@@ -125,7 +124,7 @@
+   TSFieldId *direct_fields;
+   // Retain only storage, never pending nodes or pointers into a completed slab.
+   struct {
+-    PackPosition *positions;
++    TSPoint *positions;
+     uint64_t *masks, *dictionary;
+     uint16_t *supertype_indexes;
+     uint32_t position_capacity, mask_capacity, dictionary_capacity;
+@@ -140,9 +139,7 @@
+ // accessor repeats the inline/heap test. Decode the needed fields once.
+ typedef struct {
+   uint32_t child_count, visible_child_count;
+-#if !SQ_INCLUDE_POINTS
+   uint32_t size_bytes, padding_bytes;
+-#endif
+   bool visible, extra;
+ } ChildFacts;
+ 
+@@ -153,10 +150,8 @@
+     facts.visible_child_count = 0;
+     facts.visible = subtree.data.visible;
+     facts.extra = subtree.data.extra;
+-#if !SQ_INCLUDE_POINTS
+     facts.size_bytes = subtree.data.size_bytes;
+     facts.padding_bytes = subtree.data.padding_bytes;
+-#endif
+   } else {
+     const SubtreeHeapData *data = subtree.ptr;
+     facts.child_count = data->child_count;
+@@ -165,10 +160,8 @@
+     facts.visible_child_count = data->child_count ? data->visible_child_count : 0;
+     facts.visible = data->visible;
+     facts.extra = data->extra;
+-#if !SQ_INCLUDE_POINTS
+     facts.size_bytes = data->size.bytes;
+     facts.padding_bytes = data->padding.bytes;
+-#endif
+   }
+   return facts;
+ }
+@@ -176,7 +169,7 @@
+ #if SQ_INCLUDE_POINTS
+ static bool reserve_positions(Builder *builder, uint32_t count, uint32_t *offset) {
+   uint64_t needed = (uint64_t)builder->position_count + count;
+-  if (needed > UINT32_MAX || needed > SIZE_MAX / sizeof(PackPosition)) goto allocation;
++  if (needed > UINT32_MAX || needed > SIZE_MAX / sizeof(TSPoint)) goto allocation;
+   if (needed > builder->position_capacity) {
+     uint32_t capacity = builder->position_capacity ? builder->position_capacity : 32;
+     while (capacity < needed) {
+@@ -187,7 +180,7 @@
+       capacity *= 2;
+     }
+ 
+-    PackPosition *next = realloc(builder->positions, (size_t)capacity * sizeof(PackPosition));
++    TSPoint *next = realloc(builder->positions, (size_t)capacity * sizeof(TSPoint));
+     if (!next) goto allocation;
+     builder->positions = next;
+     builder->position_capacity = capacity;
+@@ -626,8 +619,10 @@
+     // Extents cannot be recovered by subtracting a multiline child's size, so
+     // every child start is computed here. One inline/heap test per child covers
+     // its padding, size, and extra flag.
+-    PackPosition *positions = count == 1 ? &frame->inline_position
+-                                         : builder->positions + frame->position_offset;
++    TSPoint *positions = count == 1 ? &frame->inline_position
++                                    : builder->positions + frame->position_offset;
++    TSPoint point = position.extent;
++    frame->child_end_byte = position.bytes + subtree.ptr->size.bytes;
+ #else
+     frame->child_end_byte = position + subtree.ptr->size.bytes;
+ #endif
+@@ -648,9 +643,9 @@
+         extra = child.ptr->extra;
+       }
+ 
+-      if (i) position = length_add(position, padding);
+-      positions[i] = position;
+-      position = length_add(position, size);
++      if (i) point = point_add(point, padding.extent);
++      positions[i] = point;
++      point = point_add(point, size.extent);
+ #else
+       // Aliases and fields use child indexes excluding extras. Keep this
+       // count, but do not calculate or store any forward byte positions.
+@@ -958,12 +953,12 @@
+       uint32_t index = --frame->remaining;
+       const Subtree *child = &frame->children[index];
+       ChildFacts facts = child_facts(*child);
+-#if !SQ_INCLUDE_POINTS
+       // Advance even for hidden leaves skipped below. The first child's
+       // padding belongs to the parent, so it must not be subtracted here.
+-      uint32_t position = frame->child_end_byte - facts.size_bytes;
+-      frame->child_end_byte = index ? position - facts.padding_bytes
+-                                    : position;
++      uint32_t start_byte = frame->child_end_byte - facts.size_bytes;
++      frame->child_end_byte = index ? start_byte - facts.padding_bytes : start_byte;
++#if !SQ_INCLUDE_POINTS
++      PackPosition position = start_byte;
+ #endif
+       bool extra = facts.extra;
+       if (!extra) {
+@@ -989,9 +984,9 @@
+       }
+ 
+ #if SQ_INCLUDE_POINTS
+-      PackPosition position = frame->position_offset != SQ_NONE
++      PackPosition position = {start_byte, frame->position_offset != SQ_NONE
+                                   ? builder.positions[frame->position_offset + index]
+-                                  : frame->inline_position;
++                                  : frame->inline_position};
+ #endif
+       // Only the one-word mode initializes this value. Other modes carry no
+       // mask, or use child_mask_offset in the arena.

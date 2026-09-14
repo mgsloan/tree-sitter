@@ -1,0 +1,117 @@
+diff --git a/lib/squat/internal.h b/lib/squat/internal.h
+index ad4bbb6e8..374e9408a 100644
+--- a/lib/squat/internal.h
++++ b/lib/squat/internal.h
+@@ -72,6 +72,9 @@ typedef struct {
+ #endif
+   uint32_t end;
+   uint8_t symbol_bits, field_bits;
++  // Grammar-wide decoder constants; runtime-only, never serialized.
++  uint8_t symbol_lanes, field_lanes;
++  uint32_t symbol_mask, field_mask;
+ } SQLayout;
+ 
+ typedef enum { SQ_STORAGE_COLOCATED, SQ_STORAGE_COPIED, SQ_STORAGE_BORROWED } SQStorage;
+@@ -200,6 +203,27 @@ static inline uint32_t sq_get_packed(const uint8_t *data, uint32_t offset, uint3
+   return (uint32_t)((word >> (index % lanes * bits)) & ((UINT64_C(1) << bits) - 1));
+ }
+ 
++// Variable-width IDs reuse constants computed when the tree layout is created.
++// Keep fixed-width loads and constant-width callers on their existing paths.
++static inline uint32_t sq_get_packed_cached(const uint8_t *data, uint32_t offset,
++                                           uint32_t index, uint8_t bits,
++                                           uint8_t lanes, uint32_t mask) {
++  switch (bits) {
++  case 1:
++    return sq_get_bit(data, offset, index);
++  case 8:
++    return sq_get_u8(data, offset, index);
++  case 16:
++    return sq_get_u16(data, offset, index);
++  case 32:
++    return sq_get_u32(data, offset, index);
++  }
++
++  uint64_t word;
++  memcpy(&word, data + offset + (uint64_t)(index / lanes) * 8, sizeof(word));
++  return (uint32_t)(word >> (index % lanes * bits)) & mask;
++}
++
+ void sq_set_packed(uint8_t *, uint32_t offset, uint32_t index, uint8_t bits, uint32_t);
+ 
+ static inline uint32_t sq_group_waste(const SQTree *tree, uint32_t group) {
+@@ -283,18 +307,21 @@ static inline uint32_t sq_node_supertype(SQNode node) {
+ }
+ 
+ static inline uint32_t sq_node_symbol_id(SQNode node) {
+-  return sq_get_packed(node.tree->data, node.tree->layout.symbol, node.slot,
+-                       node.tree->layout.symbol_bits);
++  return sq_get_packed_cached(node.tree->data, node.tree->layout.symbol, node.slot,
++                              node.tree->layout.symbol_bits, node.tree->layout.symbol_lanes,
++                              node.tree->layout.symbol_mask);
+ }
+ 
+ static inline uint32_t sq_node_grammar_id(SQNode node) {
+-  return sq_get_packed(node.tree->data, node.tree->layout.grammar_symbol, node.slot,
+-                       node.tree->layout.symbol_bits);
++  return sq_get_packed_cached(node.tree->data, node.tree->layout.grammar_symbol, node.slot,
++                              node.tree->layout.symbol_bits, node.tree->layout.symbol_lanes,
++                              node.tree->layout.symbol_mask);
+ }
+ 
+ static inline uint32_t sq_node_field_value(SQNode node) {
+-  return sq_get_packed(node.tree->data, node.tree->layout.field, node.slot,
+-                       node.tree->layout.field_bits);
++  return sq_get_packed_cached(node.tree->data, node.tree->layout.field, node.slot,
++                              node.tree->layout.field_bits, node.tree->layout.field_lanes,
++                              node.tree->layout.field_mask);
+ }
+ 
+ // Unpack native-endian, non-straddling fields of 1..16 bits. The caller
+diff --git a/lib/squat/slab.c b/lib/squat/slab.c
+index 490f38192..3961ee32e 100644
+--- a/lib/squat/slab.c
++++ b/lib/squat/slab.c
+@@ -58,6 +58,10 @@ bool sq_layout(const TSLanguage *language, uint32_t capacity, SQLayout *layout)
+   if (!capacity || capacity > UINT32_MAX / SQ_GROUP_SIZE) return false;
+   layout->symbol_bits = sq_width(language->symbol_count + language->alias_count + 1);
+   layout->field_bits = sq_width(language->field_count);
++  layout->symbol_lanes = (uint8_t)(64 / layout->symbol_bits);
++  layout->field_lanes = (uint8_t)(64 / layout->field_bits);
++  layout->symbol_mask = (uint32_t)((UINT64_C(1) << layout->symbol_bits) - 1);
++  layout->field_mask = (uint32_t)((UINT64_C(1) << layout->field_bits) - 1);
+   uint32_t slots = capacity * SQ_GROUP_SIZE;
+   uint64_t next =
+       (sizeof(SQHeader) + SQ_COLUMN_ALIGNMENT - 1) & ~(uint64_t)(SQ_COLUMN_ALIGNMENT - 1);
+diff --git a/lib/squat/tests/unit.c b/lib/squat/tests/unit.c
+index bc32566ea..f3903f256 100644
+--- a/lib/squat/tests/unit.c
++++ b/lib/squat/tests/unit.c
+@@ -40,6 +40,8 @@ static void read_tests(void) {
+     for (uint32_t index = 0; index < 16 * lanes; index++) {
+       uint32_t expected = (uint32_t)((words[1 + index / lanes] >> (index % lanes * bits)) & mask);
+       assert(sq_get_packed((const uint8_t *)words, 8, index, bits) == expected);
++      assert(sq_get_packed_cached((const uint8_t *)words, 8, index, bits,
++                                  (uint8_t)lanes, (uint32_t)mask) == expected);
+     }
+   }
+ }
+@@ -189,6 +191,18 @@ static void exercise_columns(SQTree *tree, bool fill) {
+   exercise_column(tree, tree->layout.grammar_symbol, tree->layout.symbol_bits, SQ_GROUP_SIZE, tag++,
+                   fill);
+   exercise_column(tree, tree->layout.field, tree->layout.field_bits, SQ_GROUP_SIZE, tag++, fill);
++  // Verify cached layout constants after initial allocation and every resize.
++  assert(tree->layout.symbol_lanes == 64 / tree->layout.symbol_bits);
++  assert(tree->layout.field_lanes == 64 / tree->layout.field_bits);
++  for (uint32_t slot = 0; slot < 2 * SQ_GROUP_SIZE; slot++) {
++    SQNode node = {tree, slot};
++    assert(sq_node_symbol_id(node) == sq_get_packed(tree->data, tree->layout.symbol,
++                                                  slot, tree->layout.symbol_bits));
++    assert(sq_node_grammar_id(node) == sq_get_packed(tree->data, tree->layout.grammar_symbol,
++                                                   slot, tree->layout.symbol_bits));
++    assert(sq_node_field_value(node) == sq_get_packed(tree->data, tree->layout.field,
++                                                    slot, tree->layout.field_bits));
++  }
+ }
+ 
+ static void fixed_width_write_tests(void) {

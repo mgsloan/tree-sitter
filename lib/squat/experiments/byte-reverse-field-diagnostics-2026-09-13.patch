@@ -1,0 +1,53 @@
+--- a/lib/squat/pack.c
++++ b/lib/squat/pack.c
+@@ -1,4 +1,6 @@
+ #include "internal.h"
++#include <stdio.h>
++static unsigned long long frames, mapped, entries, slots, hidden_maps;
+ #include "../src/tree.h"
+ 
+ // Only the current group's absolute values are staged. Frame coordinates are
+@@ -588,6 +590,7 @@
+ static bool init_frame(Builder *builder, Frame *frame, const Subtree *subtree_pointer,
+                        PackPosition position, TSSymbol alias, TSFieldId field, bool visible,
+                        bool later, uint64_t mask, uint32_t mask_offset) {
++  frames++;
+   frame->node.subtree = subtree_pointer;
+   frame->node.position = position;
+   frame->node.mask = mask;
+@@ -657,9 +660,11 @@
+     if (frame->structural && builder->language_field_count) {
+       const TSFieldMapEntry *map, *end;
+       ts_language_field_map(builder->language, subtree.ptr->production_id, &map, &end);
++      entries += end - map;
+       const TSFieldMapEntry *first = map;
+       while (first < end && first->inherited) first++;
+       if (first < end) {
++        mapped++; slots += frame->structural;
+         if (!reserve_fields(builder, frame->structural, &frame->field_offset)) return false;
+         for (map = first; map < end; map++) {
+           if (!map->inherited && map->child_index < frame->structural &&
+@@ -734,6 +739,7 @@
+       if (language->field_count) {
+         const TSFieldMapEntry *map, *end;
+         ts_language_field_map(language, data->production_id, &map, &end);
++        hidden_maps++;
+         for (; map < end; map++) {
+           if (!map->inherited && map->child_index == 0) {
+             inner_field = map->field_id;
+@@ -817,6 +823,7 @@
+ 
+ static SQTree *pack_tree(SQPackContext *context, const TSTree *tree,
+                          SQPackOptions options, SQError *error) {
++  frames = mapped = entries = slots = hidden_maps = 0;
+   sq_fail(error, SQ_OK);
+   if (!tree) {
+     sq_fail(error, SQ_ERROR_ARGUMENT);
+@@ -1051,6 +1058,7 @@
+   sq_tree_delete(builder.tree);
+   builder.tree = NULL;
+ cleanup:
++  fprintf(stderr, "{\"frames\":%llu,\"mapped_frames\":%llu,\"map_entries\":%llu,\"cleared_field_slots\":%llu,\"hidden_map_calls\":%llu}\n", frames, mapped, entries, slots, hidden_maps);
+   result = builder.tree;
+   if (context) {
+     context->scratch.positions = builder.positions;

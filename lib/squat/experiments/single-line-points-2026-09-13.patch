@@ -1,0 +1,98 @@
+--- a/lib/squat/pack.c
++++ b/lib/squat/pack.c
+@@ -2,9 +2,9 @@
+ #include "../src/tree.h"
+ 
+ // Only the current group's absolute values are staged. Frame coordinates are
+-// computed once left-to-right, then consumed right-to-left when points are
+-// enabled (multiline extents lose the starting column). Byte-only frames
+-// subtract child lengths while traversing instead. No recursive C calls.
++// computed left-to-right for multiline point frames, then consumed in reverse.
++// Byte-only and single-line point frames subtract sizes/padding while traversing.
++// Multiline extents lose the starting column. No recursive C calls.
+ typedef struct {
+   uint32_t span;
+   uint32_t start_byte;
+@@ -102,7 +102,9 @@
+   const Subtree *children;
+   const TSSymbol *aliases;
+ #if SQ_INCLUDE_POINTS
++  // Single-child start, or the moving end position for a single-line frame.
+   PackPosition inline_position;
++  bool single_line;
+ #else
+   uint32_t child_end_byte;
+ #endif
+@@ -621,12 +623,17 @@
+     frame->aliases =
+         ts_language_alias_sequence(builder->language, subtree.ptr->production_id);
+ #if SQ_INCLUDE_POINTS
+-    if (count > 1 && !reserve_positions(builder, count, &frame->position_offset)) return false;
+-
+-    // Extents cannot be recovered by subtracting a multiline child's size, so
+-    // every child start is computed here. One inline/heap test per child covers
+-    // its padding, size, and extra flag.
+-    PackPosition *positions = count == 1 ? &frame->inline_position
++    // Edited ancestor extents can disagree with their children's extents.
++    // Keep the forward calculation for them, matching mainline traversal.
++    frame->single_line = subtree.ptr->size.extent.row == 0 && !subtree.ptr->has_changes;
++    if (frame->single_line) frame->inline_position = length_add(position, subtree.ptr->size);
++    if (!frame->single_line && count > 1 &&
++        !reserve_positions(builder, count, &frame->position_offset)) return false;
++
++    // Multiline frames need saved starts. Single-line frames subtract bytes
++    // and columns separately; edited trees need not have equal byte/column spans.
++    // Parent padding is excluded, so leading newlines do not prevent this path.
++    PackPosition *positions = frame->single_line ? NULL : count == 1 ? &frame->inline_position
+                                          : builder->positions + frame->position_offset;
+ #else
+     frame->child_end_byte = position + subtree.ptr->size.bytes;
+@@ -635,6 +642,10 @@
+     for (uint32_t i = 0; i < count; i++) {
+       Subtree child = frame->children[i];
+ #if SQ_INCLUDE_POINTS
++      if (!positions) {
++        structural += !ts_subtree_extra(child);
++        continue;
++      }
+       Length padding, size;
+       bool extra;
+       if (child.data.is_inline) {
+@@ -975,6 +986,25 @@
+       bool later = frame->child_later || (!frame->visible && frame->node.later);
+       frame->child_later |= visible || facts.visible_child_count > 0;
+ 
++#if SQ_INCLUDE_POINTS
++      PackPosition position;
++      if (frame->single_line) {
++        Length size = ts_subtree_size(*child);
++        position = frame->inline_position;
++        position.bytes -= size.bytes;
++        position.extent.column -= size.extent.column;
++        frame->inline_position = position;
++        if (index) {
++          Length padding = ts_subtree_padding(*child);
++          frame->inline_position.bytes -= padding.bytes;
++          frame->inline_position.extent.column -= padding.extent.column;
++        }
++      } else {
++        position = frame->position_offset != SQ_NONE
++            ? builder.positions[frame->position_offset + index] : frame->inline_position;
++      }
++#endif
++
+       // Hidden wrappers carry their incoming field; visible nodes start a new
+       // child relationship. Extras interrupt field inheritance.
+       TSFieldId field = frame->visible || extra ? 0 : frame->node.field;
+@@ -988,11 +1018,6 @@
+         continue;
+       }
+ 
+-#if SQ_INCLUDE_POINTS
+-      PackPosition position = frame->position_offset != SQ_NONE
+-                                  ? builder.positions[frame->position_offset + index]
+-                                  : frame->inline_position;
+-#endif
+       // Only the one-word mode initializes this value. Other modes carry no
+       // mask, or use child_mask_offset in the arena.
+       uint64_t child_mask = builder.words == 1 ? frame->child_mask : 0;

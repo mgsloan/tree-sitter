@@ -30,7 +30,10 @@ Link the library before mainline Tree-sitter. Public declarations are in
 For batches using one grammar, create an `SQPackContext` with
 `sq_pack_context_new(language, &error)` and call
 `sq_pack_context_pack(context, parsed_tree, options, &error)`. It retains the
-language, grammar lookup tables, and scratch allocations across files. Each call
+language, grammar lookup tables, and scratch allocations across files. Direct
+fields are cached per production, avoiding repeated field-map scans and scratch
+clearing in frames and hidden-wrapper descent. One-shot packing keeps its local
+field scratch to avoid preparing a whole grammar for a tiny tree. Each call
 resets traversal state, including after an error; a tree from another language
 is rejected with `SQ_ERROR_LANGUAGE`. Output trees own their storage and remain
 valid after context reuse, trimming, or deletion. `sq_pack_context_trim(context)`
@@ -38,6 +41,8 @@ releases high-water scratch while keeping grammar tables; finish with
 `sq_pack_context_delete(context)`. Use separate contexts for concurrent calls,
 and keep native grammar libraries loaded while any context or tree uses them.
 The original `sq_tree_pack` remains available for independent conversions.
+[Field-cache measurements and points experiments](experiments/field-cache-points-results-2026-09-13.md)
+record the retained cache and the rejected position-calculation alternatives.
 
 `context-check` checks output equality, reuse, trimming, and ownership; setting
 `CONTEXT_FAILURES=1` also injects failure at every pack allocation and checks
@@ -89,8 +94,12 @@ and skip groups whose maximum end is too small. The equal-start boundary walk us
 its subtree root as the bound, avoiding repeated whole-tree checks through the
 public preorder API.
 
-`sq_cursor_attributes` reads a bulk attribute snapshot. Rust exposes it through
-`Node::walk()` and `Cursor::attributes()`:
+`sq_node_attributes`, `sq_cursor_attributes`, and `sq_node_iterator_attributes`
+read constant-time bulk snapshots, sharing symbol decoding and metadata reads.
+Child, named-child, and descendant counts are separate node APIs. This removes
+those members from the C snapshot and Rust `Attributes`; callers must rebuild
+and request counts explicitly when needed. Rust nodes, cursors, and iterators
+expose `attributes()`:
 
 ```rust,ignore
 let mut cursor = packed.root_node().walk()?;
@@ -103,6 +112,9 @@ The runtime layout has named slab offsets, with no column enum or offset table.
 Flags, u8/u16 deltas, and u32/u64 bases have explicit typed reads and writes;
 byte positions within native packed words are adjusted on big-endian hosts.
 Only variable-width IDs and group waste use the non-straddling bit decoder.
+Symbol and field decoders cache their lanes-per-word and masks in the runtime
+layout, avoiding repeated grammar-wide arithmetic. These constants add eight
+bytes to the runtime tree and do not change serialized slabs.
 
 After the header and per-group waste column, columns are ordered: start byte,
 end byte, span, symbol, grammar symbol, field, supertype, flag bitmaps (`last`,
@@ -231,7 +243,8 @@ u16 lanes, plus six absolute coordinate columns as u32 lanes. Coordinate decodin
 widens unsigned byte/u16 deltas directly from the slab and adds or subtracts a
 broadcast group base with AVX2 (eight lanes) or SSE2 (four lanes) on x86-64.
 Other platforms use a portable scalar implementation. Single-bit flags remain
-packed; child and descendant counts still use ordinary tree scans.
+packed. Bulk snapshots exclude child and descendant counts; their explicit node
+APIs still use ordinary tree scans.
 
 AVX2 and scalar group decoding skip addition for zero bases. SSE2 and per-node
 scalar reads retain their arithmetic paths. Subtraction always retains its
