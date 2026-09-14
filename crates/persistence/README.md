@@ -27,6 +27,10 @@ Implemented:
 - LMDB metadata, source contents, and compact slabs published in one synchronous
   transaction. Source generations and packing/grammar variants coexist.
 - Owned cache hits; shared `LoadedFile` values survive publication and cache drops.
+- Opt-in `Options::read = ReadPolicy::PreferTransactionBacked` retains an LMDB
+  snapshot for aligned cache slabs. Misaligned hits and local reader pressure use
+  owned copies. `LoadedFile::transaction_backed` reports the actual storage mode;
+  `detach` copies without invalidating aliases. Sources remain owned disk captures.
 - Structural safety loading without recomputing auxiliary-index membership or
   checking canonical auxiliary padding; no slab checksum. Node source bounds are
   checked before returning the pair. See [the validator audit](validation.md).
@@ -47,7 +51,7 @@ Remaining before the full design is implemented:
 
 - Broader validator fuzzing and review of remaining conservative structural
   invariants. The auxiliary semantic checks are now separate from cache loading.
-- Transaction-backed tree ownership/alignment, tentative and chunked APIs.
+- Tentative and chunked APIs, including transaction-owned cached source views.
 - Capacity/age-based eviction policy. Maintenance is caller-driven; a full map
   skips publication instead of automatically cleaning up or resizing.
 - Durable canonical fixtures, a real generated grammar fingerprint fixture,
@@ -57,6 +61,11 @@ Remaining before the full design is implemented:
   Parse-work deferral currently bypasses coordination outside Linux.
 - Bounded environment-registry retirement and controlled map growth. The first
   opener's map size governs shared instances; handles stay alive until process exit.
+- Configurable snapshot admission and reader-age/map-usage diagnostics. Currently
+  at most 32 transaction-backed owners are admitted per local environment; clones
+  share one slot. Other processes have their own admission counts, so LMDB's
+  global reader limit can still force cache fallback. Long-lived snapshots delay
+  reuse of retired pages across the entire environment, not just their tree.
 
 Zed may use this raw-byte cache only when its loaded parser input is byte-for-byte
 identical to the disk capture. Transformed buffers bypass cache reuse/publication.

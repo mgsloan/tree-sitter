@@ -3,7 +3,7 @@ use std::{
     fs::{self, File, OpenOptions},
     io,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex, MutexGuard, OnceLock},
+    sync::{Arc, Mutex, MutexGuard, OnceLock, atomic::AtomicUsize},
 };
 
 use crate::identity::{Grammar, Request};
@@ -18,6 +18,7 @@ pub(crate) struct Store {
     pub(crate) trees: Database,
     pub(crate) current: Database,
     pub(crate) writer: Mutex<File>,
+    pub(crate) backed_readers: AtomicUsize,
     work: crate::work::WorkLocks,
     // Retain the directory behind /proc/self/fd when opening on Linux.
     _directory: File,
@@ -280,6 +281,7 @@ impl Store {
             trees,
             current,
             writer,
+            backed_readers: AtomicUsize::new(0),
             work,
             _directory: directory,
         });
@@ -305,8 +307,7 @@ impl Store {
         }
         let value = tx.get(self.trees, &request.tree_key).ok()?;
         let slab = request.decode(value)?;
-        // Initial milestone retains the existing stricter checked loader until
-        // its safety-only split is audited. No checksum is introduced.
+        // Safety validation does not reconstruct auxiliary index membership.
         let tree =
             tree_sitter_squatter::Tree::from_bytes_safety_checked(&grammar.language, slab).ok()?;
         if tree

@@ -1,11 +1,13 @@
 //! Exact-disk-byte source/tree loading with atomic LMDB persistence.
 //!
-//! This first milestone uses owned cache hits. Cache errors fall back to parsing;
+//! Owned cache hits are the default; transaction-backed hits are opt-in.
+//! Cache errors fall back to parsing;
 //! optional deferred writes never hold a database transaction while queued.
 //! See the crate README for implemented scope and remaining design milestones.
 
 mod identity;
 mod maintenance;
+mod snapshot;
 mod store;
 mod work;
 pub use identity::{Grammar, GrammarFingerprint};
@@ -32,6 +34,7 @@ pub struct Options {
     pub symbol_presence: bool,
     /// Maximum cooperative wait in synchronous loads; zero allows duplicate work immediately.
     pub cooperation_wait: std::time::Duration,
+    pub read: ReadPolicy,
 }
 impl Default for Options {
     fn default() -> Self {
@@ -39,6 +42,30 @@ impl Default for Options {
             map_size: 256 * 1024 * 1024,
             symbol_presence: true,
             cooperation_wait: std::time::Duration::from_millis(50),
+            read: ReadPolicy::Owned,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ReadPolicy {
+    #[default]
+    Owned,
+    /// Prefer a pinned LMDB snapshot. Misalignment or the per-environment local
+    /// limit of 32 owners falls back to a copy. Live snapshots delay page reuse.
+    PreferTransactionBacked,
+}
+
+#[derive(Clone)]
+enum LoadedTree {
+    Owned(Arc<tree_sitter_squatter::Tree>),
+    Backed(Arc<tree_sitter_squatter::BackedTree>),
+}
+impl LoadedTree {
+    fn tree(&self) -> &tree_sitter_squatter::Tree {
+        match self {
+            Self::Owned(tree) => tree,
+            Self::Backed(tree) => tree,
         }
     }
 }
@@ -95,7 +122,7 @@ impl From<io::Error> for LoadError {
 #[derive(Clone)]
 pub struct LoadedFile {
     source: Arc<[u8]>,
-    tree: Arc<tree_sitter_squatter::Tree>,
+    tree: LoadedTree,
     hit: bool,
     cleanup: Option<(Arc<Store>, Arc<Request>)>,
 }
@@ -104,7 +131,22 @@ impl LoadedFile {
         &self.source
     }
     pub fn tree(&self) -> &tree_sitter_squatter::Tree {
-        &self.tree
+        self.tree.tree()
+    }
+    pub fn transaction_backed(&self) -> bool {
+        matches!(self.tree, LoadedTree::Backed(_))
+    }
+    /// Return an owned copy. Existing aliases keep their snapshots until dropped.
+    /// Auxiliary semantics are not revalidated while detaching.
+    pub fn detach(&self) -> Result<Self, tree_sitter_squatter::Error> {
+        let LoadedTree::Backed(tree) = &self.tree else {
+            return Ok(self.clone());
+        };
+        let tree = tree.detach()?;
+        Ok(Self {
+            tree: LoadedTree::Owned(Arc::new(tree)),
+            ..self.clone()
+        })
     }
     pub fn cache_hit(&self) -> bool {
         self.hit
@@ -132,6 +174,7 @@ pub struct PendingLoad {
     store: Option<Arc<Store>>,
     symbol_presence: bool,
     write: WritePolicy,
+    read: ReadPolicy,
 }
 
 pub struct LoadResult {
@@ -330,6 +373,7 @@ impl Persistence {
             store: store.cloned(),
             symbol_presence: self.options.symbol_presence,
             write: options.write,
+            read: self.options.read,
         })
     }
 }
@@ -368,15 +412,23 @@ impl PendingLoad {
         options.check()?;
         let store = self.store.clone();
         let hit = || {
-            store
-                .as_ref()
-                .and_then(|store| store.get(&self.request, &self.source, &self.grammar))
+            store.as_ref().and_then(|store| {
+                if self.read == ReadPolicy::PreferTransactionBacked
+                    && let Some(tree) =
+                        snapshot::get(store, &self.request, &self.source, &self.grammar)
+                {
+                    return Some(LoadedTree::Backed(Arc::new(tree)));
+                }
+                store
+                    .get(&self.request, &self.source, &self.grammar)
+                    .map(|tree| LoadedTree::Owned(Arc::new(tree)))
+            })
         };
         let ready = |tree| {
             LoadStep::Ready(LoadResult {
                 file: LoadedFile {
                     source: self.source.clone(),
-                    tree: Arc::new(tree),
+                    tree,
                     hit: true,
                     cleanup: store
                         .as_ref()
@@ -441,7 +493,7 @@ impl PendingLoad {
         .map_err(LoadError::Pack)?;
         let file = LoadedFile {
             source: self.source.clone(),
-            tree: Arc::new(packed),
+            tree: LoadedTree::Owned(Arc::new(packed)),
             hit: false,
             cleanup: store
                 .as_ref()

@@ -1,7 +1,8 @@
 # Cache validation boundary
 
-Persistence uses Squatter's copied `from_bytes_safety_checked` loader. The existing
-`from_bytes` and borrowed loader retain their stricter behavior. Both paths require
+Persistence defaults to Squatter's copied `from_bytes_safety_checked` loader.
+Opt-in transaction-backed hits use `from_owned_slab` with the same validation.
+The existing `from_bytes` and `from_bytes_borrowed` retain their stricter behavior. Both policies require
 the exact matching grammar; persistence separately checks full implementation,
 representation, path, and captured-source identities. Neither loader reparses the
 source or proves tree correctness. There is no serialized-tree integrity checksum.
@@ -52,3 +53,30 @@ process maliciously modifying a live LMDB mapping; cache directories are trusted
 The JSON native comparison and query suites, plus packed-column unit tests, pass
 under AddressSanitizer and UBSan on Linux for this change. That is a regression
 check, not exhaustive verification of the native safety boundary.
+
+## Transaction-backed ownership
+
+`snapshot.rs` uses a private raw read-only transaction because the binding's
+borrowed transaction cannot directly own its environment. No Rust reference is
+given a fabricated lifetime. Admission retains an `Arc<Store>`; construction uses
+exclusive transaction access to check path, contents, and envelope from one read
+snapshot. The slab pointer and length are sealed in a `StableSlab` owner. There
+are no subsequent get/cursor/reset/renew calls; final drop aborts the transaction
+before releasing the environment/admission permit.
+
+Squatter's `BackedTree` drops the native descriptor before its storage owner.
+`StableSlab` is an unsafe implementation contract: its slice must remain at the
+same address and be immutable until drop, including across owner moves. The LMDB
+implementation relies on normal copy-on-write operation, retained environment
+ownership, and no environment resizing. The native loader verifies the actual
+address alignment on every hit; misalignment releases the owner and falls back
+to copied storage. No special LMDB page layout or reserved-value encoding is used.
+
+The environment uses MDB_NOTLS. The bundled LMDB header permits read transactions
+to span threads when calls are synchronized. Construction has exclusive access;
+after sealing, concurrent readers only access immutable mapped bytes, not the
+transaction API. Final abort requires exclusive owner destruction and may run
+on a different thread. The raw transaction is never exposed. Tests cover owner
+release on validation/alignment failure, cross-thread final drop, concurrent
+publication/cleanup, bounded admission, aliases after detach, and reclaiming a
+crashed process's reader slot.

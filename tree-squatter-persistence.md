@@ -563,7 +563,11 @@ bounded waits/resumable deferral, optional bounded obsolete-generation and
 deleted-path cleanup, and explicit stale-reader checks. The prototype stores the
 advisory generation pointer in a separate `current` named database; schema version
 2 is intentionally incompatible with prototype 1 and does not migrate it.
-Transaction-backed reads, capacity/age eviction, other-platform work locks, and
+Opt-in transaction-backed slab hits now retain a sealed MDB_NOTLS read owner with
+actual-pointer alignment checks and owned fallback. Their source stays an owned
+disk capture. A fixed limit of 32 local owners bounds admission; explicit detach
+copies a slab without revoking existing aliases. Configurable admission, reader
+age diagnostics, cached source views, capacity/age eviction, other-platform work locks, and
 power-loss qualification remain pending. See the crate README for scope.
 
 
