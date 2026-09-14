@@ -32,6 +32,10 @@ static uint64_t group_equal(const SQTree *tree, uint32_t group, uint32_t offset,
     return 0;
   }
 
+  if (!bits) {
+    uint32_t used = SQ_GROUP_SIZE - sq_group_waste(tree, group);
+    return UINT64_MAX >> (64 - used);
+  }
   uint32_t lanes = 64 / bits;
   uint32_t first_slot = group * SQ_GROUP_SIZE;
   uint32_t last_slot = first_slot + SQ_GROUP_SIZE;

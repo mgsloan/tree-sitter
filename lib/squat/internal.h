@@ -26,13 +26,13 @@ _Static_assert(SQ_ITERATOR_UNPACK_SLOTS >= SQ_GROUP_SIZE &&
 _Static_assert(SQ_COLUMN_ALIGNMENT == 8 || SQ_COLUMN_ALIGNMENT == 64,
                "supported experimental column alignments");
 #define SQ_VERSION                                                                                 \
-  (UINT32_C(0x53510090) |                                                                          \
+  (UINT32_C(0x535100a0) |                                                                          \
    (SQ_GROUP_SIZE == 32   ? 2u                                                                     \
     : SQ_GROUP_SIZE == 64 ? 4u                                                                     \
                           : 0u) |                                                                  \
    (SQ_COLUMN_ALIGNMENT == 64 ? 8u : 0u))
 
-// Version 9: distinguish nonterminal extras from ordinary recursive gotos.
+// Version 10: omit the field column when the grammar has no fields.
 #define SQ_LAYOUT_FLAGS (SQ_INCLUDE_POINTS ? 0u : 0x100u)
 #define SQ_PRESENCE 0x200u
 #define SQ_WIDE_SUPERTYPES 0x400u
@@ -334,6 +334,7 @@ uint32_t sq_node_grammar_id(SQNode);
 uint32_t sq_node_grammar_id_with_symbol(SQNode, uint32_t symbol);
 
 static inline uint32_t sq_node_field_value(SQNode node) {
+  if (!node.tree->layout.field_bits) return 0;
   return sq_get_packed_cached(node.tree->data, node.tree->layout.field, node.slot,
                               node.tree->layout.field_bits, node.tree->layout.field_lanes,
                               node.tree->layout.field_mask);

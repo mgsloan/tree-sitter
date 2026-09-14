@@ -311,8 +311,10 @@ static bool open_group(Builder *builder) {
   SQTree *tree = builder->tree;
   start_lanes(&builder->symbol_lane, tree->data + tree->layout.symbol, tree->layout.symbol_bits,
               builder->slot_base);
-  start_lanes(&builder->field_lane, tree->data + tree->layout.field, tree->layout.field_bits,
-              builder->slot_base);
+  if (tree->layout.field_bits) {
+    start_lanes(&builder->field_lane, tree->data + tree->layout.field, tree->layout.field_bits,
+                builder->slot_base);
+  }
   return true;
 }
 
@@ -564,7 +566,11 @@ static bool emit(Builder *builder, const EmitNode *frame) {
             (struct GrammarOverride){distance(builder), encode_symbol(builder, grammar)};
       }
       put_lane(&builder->symbol_lane, encode_symbol(builder, raw_symbol));
-      put_lane(&builder->field_lane, frame->field);
+      if (builder->tree->layout.field_bits) {
+        put_lane(&builder->field_lane, frame->field);
+      } else {
+        ts_assert(frame->field == 0);
+      }
       slot->super = super;
       builder->count++;
       return true;

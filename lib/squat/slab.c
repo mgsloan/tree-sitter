@@ -44,6 +44,7 @@ uint8_t sq_width(uint32_t max) {
 }
 
 uint64_t sq_column_size(uint32_t count, uint8_t bits) {
+  if (!bits) return 0;
   uint32_t lanes = 64 / bits;
   return ((uint64_t)count + lanes - 1) / lanes * 8;
 }
@@ -58,9 +59,9 @@ bool sq_layout(const TSLanguage *language, uint32_t capacity, bool wide_supertyp
   if (!capacity || capacity > UINT32_MAX / SQ_GROUP_SIZE) return false;
   layout->supertype_bits = wide_supertypes ? 16 : 8;
   layout->symbol_bits = sq_width(language->symbol_count + language->alias_count + 1);
-  layout->field_bits = sq_width(language->field_count);
+  layout->field_bits = language->field_count ? sq_width(language->field_count) : 0;
   layout->symbol_lanes = (uint8_t)(64 / layout->symbol_bits);
-  layout->field_lanes = (uint8_t)(64 / layout->field_bits);
+  layout->field_lanes = layout->field_bits ? (uint8_t)(64 / layout->field_bits) : 0;
   layout->symbol_mask = (uint32_t)((UINT64_C(1) << layout->symbol_bits) - 1);
   layout->field_mask = (uint32_t)((UINT64_C(1) << layout->field_bits) - 1);
   uint32_t slots = capacity * SQ_GROUP_SIZE;

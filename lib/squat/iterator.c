@@ -114,8 +114,12 @@ static uint32_t cache_slot_count(const SQTree *tree, const UnpackCache *cache) {
 static void fill_field(const SQTree *tree, UnpackCache *cache) {
   if (cache->field_filled) return;
 
-  cache->unpack(tree->data + tree->layout.field, cache->group * SQ_GROUP_SIZE,
-                cache_slot_count(tree, cache), tree->layout.field_bits, cache->field);
+  if (!tree->layout.field_bits) {
+    memset(cache->field, 0, sizeof(cache->field));
+  } else {
+    cache->unpack(tree->data + tree->layout.field, cache->group * SQ_GROUP_SIZE,
+                  cache_slot_count(tree, cache), tree->layout.field_bits, cache->field);
+  }
   cache->field_filled = true;
 }
 
