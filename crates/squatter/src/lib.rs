@@ -207,10 +207,32 @@ impl Tree {
     /// Structural validation rejects malformed data. Grammar identity is the
     /// caller's responsibility; the slab does not contain a grammar fingerprint.
     pub fn from_bytes(language: &Language, bytes: &[u8]) -> Result<Self, Error> {
+        Self::load_bytes(language, bytes, false)
+    }
+    /// Loads a copied slab with structural safety validation, not an integrity check.
+    ///
+    /// Retains layout, topology, symbol/dictionary index, and coordinate checks.
+    /// Does not reconstruct auxiliary symbol-presence membership or require its
+    /// padding (or unused dictionary bits) to be canonical. Corrupt but bounded
+    /// auxiliary data may therefore yield incorrect query results.
+    ///
+    /// The exact matching grammar is required, as with [`Self::from_bytes`].
+    /// Neither loader verifies agreement with source text. This entry point is
+    /// intended for caches whose policy deliberately omits semantic integrity
+    /// validation; it is not an unchecked or zero-copy loader.
+    pub fn from_bytes_safety_checked(language: &Language, bytes: &[u8]) -> Result<Self, Error> {
+        Self::load_bytes(language, bytes, true)
+    }
+    fn load_bytes(language: &Language, bytes: &[u8], safety_only: bool) -> Result<Self, Error> {
         let raw_language = language.clone().into_raw();
         let mut status = 0;
+        let load = if safety_only {
+            ffi::sq_tree_from_bytes_safety_checked
+        } else {
+            ffi::sq_tree_from_bytes
+        };
         let raw = unsafe {
-            ffi::sq_tree_from_bytes(
+            load(
                 raw_language.cast(),
                 bytes.as_ptr().cast(),
                 bytes.len(),
@@ -757,6 +779,12 @@ mod ffi {
             error: *mut i32,
         ) -> *mut c_void;
         pub fn sq_tree_from_bytes_borrowed(
+            language: *const c_void,
+            bytes: *const c_void,
+            length: usize,
+            error: *mut i32,
+        ) -> *mut c_void;
+        pub fn sq_tree_from_bytes_safety_checked(
             language: *const c_void,
             bytes: *const c_void,
             length: usize,

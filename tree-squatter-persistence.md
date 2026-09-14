@@ -554,8 +554,11 @@ See [Zed's load/save code](https://github.com/zed-industries/zed/blob/main/crate
 Implementation has begun in crates/persistence. The first owned-read milestone
 implements atomic sources/trees/path records, deferred writes, parser reset and
 cancellation, actual compiled representation identity, and process/thread writer
-admission. It deliberately retains Squatter's stricter validator pending the
-safety-only audit. The next milestone adds Linux parse-work cooperation with
+admission. Cache loading now uses a structural safety entry point that skips
+auxiliary-index semantic reconstruction and unused auxiliary padding checks while
+retaining conservative node/topology/coordinate checks. See
+[the scoped validator audit](crates/persistence/validation.md); broader fuzzing
+remains pending. The crate also implements Linux parse-work cooperation with
 bounded waits/resumable deferral, optional bounded obsolete-generation and
 deleted-path cleanup, and explicit stale-reader checks. The prototype stores the
 advisory generation pointer in a separate `current` named database; schema version

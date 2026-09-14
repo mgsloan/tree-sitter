@@ -86,6 +86,12 @@ const void *sq_tree_data(const SQTree *, uint32_t *length);
 // Copies and validates input, including topology and auxiliary indexes.
 SQTree *sq_tree_from_bytes(const TSLanguage *, const void *, size_t, SQError *);
 
+// Copies and validates layout, topology, indexes, and coordinate arithmetic,
+// without checking auxiliary index membership or canonical padding contents.
+// Incorrect but bounded auxiliary contents may produce incorrect query results.
+// This does not verify grammar identity or the tree's agreement with source text.
+SQTree *sq_tree_from_bytes_safety_checked(const TSLanguage *, const void *, size_t, SQError *);
+
 // Validates without copying the slab. Bytes must remain alive and immutable
 // until this tree and its nodes/cursors are no longer used. They must be aligned
 // to 8 bytes (64 with the experimental column-alignment build). Deletion frees

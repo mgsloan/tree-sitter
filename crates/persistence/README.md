@@ -27,6 +27,9 @@ Implemented:
 - LMDB metadata, source contents, and compact slabs published in one synchronous
   transaction. Source generations and packing/grammar variants coexist.
 - Owned cache hits; shared `LoadedFile` values survive publication and cache drops.
+- Structural safety loading without recomputing auxiliary-index membership or
+  checking canonical auxiliary padding; no slab checksum. Node source bounds are
+  checked before returning the pair. See [the validator audit](validation.md).
 - Parser reset, whole-file ranges, cancellation checks and no partial publication.
 - Inline, deferred, and disabled writes. Deferred work retains no transaction.
 - Nonblocking writer admission for cooperating processes/threads; map-full,
@@ -42,8 +45,8 @@ Implemented:
 
 Remaining before the full design is implemented:
 
-- Audit/split Squatter's validator into safety-only checks. Currently uses its
-  existing stricter checked loader plus source-range bounds. No checksum is added.
+- Broader validator fuzzing and review of remaining conservative structural
+  invariants. The auxiliary semantic checks are now separate from cache loading.
 - Transaction-backed tree ownership/alignment, tentative and chunked APIs.
 - Capacity/age-based eviction policy. Maintenance is caller-driven; a full map
   skips publication instead of automatically cleaning up or resizing.

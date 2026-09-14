@@ -307,7 +307,8 @@ impl Store {
         let slab = request.decode(value)?;
         // Initial milestone retains the existing stricter checked loader until
         // its safety-only split is audited. No checksum is introduced.
-        let tree = tree_sitter_squatter::Tree::from_bytes(&grammar.language, slab).ok()?;
+        let tree =
+            tree_sitter_squatter::Tree::from_bytes_safety_checked(&grammar.language, slab).ok()?;
         if tree
             .root_node()
             .preorder()

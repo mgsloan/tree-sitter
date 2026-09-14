@@ -456,6 +456,16 @@ static void reject_index_mutation(const SQTree *tree, uint8_t *bytes) {
         error == SQ_ERROR_INVALID_SLAB);
   CHECK(!sq_tree_from_bytes_borrowed(tree->language, bytes, tree->size, &error) &&
         error == SQ_ERROR_INVALID_SLAB);
+  SQTree *safety = sq_tree_from_bytes_safety_checked(tree->language, bytes, tree->size, &error);
+  CHECK(safety && error == SQ_OK);
+  // Mutated auxiliary values are data, not addresses. Exercise both modes with
+  // every valid group/symbol before releasing the owned copy.
+  for (uint32_t group = 0; group < sq_tree_group_count(safety); group++) {
+    for (uint32_t symbol = 0; symbol < sq_symbols(safety); symbol++) {
+      (void)sq_tree_group_has_symbol(safety, group, sq_decode_symbol(safety, symbol));
+    }
+  }
+  sq_tree_delete(safety);
   memcpy(bytes, tree->data, tree->size);
 }
 
@@ -624,6 +634,8 @@ static void exercise(const TSLanguage *language, const char *source, uint32_t le
     unaligned[1] = (uint8_t)((((const uint8_t *)bytes)[0] & 0x0f) | (version << 4));
     CHECK(!sq_tree_from_bytes(language, unaligned + 1, size, &error) &&
           error == SQ_ERROR_INVALID_SLAB);
+    CHECK(!sq_tree_from_bytes_safety_checked(language, unaligned + 1, size, &error) &&
+          error == SQ_ERROR_INVALID_SLAB);
   }
 
   // The row/column feature changes column offsets. Reject the other layout
@@ -692,6 +704,20 @@ static void exercise(const TSLanguage *language, const char *source, uint32_t le
       unaligned[1 + state % size] ^= (uint8_t)(1u << (trial % 8));
       SQTree *changed = sq_tree_from_bytes(language, unaligned + 1, size, &error);
       CHECK(changed ? error == SQ_OK : error == SQ_ERROR_INVALID_SLAB);
+      sq_tree_delete(changed);
+      changed = sq_tree_from_bytes_safety_checked(language, unaligned + 1, size, &error);
+      CHECK(changed ? error == SQ_OK : error == SQ_ERROR_INVALID_SLAB);
+      if (changed) {
+        uint32_t visited = 0;
+        for (SQNode node = sq_tree_root_node(changed); node.tree;
+             node = sq_node_next_preorder(node)) {
+          CHECK(visited++ < sq_tree_slot_count(changed));
+          (void)sq_node_parent(node);
+          (void)sq_node_symbol(node);
+          (void)sq_node_field_name(node);
+          (void)sq_node_descendant_count(node);
+        }
+      }
       sq_tree_delete(changed);
     }
 
