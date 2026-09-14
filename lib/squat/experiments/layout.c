@@ -90,21 +90,13 @@ int main(int argc, char **argv) {
 
     SQHeader *header = sq_header(tree);
     uint32_t slots = sq_tree_slot_count(tree);
-    uint32_t presence_bytes =
-        sq_presence_offset(tree)
-            ? (sq_dictionary_offset(tree) ? sq_dictionary_offset(tree) : tree->size) -
-                  sq_presence_offset(tree)
-            : 0;
-    uint32_t dictionary_bytes =
-        sq_dictionary_offset(tree) ? tree->size - sq_dictionary_offset(tree) : 0;
+    uint32_t presence_bytes = sq_presence_offset(tree) ? (uint32_t)sq_presence_size(tree) : 0;
+    uint32_t dictionary_bytes = header->supertype_dictionary_count *
+                                  ((tree->supertype_count + 63) / 64) * 8;
     uint64_t grammar_bytes = sq_column_size(slots, tree->layout.symbol_bits);
 
-    // Sparse aliases require a bitmap, packed exceptional values and rank
-    // checkpoints. This is a byte estimate, not a claim about access speed.
-    uint64_t sparse_bytes = aliases ? sq_column_size(slots, 1) +
-                                          sq_column_size(aliases, tree->layout.symbol_bits) +
-                                          ((uint64_t)slots + 255) / 256 * 4
-                                    : 0;
+    // Actual sparse section bytes, compared with the former dense column.
+    uint64_t sparse_bytes = aliases ? sq_grammar_size(tree, aliases) : 0;
     uint8_t super_bits = 0;
     if (tree->supertype_count > 8) {
       if (header->supertype_dictionary_count > 1) {
