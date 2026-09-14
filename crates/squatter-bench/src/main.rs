@@ -521,8 +521,8 @@ fn main() -> Result<()> {
                     "cpuinfo": fs::read_to_string("/proc/cpuinfo").ok().and_then(|text| text.lines().find(|line| line.starts_with("model name")).map(str::to_owned))},
         "build": {"debug_assertions": cfg!(debug_assertions), "package_version": env!("CARGO_PKG_VERSION")},
         "field_contract": "field API differences expected only when squat agrees with mainline visible-child fields; ERROR parents have no fields",
-        "iterator_contract": "native preorder; cached variants lazily unpack IDs; attribute walks derive depth from descendant counts; mainline uses its forward cursor",
-        "cursor_contract": "walk-forward uses bulk cursor attributes; cursor-forward measures native navigation",
+        "iterator_contract": "native preorder; walks read O(1) bulk attributes; cached attribute walks use the unpack cache; navigation-only caches are idle; mainline uses its forward cursor",
+        "cursor_contract": "walk-forward reads O(1) bulk attributes, excluding counts, fields, and depth from the Rust snapshot; cursor-forward measures native navigation",
         "workload_order": "rotate by batch and every two repeats, retaining both backend orders for each rotation",
         "query_engine": "slab NFA and structural plans adapted from ../main", "seek_contract": if arguments.strict_seeks { "strict" } else { "known differences counted but ignored by user request" },
     });

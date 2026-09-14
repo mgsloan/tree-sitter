@@ -2,7 +2,7 @@
 #define SQUAT_ATTRIBUTES_H_
 #include "internal.h"
 
-// Shared metadata/count construction keeps cursor and iterator semantics
+// Shared constant-time metadata construction keeps cursor and iterator semantics
 // identical, whether coordinates and IDs come from packed reads or a cache.
 static inline void sq_attributes_finish(SQNode node, uint32_t symbol, uint32_t grammar,
                                         TSFieldId field, SQCursorAttributes *out) {
@@ -15,9 +15,6 @@ static inline void sq_attributes_finish(SQNode node, uint32_t symbol, uint32_t g
   out->is_named = ts_language_symbol_metadata(language, raw).named;
   out->is_error = out->symbol == ts_builtin_sym_error;
   out->field_id = field;
-  out->child_count = sq_node_child_count(node);
-  out->named_child_count = sq_node_named_child_count(node);
-  out->descendant_count = sq_node_descendant_count(node);
 }
 
 static inline void sq_attributes_with_ids(SQNode node, uint32_t symbol, uint32_t grammar,

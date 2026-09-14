@@ -34,8 +34,6 @@ pub fn identities<'tree, N: NodeLike<'tree>>(root: N) -> Result<Identities> {
 pub struct Record<'tree> {
     pub ordinal: usize,
     pub attributes: Attributes<'tree>,
-    pub field: Option<u16>,
-    pub depth: u32,
 }
 
 pub fn walk<'tree, N: NodeLike<'tree>>(root: N, ids: &Identities) -> Result<Vec<Record<'tree>>> {
@@ -46,8 +44,6 @@ pub fn walk<'tree, N: NodeLike<'tree>>(root: N, ids: &Identities) -> Result<Vec<
         records.push(Record {
             ordinal: ids[&node.identity()],
             attributes: cursor.attributes(),
-            field: cursor.field_id(),
-            depth: cursor.depth(),
         });
         if cursor.goto_first_child() {
             continue;
@@ -63,32 +59,19 @@ pub fn walk<'tree, N: NodeLike<'tree>>(root: N, ids: &Identities) -> Result<Vec<
     }
 }
 
-/// The iterator is stackless. Recover relative depth from the descendant counts
-/// already required by the walk contract, using logical preorder ordinals so
-/// physical padding never enters the depth calculation.
+/// Read the same constant-time snapshot as cursor walks, using the optional
+/// block unpack cache. Counts and depth are not reconstructed.
 pub fn walk_iterator<'tree>(
     root: tree_sitter_squatter::Node<'tree>,
     ids: &Identities,
     cached: bool,
 ) -> Result<Vec<Record<'tree>>> {
-    let mut iterator = root.node_iterator(cached)?;
     let mut records = Vec::with_capacity(ids.len());
-    let mut ends = Vec::new();
+    let mut iterator = root.node_iterator(cached)?;
     while let Some(node) = iterator.next() {
-        let ordinal = ids[&node.identity()];
-        while ends.last().is_some_and(|&end| end <= ordinal) {
-            ends.pop();
-        }
-        let attributes = iterator.attributes().unwrap();
-        let depth = ends.len() as u32;
-        if attributes.descendant_count > 1 {
-            ends.push(ordinal + attributes.descendant_count);
-        }
         records.push(Record {
-            ordinal,
-            attributes,
-            field: iterator.field_id(),
-            depth,
+            ordinal: ids[&node.identity()],
+            attributes: iterator.attributes().unwrap(),
         });
     }
     Ok(records)
@@ -183,7 +166,7 @@ fn expected_field_mismatch(
     lookup != visible_child && packed == visible_child
 }
 
-/// Untimed relationship checks complement the timed attribute walks. Full checks
+/// Untimed count and relationship checks complement the O(1) walks. Full checks
 /// on small trees and evenly spaced checks on large trees avoid quadratic test
 /// setup from repeatedly finding mainline parents from the root.
 pub fn relationships<'tree, A: NodeLike<'tree>, B: NodeLike<'tree>>(
@@ -203,6 +186,14 @@ pub fn relationships<'tree, A: NodeLike<'tree>, B: NodeLike<'tree>>(
         let a = first.node();
         let b = second.node();
         let ordinal = mainline_ids[&a.identity()];
+        ensure!(
+            first.field_id() == second.field_id(),
+            "cursor field differs at ordinal {ordinal}"
+        );
+        ensure!(
+            first.depth() == second.depth(),
+            "cursor depth differs at ordinal {ordinal}"
+        );
         if ordinal.is_multiple_of(stride) {
             let a_relations = [
                 a.parent(),
@@ -225,23 +216,41 @@ pub fn relationships<'tree, A: NodeLike<'tree>, B: NodeLike<'tree>>(
                 );
             }
             let attributes = a.attributes();
+            ensure!(
+                attributes == b.attributes(),
+                "full attributes differ at ordinal {ordinal}"
+            );
+            let child_count = a.child_count();
+            let named_child_count = a.named_child_count();
+            ensure!(
+                child_count == b.child_count(),
+                "child count differs at ordinal {ordinal}"
+            );
+            ensure!(
+                named_child_count == b.named_child_count(),
+                "named child count differs at ordinal {ordinal}"
+            );
+            ensure!(
+                a.descendant_count() == b.descendant_count(),
+                "descendant count differs at ordinal {ordinal}"
+            );
             // Indexed child access scans siblings. A wide array must not turn
             // the validation harness into quadratic work; cursor transitions
             // below still check every child, and small parents are exhaustive.
-            let child_stride = (attributes.child_count / 100).max(1);
-            for index in (0..attributes.child_count)
+            let child_stride = (child_count / 100).max(1);
+            for index in (0..child_count)
                 .step_by(child_stride)
-                .chain(std::iter::once(attributes.child_count))
+                .chain(std::iter::once(child_count))
             {
                 ensure!(
                     identity_a(a.child(index)) == identity_b(b.child(index)),
                     "child {index} differs at ordinal {ordinal}"
                 );
             }
-            let named_stride = (attributes.named_child_count / 100).max(1);
-            for index in (0..attributes.named_child_count)
+            let named_stride = (named_child_count / 100).max(1);
+            for index in (0..named_child_count)
                 .step_by(named_stride)
-                .chain(std::iter::once(attributes.named_child_count))
+                .chain(std::iter::once(named_child_count))
             {
                 ensure!(
                     identity_a(a.named_child(index)) == identity_b(b.named_child(index)),

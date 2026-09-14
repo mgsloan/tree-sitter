@@ -3,7 +3,8 @@ use crate::{Cursor, Error, Node, Tree};
 #[cfg(feature = "points")]
 use tree_sitter::Point;
 
-/// Attributes supported by both representations on freshly parsed trees.
+/// Constant-time attributes supported by both representations on freshly parsed trees.
+/// Child and descendant counts are separate node operations.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Attributes<'tree> {
     pub kind: &'tree str,
@@ -22,9 +23,6 @@ pub struct Attributes<'tree> {
     pub is_error: bool,
     pub has_error: bool,
     pub has_changes: bool,
-    pub child_count: usize,
-    pub named_child_count: usize,
-    pub descendant_count: usize,
 }
 
 pub trait TreeLike {
@@ -38,7 +36,14 @@ pub trait NodeLike<'tree>: Copy + Eq {
     type Cursor: CursorLike<'tree, Node = Self>;
     /// Stable within this tree; not comparable across representations.
     fn identity(self) -> usize;
+    /// Read constant-time attributes; counts are separate operations below.
     fn attributes(self) -> Attributes<'tree>;
+    /// Count visible children; this can scan children in packed trees.
+    fn child_count(self) -> usize;
+    /// Count named children; this can scan children in packed trees.
+    fn named_child_count(self) -> usize;
+    /// Count visible descendants including this node; this can scan packed groups.
+    fn descendant_count(self) -> usize;
     fn cursor(self) -> Result<Self::Cursor, Error>;
     fn parent(self) -> Option<Self>;
     fn child(self, index: usize) -> Option<Self>;
@@ -56,7 +61,7 @@ pub trait NodeLike<'tree>: Copy + Eq {
 pub trait CursorLike<'tree> {
     type Node: NodeLike<'tree>;
     fn node(&self) -> Self::Node;
-    /// Current node attributes.
+    /// Current node constant-time attributes.
     fn attributes(&mut self) -> Attributes<'tree> {
         self.node().attributes()
     }
@@ -137,14 +142,20 @@ macro_rules! attributes {
             is_error: $node.is_error(),
             has_error: $node.has_error(),
             has_changes: $node.has_changes(),
-            child_count: $node.child_count() as usize,
-            named_child_count: $node.named_child_count(),
-            descendant_count: $node.descendant_count(),
         }
     };
 }
 impl<'tree> NodeLike<'tree> for tree_sitter::Node<'tree> {
     type Cursor = tree_sitter::TreeCursor<'tree>;
+    fn child_count(self) -> usize {
+        tree_sitter::Node::child_count(&self) as usize
+    }
+    fn named_child_count(self) -> usize {
+        tree_sitter::Node::named_child_count(&self)
+    }
+    fn descendant_count(self) -> usize {
+        tree_sitter::Node::descendant_count(&self)
+    }
     fn identity(self) -> usize {
         self.id()
     }
@@ -158,11 +169,20 @@ impl<'tree> NodeLike<'tree> for tree_sitter::Node<'tree> {
 }
 impl<'tree> NodeLike<'tree> for Node<'tree> {
     type Cursor = Cursor<'tree>;
+    fn child_count(self) -> usize {
+        Node::child_count(self)
+    }
+    fn named_child_count(self) -> usize {
+        Node::named_child_count(self)
+    }
+    fn descendant_count(self) -> usize {
+        Node::descendant_count(self)
+    }
     fn identity(self) -> usize {
         self.slot() as usize
     }
     fn attributes(self) -> Attributes<'tree> {
-        attributes!(self)
+        Node::attributes(self)
     }
     fn cursor(self) -> Result<Self::Cursor, Error> {
         self.walk()

@@ -395,6 +395,15 @@ impl<'tree> Node<'tree> {
             .ok_or(Error::Allocation)
     }
 
+    /// Read the constant-time attributes in one native call. Counts are separate.
+    pub fn attributes(self) -> traits::Attributes<'tree> {
+        let mut raw = std::mem::MaybeUninit::uninit();
+        unsafe {
+            ffi::sq_node_attributes(self.raw, raw.as_mut_ptr());
+            raw.assume_init().into_attributes()
+        }
+    }
+
     pub fn kind_id(self) -> u16 {
         unsafe { ffi::sq_node_symbol(self.raw) }
     }
@@ -612,6 +621,7 @@ impl<'tree> NodeIterator<'tree> {
     pub fn node(&self) -> Option<Node<'tree>> {
         self.current
     }
+    /// Read the last yielded node's constant-time attributes, using the optional cache.
     pub fn attributes(&mut self) -> Option<traits::Attributes<'tree>> {
         self.current?;
         let mut raw = std::mem::MaybeUninit::uninit();
@@ -639,7 +649,7 @@ pub struct Cursor<'tree> {
     lifetime: PhantomData<&'tree Tree>,
 }
 impl<'tree> Cursor<'tree> {
-    /// Read a snapshot of the current node's attributes in one native call.
+    /// Read the current node's constant-time attributes in one native call.
     pub fn attributes(&mut self) -> traits::Attributes<'tree> {
         let mut raw = std::mem::MaybeUninit::uninit();
         unsafe {
@@ -682,9 +692,6 @@ struct RawCursorAttributes {
     start_point: RawPoint,
     #[cfg(feature = "points")]
     end_point: RawPoint,
-    child_count: u32,
-    named_child_count: u32,
-    descendant_count: u32,
     symbol: u16,
     grammar_symbol: u16,
     field_id: u16,
@@ -695,8 +702,8 @@ struct RawCursorAttributes {
     has_error: bool,
 }
 impl RawCursorAttributes {
-    // Only called with an initialized snapshot from a live cursor. Its language
-    // strings are retained by the tree, so they may outlive the cursor itself.
+    // Only called with an initialized snapshot from a live tree. Its language
+    // strings are retained by the tree and may outlive a cursor or iterator.
     unsafe fn into_attributes<'tree>(self) -> traits::Attributes<'tree> {
         traits::Attributes {
             kind: unsafe { CStr::from_ptr(self.kind) }.to_str().unwrap(),
@@ -717,9 +724,6 @@ impl RawCursorAttributes {
             is_error: self.is_error,
             has_error: self.has_error,
             has_changes: false,
-            child_count: self.child_count as usize,
-            named_child_count: self.named_child_count as usize,
-            descendant_count: self.descendant_count as usize,
         }
     }
 }
@@ -776,6 +780,7 @@ mod ffi {
         pub fn sq_node_iterator_next(iterator: *mut c_void) -> RawNode;
         pub fn sq_node_iterator_attributes(iterator: *mut c_void, out: *mut RawCursorAttributes);
         pub fn sq_node_iterator_field_id(iterator: *mut c_void) -> u16;
+        pub fn sq_node_attributes(node: RawNode, out: *mut RawCursorAttributes);
         pub fn sq_cursor_attributes(cursor: *mut c_void, out: *mut RawCursorAttributes);
         pub fn sq_cursor_new(node: RawNode) -> *mut c_void;
         pub fn sq_cursor_delete(cursor: *mut c_void);

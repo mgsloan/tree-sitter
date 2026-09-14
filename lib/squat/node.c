@@ -1,4 +1,4 @@
-#include "internal.h"
+#include "attributes.h"
 #if defined(__SSE2__)
 #include <emmintrin.h>
 #endif
@@ -789,3 +789,11 @@ SQNode sq_node_named_descendant_for_point_range(SQNode node, TSPoint range_start
   return seek_point(node, range_start, range_end, true);
 }
 #endif
+
+void sq_node_attributes(SQNode node, SQCursorAttributes *out) {
+  if (!out) return;
+  memset(out, 0, sizeof(*out));
+  if (!node.tree) return;
+  sq_attributes_with_ids(node, sq_node_symbol_id(node), sq_node_grammar_id(node),
+                         (TSFieldId)sq_node_field_value(node), out);
+}

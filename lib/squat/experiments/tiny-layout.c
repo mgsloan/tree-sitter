@@ -14,7 +14,7 @@ static uint64_t walk_mainline(TSNode root) {
     TSNode node = ts_tree_cursor_current_node(&cursor);
     if (!visited_children) {
       sum += ts_node_start_byte(node) + ts_node_end_byte(node) + ts_node_symbol(node) +
-             ts_node_is_named(node) + ts_node_has_error(node) + ts_node_child_count(node);
+             ts_node_is_named(node) + ts_node_has_error(node);
 #if SQ_INCLUDE_POINTS
       TSPoint s = ts_node_start_point(node), e = ts_node_end_point(node);
       sum += s.row + s.column + e.row + e.column;
@@ -36,15 +36,14 @@ static uint64_t walk_squat(SQNode root) {
   uint64_t sum = 0;
   SQCursor *cursor = sq_cursor_new(root);
   bool visited_children = false;
-  SQCursorAttributes attrs;
   for (;;) {
     if (!visited_children) {
-      sq_cursor_attributes(cursor, &attrs);
-      sum += attrs.start_byte + attrs.end_byte + attrs.symbol + attrs.is_named +
-             attrs.has_error + attrs.child_count;
+      SQNode node = sq_cursor_node(cursor);
+      sum += sq_node_start_byte(node) + sq_node_end_byte(node) + sq_node_symbol(node) +
+             sq_node_is_named(node) + sq_node_has_error(node);
 #if SQ_INCLUDE_POINTS
-      sum += attrs.start_point.row + attrs.start_point.column + attrs.end_point.row +
-             attrs.end_point.column;
+      TSPoint start = sq_node_start_point(node), end = sq_node_end_point(node);
+      sum += start.row + start.column + end.row + end.column;
 #endif
       if (sq_cursor_goto_first_child(cursor)) continue;
       visited_children = true;

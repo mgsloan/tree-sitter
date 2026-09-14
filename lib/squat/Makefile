@@ -69,6 +69,10 @@ $(BUILD)/setup-bench: experiments/setup.c $(BUILD)/libtree-sitter-squat.a $(BUIL
 $(BUILD)/tiny-layout-bench: experiments/tiny-layout.c $(BUILD)/libtree-sitter-squat.a $(BUILD)/runtime.o
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) $^ -ldl -o $@
 
+# O(1) attribute walks against mainline; pass zero seek rounds for walks alone.
+$(BUILD)/walk-bench: experiments/walk.c $(BUILD)/libtree-sitter-squat.a $(BUILD)/runtime.o
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) $^ -ldl -o $@
+
 $(BUILD)/capacity-bench: experiments/capacity.c $(BUILD)/libtree-sitter-squat.a $(BUILD)/runtime.o
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) $^ -ldl -o $@
 
@@ -88,4 +92,8 @@ $(BUILD)/memory-bench: experiments/memory.c $(BUILD)/libtree-sitter-squat.a $(BU
 
 # Public-API probe for comparing persisted bytes with another build.
 $(BUILD)/slab-compatibility: tests/slab-compatibility.c $(BUILD)/libtree-sitter-squat.a $(BUILD)/runtime.o
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) $^ -ldl -o $@
+
+# Calibrated identical-attribute walks: individual/bulk getters and iterator cache.
+$(BUILD)/attributes-bench: experiments/attributes.c $(BUILD)/libtree-sitter-squat.a $(BUILD)/runtime.o
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) $^ -ldl -o $@

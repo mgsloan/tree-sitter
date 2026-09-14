@@ -28,15 +28,14 @@ typedef struct SQNodeIterator SQNodeIterator;
 
 // Compile callers and this library with the same SQ_INCLUDE_POINTS setting.
 // Point APIs and snapshot members are absent in byte-only builds.
-// A copied snapshot. Strings borrow the tree's retained language. Counts include
-// visible nodes only; descendant_count includes the current node.
+// A constant-time snapshot. Strings borrow the tree's retained language.
+// Child and descendant counts are available through explicit node APIs.
 typedef struct {
   const char *type, *grammar_type;
   uint32_t start_byte, end_byte;
 #if SQ_INCLUDE_POINTS
   TSPoint start_point, end_point;
 #endif
-  uint32_t child_count, named_child_count, descendant_count;
   TSSymbol symbol, grammar_symbol;
   TSFieldId field_id;
   bool is_named, is_extra, is_missing, is_error, has_error;
@@ -185,6 +184,9 @@ bool sq_cursor_goto_first_child(SQCursor *);
 bool sq_cursor_goto_last_child(SQCursor *);
 bool sq_cursor_goto_next_sibling(SQCursor *);
 bool sq_cursor_goto_parent(SQCursor *);
+
+// Constant-time snapshots; null nodes/cursors produce zeroed snapshots.
+void sq_node_attributes(SQNode, SQCursorAttributes *);
 
 // Trees must outlive cursors. Each cursor owns its ancestor stack.
 void sq_cursor_attributes(SQCursor *, SQCursorAttributes *);

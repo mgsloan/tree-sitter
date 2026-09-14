@@ -180,6 +180,9 @@ static void compare_cursor_state(SQCursor *cursor) {
   SQNode node = sq_cursor_node(cursor);
   SQCursorAttributes actual;
   sq_cursor_attributes(cursor, &actual);
+  SQCursorAttributes direct;
+  sq_node_attributes(node, &direct);
+  CHECK(memcmp(&actual, &direct, sizeof(actual)) == 0);
   CHECK(actual.symbol == sq_node_symbol(node));
   CHECK(actual.grammar_symbol == sq_node_grammar_symbol(node));
   CHECK(strcmp(actual.type, sq_node_type(node)) == 0);
@@ -197,9 +200,6 @@ static void compare_cursor_state(SQCursor *cursor) {
   CHECK(actual.is_missing == sq_node_is_missing(node));
   CHECK(actual.is_error == sq_node_is_error(node));
   CHECK(actual.has_error == sq_node_has_error(node));
-  CHECK(actual.child_count == sq_node_child_count(node));
-  CHECK(actual.named_child_count == sq_node_named_child_count(node));
-  CHECK(actual.descendant_count == sq_node_descendant_count(node));
 }
 
 static void compare_supertypes(const TSTreeCursor *cursor, SQNode node) {
@@ -770,6 +770,11 @@ static void packing_tests(void) {
   CHECK(sq_node_is_null(sq_node_iterator_node(NULL)));
   CHECK(sq_node_iterator_field_id(NULL) == 0);
   sq_node_iterator_delete(NULL);
+  SQCursorAttributes empty = {0}, actual;
+  memset(&actual, 0xff, sizeof(actual));
+  sq_node_attributes(sq_null(), &actual);
+  CHECK(memcmp(&empty, &actual, sizeof(actual)) == 0);
+  sq_node_attributes(sq_null(), NULL);
   uint8_t data[256];
   for (uint8_t bits = 1; bits <= 32; bits++) {
     memset(data, 0, sizeof(data));
