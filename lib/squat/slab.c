@@ -1,5 +1,10 @@
 #include "internal.h"
 
+uint64_t sq_representation_id(void) {
+  return (uint64_t)(SQ_VERSION | SQ_LAYOUT_FLAGS) | ((uint64_t)SQ_GROUP_SIZE << 32) |
+         ((uint64_t)SQ_COLUMN_ALIGNMENT << 40) | ((uint64_t)sizeof(size_t) << 48);
+}
+
 uint8_t *sq_allocate_data(size_t size) {
 #if SQ_COLUMN_ALIGNMENT == 64
   if (size > SIZE_MAX - 63) {

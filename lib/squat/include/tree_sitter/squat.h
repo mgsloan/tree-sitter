@@ -60,6 +60,8 @@ typedef struct {
 } SQPackOptions;
 
 const char *sq_error_string(SQError);
+// Actual compiled slab format/configuration, for persistence identity.
+uint64_t sq_representation_id(void);
 SQPackOptions sq_pack_options_default(void);
 SQTree *sq_tree_pack(const TSTree *, SQPackOptions, SQError *);
 

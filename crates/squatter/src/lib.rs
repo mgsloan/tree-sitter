@@ -39,6 +39,14 @@ use tree_sitter::Point;
 /// Whether this library includes row/column storage and point APIs.
 pub const HAS_POINT_POSITIONS: bool = cfg!(feature = "points");
 
+/// Slab version and actual C build configuration (not a grammar/runtime identity).
+pub fn representation_id() -> u64 {
+    unsafe extern "C" {
+        fn sq_representation_id() -> u64;
+    }
+    unsafe { sq_representation_id() }
+}
+
 pub mod query;
 pub use query::{
     Query, QueryCapture, QueryCursor, QueryError, QueryExecution, QueryExecutionError, QueryMatch,
