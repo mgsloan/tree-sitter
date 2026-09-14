@@ -715,6 +715,54 @@ static void exercise(const TSLanguage *language, const char *source, uint32_t le
   ts_parser_delete(parser);
 }
 
+// Edits can change columns by a different amount than bytes. A single-line
+// reverse packer must subtract the two extents independently, even though
+// ordinary UTF-8 parsing usually gives them equal widths.
+static void edited_positions(const TSLanguage *language) {
+  TSParser *parser = ts_parser_new();
+  CHECK(ts_parser_set_language(parser, language));
+  const char *source = "[1, 2, 3]";
+  TSTree *tree = ts_parser_parse_string(parser, NULL, source, (uint32_t)strlen(source));
+  CHECK(tree);
+  TSInputEdit edit = {.start_byte = 4, .old_end_byte = 4, .new_end_byte = 7,
+      .start_point = {0, 4}, .old_end_point = {0, 4}, .new_end_point = {0, 11}};
+  ts_tree_edit(tree, &edit);
+  SQError error;
+  SQTree *packed = sq_tree_pack(tree, sq_pack_options_default(), &error);
+  CHECK(packed && error == SQ_OK);
+  SQPackContext *context = sq_pack_context_new(language, &error);
+  CHECK(context);
+  SQTree *cached = sq_pack_context_pack(context, tree, sq_pack_options_default(), &error);
+  CHECK(cached && cached->size == packed->size);
+  CHECK(memcmp(cached->data, packed->data, packed->size) == 0);
+  TSTreeCursor cursor = ts_tree_cursor_new(ts_tree_root_node(tree));
+  SQNode node = sq_tree_root_node(packed);
+  for (;;) {
+    TSNode expected = ts_tree_cursor_current_node(&cursor);
+    CHECK(!sq_node_is_null(node));
+    CHECK(ts_node_start_byte(expected) == sq_node_start_byte(node));
+    CHECK(ts_node_end_byte(expected) == sq_node_end_byte(node));
+#if SQ_INCLUDE_POINTS
+    CHECK(points_equal(ts_node_start_point(expected), sq_node_start_point(node)));
+    CHECK(points_equal(ts_node_end_point(expected), sq_node_end_point(node)));
+#endif
+    node = sq_node_next_preorder(node);
+    if (ts_tree_cursor_goto_first_child(&cursor)) continue;
+    bool moved = false;
+    do {
+      if (ts_tree_cursor_goto_next_sibling(&cursor)) { moved = true; break; }
+    } while (ts_tree_cursor_goto_parent(&cursor));
+    if (!moved) break;
+  }
+  CHECK(sq_node_is_null(node));
+  ts_tree_cursor_delete(&cursor);
+  sq_tree_delete(cached);
+  sq_tree_delete(packed);
+  sq_pack_context_delete(context);
+  ts_tree_delete(tree);
+  ts_parser_delete(parser);
+}
+
 static void packing_tests(void) {
   CHECK(!sq_node_iterator_new(sq_null(), false));
   CHECK(!sq_node_iterator_new(sq_null(), true));
@@ -758,6 +806,8 @@ int main(int argc, char **argv) {
   const TSLanguage *(*language_fn)(void) = (const TSLanguage *(*)(void))dlsym(library, argv[2]);
   CHECK(language_fn);
   const TSLanguage *language = language_fn();
+  input_name = "edited positions";
+  edited_positions(language);
   const char *samples[] = {"",
                            "x",
                            "{\"a\": [1, true, null], \"b\": {\"c\": 2}}",

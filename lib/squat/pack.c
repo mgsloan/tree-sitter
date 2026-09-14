@@ -2,8 +2,9 @@
 #include "../src/tree.h"
 
 // Only the current group's absolute values are staged. Frame coordinates are
-// computed once left-to-right, then consumed right-to-left (columns cannot be
-// recovered by subtracting a multiline child's extent). No recursive C calls.
+// computed once left-to-right, then consumed right-to-left when points are
+// enabled (multiline extents lose the starting column). Byte-only frames
+// subtract child lengths while traversing instead. No recursive C calls.
 typedef struct {
   uint32_t span;
   uint32_t start_byte;
@@ -95,9 +96,15 @@ typedef struct {
   EmitNode node;
   const Subtree *children;
   const TSSymbol *aliases;
+#if SQ_INCLUDE_POINTS
   PackPosition inline_position;
+#else
+  uint32_t child_end_byte;
+#endif
   uint64_t child_mask;
+#if SQ_INCLUDE_POINTS
   uint32_t position_mark, position_offset;
+#endif
   uint32_t field_mark, field_offset;
   uint32_t mask_mark, child_mask_offset;
   uint32_t remaining, structural;
@@ -127,6 +134,9 @@ struct SQPackContext {
 // accessor repeats the inline/heap test. Decode the needed fields once.
 typedef struct {
   uint32_t child_count, visible_child_count;
+#if !SQ_INCLUDE_POINTS
+  uint32_t size_bytes, padding_bytes;
+#endif
   bool visible, extra;
 } ChildFacts;
 
@@ -137,6 +147,10 @@ static inline ChildFacts child_facts(Subtree subtree) {
     facts.visible_child_count = 0;
     facts.visible = subtree.data.visible;
     facts.extra = subtree.data.extra;
+#if !SQ_INCLUDE_POINTS
+    facts.size_bytes = subtree.data.size_bytes;
+    facts.padding_bytes = subtree.data.padding_bytes;
+#endif
   } else {
     const SubtreeHeapData *data = subtree.ptr;
     facts.child_count = data->child_count;
@@ -145,10 +159,15 @@ static inline ChildFacts child_facts(Subtree subtree) {
     facts.visible_child_count = data->child_count ? data->visible_child_count : 0;
     facts.visible = data->visible;
     facts.extra = data->extra;
+#if !SQ_INCLUDE_POINTS
+    facts.size_bytes = data->size.bytes;
+    facts.padding_bytes = data->padding.bytes;
+#endif
   }
   return facts;
 }
 
+#if SQ_INCLUDE_POINTS
 static bool reserve_positions(Builder *builder, uint32_t count, uint32_t *offset) {
   uint64_t needed = (uint64_t)builder->position_count + count;
   if (needed > UINT32_MAX || needed > SIZE_MAX / sizeof(PackPosition)) goto allocation;
@@ -175,6 +194,7 @@ allocation:
   sq_fail(builder->error, SQ_ERROR_ALLOCATION);
   return false;
 }
+#endif
 
 static bool reserve_fields(Builder *builder, uint32_t count, uint32_t *offset) {
   uint64_t needed = (uint64_t)builder->field_count + count;
@@ -577,8 +597,10 @@ static bool init_frame(Builder *builder, Frame *frame, const Subtree *subtree_po
   frame->node.alias = alias;
   frame->node.later = later;
   frame->visible = visible;
+#if SQ_INCLUDE_POINTS
   frame->position_mark = builder->position_count;
   frame->position_offset = SQ_NONE;
+#endif
   frame->field_mark = builder->field_count;
   frame->field_offset = SQ_NONE;
   frame->mask_mark = builder->mask_count;
@@ -591,16 +613,21 @@ static bool init_frame(Builder *builder, Frame *frame, const Subtree *subtree_po
     frame->children = ts_subtree_children(subtree);
     frame->aliases =
         ts_language_alias_sequence(builder->language, subtree.ptr->production_id);
+#if SQ_INCLUDE_POINTS
     if (count > 1 && !reserve_positions(builder, count, &frame->position_offset)) return false;
 
     // Extents cannot be recovered by subtracting a multiline child's size, so
     // every child start is computed here. One inline/heap test per child covers
     // its padding, size, and extra flag.
-    uint32_t structural = 0;
     PackPosition *positions = count == 1 ? &frame->inline_position
                                          : builder->positions + frame->position_offset;
+#else
+    frame->child_end_byte = position + subtree.ptr->size.bytes;
+#endif
+    uint32_t structural = 0;
     for (uint32_t i = 0; i < count; i++) {
       Subtree child = frame->children[i];
+#if SQ_INCLUDE_POINTS
       Length padding, size;
       bool extra;
       if (child.data.is_inline) {
@@ -614,14 +641,13 @@ static bool init_frame(Builder *builder, Frame *frame, const Subtree *subtree_po
         extra = child.ptr->extra;
       }
 
-#if SQ_INCLUDE_POINTS
       if (i) position = length_add(position, padding);
       positions[i] = position;
       position = length_add(position, size);
 #else
-      if (i) position += padding.bytes;
-      positions[i] = position;
-      position += size.bytes;
+      // Aliases and fields use child indexes excluding extras. Keep this
+      // count, but do not calculate or store any forward byte positions.
+      bool extra = ts_subtree_extra(child);
 #endif
       structural += !extra;
     }
@@ -880,6 +906,13 @@ static SQTree *pack_tree(SQPackContext *context, const TSTree *tree,
       uint32_t index = --frame->remaining;
       const Subtree *child = &frame->children[index];
       ChildFacts facts = child_facts(*child);
+#if !SQ_INCLUDE_POINTS
+      // Advance even for hidden leaves skipped below. The first child's
+      // padding belongs to the parent, so it must not be subtracted here.
+      uint32_t position = frame->child_end_byte - facts.size_bytes;
+      frame->child_end_byte = index ? position - facts.padding_bytes
+                                    : position;
+#endif
       bool extra = facts.extra;
       if (!extra) {
         --frame->structural;
@@ -903,9 +936,11 @@ static SQTree *pack_tree(SQPackContext *context, const TSTree *tree,
         continue;
       }
 
+#if SQ_INCLUDE_POINTS
       PackPosition position = frame->position_offset != SQ_NONE
                                   ? builder.positions[frame->position_offset + index]
                                   : frame->inline_position;
+#endif
       // Only the one-word mode initializes this value. Other modes carry no
       // mask, or use child_mask_offset in the arena.
       uint64_t child_mask = builder.words == 1 ? frame->child_mask : 0;
@@ -968,7 +1003,9 @@ static SQTree *pack_tree(SQPackContext *context, const TSTree *tree,
         goto failure;
       }
 
+#if SQ_INCLUDE_POINTS
       builder.position_count = frame->position_mark;
+#endif
       builder.field_count = frame->field_mark;
       builder.mask_count = frame->mask_mark;
       depth--;
