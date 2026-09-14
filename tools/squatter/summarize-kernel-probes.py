@@ -22,6 +22,7 @@ def main():
     p.add_argument('runs', nargs='+', type=Path)
     p.add_argument('--output', type=Path, required=True)
     p.add_argument('--keep-all', action='store_true')
+    p.add_argument('--allow-layout-changes', action='store_true')
     a = p.parse_args()
     ratios, absolute = defaultdict(list), defaultdict(list)
     jobs, rejected = {}, []
@@ -49,7 +50,8 @@ def main():
                 if not a.keep_all:
                     continue
             for variant, measured in block.items():
-                assert measured['slab_bytes'] == block['exact']['slab_bytes']
+                if not a.allow_layout_changes:
+                    assert measured['slab_bytes'] == block['exact']['slab_bytes']
                 for op in operations:
                     assert check(measured, op) == check(block['exact'], op)
                     key = (point, job, variant, op)

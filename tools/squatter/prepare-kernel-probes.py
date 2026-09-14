@@ -22,7 +22,40 @@ FLAGS = '-O3 -g -fno-omit-frame-pointer'
 VARIANTS = ['exact', 'control', 'noscan', 'simd', 'clipped', 'swar', 'avx2', 'special',
             'diagnostic', 'cache16', 'cache64', 'cache256', 'cachefull',
             'autoavx', 'scalarfilter', 'scanwidth', 'hoist', 'lookup', 'warmexact', 'warmfull',
-            'presence64', 'presence256', 'grouppext']
+            'presence64', 'presence256', 'grouppext', 'fieldlocal', 'fieldcache']
+
+
+def field_mask_probe(text, persistent):
+    if persistent:
+        text = text.replace('  SQCursor *cursor;\n} QueryTreeCursor;', '''  SQCursor *cursor;
+  struct { uint32_t group; TSFieldId field; uint64_t mask; } field_masks[4];
+} QueryTreeCursor;''')
+        text = text.replace('  self->first_capture.valid = false;\n  query_tree_cursor_reset', '''  self->first_capture.valid = false;
+  memset(self->cursor.field_masks, 0, sizeof(self->cursor.field_masks));
+  query_tree_cursor_reset''')
+    start = text.index('static bool sq_query_cursor__has_later_field(')
+    end = text.index('\nstatic inline bool sq_query_cursor__should_descend', start)
+    function = text[start:end].replace('const QueryTreeCursor *cursor', 'QueryTreeCursor *cursor')
+    function = function.replace('  for (SQNode node =', '  uint32_t cached_group = UINT32_MAX;\n  uint64_t matches = 0;\n  for (SQNode node =', 1)
+    replacement = '''    uint32_t group = node.slot / SQ_GROUP_SIZE;
+    if (group != cached_group) {
+      cached_group = group;
+'''
+    if persistent:
+        replacement += '''      unsigned set = (group ^ field) & 3u;
+      if (cursor->field_masks[set].group != group + 1 || cursor->field_masks[set].field != field) {
+        cursor->field_masks[set].group = group + 1;
+        cursor->field_masks[set].field = field;
+        cursor->field_masks[set].mask = sq_tree_group_field_equal(node.tree, group, field);
+      }
+      matches = cursor->field_masks[set].mask;
+'''
+    else:
+        replacement += '      matches = sq_tree_group_field_equal(node.tree, group, field);\n'
+    replacement += '''    }
+    if (matches & (UINT64_C(1) << (node.slot % SQ_GROUP_SIZE))) {'''
+    function = function.replace('    if (sq_node_field_id(node) == field) {', replacement)
+    return text[:start] + function + text[end:]
 
 
 def presence_probe(text, window):
@@ -243,9 +276,9 @@ def query_probe(text, variant):
     raise ValueError(variant)
 
 
-def main():
+def main(config=None):
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument('--output', type=Path, default=ROOT/'build/kernel-probes')
+    ap.add_argument('--output', type=Path, default=ROOT/('build/kernel-probes' if config is None else config.output))
     ap.add_argument('--variants', default=','.join(VARIANTS))
     ap.add_argument('--points', default='1,0')
     args = ap.parse_args()
@@ -286,6 +319,10 @@ def main():
             for sub in ('lib/include', 'lib/src', 'lib/squat'):
                 shutil.copytree(rust/sub, source/sub)
             patches = []
+            if config is not None:
+                config.apply(source, variant, patches)
+            if variant in ('fieldlocal', 'fieldcache'):
+                edit(source, 'lib/squat/query.c', lambda s: field_mask_probe(s, variant == 'fieldcache'), patches)
             if variant == 'grouppext':
                 edit(source, 'lib/squat/scan.c', group_pext, patches)
                 shutil.copy2(ROOT/'lib/squat/experiments/group-equality-check.c', source/'lib/squat/experiments/group-equality-check.c')
@@ -347,10 +384,14 @@ void sq_query_delete(SQQuery *self) {
             harness = harness.replace('    prepare_query(in, language);', '    if (!getenv("SQ_WALK_ONLY")) prepare_query(in, language);')
             harness = harness.replace('    sq_query_cursor_delete(in->query_cursor);', '    if (in->query_cursor) sq_query_cursor_delete(in->query_cursor);')
             harness = harness.replace('  for (unsigned i = 0; i < 6; i++) {\n    unsigned op = end_to_end ? primary[i] : i;', '  const unsigned walks[] = {6, 7, 2};\n  bool walks_only = getenv("SQ_WALK_ONLY") != NULL;\n  for (unsigned i = 0; i < (walks_only ? 3u : 6u); i++) {\n    unsigned op = walks_only ? walks[i] : end_to_end ? primary[i] : i;')
+            if config is not None:
+                harness = config.walk_harness(harness)
             (source/'lib/squat/experiments/byte-rounding.c').write_text(harness)
             dest.mkdir(parents=True)
             (dest/'probe.patch').write_text(''.join(patches))
             flags = FLAGS + f' -DSQ_INCLUDE_POINTS={point}'
+            if config is not None:
+                flags += ' ' + config.flags(variant)
             if variant in ('swar', 'avx2'):
                 flags += ' -DSQ_UNPACK_KERNEL=' + ('2' if variant == 'swar' else '4')
             command = ['make', '-C', str(source/'lib/squat'), '-j4', 'BUILD='+str(dest), 'CFLAGS='+flags, 'check', 'all', str(dest/'unpack-bench')]
@@ -363,6 +404,8 @@ void sq_query_delete(SQQuery *self) {
                 subprocess.run(['cc', *flags.split(), '-std=c11', *includes, str(source/'lib/squat/experiments/byte-rounding.c'), str(dest/'libtree-sitter-squat.a'), str(dest/'runtime.o'), '-ldl', '-o', str(dest/'walk')], stdout=log, stderr=subprocess.STDOUT, check=True)
                 cargo = ['cargo', 'build', '--manifest-path', str(rust/'Cargo.toml'), '--locked', '--release', '-p', 'squatter-bench', '--bin', 'query-workload', '--target-dir', str(out/'target')]
                 rust_harness = original_harness
+                if config is not None:
+                    rust_harness = config.rust_harness(rust_harness)
                 if variant.startswith('warm'):
                     rust_harness = rust_harness.replace('struct Input {\n', 'struct Input {\n    cursor: std::cell::RefCell<tree_sitter_squatter::QueryCursor>,\n')
                     rust_harness = rust_harness.replace('        inputs.push(Input {\n', '        inputs.push(Input {\n            cursor: std::cell::RefCell::new(tree_sitter_squatter::QueryCursor::new()),\n')

@@ -35,6 +35,7 @@ def main():
     p.add_argument('--round-start', type=int, default=0)
     p.add_argument('--repeat', type=int, default=5)
     p.add_argument('--jobs', default='')
+    p.add_argument('--job-variants', type=Path, help='Optional JSON mapping job names to variant lists')
     p.add_argument('--tag', required=True)
     p.add_argument('--loader', default='/lib64/ld-linux-x86-64.so.2')
     p.add_argument('--cpu', type=int, default=0)
@@ -49,6 +50,9 @@ def main():
     assert jobs
     variants = a.variants.split(',')
     assert 'exact' in variants
+    job_variants = json.loads(a.job_variants.read_text()) if a.job_variants else {}
+    for selected in job_variants.values():
+        assert 'exact' in selected and 'control' in selected and set(selected) <= set(variants)
     points = list(map(int, a.points.split(',')))
     build = json.loads((b/'build-manifest.json').read_text())
     binary_name = 'query-workload' if a.kind == 'query' else 'walk'
@@ -64,7 +68,7 @@ def main():
     for r in range(a.round_start, a.round_start+a.rounds):
         for point in points:
             for ji, j in enumerate(jobs):
-                order = variants.copy()
+                order = job_variants.get(j['name'], variants).copy()
                 random.Random(5119+r*1000+point*100+ji).shuffle(order)
                 checks = []
                 for v in order:
