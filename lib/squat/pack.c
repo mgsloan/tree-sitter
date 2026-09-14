@@ -38,6 +38,10 @@ typedef uint32_t PackPosition;
 #endif
 
 typedef struct {
+  uint32_t offset, length;
+} DirectFieldSlice;
+
+typedef struct {
   SQTree *tree;
   Pending pending[SQ_GROUP_SIZE];
   uint32_t count;
@@ -51,6 +55,7 @@ typedef struct {
   PackPosition *positions;
   uint32_t position_count, position_capacity;
   TSFieldId *fields;
+  const DirectFieldSlice *production_fields;
   uint32_t field_count, field_capacity;
   uint64_t *masks;
   uint32_t mask_count, mask_capacity;
@@ -105,7 +110,7 @@ typedef struct {
 #if SQ_INCLUDE_POINTS
   uint32_t position_mark, position_offset;
 #endif
-  uint32_t field_mark, field_offset;
+  uint32_t field_mark, field_offset, field_length;
   uint32_t mask_mark, child_mask_offset;
   uint32_t remaining, structural;
   bool visible, child_later;
@@ -116,13 +121,14 @@ struct SQPackContext {
   TSSymbol *supertypes;
   uint32_t supertype_count;
   uint16_t *public_index;
+  DirectFieldSlice *production_fields;
+  TSFieldId *direct_fields;
   // Retain only storage, never pending nodes or pointers into a completed slab.
   struct {
     PackPosition *positions;
-    TSFieldId *fields;
     uint64_t *masks, *dictionary;
     uint16_t *supertype_indexes;
-    uint32_t position_capacity, field_capacity, mask_capacity, dictionary_capacity;
+    uint32_t position_capacity, mask_capacity, dictionary_capacity;
   } scratch;
   Frame *stack;
   size_t stack_capacity;
@@ -603,6 +609,7 @@ static bool init_frame(Builder *builder, Frame *frame, const Subtree *subtree_po
 #endif
   frame->field_mark = builder->field_count;
   frame->field_offset = SQ_NONE;
+  frame->field_length = 0;
   frame->mask_mark = builder->mask_count;
   frame->child_mask_offset = SQ_NONE;
   frame->remaining = 0;
@@ -654,13 +661,18 @@ static bool init_frame(Builder *builder, Frame *frame, const Subtree *subtree_po
 
     frame->structural = structural;
 
-    if (frame->structural && builder->language_field_count) {
+    if (builder->production_fields) {
+      DirectFieldSlice slice = builder->production_fields[subtree.ptr->production_id];
+      frame->field_offset = slice.offset;
+      frame->field_length = slice.length;
+    } else if (frame->structural && builder->language_field_count) {
       const TSFieldMapEntry *map, *end;
       ts_language_field_map(builder->language, subtree.ptr->production_id, &map, &end);
       const TSFieldMapEntry *first = map;
       while (first < end && first->inherited) first++;
       if (first < end) {
         if (!reserve_fields(builder, frame->structural, &frame->field_offset)) return false;
+        frame->field_length = frame->structural;
         for (map = first; map < end; map++) {
           if (!map->inherited && map->child_index < frame->structural &&
               !builder->fields[frame->field_offset + map->child_index]) {
@@ -731,7 +743,11 @@ static void descend_hidden(const Builder *builder, const TSLanguage *language, u
       const TSSymbol *aliases = ts_language_alias_sequence(language, data->production_id);
       if (aliases) inner_alias = aliases[0];
       inner_field = descent->field;
-      if (language->field_count) {
+      if (builder->production_fields) {
+        DirectFieldSlice slice = builder->production_fields[data->production_id];
+        if (slice.length && builder->fields[slice.offset])
+          inner_field = builder->fields[slice.offset];
+      } else if (language->field_count) {
         const TSFieldMapEntry *map, *end;
         ts_language_field_map(language, data->production_id, &map, &end);
         for (; map < end; map++) {
@@ -759,7 +775,6 @@ void sq_pack_context_trim(SQPackContext *context) {
   if (!context) return;
   free(context->stack);
   free(context->scratch.positions);
-  free(context->scratch.fields);
   free(context->scratch.masks);
   free(context->scratch.dictionary);
   free(context->presence);
@@ -777,6 +792,8 @@ void sq_pack_context_delete(SQPackContext *context) {
   sq_pack_context_trim(context);
   ts_language_delete(context->language);
   free(context->supertypes);
+  free(context->production_fields);
+  free(context->direct_fields);
   free(context);
 }
 
@@ -809,7 +826,42 @@ SQPackContext *sq_pack_context_new(const TSLanguage *language, SQError *error) {
   }
   context->public_index[symbols] = (uint16_t)symbols;
   context->public_index[symbols + 1] = (uint16_t)(symbols + 1);
+  // Immutable grammar metadata survives trim. Ordinary one-shot packing keeps
+  // its per-frame scratch so tiny trees do not pay for the entire grammar.
+  if (language->field_count && language->production_id_count) {
+    context->production_fields = calloc(language->production_id_count, sizeof(DirectFieldSlice));
+    if (!context->production_fields) goto context_allocation;
+    uint64_t total = 0;
+    for (uint32_t id = 0; id < language->production_id_count; id++) {
+      const TSFieldMapEntry *map, *end;
+      ts_language_field_map(language, id, &map, &end);
+      uint32_t length = 0;
+      for (; map < end; map++) {
+        if (!map->inherited && (uint32_t)map->child_index + 1 > length)
+          length = (uint32_t)map->child_index + 1;
+      }
+      context->production_fields[id] = (DirectFieldSlice){(uint32_t)total, length};
+      total += length;
+      if (total > UINT32_MAX || total > SIZE_MAX / sizeof(TSFieldId))
+        goto context_allocation;
+    }
+    if (total) {
+      context->direct_fields = calloc((size_t)total, sizeof(TSFieldId));
+      if (!context->direct_fields) goto context_allocation;
+      for (uint32_t id = 0; id < language->production_id_count; id++) {
+        const TSFieldMapEntry *map, *end;
+        ts_language_field_map(language, id, &map, &end);
+        uint32_t offset = context->production_fields[id].offset;
+        for (; map < end; map++) {
+          if (!map->inherited && !context->direct_fields[offset + map->child_index])
+            context->direct_fields[offset + map->child_index] = map->field_id;
+        }
+      }
+    }
+  }
   return context;
+context_allocation:
+  sq_pack_context_delete(context);
 allocation:
   sq_fail(error, SQ_ERROR_ALLOCATION);
   return NULL;
@@ -856,8 +908,8 @@ static SQTree *pack_tree(SQPackContext *context, const TSTree *tree,
   if (context) {
     builder.positions = context->scratch.positions;
     builder.position_capacity = context->scratch.position_capacity;
-    builder.fields = context->scratch.fields;
-    builder.field_capacity = context->scratch.field_capacity;
+    builder.fields = context->direct_fields;
+    builder.production_fields = context->production_fields;
     builder.masks = context->scratch.masks;
     builder.mask_capacity = context->scratch.mask_capacity;
     builder.dictionary = context->scratch.dictionary;
@@ -926,7 +978,7 @@ static SQTree *pack_tree(SQPackContext *context, const TSTree *tree,
       // Hidden wrappers carry their incoming field; visible nodes start a new
       // child relationship. Extras interrupt field inheritance.
       TSFieldId field = frame->visible || extra ? 0 : frame->node.field;
-      if (!extra && frame->field_offset != SQ_NONE) {
+      if (!extra && frame->structural < frame->field_length) {
         TSFieldId direct = builder.fields[frame->field_offset + frame->structural];
         if (direct) field = direct;
       }
@@ -1055,8 +1107,6 @@ cleanup:
   if (context) {
     context->scratch.positions = builder.positions;
     context->scratch.position_capacity = builder.position_capacity;
-    context->scratch.fields = builder.fields;
-    context->scratch.field_capacity = builder.field_capacity;
     context->scratch.masks = builder.masks;
     context->scratch.mask_capacity = builder.mask_capacity;
     context->scratch.dictionary = builder.dictionary;

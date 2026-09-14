@@ -109,13 +109,16 @@ int main(int argc, char **argv) {
         sq_tree_delete(recovered);
         if (finished) break;
       }
-      for (size_t nth = 1; nth <= 3; nth++) {
+      for (size_t nth = 1; ; nth++) {
+        assert(nth < 256);
         allocations = 0;
         fail_at = nth;
         SQPackContext *attempt = sq_pack_context_new(language, &error);
         fail_at = 0;
         if (!attempt) assert(error == SQ_ERROR_ALLOCATION);
+        bool finished = attempt != NULL;
         sq_pack_context_delete(attempt);
+        if (finished) break;
       }
     }
     SQTree *again = sq_pack_context_pack(context, parsed, options, &error);
