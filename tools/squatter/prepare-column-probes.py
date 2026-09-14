@@ -3,6 +3,7 @@
 
 The baseline includes the already committed grammar-wide supertype dictionary.
 No live runtime files or unrelated working-tree changes enter these builds.
+The optional superpow2 byte-reader probe requires a little-endian target.
 """
 import importlib.util
 from pathlib import Path
@@ -17,7 +18,7 @@ POLICIES = {
     'symbol5': (0, 5, 0), 'symbol6': (0, 6, 0),
     'symbol9': (0, 9, 0), 'symbol10': (0, 10, 0),
     'fieldonly': (20, 0, 0), 'symbolonly': (0, 20, 0), 'both': (20, 20, 0),
-    'super': (0, 0, 1),
+    'super': (0, 0, 1), 'superpow2': (0, 0, 2),
 }
 kernel.VARIANTS = list(POLICIES)
 
@@ -59,6 +60,10 @@ class Columns:
   uint8_t bits = node.tree->layout.supertype_bits;
   if (!bits) return 0;
   if (bits == 1) return sq_get_bit(node.tree->data, node.tree->layout.supertype, node.slot);
+#if SQ_SUPER_VARIABLE == 2
+  if (bits == 2) return (sq_get_u8(node.tree->data, node.tree->layout.supertype, node.slot / 4) >> ((node.slot % 4) * 2)) & 3u;
+  if (bits == 4) return (sq_get_u8(node.tree->data, node.tree->layout.supertype, node.slot / 2) >> ((node.slot % 2) * 4)) & 15u;
+#endif
   return sq_get_packed_cached(node.tree->data, node.tree->layout.supertype, node.slot,
                               bits, node.tree->layout.supertype_lanes, node.tree->layout.supertype_mask);
 #else
