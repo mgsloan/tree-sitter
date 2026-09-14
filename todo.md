@@ -1,6 +1,10 @@
 - [ ] Review b3339c87b (AI design polish)
 
+- [ ] Dictionary overflow
+
 - [ ] Consider what APIs could make it faster
+
+- [ ] Port to Rust to see if there are sufficient LTO payoffs
 
 - [ ] specialization for 8-bit symbol or field case? Round 6 or 7 up to 8?
 
@@ -26,3 +30,5 @@
 - [ ] Accumulate occupancy estimate during parsing?
 
 - [ ] Rust impl for better LTO - or just have Rust-side implementations for small ops
+
+- [ ] Support conversion to and from little-endian representation on big-endian? (for inter-architecture communication)
