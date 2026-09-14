@@ -2,6 +2,10 @@
 
 This follow-up makes query execution and complete tree walks the primary evidence. Isolated reads, unpacking, and scans from the [earlier local experiment](byte-rounding-results-2026-09-14.md) are supporting evidence only. The production layout remains unchanged.
 
+## Individual transitions
+
+See the [per-transition analysis](byte-transitions-cloud-results-2026-09-14.md) for one row per width transition, with independent treatment of the 8-bit and 16-bit thresholds. The tables below are combined-policy comparisons; their totals must not be attributed to either transition alone.
+
 ## Recommendation
 
 Keep **5–7 → 8 bits and 13–15 → 16 bits** as the balanced choice when complete walks matter. On GCP, the 5-bit cutoff reduces the three walk times by **1.8–4.0% with points** and **1.8–3.4% without points**, for **1.3% / 1.9% more retained storage**. The three query workloads change by less than 1% in either direction: there is no convincing query-speed improvement. The unchanged-layout control also moves by about 1%, so smaller differences should not decide the policy.
@@ -10,7 +14,7 @@ For a query-dominated workload, **only 13–15 → 16** is the more conservative
 
 The 6-bit cutoff saves a little space (0.8% / 1.2% overhead) but generally gives up some walk improvement. Lowering the cutoff to 2 bits costs 3.3% / 5.2% while adding relatively little walk speed. Widening 9/10-bit symbols to 16 is a stronger walk-speed option—roughly 4.8–8.1% faster walks—but costs 4.7% / 6.9%; parent/child and field queries remain approximately flat. Keep 9–12 bits compact by default.
 
-## Primary results
+## Combined-policy results
 
 Negative percentages mean less execution time. Query workloads and complete walks are reported separately; no composite score mixes them with microbenchmarks. Memory includes the packed tree and its language runtime.
 

@@ -1,0 +1,1221 @@
+[
+  {
+    "required": 2,
+    "stored": 8,
+    "asymptotic_column_ratio": 4.0,
+    "points": {
+      "1": {
+        "cases": [
+          {
+            "case": "css-small",
+            "blocks": 3,
+            "ratios": {
+              "queries": 0.9995472494221046,
+              "structural_queries": 1.0009504444506225,
+              "field_queries": 1.0092629504689192,
+              "cursor_walk": 0.9870926627871905,
+              "uncached": 0.9750653936117835,
+              "cached": 0.9912165383416677
+            },
+            "retained_ratio": 1.0529767911200807
+          },
+          {
+            "case": "html-small",
+            "blocks": 3,
+            "ratios": {
+              "queries": 0.9976252776522214,
+              "structural_queries": 1.003866140061081,
+              "field_queries": 1.0388975702060357,
+              "cursor_walk": 0.9757239148748506,
+              "uncached": 0.9661908441792456,
+              "cached": 0.9688937889861101
+            },
+            "retained_ratio": 1.0578738738738738
+          },
+          {
+            "case": "json-large-0",
+            "blocks": 3,
+            "ratios": {
+              "queries": 0.9426056046527777,
+              "structural_queries": 0.9801596403460714,
+              "field_queries": 0.9727247980574296,
+              "cursor_walk": 0.963085335654989,
+              "uncached": 0.9329823297645118,
+              "cached": 0.9771668464576531
+            },
+            "retained_ratio": 1.0591021974895478
+          },
+          {
+            "case": "json-large-8",
+            "blocks": 3,
+            "ratios": {
+              "queries": 1.0144379635195515,
+              "structural_queries": 0.9927335671749206,
+              "field_queries": 1.0056363923616332,
+              "cursor_walk": 0.9606977264603218,
+              "uncached": 0.9620532472686575,
+              "cached": 0.9786522863586227
+            },
+            "retained_ratio": 1.059102983453159
+          },
+          {
+            "case": "json-small",
+            "blocks": 3,
+            "ratios": {
+              "queries": 1.0029703834583967,
+              "structural_queries": 1.0040200384328557,
+              "field_queries": 0.9956018983877264,
+              "cursor_walk": 0.9787347210071988,
+              "uncached": 0.958713781700637,
+              "cached": 0.9671367648269849
+            },
+            "retained_ratio": 1.0589630131475876
+          },
+          {
+            "case": "yaml-large-5",
+            "blocks": 3,
+            "ratios": {
+              "queries": 0.9991805060558039,
+              "structural_queries": 1.0068901567183346,
+              "field_queries": 0.9909695390529432,
+              "cursor_walk": 0.982083231955107,
+              "uncached": 0.9648751553248959,
+              "cached": 0.987520098583534
+            },
+            "retained_ratio": 1.0513720820098638
+          },
+          {
+            "case": "yaml-small",
+            "blocks": 3,
+            "ratios": {
+              "queries": 1.0045247738422731,
+              "structural_queries": 1.003928763110081,
+              "field_queries": 0.9793877423218447,
+              "cursor_walk": 1.0079332771351093,
+              "uncached": 0.9808248818626482,
+              "cached": 0.9864809529361374
+            },
+            "retained_ratio": 1.0480996349581275
+          }
+        ],
+        "grammars": [
+          "css",
+          "html",
+          "json",
+          "yaml"
+        ],
+        "ratios": {
+          "queries": 0.9962773047073316,
+          "structural_queries": 1.0006074029362448,
+          "field_queries": 1.0059217385306258,
+          "cursor_walk": 0.9812472192570478,
+          "uncached": 0.9662632187228112,
+          "cached": 0.9803118704382573
+        },
+        "retained_ratio": 1.0549106470436787
+      },
+      "0": {
+        "cases": [
+          {
+            "case": "css-small",
+            "blocks": 3,
+            "ratios": {
+              "queries": 1.045966296612606,
+              "structural_queries": 1.0787097423311611,
+              "field_queries": 1.0781025053902948,
+              "cursor_walk": 0.9784849679760804,
+              "uncached": 0.9893286418219405,
+              "cached": 0.9617499336474816
+            },
+            "retained_ratio": 1.082191780821918
+          },
+          {
+            "case": "html-small",
+            "blocks": 3,
+            "ratios": {
+              "queries": 1.0081475754805802,
+              "structural_queries": 1.0073241631696626,
+              "field_queries": 0.9888174941800726,
+              "cursor_walk": 0.9932875480592511,
+              "uncached": 0.9809551064105925,
+              "cached": 0.9633952035706176
+            },
+            "retained_ratio": 1.0946041470311028
+          },
+          {
+            "case": "json-large-0",
+            "blocks": 3,
+            "ratios": {
+              "queries": 0.9668452469691854,
+              "structural_queries": 0.9769937506579484,
+              "field_queries": 1.0333958507858856,
+              "cursor_walk": 0.9865079443430443,
+              "uncached": 0.9503440150442192,
+              "cached": 0.9689688074674654
+            },
+            "retained_ratio": 1.0975310469296842
+          },
+          {
+            "case": "json-large-8",
+            "blocks": 3,
+            "ratios": {
+              "queries": 0.9918841093233125,
+              "structural_queries": 0.9831088850995995,
+              "field_queries": 0.9891654459914344,
+              "cursor_walk": 0.9623664816154879,
+              "uncached": 0.9875571509906994,
+              "cached": 0.9705935398064979
+            },
+            "retained_ratio": 1.0975332658704249
+          },
+          {
+            "case": "json-small",
+            "blocks": 3,
+            "ratios": {
+              "queries": 1.005320813312652,
+              "structural_queries": 1.1204216875183464,
+              "field_queries": 1.059144306291877,
+              "cursor_walk": 0.9817668948945762,
+              "uncached": 0.9964404130626123,
+              "cached": 0.9648293646221947
+            },
+            "retained_ratio": 1.0971839341173186
+          },
+          {
+            "case": "yaml-large-5",
+            "blocks": 3,
+            "ratios": {
+              "queries": 0.9845621149144523,
+              "structural_queries": 0.9791274183888659,
+              "field_queries": 0.996079780161513,
+              "cursor_walk": 0.9655865301716389,
+              "uncached": 0.9748662243173652,
+              "cached": 0.9782384708823398
+            },
+            "retained_ratio": 1.0781306034132039
+          },
+          {
+            "case": "yaml-small",
+            "blocks": 3,
+            "ratios": {
+              "queries": 1.0092597134236603,
+              "structural_queries": 0.9841580727168073,
+              "field_queries": 0.9997415458890555,
+              "cursor_walk": 0.9774685389109249,
+              "uncached": 0.978192009291894,
+              "cached": 0.9803429624666034
+            },
+            "retained_ratio": 1.0709085153529598
+          }
+        ],
+        "grammars": [
+          "css",
+          "html",
+          "json",
+          "yaml"
+        ],
+        "ratios": {
+          "queries": 1.009469236976224,
+          "structural_queries": 1.0224985832312616,
+          "field_queries": 1.0223297862345693,
+          "cursor_walk": 0.9799934144938041,
+          "uncached": 0.9811673888952777,
+          "cached": 0.9681165624670297
+        },
+        "retained_ratio": 1.0871828923854778
+      }
+    },
+    "before_variant": "r5",
+    "after_variant": "r2"
+  },
+  {
+    "required": 3,
+    "stored": 8,
+    "asymptotic_column_ratio": 2.625,
+    "points": {}
+  },
+  {
+    "required": 4,
+    "stored": 8,
+    "asymptotic_column_ratio": 2.0,
+    "points": {}
+  },
+  {
+    "required": 5,
+    "stored": 8,
+    "asymptotic_column_ratio": 1.5,
+    "points": {
+      "1": {
+        "cases": [
+          {
+            "case": "bash-small",
+            "blocks": 3,
+            "ratios": {
+              "queries": 0.9799723054657529,
+              "structural_queries": 0.988607492659879,
+              "field_queries": 1.0163218243404217,
+              "cursor_walk": 0.987574907892576,
+              "uncached": 0.9727662734480756,
+              "cached": 0.9636819975809854
+            },
+            "retained_ratio": 1.0208875094371277
+          },
+          {
+            "case": "json-large-0",
+            "blocks": 3,
+            "ratios": {
+              "queries": 1.0295847852843703,
+              "structural_queries": 0.988634004151277,
+              "field_queries": 0.9972436700204036,
+              "cursor_walk": 0.980424650651925,
+              "uncached": 0.9480231614206823,
+              "cached": 0.9760130066454408
+            },
+            "retained_ratio": 1.026976245729867
+          },
+          {
+            "case": "json-large-8",
+            "blocks": 3,
+            "ratios": {
+              "queries": 0.9401269433503998,
+              "structural_queries": 0.9798227027193745,
+              "field_queries": 0.9753965026878627,
+              "cursor_walk": 0.9458788862884611,
+              "uncached": 0.9508629395548743,
+              "cached": 0.9722756667425195
+            },
+            "retained_ratio": 1.0269767203721762
+          },
+          {
+            "case": "json-small",
+            "blocks": 3,
+            "ratios": {
+              "queries": 0.9512745492165373,
+              "structural_queries": 0.9841578022434636,
+              "field_queries": 0.9820035631300275,
+              "cursor_walk": 0.9693259440359783,
+              "uncached": 0.9527239565084592,
+              "cached": 0.9541867882412598
+            },
+            "retained_ratio": 1.026915969127079
+          }
+        ],
+        "grammars": [
+          "bash",
+          "json"
+        ],
+        "ratios": {
+          "queries": 0.9764109700445183,
+          "structural_queries": 0.9864004138275039,
+          "field_queries": 1.000456515279409,
+          "cursor_walk": 0.9762737717191499,
+          "uncached": 0.9615862505501429,
+          "cached": 0.9655615054631487
+        },
+        "retained_ratio": 1.0239219105900843
+      },
+      "0": {
+        "cases": [
+          {
+            "case": "bash-small",
+            "blocks": 3,
+            "ratios": {
+              "queries": 0.9996188047692511,
+              "structural_queries": 0.916219430596341,
+              "field_queries": 0.9383178803136825,
+              "cursor_walk": 0.9824562118982222,
+              "uncached": 0.9716716235359573,
+              "cached": 0.9823737274474399
+            },
+            "retained_ratio": 1.0304587155963303
+          },
+          {
+            "case": "json-large-0",
+            "blocks": 3,
+            "ratios": {
+              "queries": 0.9910278373542037,
+              "structural_queries": 0.996784007288346,
+              "field_queries": 0.9780956257412886,
+              "cursor_walk": 0.934304922273327,
+              "uncached": 0.9268921138687252,
+              "cached": 0.9847924809636402
+            },
+            "retained_ratio": 1.0453112444621162
+          },
+          {
+            "case": "json-large-8",
+            "blocks": 3,
+            "ratios": {
+              "queries": 0.9648327858718546,
+              "structural_queries": 1.0022428206047735,
+              "field_queries": 0.9837826792599991,
+              "cursor_walk": 0.9253165995421518,
+              "uncached": 0.913371657215833,
+              "cached": 0.9599145866224698
+            },
+            "retained_ratio": 1.0453125036647635
+          },
+          {
+            "case": "json-small",
+            "blocks": 3,
+            "ratios": {
+              "queries": 0.9438313478624291,
+              "structural_queries": 0.962675344056022,
+              "field_queries": 0.9462673930933215,
+              "cursor_walk": 0.9260103738584451,
+              "uncached": 0.9256423940111721,
+              "cached": 0.9568759656306234
+            },
+            "retained_ratio": 1.045151172544586
+          }
+        ],
+        "grammars": [
+          "bash",
+          "json"
+        ],
+        "ratios": {
+          "queries": 0.9828545656120321,
+          "structural_queries": 0.950988779712849,
+          "field_queries": 0.9536537555802982,
+          "cursor_walk": 0.9551151674670451,
+          "uncached": 0.9464835837608282,
+          "cached": 0.9747139832918654
+        },
+        "retained_ratio": 1.0378585112434093
+      }
+    },
+    "before_variant": "r6",
+    "after_variant": "r5"
+  },
+  {
+    "required": 6,
+    "stored": 8,
+    "asymptotic_column_ratio": 1.25,
+    "points": {
+      "1": {
+        "cases": [
+          {
+            "case": "c-small",
+            "blocks": 3,
+            "ratios": {
+              "queries": 1.010783195800702,
+              "structural_queries": 0.9982571358063871,
+              "field_queries": 0.998063450336107,
+              "cursor_walk": 0.9742805493917295,
+              "uncached": 0.9822062213516075,
+              "cached": 0.9828295650320173
+            },
+            "retained_ratio": 1.0125394065340627
+          },
+          {
+            "case": "cpp-large-3",
+            "blocks": 3,
+            "ratios": {
+              "queries": 1.0080592618170465,
+              "structural_queries": 1.001273677154458,
+              "field_queries": 0.995485536018172,
+              "cursor_walk": 0.9869580778244219,
+              "uncached": 0.9891285993653326,
+              "cached": 0.9649121796305858
+            },
+            "retained_ratio": 1.0115590724010532
+          },
+          {
+            "case": "cpp-small",
+            "blocks": 3,
+            "ratios": {
+              "queries": 0.9988124639086695,
+              "structural_queries": 0.9824119695618438,
+              "field_queries": 0.9963334947355695,
+              "cursor_walk": 0.9685765700146736,
+              "uncached": 0.9787319111992179,
+              "cached": 0.9541503668666966
+            },
+            "retained_ratio": 1.011391170269675
+          },
+          {
+            "case": "go-small",
+            "blocks": 3,
+            "ratios": {
+              "queries": 1.0350147895341348,
+              "structural_queries": 1.0202389963131466,
+              "field_queries": 1.0257946160539555,
+              "cursor_walk": 0.9757127761198915,
+              "uncached": 0.9678042878172815,
+              "cached": 0.9438335181571951
+            },
+            "retained_ratio": 1.0134843581445523
+          },
+          {
+            "case": "html-small",
+            "blocks": 3,
+            "ratios": {
+              "queries": 0.9772769392980949,
+              "structural_queries": 0.994838147820199,
+              "field_queries": 0.9867837579340927,
+              "cursor_walk": 0.9442013936981413,
+              "uncached": 0.9579717119377447,
+              "cached": 0.9483694038962058
+            },
+            "retained_ratio": 1.015590689503733
+          },
+          {
+            "case": "python-large-4",
+            "blocks": 3,
+            "ratios": {
+              "queries": 1.0307437507979877,
+              "structural_queries": 1.1982764099392655,
+              "field_queries": 0.9861423906975243,
+              "cursor_walk": 0.9802290082932832,
+              "uncached": 0.9598347120196108,
+              "cached": 0.9416908397989145
+            },
+            "retained_ratio": 1.0134735490484539
+          },
+          {
+            "case": "python-small",
+            "blocks": 3,
+            "ratios": {
+              "queries": 1.0224831125107283,
+              "structural_queries": 0.9828871144857878,
+              "field_queries": 0.988344720093268,
+              "cursor_walk": 0.9820551677462047,
+              "uncached": 0.9758645384087961,
+              "cached": 0.9669875193000382
+            },
+            "retained_ratio": 1.012705272255834
+          },
+          {
+            "case": "tsx-large-1",
+            "blocks": 3,
+            "ratios": {
+              "queries": 1.0180966729687981,
+              "structural_queries": 0.9742723737147873,
+              "field_queries": 0.9902869901504693,
+              "cursor_walk": 0.9842840274026261,
+              "uncached": 0.9712614312654526,
+              "cached": 0.9590079867421665
+            },
+            "retained_ratio": 1.0122989456602869
+          },
+          {
+            "case": "tsx-small",
+            "blocks": 3,
+            "ratios": {
+              "queries": 1.0223519443518947,
+              "structural_queries": 0.9917383378099223,
+              "field_queries": 0.9850539853674306,
+              "cursor_walk": 0.9541462536799069,
+              "uncached": 0.9697836616635754,
+              "cached": 0.9885953488966901
+            },
+            "retained_ratio": 1.0118638520700376
+          },
+          {
+            "case": "typescript-large-2",
+            "blocks": 3,
+            "ratios": {
+              "queries": 0.9791638915025871,
+              "structural_queries": 0.9912143381150278,
+              "field_queries": 0.9921296340713821,
+              "cursor_walk": 0.9752322920166258,
+              "uncached": 0.9851286225523113,
+              "cached": 0.9688659095301851
+            },
+            "retained_ratio": 1.0125787537638937
+          },
+          {
+            "case": "typescript-large-6",
+            "blocks": 3,
+            "ratios": {
+              "queries": 1.0064073720137772,
+              "structural_queries": 1.0006290054143676,
+              "field_queries": 1.0056515351604787,
+              "cursor_walk": 0.9686093760564403,
+              "uncached": 0.9788380852080354,
+              "cached": 0.9439669487755166
+            },
+            "retained_ratio": 1.0123378447438514
+          },
+          {
+            "case": "typescript-small",
+            "blocks": 3,
+            "ratios": {
+              "queries": 1.0299703935150892,
+              "structural_queries": 1.0115100699483521,
+              "field_queries": 1.0038025488388105,
+              "cursor_walk": 0.9980331290051503,
+              "uncached": 0.9899993587452723,
+              "cached": 0.9746275710176412
+            },
+            "retained_ratio": 1.0119707661290323
+          }
+        ],
+        "grammars": [
+          "c",
+          "cpp",
+          "go",
+          "html",
+          "python",
+          "tsx",
+          "typescript"
+        ],
+        "ratios": {
+          "queries": 1.0110327916707487,
+          "structural_queries": 1.0101361373497149,
+          "field_queries": 0.9973445083353342,
+          "cursor_walk": 0.9717409838300971,
+          "uncached": 0.973508818257626,
+          "cached": 0.9606137214798564
+        },
+        "retained_ratio": 1.0129365961781824
+      },
+      "0": {
+        "cases": [
+          {
+            "case": "c-small",
+            "blocks": 3,
+            "ratios": {
+              "queries": 1.004292318701553,
+              "structural_queries": 1.0031964003877716,
+              "field_queries": 0.9908792931162216,
+              "cursor_walk": 0.9858339864487538,
+              "uncached": 0.9708628137207733,
+              "cached": 0.9451642652818072
+            },
+            "retained_ratio": 1.0182769776019451
+          },
+          {
+            "case": "cpp-large-3",
+            "blocks": 3,
+            "ratios": {
+              "queries": 0.9892991256404139,
+              "structural_queries": 1.0022236759779684,
+              "field_queries": 0.9883609259377975,
+              "cursor_walk": 0.9730063054473854,
+              "uncached": 0.9553664585772196,
+              "cached": 0.9412696488781866
+            },
+            "retained_ratio": 1.0162635050823454
+          },
+          {
+            "case": "cpp-small",
+            "blocks": 3,
+            "ratios": {
+              "queries": 1.00143435951008,
+              "structural_queries": 1.0137858359640624,
+              "field_queries": 1.0063088117264711,
+              "cursor_walk": 0.9687180074748083,
+              "uncached": 0.9803756066309826,
+              "cached": 0.9500229155443779
+            },
+            "retained_ratio": 1.0159661271115423
+          },
+          {
+            "case": "go-small",
+            "blocks": 3,
+            "ratios": {
+              "queries": 0.9941329206446915,
+              "structural_queries": 1.0029813199502913,
+              "field_queries": 0.9965970309122623,
+              "cursor_walk": 0.9519720454780476,
+              "uncached": 0.9904474994849396,
+              "cached": 0.9611585598145159
+            },
+            "retained_ratio": 1.020478374836173
+          },
+          {
+            "case": "html-small",
+            "blocks": 3,
+            "ratios": {
+              "queries": 0.994353398480187,
+              "structural_queries": 1.0025013791064346,
+              "field_queries": 1.0074646734186135,
+              "cursor_walk": 0.921243540963669,
+              "uncached": 0.9263421999704823,
+              "cached": 0.9338440729948783
+            },
+            "retained_ratio": 1.0257401812688822
+          },
+          {
+            "case": "python-large-4",
+            "blocks": 3,
+            "ratios": {
+              "queries": 1.0010653804459615,
+              "structural_queries": 0.9940791204385292,
+              "field_queries": 0.9427577455504469,
+              "cursor_walk": 0.9790144053384261,
+              "uncached": 0.9689770632390784,
+              "cached": 0.9638531734081427
+            },
+            "retained_ratio": 1.0203172073133389
+          },
+          {
+            "case": "python-small",
+            "blocks": 3,
+            "ratios": {
+              "queries": 1.004714211318085,
+              "structural_queries": 0.9597937040067276,
+              "field_queries": 0.9973371246026097,
+              "cursor_walk": 0.9842763206057206,
+              "uncached": 0.9909198927157354,
+              "cached": 0.9617438244217341
+            },
+            "retained_ratio": 1.0187404385517593
+          },
+          {
+            "case": "tsx-large-1",
+            "blocks": 3,
+            "ratios": {
+              "queries": 1.0171726070295302,
+              "structural_queries": 0.9884389760535334,
+              "field_queries": 1.014364113077652,
+              "cursor_walk": 0.9742269026078935,
+              "uncached": 0.975287495363827,
+              "cached": 0.9499871019368152
+            },
+            "retained_ratio": 1.0182291081560226
+          },
+          {
+            "case": "tsx-small",
+            "blocks": 3,
+            "ratios": {
+              "queries": 0.9928067065278988,
+              "structural_queries": 0.9811983640738461,
+              "field_queries": 0.9879253934356405,
+              "cursor_walk": 0.966259437735049,
+              "uncached": 1.007110375491905,
+              "cached": 0.9752523640189671
+            },
+            "retained_ratio": 1.0169471715755025
+          },
+          {
+            "case": "typescript-large-2",
+            "blocks": 3,
+            "ratios": {
+              "queries": 1.0324707798589534,
+              "structural_queries": 0.9880858504989318,
+              "field_queries": 0.9961081585842569,
+              "cursor_walk": 0.9829203131425241,
+              "uncached": 0.9842168601644162,
+              "cached": 0.9505370720108532
+            },
+            "retained_ratio": 1.0183606728477743
+          },
+          {
+            "case": "typescript-large-6",
+            "blocks": 3,
+            "ratios": {
+              "queries": 1.0015139667418995,
+              "structural_queries": 1.0158192521369713,
+              "field_queries": 1.029850652947863,
+              "cursor_walk": 0.9789716286056827,
+              "uncached": 0.9679409469616748,
+              "cached": 0.9437563849547458
+            },
+            "retained_ratio": 1.0178593299138265
+          },
+          {
+            "case": "typescript-small",
+            "blocks": 3,
+            "ratios": {
+              "queries": 1.0508706897577793,
+              "structural_queries": 0.9900429469156352,
+              "field_queries": 1.0056045113814134,
+              "cursor_walk": 0.9684237625433381,
+              "uncached": 0.9527255849224602,
+              "cached": 0.9697653192655743
+            },
+            "retained_ratio": 1.0171480144404332
+          }
+        ],
+        "grammars": [
+          "c",
+          "cpp",
+          "go",
+          "html",
+          "python",
+          "tsx",
+          "typescript"
+        ],
+        "ratios": {
+          "queries": 1.003370932591135,
+          "structural_queries": 0.9965390908536286,
+          "field_queries": 0.996118257886637,
+          "cursor_walk": 0.9652801291418514,
+          "uncached": 0.9704435891697154,
+          "cached": 0.952196210376063
+        },
+        "retained_ratio": 1.0193595216670857
+      }
+    },
+    "before_variant": "r7",
+    "after_variant": "r6"
+  },
+  {
+    "required": 7,
+    "stored": 8,
+    "asymptotic_column_ratio": 1.125,
+    "points": {}
+  },
+  {
+    "required": 9,
+    "stored": 16,
+    "asymptotic_column_ratio": 1.75,
+    "points": {
+      "1": {
+        "cases": [
+          {
+            "case": "bash-small",
+            "blocks": 3,
+            "ratios": {
+              "queries": 0.9841992858971187,
+              "structural_queries": 1.0126356695480363,
+              "field_queries": 0.979015862278836,
+              "cursor_walk": 0.9833020631180384,
+              "uncached": 0.9447911649420778,
+              "cached": 0.9387703470198722
+            },
+            "retained_ratio": 1.0536565324568612
+          },
+          {
+            "case": "c-small",
+            "blocks": 3,
+            "ratios": {
+              "queries": 0.9645663507854028,
+              "structural_queries": 1.0125594763513754,
+              "field_queries": 1.0056613853500527,
+              "cursor_walk": 0.9555762848561986,
+              "uncached": 0.9541432854074527,
+              "cached": 0.9328222500243886
+            },
+            "retained_ratio": 1.0532503071596113
+          },
+          {
+            "case": "python-large-4",
+            "blocks": 3,
+            "ratios": {
+              "queries": 0.970954030802824,
+              "structural_queries": 0.9873776169296047,
+              "field_queries": 0.9751273507472604,
+              "cursor_walk": 0.9343871550627272,
+              "uncached": 0.9315837095452185,
+              "cached": 0.9244147137730486
+            },
+            "retained_ratio": 1.056975986210336
+          },
+          {
+            "case": "python-small",
+            "blocks": 3,
+            "ratios": {
+              "queries": 0.974295584164737,
+              "structural_queries": 0.9938404648309737,
+              "field_queries": 0.9841600002009252,
+              "cursor_walk": 0.9696613893775706,
+              "uncached": 0.9353308073464324,
+              "cached": 0.9382552884806508
+            },
+            "retained_ratio": 1.0544507979858326
+          },
+          {
+            "case": "tsx-large-1",
+            "blocks": 3,
+            "ratios": {
+              "queries": 0.9774237833424588,
+              "structural_queries": 1.0019984832932052,
+              "field_queries": 1.0234137275882549,
+              "cursor_walk": 0.9898030010503512,
+              "uncached": 0.9372147835490676,
+              "cached": 0.9326087595103978
+            },
+            "retained_ratio": 1.0541480076442569
+          },
+          {
+            "case": "tsx-small",
+            "blocks": 3,
+            "ratios": {
+              "queries": 1.017102741103677,
+              "structural_queries": 0.996855831929938,
+              "field_queries": 0.993600192176039,
+              "cursor_walk": 0.9560250872138525,
+              "uncached": 0.9612491639659412,
+              "cached": 0.8546879964669464
+            },
+            "retained_ratio": 1.0532061130427752
+          },
+          {
+            "case": "typescript-large-2",
+            "blocks": 3,
+            "ratios": {
+              "queries": 0.9920909383905359,
+              "structural_queries": 1.02169051896639,
+              "field_queries": 0.9989602009476538,
+              "cursor_walk": 0.9684715834916052,
+              "uncached": 0.960969364987553,
+              "cached": 0.9478824916360507
+            },
+            "retained_ratio": 1.0585228353808642
+          },
+          {
+            "case": "typescript-large-6",
+            "blocks": 3,
+            "ratios": {
+              "queries": 0.9852833345152979,
+              "structural_queries": 0.9697518973263739,
+              "field_queries": 0.9870517884142815,
+              "cursor_walk": 0.9864423027116697,
+              "uncached": 0.9477647311559617,
+              "cached": 0.9559705998138891
+            },
+            "retained_ratio": 1.0574972795062827
+          },
+          {
+            "case": "typescript-small",
+            "blocks": 3,
+            "ratios": {
+              "queries": 0.9940872994327454,
+              "structural_queries": 1.000385259623959,
+              "field_queries": 0.985105355515616,
+              "cursor_walk": 0.9684811278083423,
+              "uncached": 0.9468047431349321,
+              "cached": 0.9580735312153668
+            },
+            "retained_ratio": 1.0529199352509027
+          },
+          {
+            "case": "yaml-large-5",
+            "blocks": 3,
+            "ratios": {
+              "queries": 0.9876622814622242,
+              "structural_queries": 1.012894436400556,
+              "field_queries": 1.0062436975503721,
+              "cursor_walk": 0.9566842904898137,
+              "uncached": 0.977122030949798,
+              "cached": 0.9481916170675081
+            },
+            "retained_ratio": 1.0587095355191798
+          },
+          {
+            "case": "yaml-small",
+            "blocks": 3,
+            "ratios": {
+              "queries": 0.9609823656510578,
+              "structural_queries": 1.0510344237431635,
+              "field_queries": 0.9965460197645771,
+              "cursor_walk": 0.9609515483287799,
+              "uncached": 0.9616284897005232,
+              "cached": 0.9212537364964101
+            },
+            "retained_ratio": 1.0548636461241143
+          }
+        ],
+        "grammars": [
+          "bash",
+          "c",
+          "python",
+          "tsx",
+          "typescript",
+          "yaml"
+        ],
+        "ratios": {
+          "queries": 0.9804645506640868,
+          "structural_queries": 1.007252364758301,
+          "field_queries": 0.9940033216797894,
+          "cursor_walk": 0.9660582195610226,
+          "uncached": 0.9503915644011026,
+          "cached": 0.9305277789351294
+        },
+        "retained_ratio": 1.054899538820956
+      },
+      "0": {
+        "cases": [
+          {
+            "case": "bash-small",
+            "blocks": 3,
+            "ratios": {
+              "queries": 0.9730903022901872,
+              "structural_queries": 0.9933605450941236,
+              "field_queries": 0.9965960619234061,
+              "cursor_walk": 0.9266622597083078,
+              "uncached": 0.9437384121897022,
+              "cached": 0.927384910595682
+            },
+            "retained_ratio": 1.077516619183286
+          },
+          {
+            "case": "c-small",
+            "blocks": 3,
+            "ratios": {
+              "queries": 0.9772255620893728,
+              "structural_queries": 0.9664131497987539,
+              "field_queries": 0.9842594566064757,
+              "cursor_walk": 0.9365668856457959,
+              "uncached": 0.9271138366594476,
+              "cached": 0.9287641836886765
+            },
+            "retained_ratio": 1.0771783560645918
+          },
+          {
+            "case": "python-large-4",
+            "blocks": 3,
+            "ratios": {
+              "queries": 0.9657981874288056,
+              "structural_queries": 0.962599228015481,
+              "field_queries": 0.9270828379214187,
+              "cursor_walk": 0.9205731500660017,
+              "uncached": 0.898769581962694,
+              "cached": 0.9192442283216495
+            },
+            "retained_ratio": 1.0853396904196804
+          },
+          {
+            "case": "python-small",
+            "blocks": 3,
+            "ratios": {
+              "queries": 0.9698367944579183,
+              "structural_queries": 0.9199918980492635,
+              "field_queries": 0.9259090315830384,
+              "cursor_walk": 0.9425224223471294,
+              "uncached": 0.9328661580305992,
+              "cached": 0.9347881769163914
+            },
+            "retained_ratio": 1.0798398197972718
+          },
+          {
+            "case": "tsx-large-1",
+            "blocks": 3,
+            "ratios": {
+              "queries": 0.9879164709666463,
+              "structural_queries": 1.0188592736444062,
+              "field_queries": 0.9943167726352928,
+              "cursor_walk": 0.9387172932956613,
+              "uncached": 0.92238141941382,
+              "cached": 0.9441679544996086
+            },
+            "retained_ratio": 1.0797890505066214
+          },
+          {
+            "case": "tsx-small",
+            "blocks": 3,
+            "ratios": {
+              "queries": 0.9960974054814498,
+              "structural_queries": 0.9099544183308288,
+              "field_queries": 0.8807990347616756,
+              "cursor_walk": 0.9410546615596598,
+              "uncached": 0.9383693522303805,
+              "cached": 0.9455997263795033
+            },
+            "retained_ratio": 1.075623491552695
+          },
+          {
+            "case": "typescript-large-2",
+            "blocks": 3,
+            "ratios": {
+              "queries": 0.9892996396331337,
+              "structural_queries": 0.9914404820394648,
+              "field_queries": 0.9894580023682036,
+              "cursor_walk": 0.9270256261681536,
+              "uncached": 0.9071879923412735,
+              "cached": 0.9151096249749292
+            },
+            "retained_ratio": 1.0849382926933424
+          },
+          {
+            "case": "typescript-large-6",
+            "blocks": 3,
+            "ratios": {
+              "queries": 0.9582265213208456,
+              "structural_queries": 0.9699497904930788,
+              "field_queries": 0.9882497580114105,
+              "cursor_walk": 0.9278016640499408,
+              "uncached": 0.9144625589749775,
+              "cached": 0.9282998927089778
+            },
+            "retained_ratio": 1.0827772256140848
+          },
+          {
+            "case": "typescript-small",
+            "blocks": 3,
+            "ratios": {
+              "queries": 0.9903580377751746,
+              "structural_queries": 0.9794256430729751,
+              "field_queries": 0.9805407155655246,
+              "cursor_walk": 0.9293218956969406,
+              "uncached": 0.9198157682002827,
+              "cached": 0.9465429729524681
+            },
+            "retained_ratio": 1.0754214729370009
+          },
+          {
+            "case": "yaml-large-5",
+            "blocks": 3,
+            "ratios": {
+              "queries": 0.9816392011827335,
+              "structural_queries": 1.0044013573112691,
+              "field_queries": 0.9854623402107776,
+              "cursor_walk": 0.9287308969090503,
+              "uncached": 0.9143660725897522,
+              "cached": 0.9328561796657533
+            },
+            "retained_ratio": 1.0892899656148196
+          },
+          {
+            "case": "yaml-small",
+            "blocks": 3,
+            "ratios": {
+              "queries": 0.9637557674337294,
+              "structural_queries": 0.9974830896962561,
+              "field_queries": 0.9883858559165859,
+              "cursor_walk": 0.9279146515771344,
+              "uncached": 0.9347397595091101,
+              "cached": 0.9526377624441958
+            },
+            "retained_ratio": 1.0808800253244697
+          }
+        ],
+        "grammars": [
+          "bash",
+          "c",
+          "python",
+          "tsx",
+          "typescript",
+          "yaml"
+        ],
+        "ratios": {
+          "queries": 0.9769648755550292,
+          "structural_queries": 0.9739376590962089,
+          "field_queries": 0.9689715565761324,
+          "cursor_walk": 0.9318156809005355,
+          "uncached": 0.9258063131424132,
+          "cached": 0.9334050958590047
+        },
+        "retained_ratio": 1.0801869434339666
+      }
+    },
+    "before_variant": "r5",
+    "after_variant": "r5_9"
+  },
+  {
+    "required": 10,
+    "stored": 16,
+    "asymptotic_column_ratio": 1.5,
+    "points": {
+      "1": {
+        "cases": [
+          {
+            "case": "cpp-large-3",
+            "blocks": 3,
+            "ratios": {
+              "queries": 0.9696521125238472,
+              "structural_queries": 0.9891358395109646,
+              "field_queries": 0.9853113583134879,
+              "cursor_walk": 0.9705997571884387,
+              "uncached": 0.9470576717058011,
+              "cached": 0.9521803167620321
+            },
+            "retained_ratio": 1.0412127020409268
+          },
+          {
+            "case": "cpp-small",
+            "blocks": 3,
+            "ratios": {
+              "queries": 0.9849766990052505,
+              "structural_queries": 0.9879797303761697,
+              "field_queries": 1.0148291420603242,
+              "cursor_walk": 0.9754485726147315,
+              "uncached": 0.9386036405352288,
+              "cached": 0.960749806973739
+            },
+            "retained_ratio": 1.0399489748296569
+          }
+        ],
+        "grammars": [
+          "cpp"
+        ],
+        "ratios": {
+          "queries": 0.9772843685321109,
+          "structural_queries": 0.9885576159361927,
+          "field_queries": 0.9999613394624662,
+          "cursor_walk": 0.9730211445439753,
+          "uncached": 0.9428211805320681,
+          "cached": 0.9564554644798241
+        },
+        "retained_ratio": 1.0405808384352917
+      },
+      "0": {
+        "cases": [
+          {
+            "case": "cpp-large-3",
+            "blocks": 3,
+            "ratios": {
+              "queries": 0.9778616634729336,
+              "structural_queries": 1.0067638076389522,
+              "field_queries": 0.9965990950996855,
+              "cursor_walk": 0.9258328325959305,
+              "uncached": 0.9219410721514181,
+              "cached": 0.9410500440975872
+            },
+            "retained_ratio": 1.0577174552039945
+          },
+          {
+            "case": "cpp-small",
+            "blocks": 3,
+            "ratios": {
+              "queries": 0.9943135777130656,
+              "structural_queries": 0.9811263291119383,
+              "field_queries": 0.9896518017302058,
+              "cursor_walk": 0.9373593346627087,
+              "uncached": 0.9253804139816195,
+              "cached": 0.9559811424291921
+            },
+            "retained_ratio": 1.0557412632949859
+          }
+        ],
+        "grammars": [
+          "cpp"
+        ],
+        "ratios": {
+          "queries": 0.9860533094697377,
+          "structural_queries": 0.9938624043958816,
+          "field_queries": 0.9931193735236951,
+          "cursor_walk": 0.9315782564932548,
+          "uncached": 0.9236591422240876,
+          "cached": 0.94848621299387
+        },
+        "retained_ratio": 1.0567293592494902
+      }
+    },
+    "before_variant": "r5",
+    "after_variant": "r5_9"
+  },
+  {
+    "required": 11,
+    "stored": 16,
+    "asymptotic_column_ratio": 1.25,
+    "points": {}
+  },
+  {
+    "required": 12,
+    "stored": 16,
+    "asymptotic_column_ratio": 1.25,
+    "points": {}
+  },
+  {
+    "required": 13,
+    "stored": 16,
+    "asymptotic_column_ratio": 1.0,
+    "points": {}
+  },
+  {
+    "required": 14,
+    "stored": 16,
+    "asymptotic_column_ratio": 1.0,
+    "points": {}
+  },
+  {
+    "required": 15,
+    "stored": 16,
+    "asymptotic_column_ratio": 1.0,
+    "points": {}
+  }
+]
