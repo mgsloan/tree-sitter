@@ -1,0 +1,476 @@
+//! Exact-disk-byte source/tree loading with atomic LMDB persistence.
+//!
+//! This first milestone uses owned cache hits. Cache errors fall back to parsing;
+//! optional deferred writes never hold a database transaction while queued.
+//! See the crate README for implemented scope and remaining design milestones.
+
+mod identity;
+mod maintenance;
+mod store;
+mod work;
+pub use identity::{Grammar, GrammarFingerprint};
+pub use maintenance::{Maintenance, MaintenanceProgress, MaintenanceState, MissingSweep};
+pub use store::{CacheError, WriteOutcome};
+
+use identity::Request;
+use std::{
+    fs::OpenOptions,
+    io::{self, Read},
+    ops::ControlFlow,
+    path::{Path, PathBuf},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+};
+use store::Store;
+
+#[derive(Clone, Debug)]
+pub struct Options {
+    /// Fixed LMDB map ceiling. Full maps cause write fallback, never forced resize.
+    pub map_size: usize,
+    pub symbol_presence: bool,
+    /// Maximum cooperative wait in synchronous loads; zero allows duplicate work immediately.
+    pub cooperation_wait: std::time::Duration,
+}
+impl Default for Options {
+    fn default() -> Self {
+        Self {
+            map_size: 256 * 1024 * 1024,
+            symbol_presence: true,
+            cooperation_wait: std::time::Duration::from_millis(50),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum WritePolicy {
+    #[default]
+    Inline,
+    Deferred,
+    Disabled,
+}
+
+#[derive(Default)]
+pub struct LoadOptions<'a> {
+    pub write: WritePolicy,
+    pub cancellation: Option<&'a AtomicBool>,
+}
+impl LoadOptions<'_> {
+    fn cancelled(&self) -> bool {
+        self.cancellation
+            .is_some_and(|flag| flag.load(Ordering::Relaxed))
+    }
+    fn check(&self) -> Result<(), LoadError> {
+        if self.cancelled() {
+            Err(LoadError::Cancelled)
+        } else {
+            Ok(())
+        }
+    }
+}
+
+#[derive(Debug)]
+pub enum LoadError {
+    InvalidPath,
+    Source(io::Error),
+    TooLarge,
+    Language(tree_sitter::LanguageError),
+    Cancelled,
+    ParseFailed,
+    Pack(tree_sitter_squatter::Error),
+}
+impl std::fmt::Display for LoadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "load failed: {self:?}")
+    }
+}
+impl std::error::Error for LoadError {}
+impl From<io::Error> for LoadError {
+    fn from(error: io::Error) -> Self {
+        Self::Source(error)
+    }
+}
+
+#[derive(Clone)]
+pub struct LoadedFile {
+    source: Arc<[u8]>,
+    tree: Arc<tree_sitter_squatter::Tree>,
+    hit: bool,
+    cleanup: Option<(Arc<Store>, Arc<Request>)>,
+}
+impl LoadedFile {
+    pub fn source(&self) -> &[u8] {
+        &self.source
+    }
+    pub fn tree(&self) -> &tree_sitter_squatter::Tree {
+        &self.tree
+    }
+    pub fn cache_hit(&self) -> bool {
+        self.hit
+    }
+    /// Retire older cached generations independently of loading/publication.
+    /// The work stops if another publication supersedes this generation.
+    pub fn maintenance(&self) -> Option<Maintenance> {
+        self.cleanup
+            .as_ref()
+            .map(|(store, request)| Maintenance::keep(store.clone(), request))
+    }
+}
+
+/// Executor-neutral load result. A deferred request owns its captured source and
+/// retains no database transaction, parser borrow, or work lock.
+pub enum LoadStep {
+    Ready(LoadResult),
+    Deferred(PendingLoad),
+}
+
+pub struct PendingLoad {
+    request: Arc<Request>,
+    source: Arc<[u8]>,
+    grammar: Grammar,
+    store: Option<Arc<Store>>,
+    symbol_presence: bool,
+    write: WritePolicy,
+}
+
+pub struct LoadResult {
+    pub file: LoadedFile,
+    pub pending_write: Option<PendingWrite>,
+}
+
+/// Complete, immutable work. No LMDB transaction is retained until execution.
+pub struct PendingWrite {
+    store: Arc<Store>,
+    request: Arc<Request>,
+    grammar: Grammar,
+    file: LoadedFile,
+}
+impl PendingWrite {
+    /// Busy work can be retried later using this same item.
+    pub fn publish(&self) -> Result<WriteOutcome, CacheError> {
+        self.publish_with_cancellation(&AtomicBool::new(false))
+    }
+    pub fn publish_with_cancellation(
+        &self,
+        cancellation: &AtomicBool,
+    ) -> Result<WriteOutcome, CacheError> {
+        self.store.publish(
+            &self.request,
+            self.file.source(),
+            self.file.tree(),
+            &self.grammar,
+            || cancellation.load(Ordering::Relaxed),
+        )
+    }
+}
+
+pub struct Persistence {
+    root: PathBuf,
+    store: Option<Arc<Store>>,
+    options: Options,
+}
+impl Persistence {
+    pub fn sweep_missing(&self) -> Option<MissingSweep> {
+        self.store
+            .as_ref()
+            .map(|store| MissingSweep::new(store.clone(), self.root.clone()))
+    }
+
+    /// Reclaim LMDB reader slots abandoned by crashed processes, never live readers.
+    pub fn check_stale_readers(&self) -> Result<usize, CacheError> {
+        let Some(store) = &self.store else {
+            return Ok(0);
+        };
+        let mut dead = 0;
+        // The shared environment remains open; LMDB owns reader-table locking.
+        let status = unsafe { lmdb_sys::mdb_reader_check(store.env.env(), &mut dead) };
+        if status != 0 {
+            return Err(lmdb::Error::from_err_code(status).into());
+        }
+        Ok(dead as usize)
+    }
+    /// Construct optional cleanup for a deleted source. Every batch rechecks
+    /// absence; a recreated file or newer publication stops the task.
+    pub fn maintenance_missing(&self, path: &Path) -> Result<Option<Maintenance>, CacheError> {
+        let (path, encoded) = identity::path(path)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
+        match &self.store {
+            Some(store) => Maintenance::missing(store.clone(), encoded, self.root.join(path)),
+            None => Ok(None),
+        }
+    }
+    /// Cache opening failures are nonfatal. Root resolution must succeed.
+    /// The cache directory must be trusted and accessed by cooperating writers.
+    pub fn open(root: impl AsRef<Path>, options: Options) -> io::Result<Self> {
+        let root = root.as_ref().canonicalize()?;
+        if !root.is_dir() {
+            return Err(io::Error::new(io::ErrorKind::NotADirectory, "project root"));
+        }
+        let store = Store::open(&root, options.map_size).ok();
+        Ok(Self {
+            root,
+            store,
+            options,
+        })
+    }
+
+    pub fn load(
+        &self,
+        path: &Path,
+        grammar: &Grammar,
+        parser: &mut tree_sitter::Parser,
+    ) -> Result<LoadedFile, LoadError> {
+        Ok(self
+            .load_with_options(path, grammar, parser, LoadOptions::default())?
+            .file)
+    }
+
+    pub fn load_with_options(
+        &self,
+        path: &Path,
+        grammar: &Grammar,
+        parser: &mut tree_sitter::Parser,
+        options: LoadOptions<'_>,
+    ) -> Result<LoadResult, LoadError> {
+        let mut pending = self.capture(path, grammar, &options)?;
+        let started = std::time::Instant::now();
+        loop {
+            let cooperate = started.elapsed() < self.options.cooperation_wait;
+            match pending.attempt(parser, options.cancellation, cooperate)? {
+                LoadStep::Ready(result) => return Ok(result),
+                LoadStep::Deferred(next) => {
+                    pending = next;
+                    options.check()?;
+                    let remaining = self
+                        .options
+                        .cooperation_wait
+                        .saturating_sub(started.elapsed());
+                    std::thread::sleep(remaining.min(std::time::Duration::from_millis(5)));
+                }
+            }
+        }
+    }
+
+    /// Attempt once, returning captured work immediately if another parser owns it.
+    pub fn load_step(
+        &self,
+        path: &Path,
+        grammar: &Grammar,
+        parser: &mut tree_sitter::Parser,
+        options: LoadOptions<'_>,
+    ) -> Result<LoadStep, LoadError> {
+        self.capture(path, grammar, &options)?
+            .resume(parser, options.cancellation)
+    }
+
+    fn capture(
+        &self,
+        path: &Path,
+        grammar: &Grammar,
+        options: &LoadOptions<'_>,
+    ) -> Result<PendingLoad, LoadError> {
+        let (path, encoded) = identity::path(path)?;
+        options.check()?;
+        let source_path = self.root.join(path);
+        let mut open = OpenOptions::new();
+        open.read(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            // Avoid blocking on a FIFO before metadata can reject it.
+            open.custom_flags(libc::O_NONBLOCK);
+        }
+        let mut input = open.open(&source_path)?;
+        let metadata = input.metadata()?;
+        if !metadata.is_file() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "source is not a regular file",
+            )
+            .into());
+        }
+        if metadata.len() > u32::MAX as u64 {
+            return Err(LoadError::TooLarge);
+        }
+        let mut source = Vec::new();
+        let mut chunk = [0; 64 * 1024];
+        loop {
+            options.check()?;
+            let count = input.read(&mut chunk)?;
+            if count == 0 {
+                break;
+            }
+            if source
+                .len()
+                .checked_add(count)
+                .is_none_or(|len| len > u32::MAX as usize)
+            {
+                return Err(LoadError::TooLarge);
+            }
+            source.extend_from_slice(&chunk[..count]);
+        }
+        let source: Arc<[u8]> = source.into();
+        let request = Arc::new(Request::new(
+            encoded,
+            &source,
+            grammar,
+            self.options.symbol_presence,
+        ));
+        // Symlinked files outside the project can be read but are not persisted.
+        let store = self.store.as_ref().filter(|_| {
+            source_path
+                .canonicalize()
+                .is_ok_and(|p| p.starts_with(&self.root))
+        });
+        Ok(PendingLoad {
+            request,
+            source,
+            grammar: grammar.clone(),
+            store: store.cloned(),
+            symbol_presence: self.options.symbol_presence,
+            write: options.write,
+        })
+    }
+}
+
+impl PendingLoad {
+    pub fn resume(
+        self,
+        parser: &mut tree_sitter::Parser,
+        cancellation: Option<&AtomicBool>,
+    ) -> Result<LoadStep, LoadError> {
+        self.attempt(parser, cancellation, true)
+    }
+
+    /// Explicit escape hatch for callers whose wait budget has expired.
+    pub fn parse_now(
+        self,
+        parser: &mut tree_sitter::Parser,
+        cancellation: Option<&AtomicBool>,
+    ) -> Result<LoadResult, LoadError> {
+        match self.attempt(parser, cancellation, false)? {
+            LoadStep::Ready(result) => Ok(result),
+            LoadStep::Deferred(_) => unreachable!("cooperation disabled"),
+        }
+    }
+
+    fn attempt(
+        self,
+        parser: &mut tree_sitter::Parser,
+        cancellation: Option<&AtomicBool>,
+        cooperate: bool,
+    ) -> Result<LoadStep, LoadError> {
+        let options = LoadOptions {
+            write: self.write,
+            cancellation,
+        };
+        options.check()?;
+        let store = self.store.clone();
+        let hit = || {
+            store
+                .as_ref()
+                .and_then(|store| store.get(&self.request, &self.source, &self.grammar))
+        };
+        let ready = |tree| {
+            LoadStep::Ready(LoadResult {
+                file: LoadedFile {
+                    source: self.source.clone(),
+                    tree: Arc::new(tree),
+                    hit: true,
+                    cleanup: store
+                        .as_ref()
+                        .map(|store| (store.clone(), self.request.clone())),
+                },
+                pending_write: None,
+            })
+        };
+        if let Some(tree) = hit() {
+            return Ok(ready(tree));
+        }
+        // Errors disable this optimization. A busy owner instead defers work.
+        let _work = if cooperate {
+            if let Some(store) = &store {
+                match store.work(&self.request) {
+                    Ok(Some(guard)) => Some(guard),
+                    Ok(None) => return Ok(LoadStep::Deferred(self)),
+                    Err(_) => None,
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        if let Some(tree) = hit() {
+            return Ok(ready(tree));
+        }
+        parser.reset();
+        parser
+            .set_language(&self.grammar.language)
+            .map_err(LoadError::Language)?;
+        parser
+            .set_included_ranges(&[])
+            .expect("empty ranges are always valid");
+        let mut progress = |_: &tree_sitter::ParseState| {
+            if options.cancelled() {
+                ControlFlow::Break(())
+            } else {
+                ControlFlow::Continue(())
+            }
+        };
+        let tree = parser.parse_with_options(
+            &mut |offset, _| self.source.get(offset..).unwrap_or_default(),
+            None,
+            Some(tree_sitter::ParseOptions::new().progress_callback(&mut progress)),
+        );
+        let Some(tree) = tree else {
+            parser.reset();
+            options.check()?;
+            return Err(LoadError::ParseFailed);
+        };
+        options.check()?;
+        let packed = tree_sitter_squatter::Tree::pack_with_options(
+            &tree,
+            tree_sitter_squatter::PackOptions {
+                repack: true,
+                symbol_presence: self.symbol_presence,
+                initial_group_capacity: 0,
+            },
+        )
+        .map_err(LoadError::Pack)?;
+        let file = LoadedFile {
+            source: self.source.clone(),
+            tree: Arc::new(packed),
+            hit: false,
+            cleanup: store
+                .as_ref()
+                .map(|store| (store.clone(), self.request.clone())),
+        };
+        let pending_write = match (options.write, store.as_ref()) {
+            (WritePolicy::Disabled, _) | (_, None) => None,
+            (_, Some(store)) => Some(PendingWrite {
+                store: store.clone(),
+                request: self.request,
+                grammar: self.grammar.clone(),
+                file: file.clone(),
+            }),
+        };
+        if options.write == WritePolicy::Inline {
+            if let Some(write) = &pending_write {
+                let _ = write.publish_with_cancellation(
+                    options.cancellation.unwrap_or(&AtomicBool::new(false)),
+                );
+            }
+            Ok(LoadStep::Ready(LoadResult {
+                file,
+                pending_write: None,
+            }))
+        } else {
+            Ok(LoadStep::Ready(LoadResult {
+                file,
+                pending_write,
+            }))
+        }
+    }
+}

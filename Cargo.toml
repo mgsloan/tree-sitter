@@ -10,6 +10,7 @@ members = [
   "crates/xtask",
   "crates/language",
   "crates/squatter",
+  "crates/persistence",
   "crates/corpus-analysis",
   "crates/squatter-bench",
   "lib",
