@@ -41,8 +41,8 @@ def main():
                     for name, grammar in run["registry"]["grammars"].items()}
         per_file = rows(prefix.with_name(name + "-files.jsonl"))
         files[name] = {(row["path"], row["benchmark"]): row for row in per_file}
-        # Cold parse has one row per file and carries representation measurements.
-        trees = [row for row in per_file if row["benchmark"] == "cold-parse"]
+        # The prerequisite parse row carries representation measurements.
+        trees = [row for row in per_file if row["benchmark"] == run.get("parse_benchmark", "cold-parse")]
         summaries[name] = dict(group_size=record["group_size"], variant=record["variant"],
                               mutated=record["mutated"], cflags=record["cflags"],
                               binary_sha256=record["binary_sha256"], files=run["completed"],

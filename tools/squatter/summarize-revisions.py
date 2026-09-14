@@ -75,7 +75,8 @@ def main():
         require(len(keyed) == len(rows), f"duplicate records: {name}")
         inputs = {entry["path"]: entry for entry in manifest["samples"][operation["sample"]]["inputs"]}
         expected_files = inputs.keys()
-        expected = {(path, benchmark) for path in expected_files for benchmark in run["benchmarks"]}
+        benchmarks = set(run["benchmarks"]) | {run.get("parse_benchmark", "cold-parse")}
+        expected = {(path, benchmark) for path in expected_files for benchmark in benchmarks}
         require(keyed.keys() == expected, f"missing or unexpected records: {name}")
         for row in rows:
             require(row["source_sha256"] == inputs[row["path"]]["sha256"],

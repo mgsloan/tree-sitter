@@ -61,7 +61,7 @@ def main():
         paths = {row["path"] for row in rows}
         # Parsing is prerequisite setup and is recorded even when its additional
         # relationship-validation workload was not selected.
-        benchmarks = set(run["benchmarks"]) | {"cold-parse"}
+        benchmarks = set(run["benchmarks"]) | {run.get("parse_benchmark", "cold-parse")}
         require(set(keyed) == {(path, bench) for path in paths for bench in benchmarks},
                 f"incomplete workload coverage: {name}")
         require(all(not row["failures"] and row["repeats"] == manifest["repeat"] for row in rows),

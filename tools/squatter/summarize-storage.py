@@ -50,7 +50,7 @@ def main():
             assert len(keyed) == len(rows)
             # Parsing is timed during setup even when relationship validation
             # (the explicit cold-parse selector) is omitted on large inputs.
-            benchmarks = set(run["benchmarks"]) | {"cold-parse"}
+            benchmarks = set(run["benchmarks"]) | {run.get("parse_benchmark", "cold-parse")}
             assert keyed.keys() == {(path, bench) for path in expected_inputs for bench in benchmarks}
             for row in rows:
                 assert row["repeats"] == manifest["repeat"] and row["failures"] == 0

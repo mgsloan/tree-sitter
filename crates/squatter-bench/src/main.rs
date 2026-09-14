@@ -18,7 +18,7 @@ use std::{
     time::Duration,
 };
 use tree_sitter::Point;
-use tree_sitter_squatter::{PackOptions, Tree};
+use tree_sitter_squatter::{PackContext, PackOptions, Tree};
 
 const BENCHMARKS: &[&str] = &[
     "query-matches",
@@ -485,6 +485,14 @@ fn main() -> Result<()> {
     };
     let (benchmarks, inputs, coverage) = choose(&arguments, &registry)?;
     ensure!(!inputs.is_empty(), "--count selected no files");
+    // Read workloads reuse grammar preparation; explicitly requested cold parse
+    // still measures a fresh parser and a one-shot conversion on every repeat.
+    let cold_parse = benchmarks.iter().any(|name| name == "cold-parse");
+    let parse_benchmark = if cold_parse {
+        "cold-parse"
+    } else {
+        "setup-parse"
+    };
     fs::create_dir_all(&arguments.output_directory)?;
     let prefix = arguments.output_directory.join(&arguments.output);
     let output_path = |suffix: &str| PathBuf::from(format!("{}-{suffix}", prefix.display()));
@@ -508,7 +516,7 @@ fn main() -> Result<()> {
     );
     let mut meter = Meter::new();
     let mut manifest = serde_json::json!({
-        "schema": 1, "point_positions": tree_sitter_squatter::HAS_POINT_POSITIONS, "arguments": arguments, "benchmarks": benchmarks, "seed": arguments.seed,
+        "schema": 1, "parse_benchmark": parse_benchmark, "reuse_pack_context": !cold_parse, "point_positions": tree_sitter_squatter::HAS_POINT_POSITIONS, "arguments": arguments, "benchmarks": benchmarks, "seed": arguments.seed,
         "inputs": inputs, "planned": inputs.len(), "completed": 0, "failed": 0, "partial": true,
         "coverage": coverage, "registry": registry, "counter_status": meter.counter_status,
         "tool": {"checkout": git_identity(Path::new(".")), "container_revision": std::env::var("SQUAT_TOOL_SHA").ok(), "source_sha256": std::env::var("SQUAT_SOURCE_SHA256").ok(),
@@ -531,6 +539,8 @@ fn main() -> Result<()> {
         serde_json::to_vec_pretty(&manifest)?,
     )?;
     let mut grammars = BTreeMap::new();
+    // Declared after grammar libraries so contexts drop before their libraries.
+    let mut pack_contexts = BTreeMap::new();
     let mut queries = BTreeMap::new();
     let wants_queries = benchmarks.iter().any(|name| name.starts_with("query-"));
     let mut failures = Failures::default();
@@ -549,6 +559,12 @@ fn main() -> Result<()> {
                         // The registry identifies trusted grammar exports. This map
                         // outlives every parser/tree/query created below.
                         unsafe { LoadedGrammar::open(&registry.grammars[&input.grammar])? },
+                    );
+                }
+                if !cold_parse && !pack_contexts.contains_key(&input.grammar) {
+                    pack_contexts.insert(
+                        input.grammar.clone(),
+                        PackContext::new(&grammars[&input.grammar].language)?,
                     );
                 }
                 if wants_queries && !queries.contains_key(&input.grammar) {
@@ -599,13 +615,18 @@ fn main() -> Result<()> {
                 };
                 let parse_squat = || -> Result<_> {
                     let parsed = parse_mainline()?;
-                    Ok(Tree::pack_with_options(
-                        &parsed,
-                        PackOptions {
-                            repack: arguments.repack,
-                            ..Default::default()
-                        },
-                    )?)
+                    let options = PackOptions {
+                        repack: arguments.repack,
+                        ..Default::default()
+                    };
+                    Ok(if cold_parse {
+                        Tree::pack_with_options(&parsed, options)?
+                    } else {
+                        pack_contexts
+                            .get_mut(&source.input.grammar)
+                            .unwrap()
+                            .pack_with_options(&parsed, options)?
+                    })
                 };
                 let ((mainline, mainline_time), (squat, squat_time)) =
                     if (batch_index + repeat) % 2 == 0 {
@@ -639,7 +660,7 @@ fn main() -> Result<()> {
                         };
                         let mut cold_failed = false;
                         let mut expected_fields = 0;
-                        if benchmarks.iter().any(|name| name == "cold-parse") {
+                        if cold_parse {
                             let check = (|| -> Result<()> {
                                 let expected = Observation::Walk(compare::walk(
                                     mainline.root_node(),
@@ -670,7 +691,7 @@ fn main() -> Result<()> {
                         accumulate(
                             &mut results,
                             source,
-                            "cold-parse",
+                            parse_benchmark,
                             mainline_time,
                             squat_time,
                             &squat,
@@ -678,7 +699,7 @@ fn main() -> Result<()> {
                         );
                         expected_field_differences += expected_fields;
                         results
-                            .get_mut(&(source.input.path.clone(), "cold-parse".to_owned()))
+                            .get_mut(&(source.input.path.clone(), parse_benchmark.to_owned()))
                             .unwrap()
                             .result
                             .expected_field_differences += expected_fields;
@@ -699,7 +720,7 @@ fn main() -> Result<()> {
                     (a, b) => {
                         failures.record(
                             &source.input.path,
-                            "cold-parse",
+                            parse_benchmark,
                             format!("mainline: {:?}; squat: {:?}", a.err(), b.err()),
                         );
                         failed_files.insert(source.input.path.clone());
