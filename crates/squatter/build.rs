@@ -6,6 +6,7 @@ fn main() {
         .include("../../lib/include")
         .include("../../lib/src");
     for file in [
+        "supertypes.c",
         "slab.c",
         "pack.c",
         "node.c",

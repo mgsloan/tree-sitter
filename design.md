@@ -1,6 +1,6 @@
 # Squat representation
 
-The idea here is to create a compact yet efficient representation for tree-sitter trees that do not require incremental reparse. Newly packed trees use one allocation containing runtime metadata followed by a contiguous persisted slab. Physical nodes are stored in reverse preorder; traversal APIs still enumerate preorder. The persisted portion contains no pointers.
+The idea here is to create a compact yet efficient representation for tree-sitter trees that do not require incremental reparse. Newly packed trees use one allocation containing runtime metadata followed by a contiguous persisted slab. Physical nodes are stored in reverse preorder; traversal APIs still enumerate preorder. The persisted portion contains no pointers. Trees with more than eight supertypes also retain an immutable dictionary shared with other trees and packing contexts for the same language.
 
 To make the representation compact without much access overhead, a statistical
 fact about preorder nodes is exploited. In the space of possible values for a
@@ -14,7 +14,7 @@ So, the idea is to split the nodes into groups. Each squat group stores the abso
 * Struct-of-arrays `Group` with `group_capacity`
 * Struct-of-arrays `Node` with `slot_capacity`
 * Symbol presence bitmaps
-* Supertype dictionary
+* Optional sparse grammar-symbol overrides
 
 The slab can be directly written during conversion by somewhat overestimating `group_capacity` from node count. This version uses 16 slots per group, so `slot_capacity = 16 * group_capacity` and `slot_count = 16 * group_count`. Counts include partially occupied groups and their wasted slots; capacities also include unused allocation space.
 
@@ -51,7 +51,7 @@ point columns, their group bases, packing constraints, cache lanes, and
 point APIs and snapshot members. Byte positions and byte-range APIs remain.
 The layout below describes the default build with points enabled.
 
-The 16-byte version-6 header has a format/flags word. Readers reject other
+The 16-byte version-9 header has a format/flags word. Readers reject other
 versions, point modes, group sizes, alignments, and unknown flags. Old slabs
 must be regenerated.
 
@@ -61,7 +61,7 @@ Despite the code below being Rust, this will be implemented in C in `lib/squat/`
 
 ```rs
 struct SlabHeader {
-    /// Native-endian format/version, point/group/alignment flags, optional index.
+    /// Native-endian format/version, point/group/alignment flags, optional index, supertype index width.
     format_flags: u32,
     group_count: u32,
     /// Actual allocated capacity, including growth beyond the initial estimate.
@@ -96,7 +96,7 @@ struct Node {
   end_point: u16,
 
   /// Supertypes mask or dictionary index.
-  supertypes: u8,
+  supertypes: u8 | u16,
 
   /// Raw symbol after aliasing; public-symbol mapping happens on read.
   display_symbol: VarBits,
@@ -142,7 +142,7 @@ fields on ERROR parents. Mainline's lookup API can instead inherit through an
 alias-visible wrapper and return a grandchild whose field is absent from the
 parent's visible children. Tests count these as expected mismatches only when
 squat agrees with mainline's visible-child cursor. Other field mismatches fail.
-The sparse field-exception section remains removed. Version 7 uses a 16-byte
+The sparse field-exception section remains removed. Version 9 uses a 16-byte
 header and reverse-preorder physical slots; the loader rejects earlier formats.
 
 Public symbol is mapped from raw display symbol at read time.
@@ -151,7 +151,7 @@ Public symbol is mapped from raw display symbol at read time.
 
 Original grammar IDs are sparse overrides of raw `display_symbol`. The
 `SQ_GRAMMAR_OVERRIDES` header flag indicates an optional section after the
-symbol-presence index and supertype dictionary. Trees without differing IDs
+symbol-presence index. Trees without differing IDs
 omit the section entirely. It contains an eight-byte header (`u32` override
 count and a zero reserved word), a bitmap over live physical slot extent
 (including zero bits for waste), an array of `u32` prefix ranks for each 64-slot
@@ -179,9 +179,13 @@ Since hidden nodes are omitted, supertype information is needed. There are two m
 
 1. Stored directly in the `supertypes: u8`, when there are 8 or less potential supertypes.
 
-2. An index into a dictionary of bitmaps where each bitmap has N bits where N is the supertypes count. This requires building up the dictionary as it goes. Each entry occupies `ceil(N / 64)` 64-bit words, with unused high bits zeroed. Its entry count is stored in `SlabHeader`, so its byte length is `supertype_dictionary_count * ceil(N / 64) * 8`. Its location is derived: immediately after the columns and optional symbol-presence index. The dictionary is staged separately and appended after grouping is complete.
+2. An index into an immutable grammar-wide dictionary. Each entry contains `ceil(N / 64)` words, with unused high bits zero. Compiled parse-table reductions and predecessor transitions reconstruct a conservative hidden-child graph; production-specific aliases stop inheritance, and hidden extras may occur inside any production. Nonterminal extras are identified by EOF reductions in states with a null-lookahead lex mode, not ordinary self-loop gotos. Only definitions reachable from a supertype or hidden extra are explored. Unary reductions use deduplicated hidden incoming transitions; longer productions lazily build the full predecessor graph. Shared reduction action lists are visited once per state. Hidden non-supertype wrappers are collapsed to a supertype nesting graph. Enumerating `(mask, last supertype)` states reaches a fixed point, including cycles. Every singleton and the empty mask are included to cover detached recovery roots. Visible `ERROR` resets inheritance; hidden `_ERROR` adds no bit.
 
-Packing returns `SQ_ERROR_DICTIONARY_FULL` if more than 256 dictionary entries are needed.
+Masks are sorted numerically (highest word first, raw grammar IDs in ascending bit order). IDs therefore depend on the matching grammar and representation version, never tree contents, parse-table iteration order, or cache history. Up to 256 dictionary entries use an 8-bit node column; larger dictionaries use 16 bits from initial allocation. More than 65,536 entries returns `SQ_ERROR_DICTIONARY_FULL` during grammar analysis, even if an individual tree would need fewer entries. No tree-local fallback changes the ID meaning. Packing uses an immutable hash table for mask-to-ID lookup rather than linear interning. With at most eight supertypes, the column is the mask itself and needs no dictionary or lookup.
+
+A synchronized, reference-counted cache is keyed by the retained `TSLanguage` identity. Trees and contexts share the dictionary; trimming a context retains it, and deleting the final owner releases the cache entry and language reference. Separate contexts can initialize and use the cache concurrently. Native grammar libraries must remain loaded while their language is in use.
+
+The dictionary is not serialized. The header records its count and width flag; loading recomputes or reuses the matching grammar's dictionary and rejects inconsistent counts/widths. Version 9 rejects older slabs because the tighter extra analysis can change dictionary IDs. Sparse grammar-symbol overrides now immediately follow the columns and optional symbol-presence index. Copying nodes between trees of the same grammar requires no dictionary remapping, though changed ancestry can still require a different inherited mask.
 
 EXPERIMENT: Make supertypes a VarBits representation. Allows omitting it when there are none.
 

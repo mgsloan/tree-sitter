@@ -117,11 +117,11 @@ layout, avoiding repeated grammar-wide arithmetic. These constants add eight
 bytes to the runtime tree and do not change serialized slabs.
 
 After the header and per-group waste column, columns are ordered: start byte,
-end byte, span, symbol, grammar symbol, field, supertype, flag bitmaps (`last`,
+end byte, span, symbol, field, supertype, flag bitmaps (`last`,
 `extra`, `error`, `missing`), start point, end point. Each group-base column
 immediately precedes its corresponding node-value column, with alignment padding
-where needed. The supertype dictionary and optional symbol-presence index follow
-the columns.
+where needed. The optional symbol-presence index and sparse grammar-symbol
+overrides follow the columns.
 
 Subtree-span and start-column bases are zero when every live value in the group
 fits in u8; otherwise they use the actual minimum. The packer chooses these bases
@@ -137,7 +137,7 @@ stored symmetrically as one u64 key, with the row in the high word. The payload
 still uses four bytes per node and 16 bytes per group before column padding,
 while lexicographic point comparisons now use one integer key.
 
-The version-6 serialized header is 16 bytes: a format/flags word, live group
+The version-9 serialized header is 16 bytes: a format/flags word, live group
 count, allocated group capacity, and supertype-dictionary count. Column and
 auxiliary-section offsets are derived from the exact grammar, capacity, and
 feature flags. The symbol-presence index has an explicit presence flag. All
@@ -145,11 +145,26 @@ previous versions are rejected. Columns start on eight-byte boundaries (64 in
 the experimental alignment build); auxiliary sections remain eight-byte aligned.
 Slabs are native-endian.
 
-Newly packed trees use one allocation: runtime descriptor, supertype metadata,
+Each newly packed tree has one private allocation: runtime descriptor, supertype metadata,
 alignment padding, then the persisted slab. `sq_tree_data` / Rust `as_bytes`
 returns only the persisted suffix. Builder growth can relocate this allocation;
 public trees and handles are immutable. `sq_tree_repack` returns an independent
 colocated compact copy with the same physical slot IDs.
+
+Up to eight supertypes use direct byte masks without a dictionary lookup. Larger
+supertype sets use a deterministic dictionary derived from the compiled grammar,
+shared by trees and contexts for that language. IDs are sorted by mask, independent
+of conversion order. The dictionary selects 8- or 16-bit indexes upfront and is
+not stored in each slab. Loading derives it from the matching grammar and checks
+the header count/width. Grammar analysis returns `SQ_ERROR_DICTIONARY_FULL` if its
+conservative mask set exceeds 65,536 entries. Retaining a packing context keeps
+the cache warm even when no trees remain; trimming keeps this immutable metadata.
+Analysis distinguishes nonterminal extras from ordinary recursive gotos and only
+explores hidden definitions reachable from supertypes or hidden extras. Unary
+productions avoid building the full predecessor graph. Version 9 rejects older
+slabs because the tighter analysis can change dictionary IDs.
+The [mask-analysis benchmarks](experiments/supertype-tight-results-2026-09-14.md)
+record the dictionary-size, initialization, conversion, and memory effects.
 
 Physical columns are filled from the beginning in reverse preorder. Nodes use
 direct physical slot indexes, and preorder traversal walks toward lower slots.
@@ -349,7 +364,7 @@ Point methods and attribute fields are omitted from Rust as well. Configure Rust
 through Cargo features; a generated C assertion prevents incompatible CFLAGS
 from silently changing the FFI snapshot layout.
 
-The 16-byte version-6 header records point support in `format_flags`. Each build
+The 16-byte version-9 header records point support in `format_flags`. Each build
 rejects the other mode before interpreting columns. Regenerate older slabs and
 slabs from another point mode; they are incompatible with this format.
 

@@ -64,6 +64,9 @@ SQTree *sq_tree_pack(const TSTree *, SQPackOptions, SQError *);
 
 // Reuse grammar metadata and scratch across conversions of one language.
 // A context retains the language (native grammar libraries must remain loaded).
+// For more than eight supertypes, compiled-table analysis produces a deterministic
+// dictionary shared by contexts and trees of this language. Initialization fails
+// with SQ_ERROR_DICTIONARY_FULL if the conservative set exceeds 65536 masks.
 // Calls reset transient state automatically, including after a failed pack.
 // One context may be used by only one thread at a time; separate contexts may
 // run concurrently. Packed trees own their storage and outlive the context.

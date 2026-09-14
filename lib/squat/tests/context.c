@@ -3,6 +3,7 @@
 #include <assert.h>
 #include <dlfcn.h>
 #include <stdio.h>
+#include "supertype_fixture.h"
 
 static size_t fail_at, allocations;
 void *__real_malloc(size_t);
@@ -20,8 +21,38 @@ static void equal(const SQTree *a, const SQTree *b) {
   assert(an == bn && !memcmp(ab, bb, an));
 }
 
+static void grammar_allocation_failures(bool multi_child) {
+  SupertypeFixture fixture;
+  supertype_fixture(&fixture, 9, true);
+  if (multi_child) {
+    for (unsigned i = 0; i < 9; i++) fixture.actions[i + 2].action.reduce.child_count = 2;
+  }
+  for (size_t nth = 1; ; nth++) {
+    assert(nth < 256);
+    SQError error = SQ_OK;
+    allocations = 0;
+    fail_at = nth;
+    SQSupertypeGrammar *attempt = sq_supertype_grammar_acquire(&fixture.language, 9, &error);
+    fail_at = 0;
+    if (attempt) {
+      assert(attempt->count == 512);
+      sq_supertype_grammar_release(attempt);
+      break;
+    }
+    assert(error == SQ_ERROR_ALLOCATION);
+    // Failed initialization must not publish a partial cache entry.
+    SQSupertypeGrammar *recovered = sq_supertype_grammar_acquire(&fixture.language, 9, &error);
+    assert(recovered && recovered->count == 512);
+    sq_supertype_grammar_release(recovered);
+  }
+}
+
 int main(int argc, char **argv) {
   assert(argc >= 4);
+  if (getenv("CONTEXT_FAILURES")) {
+    grammar_allocation_failures(false);
+    grammar_allocation_failures(true);
+  }
   SQError error;
   assert(!sq_pack_context_new(NULL, &error) && error == SQ_ERROR_LANGUAGE);
   sq_pack_context_delete(NULL);

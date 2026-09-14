@@ -178,21 +178,6 @@ bool sq_tree_group_has_symbol(const SQTree *tree, uint32_t group, TSSymbol symbo
   return false;
 }
 
-bool sq_append_dictionary(SQTree *tree, const uint64_t *dictionary, uint32_t count,
-                          SQError *error) {
-  uint64_t bytes = (uint64_t)count * ((tree->supertype_count + 63) / 64) * 8;
-  uint64_t offset = tree->layout.end;
-  if (sq_presence_offset(tree)) offset += sq_presence_size(tree);
-  if (offset + bytes > tree->size) {
-    sq_fail(error, SQ_ERROR_ARGUMENT);
-    return false;
-  }
-
-  sq_header(tree)->supertype_dictionary_count = count;
-  memcpy(tree->data + (uint32_t)offset, dictionary, (size_t)bytes);
-  return true;
-}
-
 // Validate before exposing any nodes. Layout offsets must be canonical, so no
 // column read can escape the buffer even when the input is hostile.
 static bool validate_nodes(SQTree *tree, SQError *error) {
@@ -420,12 +405,14 @@ static SQTree *load_bytes(const TSLanguage *language, const void *bytes, size_t 
 
   memcpy(&header, bytes, sizeof(header));
   if (!header.group_count || header.group_count > header.group_capacity ||
-      (header.format_flags & ~(SQ_PRESENCE | SQ_GRAMMAR_OVERRIDES)) != (SQ_VERSION | SQ_LAYOUT_FLAGS)) {
+      (header.format_flags & ~(SQ_PRESENCE | SQ_WIDE_SUPERTYPES | SQ_GRAMMAR_OVERRIDES)) != (SQ_VERSION | SQ_LAYOUT_FLAGS)) {
     goto invalid;
   }
 
   SQLayout layout;
-  if (!language || !sq_layout(language, header.group_capacity, &layout) || layout.end > length) {
+  if (!language || !sq_layout(language, header.group_capacity,
+                              (header.format_flags & SQ_WIDE_SUPERTYPES) != 0, &layout) ||
+      layout.end > length) {
     goto invalid;
   }
 
@@ -452,15 +439,9 @@ static SQTree *load_bytes(const TSLanguage *language, const void *bytes, size_t 
   SQTree *tree =
       sq_allocate_loaded(language, header.group_capacity, bytes, (uint32_t)length, borrowed, error);
   if (!tree) return NULL;
-  if (tree->supertype_count > 8) {
-    if (!header.supertype_dictionary_count || header.supertype_dictionary_count > 256) {
-      sq_tree_delete(tree);
-      goto invalid;
-    }
-
-    expected +=
-        (uint64_t)header.supertype_dictionary_count * ((tree->supertype_count + 63) / 64) * 8;
-  } else if (header.supertype_dictionary_count) {
+  uint32_t dictionary_count = tree->supertype_grammar ? tree->supertype_grammar->count : 0;
+  if (header.supertype_dictionary_count != dictionary_count ||
+      ((header.format_flags & SQ_WIDE_SUPERTYPES) != 0) != (dictionary_count > 256)) {
     sq_tree_delete(tree);
     goto invalid;
   }
@@ -479,7 +460,6 @@ static SQTree *load_bytes(const TSLanguage *language, const void *bytes, size_t 
     goto invalid;
   }
 
-  const uint8_t *data = tree->data;
   if ((header.format_flags & SQ_GRAMMAR_OVERRIDES) && !validate_grammar(tree)) {
     sq_tree_delete(tree);
     goto invalid;
@@ -487,18 +467,6 @@ static SQTree *load_bytes(const TSLanguage *language, const void *bytes, size_t 
   if (!validate_nodes(tree, error)) {
     sq_tree_delete(tree);
     return NULL;
-  }
-
-  if (tree->supertype_count > 8 && tree->supertype_count % 64) {
-    uint32_t words = (tree->supertype_count + 63) / 64;
-    for (uint32_t i = 0; i < header.supertype_dictionary_count; i++) {
-      uint64_t word;
-      memcpy(&word, data + sq_dictionary_offset(tree) + ((size_t)(i + 1) * words - 1) * 8, 8);
-      if (word >> (tree->supertype_count % 64)) {
-        sq_tree_delete(tree);
-        goto invalid;
-      }
-    }
   }
 
   if ((header.format_flags & SQ_PRESENCE) && !validate_presence(tree, error)) {

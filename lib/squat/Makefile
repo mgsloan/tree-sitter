@@ -3,7 +3,7 @@ CC ?= cc
 CFLAGS ?= -O2 -g
 CPPFLAGS += -I$(ROOT)/lib/include -I$(ROOT)/lib/src -Iinclude
 WARNINGS := -std=c11 -Wall -Wextra -Werror
-SOURCES := slab.c pack.c node.c cursor.c iterator.c unpack.c index.c scan.c query.c
+SOURCES := supertypes.c slab.c pack.c node.c cursor.c iterator.c unpack.c index.c scan.c query.c
 BUILD ?= $(ROOT)/build/squat
 
 .PHONY: all clean test
@@ -32,15 +32,19 @@ test: $(BUILD)/compare
 clean:
 	rm -f $(BUILD)/*.o $(BUILD)/*.a $(BUILD)/compare
 
-$(BUILD)/unit: tests/unit.c $(BUILD)/libtree-sitter-squat.a $(BUILD)/runtime.o
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) $^ -o $@
+$(BUILD)/unit: tests/unit.c tests/supertype_fixture.h $(BUILD)/libtree-sitter-squat.a $(BUILD)/runtime.o
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) $(filter %.c %.a %.o,$^) -o $@
 
 $(BUILD)/seek-check: tests/seek.c $(BUILD)/libtree-sitter-squat.a $(BUILD)/runtime.o
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) $^ -ldl -o $@
 
 .PHONY: check
-check: $(BUILD)/unit
+$(BUILD)/supertype-check: tests/supertypes.c tests/supertype_fixture.h pack.c $(BUILD)/libtree-sitter-squat.a $(BUILD)/runtime.o
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) $(filter-out pack.c,$(filter %.c %.a %.o,$^)) -pthread -o $@
+
+check: $(BUILD)/unit $(BUILD)/supertype-check
 	$(BUILD)/unit
+	$(BUILD)/supertype-check
 
 $(BUILD)/scan-bench: experiments/scan.c $(BUILD)/libtree-sitter-squat.a $(BUILD)/runtime.o
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) $^ -o $@
@@ -76,8 +80,8 @@ $(BUILD)/walk-bench: experiments/walk.c $(BUILD)/libtree-sitter-squat.a $(BUILD)
 $(BUILD)/capacity-bench: experiments/capacity.c $(BUILD)/libtree-sitter-squat.a $(BUILD)/runtime.o
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) $^ -ldl -o $@
 
-$(BUILD)/context-check: tests/context.c $(BUILD)/libtree-sitter-squat.a $(BUILD)/runtime.o
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) $^ -ldl \
+$(BUILD)/context-check: tests/context.c tests/supertype_fixture.h $(BUILD)/libtree-sitter-squat.a $(BUILD)/runtime.o
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) $(filter %.c %.a %.o,$^) -ldl \
 	  -Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc -o $@
 
 # Repeated sq_tree_from_bytes over pre-serialized slabs: the persistence read path.

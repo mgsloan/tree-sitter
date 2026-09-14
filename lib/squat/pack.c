@@ -19,7 +19,7 @@ typedef struct {
 
 typedef struct {
   PackValues values;
-  uint8_t super;
+  uint16_t super;
 } Pending;
 
 // Write position in one packed column: the word holding the next slot's lane
@@ -50,8 +50,7 @@ typedef struct {
   // per-node physical distance does not chase tree->data and the header.
   uint32_t slot_base;
   PackValues base, max;
-  uint64_t *dictionary;
-  uint32_t dictionary_count, dictionary_capacity, words;
+  uint32_t words;
   PackPosition *positions;
   uint32_t position_count, position_capacity;
   TSFieldId *fields;
@@ -122,14 +121,15 @@ struct SQPackContext {
   uint16_t *public_index;
   DirectFieldSlice *production_fields;
   TSFieldId *direct_fields;
+  SQSupertypeGrammar *supertype_grammar;
   // Retain only storage, never pending nodes or pointers into a completed slab.
   struct {
     PackPosition *positions;
-    uint64_t *masks, *dictionary;
+    uint64_t *masks;
     uint16_t *supertype_indexes;
     struct GrammarOverride *overrides;
     uint32_t override_capacity;
-    uint32_t position_capacity, mask_capacity, dictionary_capacity;
+    uint32_t position_capacity, mask_capacity;
   } scratch;
   Frame *stack;
   size_t stack_capacity;
@@ -359,7 +359,8 @@ static bool close_group(Builder *builder) {
   uint8_t *span_delta = data + tree->layout.span_delta + first;
   uint8_t *start_byte_delta = data + tree->layout.start_byte_delta + first;
   uint8_t *end_byte_delta = data + tree->layout.end_byte_delta + (size_t)first * 2;
-  uint8_t *supertype = data + tree->layout.supertype + first;
+  uint32_t supertype_offset = tree->layout.supertype;
+  bool wide_supertypes = tree->layout.supertype_bits == 16;
 #if SQ_INCLUDE_POINTS
   uint8_t *start_point = data + tree->layout.start_point + (size_t)first * 2;
   uint8_t *end_point = data + tree->layout.end_point + (size_t)first * 2;
@@ -381,7 +382,11 @@ static bool close_group(Builder *builder) {
     memcpy(end_point + (size_t)i * 2, &end, sizeof(end));
 #endif
 
-    supertype[i] = builder->pending[i].super;
+    if (wide_supertypes) {
+      sq_set_u16(data, supertype_offset, first + i, builder->pending[i].super);
+    } else {
+      sq_set_u8(data, supertype_offset, first + i, (uint8_t)builder->pending[i].super);
+    }
   }
 
   builder->count = 0;
@@ -389,40 +394,20 @@ static bool close_group(Builder *builder) {
   return true;
 }
 
-static bool intern_mask(Builder *builder, const uint64_t *mask, uint8_t *result) {
+static bool intern_mask(Builder *builder, const uint64_t *mask, uint16_t *result) {
   if (builder->small_supertypes) {
     *result = mask ? (uint8_t)mask[0] : 0;
     return true;
   }
 
-  size_t bytes = (size_t)builder->words * 8;
-  for (uint32_t i = 0; i < builder->dictionary_count; i++) {
-    if (!memcmp(builder->dictionary + (size_t)i * builder->words, mask, bytes)) {
-      *result = (uint8_t)i;
-      return true;
-    }
-  }
-
-  if (builder->dictionary_count == 256) {
-    sq_fail(builder->error, SQ_ERROR_DICTIONARY_FULL);
+  uint32_t id = sq_supertype_mask_id(builder->tree->supertype_grammar, mask);
+  if (id == SQ_NONE) {
+    // Never introduce order-dependent IDs if a grammar/runtime combination
+    // violates the conservative analysis.
+    sq_fail(builder->error, SQ_ERROR_LANGUAGE);
     return false;
   }
-
-  if (builder->dictionary_count == builder->dictionary_capacity) {
-    uint32_t capacity = builder->dictionary_capacity ? builder->dictionary_capacity * 2 : 8;
-    if (capacity > 256) capacity = 256;
-    uint64_t *next = realloc(builder->dictionary, (size_t)capacity * bytes);
-    if (!next) {
-      sq_fail(builder->error, SQ_ERROR_ALLOCATION);
-      return false;
-    }
-
-    builder->dictionary = next;
-    builder->dictionary_capacity = capacity;
-  }
-
-  memcpy(builder->dictionary + (size_t)builder->dictionary_count * builder->words, mask, bytes);
-  *result = (uint8_t)builder->dictionary_count++;
+  *result = (uint16_t)id;
   return true;
 }
 
@@ -510,7 +495,7 @@ static bool emit(Builder *builder, const EmitNode *frame) {
 #else
   uint32_t start_byte = frame->position;
 #endif
-  uint8_t super;
+  uint16_t super;
   const uint64_t *mask = builder->words == 1 ? &frame->mask
                          : builder->words > 1 ? builder->masks + frame->mask_offset
                                               : NULL;
@@ -776,7 +761,6 @@ void sq_pack_context_trim(SQPackContext *context) {
   free(context->stack);
   free(context->scratch.positions);
   free(context->scratch.masks);
-  free(context->scratch.dictionary);
   free(context->scratch.overrides);
   free(context->presence);
   uint16_t *indexes = context->scratch.supertype_indexes;
@@ -795,6 +779,7 @@ void sq_pack_context_delete(SQPackContext *context) {
   free(context->supertypes);
   free(context->production_fields);
   free(context->direct_fields);
+  sq_supertype_grammar_release(context->supertype_grammar);
   free(context);
 }
 
@@ -824,6 +809,13 @@ SQPackContext *sq_pack_context_new(const TSLanguage *language, SQError *error) {
     TSSymbol public = ts_language_public_symbol(language, (TSSymbol)symbol);
     context->public_index[symbol] = public == ts_builtin_sym_error ? symbols
         : public == ts_builtin_sym_error_repeat ? symbols + 1 : public;
+  }
+  if (context->supertype_count > 8) {
+    context->supertype_grammar = sq_supertype_grammar_acquire(language, context->supertype_count, error);
+    if (!context->supertype_grammar) {
+      sq_pack_context_delete(context);
+      return NULL;
+    }
   }
   context->public_index[symbols] = (uint16_t)symbols;
   context->public_index[symbols + 1] = (uint16_t)(symbols + 1);
@@ -915,8 +907,6 @@ static SQTree *pack_tree(SQPackContext *context, const TSTree *tree,
     builder.mask_capacity = context->scratch.mask_capacity;
     builder.overrides = context->scratch.overrides;
     builder.override_capacity = context->scratch.override_capacity;
-    builder.dictionary = context->scratch.dictionary;
-    builder.dictionary_capacity = context->scratch.dictionary_capacity;
     builder.supertype_indexes = context->scratch.supertype_indexes;
     stack = context->stack;
     if (stack) stack_capacity = context->stack_capacity;
@@ -1073,12 +1063,9 @@ static SQTree *pack_tree(SQPackContext *context, const TSTree *tree,
 
   uint64_t presence_bytes = options.symbol_presence ? sq_presence_size(builder.tree) : 0;
   if (sq_header(builder.tree)->group_count <= 32) presence_bytes = 0;
-  uint64_t dictionary_bytes = builder.tree->supertype_count > 8
-                                  ? (uint64_t)builder.dictionary_count * builder.words * 8
-                                  : 0;
   uint64_t grammar_bytes = builder.override_count
       ? sq_grammar_size(builder.tree, builder.override_count) : 0;
-  uint64_t trailing_bytes = presence_bytes + dictionary_bytes + grammar_bytes;
+  uint64_t trailing_bytes = presence_bytes + grammar_bytes;
   if (trailing_bytes > UINT32_MAX) {
     sq_fail(error, SQ_ERROR_OVERFLOW);
     goto failure;
@@ -1096,11 +1083,6 @@ static SQTree *pack_tree(SQPackContext *context, const TSTree *tree,
                                    &context->presence, &context->presence_capacity, error)
         : sq_build_presence(builder.tree, error);
     if (!ok) goto failure;
-  }
-
-  if (builder.tree->supertype_count > 8 &&
-      !sq_append_dictionary(builder.tree, builder.dictionary, builder.dictionary_count, error)) {
-    goto failure;
   }
 
   if (builder.override_count) {
@@ -1136,8 +1118,6 @@ cleanup:
     context->scratch.position_capacity = builder.position_capacity;
     context->scratch.masks = builder.masks;
     context->scratch.mask_capacity = builder.mask_capacity;
-    context->scratch.dictionary = builder.dictionary;
-    context->scratch.dictionary_capacity = builder.dictionary_capacity;
     context->stack = stack;
     context->stack_capacity = stack_capacity;
   } else {
@@ -1147,7 +1127,6 @@ cleanup:
     free(builder.fields);
     free(builder.masks);
     free(builder.supertype_indexes);
-    free(builder.dictionary);
   }
   return result;
 }

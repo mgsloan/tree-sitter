@@ -1,0 +1,298 @@
+--- a/lib/squat/index.c
++++ b/lib/squat/index.c
+@@ -420,12 +420,12 @@
+ 
+   memcpy(&header, bytes, sizeof(header));
+   if (!header.group_count || header.group_count > header.group_capacity ||
+-      (header.format_flags & ~(SQ_PRESENCE | SQ_GRAMMAR_OVERRIDES)) != (SQ_VERSION | SQ_LAYOUT_FLAGS)) {
++      (header.format_flags & ~(SQ_PRESENCE | SQ_WIDE_SUPERTYPES | SQ_GRAMMAR_OVERRIDES)) != (SQ_VERSION | SQ_LAYOUT_FLAGS)) {
+     goto invalid;
+   }
+ 
+   SQLayout layout;
+-  if (!language || !sq_layout(language, header.group_capacity, &layout) || layout.end > length) {
++  if (!language || !sq_layout(language, header.group_capacity, (header.format_flags & SQ_WIDE_SUPERTYPES) != 0, &layout) || layout.end > length) {
+     goto invalid;
+   }
+ 
+@@ -453,14 +453,15 @@
+       sq_allocate_loaded(language, header.group_capacity, bytes, (uint32_t)length, borrowed, error);
+   if (!tree) return NULL;
+   if (tree->supertype_count > 8) {
+-    if (!header.supertype_dictionary_count || header.supertype_dictionary_count > 256) {
++    if (!header.supertype_dictionary_count || header.supertype_dictionary_count > 65536 ||
++        ((header.supertype_dictionary_count > 256) != ((header.format_flags & SQ_WIDE_SUPERTYPES) != 0))) {
+       sq_tree_delete(tree);
+       goto invalid;
+     }
+ 
+     expected +=
+         (uint64_t)header.supertype_dictionary_count * ((tree->supertype_count + 63) / 64) * 8;
+-  } else if (header.supertype_dictionary_count) {
++  } else if (header.supertype_dictionary_count || (header.format_flags & SQ_WIDE_SUPERTYPES)) {
+     sq_tree_delete(tree);
+     goto invalid;
+   }
+--- a/lib/squat/internal.h
++++ b/lib/squat/internal.h
+@@ -35,6 +35,7 @@
+ // Version 7: grammar IDs use an optional sparse override section.
+ #define SQ_LAYOUT_FLAGS (SQ_INCLUDE_POINTS ? 0u : 0x100u)
+ #define SQ_PRESENCE 0x200u
++#define SQ_WIDE_SUPERTYPES 0x400u
+ #define SQ_GRAMMAR_OVERRIDES 0x800u
+ #define SQ_NONE UINT32_MAX
+ 
+@@ -71,7 +72,7 @@
+   uint32_t end_point;
+ #endif
+   uint32_t end;
+-  uint8_t symbol_bits, field_bits;
++  uint8_t symbol_bits, field_bits, supertype_bits;
+   // Grammar-wide decoder constants; runtime-only, never serialized.
+   uint8_t symbol_lanes, field_lanes;
+   uint32_t symbol_mask, field_mask;
+@@ -120,7 +121,8 @@
+   return ((uint64_t)count * bytes + 7) & ~UINT64_C(7);
+ }
+ 
+-bool sq_layout(const TSLanguage *, uint32_t capacity, SQLayout *);
++bool sq_layout(const TSLanguage *, uint32_t capacity, bool wide_supertypes, SQLayout *);
++bool sq_widen_supertypes(SQTree **, SQError *);
+ 
+ // Packed words store their first lane in the low bits. On big-endian hosts,
+ // reverse byte/halfword positions within each word before a native load.
+@@ -303,7 +305,9 @@
+ #endif
+ 
+ static inline uint32_t sq_node_supertype(SQNode node) {
+-  return sq_get_u8(node.tree->data, node.tree->layout.supertype, node.slot);
++  return node.tree->layout.supertype_bits == 16
++      ? sq_get_u16(node.tree->data, node.tree->layout.supertype, node.slot)
++      : sq_get_u8(node.tree->data, node.tree->layout.supertype, node.slot);
+ }
+ 
+ static inline uint32_t sq_node_symbol_id(SQNode node) {
+--- a/lib/squat/pack.c
++++ b/lib/squat/pack.c
+@@ -19,7 +19,7 @@
+ 
+ typedef struct {
+   PackValues values;
+-  uint8_t super;
++  uint16_t super;
+ } Pending;
+ 
+ // Write position in one packed column: the word holding the next slot's lane
+@@ -359,7 +359,8 @@
+   uint8_t *span_delta = data + tree->layout.span_delta + first;
+   uint8_t *start_byte_delta = data + tree->layout.start_byte_delta + first;
+   uint8_t *end_byte_delta = data + tree->layout.end_byte_delta + (size_t)first * 2;
+-  uint8_t *supertype = data + tree->layout.supertype + first;
++  uint32_t supertype_offset = tree->layout.supertype;
++  bool wide_supertypes = tree->layout.supertype_bits == 16;
+ #if SQ_INCLUDE_POINTS
+   uint8_t *start_point = data + tree->layout.start_point + (size_t)first * 2;
+   uint8_t *end_point = data + tree->layout.end_point + (size_t)first * 2;
+@@ -381,7 +382,8 @@
+     memcpy(end_point + (size_t)i * 2, &end, sizeof(end));
+ #endif
+ 
+-    supertype[i] = builder->pending[i].super;
++    if (wide_supertypes) sq_set_u16(data, supertype_offset, first + i, builder->pending[i].super);
++    else sq_set_u8(data, supertype_offset, first + i, (uint8_t)builder->pending[i].super);
+   }
+ 
+   builder->count = 0;
+@@ -389,7 +391,7 @@
+   return true;
+ }
+ 
+-static bool intern_mask(Builder *builder, const uint64_t *mask, uint8_t *result) {
++static bool intern_mask(Builder *builder, const uint64_t *mask, uint16_t *result) {
+   if (builder->small_supertypes) {
+     *result = mask ? (uint8_t)mask[0] : 0;
+     return true;
+@@ -398,19 +400,22 @@
+   size_t bytes = (size_t)builder->words * 8;
+   for (uint32_t i = 0; i < builder->dictionary_count; i++) {
+     if (!memcmp(builder->dictionary + (size_t)i * builder->words, mask, bytes)) {
+-      *result = (uint8_t)i;
++      *result = (uint16_t)i;
+       return true;
+     }
+   }
+ 
+-  if (builder->dictionary_count == 256) {
++  if (builder->dictionary_count == 65536) {
+     sq_fail(builder->error, SQ_ERROR_DICTIONARY_FULL);
+     return false;
+   }
+ 
++  if (builder->dictionary_count == 256) {
++    if (!close_group(builder) || !sq_widen_supertypes(&builder->tree, builder->error)) return false;
++  }
+   if (builder->dictionary_count == builder->dictionary_capacity) {
+     uint32_t capacity = builder->dictionary_capacity ? builder->dictionary_capacity * 2 : 8;
+-    if (capacity > 256) capacity = 256;
++    if (capacity > 65536) capacity = 65536;
+     uint64_t *next = realloc(builder->dictionary, (size_t)capacity * bytes);
+     if (!next) {
+       sq_fail(builder->error, SQ_ERROR_ALLOCATION);
+@@ -422,7 +427,7 @@
+   }
+ 
+   memcpy(builder->dictionary + (size_t)builder->dictionary_count * builder->words, mask, bytes);
+-  *result = (uint8_t)builder->dictionary_count++;
++  *result = (uint16_t)builder->dictionary_count++;
+   return true;
+ }
+ 
+@@ -510,7 +515,7 @@
+ #else
+   uint32_t start_byte = frame->position;
+ #endif
+-  uint8_t super;
++  uint16_t super;
+   const uint64_t *mask = builder->words == 1 ? &frame->mask
+                          : builder->words > 1 ? builder->masks + frame->mask_offset
+                                               : NULL;
+--- a/lib/squat/scan.c
++++ b/lib/squat/scan.c
+@@ -80,7 +80,7 @@
+ #endif
+ 
+ uint64_t sq_tree_group_supertype_equal(const SQTree *tree, uint32_t group, uint32_t value) {
+-  return tree ? group_equal(tree, group, tree->layout.supertype, 8, value) : 0;
++  return tree ? group_equal(tree, group, tree->layout.supertype, tree->layout.supertype_bits, value) : 0;
+ }
+ 
+ uint64_t sq_tree_group_symbol_equal(const SQTree *tree, uint32_t group, uint32_t value) {
+--- a/lib/squat/slab.c
++++ b/lib/squat/slab.c
+@@ -54,8 +54,9 @@
+   return result;
+ }
+ 
+-bool sq_layout(const TSLanguage *language, uint32_t capacity, SQLayout *layout) {
++bool sq_layout(const TSLanguage *language, uint32_t capacity, bool wide_supertypes, SQLayout *layout) {
+   if (!capacity || capacity > UINT32_MAX / SQ_GROUP_SIZE) return false;
++  layout->supertype_bits = wide_supertypes ? 16 : 8;
+   layout->symbol_bits = sq_width(language->symbol_count + language->alias_count + 1);
+   layout->field_bits = sq_width(language->field_count);
+   layout->symbol_lanes = (uint8_t)(64 / layout->symbol_bits);
+@@ -74,7 +75,7 @@
+   layout->span_delta = column_offset(&next, sq_array_size(slots, 1));
+   layout->symbol = column_offset(&next, sq_column_size(slots, layout->symbol_bits));
+   layout->field = column_offset(&next, sq_column_size(slots, layout->field_bits));
+-  layout->supertype = column_offset(&next, sq_array_size(slots, 1));
++  layout->supertype = column_offset(&next, sq_array_size(slots, layout->supertype_bits / 8));
+   layout->last = column_offset(&next, sq_column_size(slots, 1));
+   layout->extra = column_offset(&next, sq_column_size(slots, 1));
+   layout->error = column_offset(&next, sq_column_size(slots, 1));
+@@ -138,7 +139,7 @@
+   }
+ 
+   SQLayout layout;
+-  if (!sq_layout(language, capacity, &layout)) {
++  if (!sq_layout(language, capacity, false, &layout)) {
+     sq_fail(error, SQ_ERROR_OVERFLOW);
+     return NULL;
+   }
+@@ -216,6 +217,14 @@
+   SQTree *tree = allocate_tree(language, capacity, length,
+                                borrowed ? SQ_STORAGE_BORROWED : SQ_STORAGE_COPIED, NULL, 0, error);
+   if (tree) {
++    SQHeader header;
++    memcpy(&header, bytes, sizeof(header));
++    if (!sq_layout(language, capacity, (header.format_flags & SQ_WIDE_SUPERTYPES) != 0,
++                   &tree->layout)) {
++      sq_tree_delete(tree);
++      sq_fail(error, SQ_ERROR_OVERFLOW);
++      return NULL;
++    }
+     if (borrowed) {
+       // This storage is only read. Mutable helpers reject borrowed descriptors.
+       tree->data = (uint8_t *)bytes;
+@@ -275,7 +284,7 @@
+ // Builder finalization can reserve a new empty suffix in the same allocation;
+ // ordinary resizing instead copies the tree's existing serialized suffix.
+ static bool resize_tree(SQTree **tree_pointer, uint32_t capacity, uint32_t trailing_size,
+-                        bool preserve_trailing, SQError *error) {
++                        bool preserve_trailing, bool wide_supertypes, SQError *error) {
+   SQTree *tree = *tree_pointer;
+   if (tree->storage == SQ_STORAGE_BORROWED) {
+     sq_fail(error, SQ_ERROR_ARGUMENT);
+@@ -289,7 +298,7 @@
+   }
+ 
+   SQLayout next;
+-  if (!sq_layout(tree->language, capacity, &next)) {
++  if (!sq_layout(tree->language, capacity, wide_supertypes, &next)) {
+     sq_fail(error, SQ_ERROR_OVERFLOW);
+     return false;
+   }
+@@ -321,6 +330,7 @@
+   uint8_t *data = replacement->data;
+   memcpy(data, &old, sizeof(old));
+   ((SQHeader *)data)->group_capacity = capacity;
++  if (wide_supertypes) ((SQHeader *)data)->format_flags |= SQ_WIDE_SUPERTYPES;
+ 
+   // Prefix-filled reverse-preorder columns retain both physical indexes and
+   // packed lane phase across growth. Copy their used words, including padding.
+@@ -340,7 +350,13 @@
+          sq_column_size(slots, next.symbol_bits));
+   memcpy(data + next.field, tree->data + tree->layout.field,
+          sq_column_size(slots, next.field_bits));
+-  memcpy(data + next.supertype, tree->data + tree->layout.supertype, sq_array_size(slots, 1));
++  if (next.supertype_bits != tree->layout.supertype_bits) {
++    for (uint32_t slot = 0; slot < slots; slot++) {
++      sq_set_u16(data, next.supertype, slot, sq_get_u8(tree->data, tree->layout.supertype, slot));
++    }
++  } else {
++    memcpy(data + next.supertype, tree->data + tree->layout.supertype, sq_array_size(slots, next.supertype_bits / 8));
++  }
+   memcpy(data + next.last, tree->data + tree->layout.last, sq_column_size(slots, 1));
+   memcpy(data + next.extra, tree->data + tree->layout.extra, sq_column_size(slots, 1));
+   memcpy(data + next.error, tree->data + tree->layout.error, sq_column_size(slots, 1));
+@@ -363,6 +379,13 @@
+   return true;
+ }
+ 
++bool sq_widen_supertypes(SQTree **tree_pointer, SQError *error) {
++  SQTree *tree = *tree_pointer;
++  return tree->layout.supertype_bits == 16 ||
++         resize_tree(tree_pointer, sq_header(tree)->group_capacity,
++                     tree->size - tree->layout.end, true, true, error);
++}
++
+ bool sq_resize(SQTree **tree_pointer, uint32_t capacity, SQError *error) {
+   SQTree *tree = *tree_pointer;
+   if (tree->storage == SQ_STORAGE_BORROWED || tree->size < tree->layout.end ||
+@@ -373,7 +396,7 @@
+   if (capacity == sq_header(tree)->group_capacity && tree->storage == SQ_STORAGE_COLOCATED) {
+     return true;
+   }
+-  return resize_tree(tree_pointer, capacity, tree->size - tree->layout.end, true, error);
++  return resize_tree(tree_pointer, capacity, tree->size - tree->layout.end, true, tree->layout.supertype_bits == 16, error);
+ }
+ 
+ bool sq_prepare_final(SQTree **tree_pointer, uint32_t capacity, uint32_t trailing_size,
+@@ -386,7 +409,7 @@
+   }
+ 
+   if (capacity != sq_header(tree)->group_capacity) {
+-    return resize_tree(tree_pointer, capacity, trailing_size, false, error);
++    return resize_tree(tree_pointer, capacity, trailing_size, false, tree->layout.supertype_bits == 16, error);
+   }
+ 
+   uint64_t total = (uint64_t)tree->layout.end + trailing_size;
+@@ -444,7 +467,7 @@
+   case SQ_ERROR_OVERFLOW:
+     return "slab exceeds 32-bit address space";
+   case SQ_ERROR_DICTIONARY_FULL:
+-    return "more than 256 supertype masks";
++    return "more than 65536 supertype masks";
+   case SQ_ERROR_INVALID_SLAB:
+     return "invalid or incompatible slab";
+   case SQ_ERROR_LANGUAGE:

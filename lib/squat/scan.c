@@ -80,7 +80,7 @@ uint64_t sq_tree_group_end_point_equal(const SQTree *tree, uint32_t group, uint3
 #endif
 
 uint64_t sq_tree_group_supertype_equal(const SQTree *tree, uint32_t group, uint32_t value) {
-  return tree ? group_equal(tree, group, tree->layout.supertype, 8, value) : 0;
+  return tree ? group_equal(tree, group, tree->layout.supertype, tree->layout.supertype_bits, value) : 0;
 }
 
 uint64_t sq_tree_group_symbol_equal(const SQTree *tree, uint32_t group, uint32_t value) {

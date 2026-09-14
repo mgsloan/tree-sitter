@@ -1,6 +1,7 @@
 #include "../internal.h"
 #include <assert.h>
 #include <stdio.h>
+#include "supertype_fixture.h"
 
 static void equality_tests(void) {
   uint64_t state = 42;
@@ -186,7 +187,7 @@ static void exercise_columns(SQTree *tree, bool fill) {
   exercise_column(tree, tree->layout.start_point, 16, SQ_GROUP_SIZE, tag++, fill);
   exercise_column(tree, tree->layout.end_point, 16, SQ_GROUP_SIZE, tag++, fill);
 #endif
-  exercise_column(tree, tree->layout.supertype, 8, SQ_GROUP_SIZE, tag++, fill);
+  exercise_column(tree, tree->layout.supertype, tree->layout.supertype_bits, SQ_GROUP_SIZE, tag++, fill);
   exercise_column(tree, tree->layout.symbol, tree->layout.symbol_bits, SQ_GROUP_SIZE, tag++, fill);
   exercise_column(tree, tree->layout.field, tree->layout.field_bits, SQ_GROUP_SIZE, tag++, fill);
   // Verify cached layout constants after initial allocation and every resize.
@@ -238,10 +239,12 @@ static void fixed_width_write_tests(void) {
 }
 
 static void sparse_grammar_tests(bool dictionary) {
-  TSSymbolMetadata metadata[16] = {0};
-  for (unsigned i = 0; dictionary && i < 9; i++) metadata[i].supertype = true;
-  TSLanguage language = {.abi_version = TREE_SITTER_LANGUAGE_VERSION,
-                         .symbol_count = 16, .symbol_metadata = metadata};
+  SupertypeFixture fixture;
+  supertype_fixture(&fixture, dictionary ? 9 : 0, false);
+  TSLanguage language = fixture.language;
+  // The override fixture needs sixteen raw symbol IDs.
+  language.symbol_count = 16;
+  language.state_count = language.large_state_count = 1;
   SQError error;
   const uint32_t groups = (130 + SQ_GROUP_SIZE - 1) / SQ_GROUP_SIZE;
   SQTree *tree = sq_allocate(&language, groups + 3, &error);
@@ -256,11 +259,7 @@ static void sparse_grammar_tests(bool dictionary) {
   const uint32_t slots[] = {0, 63, 64, 127, 128, 129};
   const uint32_t count = sizeof(slots) / sizeof(slots[0]);
   uint32_t bytes = (uint32_t)sq_grammar_size(tree, count);
-  assert(sq_prepare_final(&tree, groups + 3, bytes + (dictionary ? 8 : 0), &error));
-  if (dictionary) {
-    uint64_t empty_mask = 0;
-    assert(sq_append_dictionary(tree, &empty_mask, 1, &error));
-  }
+  assert(sq_prepare_final(&tree, groups + 3, bytes, &error));
   uint32_t offset = sq_grammar_offset(tree), words = sq_grammar_words(tree);
   uint32_t bitmap = offset + 8, ranks = bitmap + words * 8;
   uint32_t values = ranks + (uint32_t)sq_array_size(words, 4);

@@ -26,15 +26,16 @@ _Static_assert(SQ_ITERATOR_UNPACK_SLOTS >= SQ_GROUP_SIZE &&
 _Static_assert(SQ_COLUMN_ALIGNMENT == 8 || SQ_COLUMN_ALIGNMENT == 64,
                "supported experimental column alignments");
 #define SQ_VERSION                                                                                 \
-  (UINT32_C(0x53510070) |                                                                          \
+  (UINT32_C(0x53510090) |                                                                          \
    (SQ_GROUP_SIZE == 32   ? 2u                                                                     \
     : SQ_GROUP_SIZE == 64 ? 4u                                                                     \
                           : 0u) |                                                                  \
    (SQ_COLUMN_ALIGNMENT == 64 ? 8u : 0u))
 
-// Version 7: grammar IDs use an optional sparse override section.
+// Version 9: distinguish nonterminal extras from ordinary recursive gotos.
 #define SQ_LAYOUT_FLAGS (SQ_INCLUDE_POINTS ? 0u : 0x100u)
 #define SQ_PRESENCE 0x200u
+#define SQ_WIDE_SUPERTYPES 0x400u
 #define SQ_GRAMMAR_OVERRIDES 0x800u
 #define SQ_NONE UINT32_MAX
 
@@ -71,11 +72,25 @@ typedef struct {
   uint32_t end_point;
 #endif
   uint32_t end;
-  uint8_t symbol_bits, field_bits;
+  uint8_t symbol_bits, field_bits, supertype_bits;
   // Grammar-wide decoder constants; runtime-only, never serialized.
   uint8_t symbol_lanes, field_lanes;
   uint32_t symbol_mask, field_mask;
 } SQLayout;
+
+typedef struct SQSupertypeGrammar {
+  const TSLanguage *language;
+  uint64_t *masks;
+  uint32_t *table;
+  uint32_t count, words, supertype_count, table_capacity;
+  // Only accessed under the cache lock.
+  uint32_t references;
+  struct SQSupertypeGrammar *next;
+} SQSupertypeGrammar;
+
+SQSupertypeGrammar *sq_supertype_grammar_acquire(const TSLanguage *, uint32_t, SQError *);
+void sq_supertype_grammar_release(SQSupertypeGrammar *);
+uint32_t sq_supertype_mask_id(const SQSupertypeGrammar *, const uint64_t *);
 
 typedef enum { SQ_STORAGE_COLOCATED, SQ_STORAGE_COPIED, SQ_STORAGE_BORROWED } SQStorage;
 struct SQTree {
@@ -88,6 +103,7 @@ struct SQTree {
   TSSymbol *supertypes;
   uint32_t supertype_count;
   SQStorage storage;
+  SQSupertypeGrammar *supertype_grammar;
 };
 
 static inline SQHeader *sq_header(const SQTree *tree) {
@@ -120,7 +136,7 @@ static inline uint64_t sq_array_size(uint32_t count, unsigned bytes) {
   return ((uint64_t)count * bytes + 7) & ~UINT64_C(7);
 }
 
-bool sq_layout(const TSLanguage *, uint32_t capacity, SQLayout *);
+bool sq_layout(const TSLanguage *, uint32_t capacity, bool wide_supertypes, SQLayout *);
 
 // Packed words store their first lane in the low bits. On big-endian hosts,
 // reverse byte/halfword positions within each word before a native load.
@@ -303,7 +319,9 @@ static inline uint32_t sq_node_end_point_key(SQNode node) {
 #endif
 
 static inline uint32_t sq_node_supertype(SQNode node) {
-  return sq_get_u8(node.tree->data, node.tree->layout.supertype, node.slot);
+  return node.tree->layout.supertype_bits == 16
+      ? sq_get_u16(node.tree->data, node.tree->layout.supertype, node.slot)
+      : sq_get_u8(node.tree->data, node.tree->layout.supertype, node.slot);
 }
 
 static inline uint32_t sq_node_symbol_id(SQNode node) {
@@ -378,24 +396,16 @@ bool sq_prepare_final(SQTree **, uint32_t capacity, uint32_t trailing_size, SQEr
 bool sq_grow_data(SQTree **, uint32_t, SQError *);
 bool sq_build_presence(SQTree *, SQError *);
 bool sq_build_presence_cached(SQTree *, const uint16_t *, uint8_t **, size_t *, SQError *);
-bool sq_append_dictionary(SQTree *, const uint64_t *, uint32_t, SQError *);
 uint64_t sq_presence_size(const SQTree *);
 static inline uint32_t sq_presence_offset(const SQTree *tree) {
   return sq_header(tree)->format_flags & SQ_PRESENCE ? tree->layout.end : 0;
 }
 
-static inline uint32_t sq_dictionary_offset(const SQTree *tree) {
-  return sq_header(tree)->supertype_dictionary_count
-             ? tree->layout.end + (sq_presence_offset(tree) ? (uint32_t)sq_presence_size(tree) : 0)
-             : 0;
-}
-
-// Optional suffix after presence and supertype data. Header: count, reserved;
-// then a live-slot bitmap, u32 ranks per 64 slots, and packed grammar IDs.
+// Optional suffix after presence data. Header: count, reserved; then a live-slot
+// bitmap, u32 ranks per 64 slots, and packed grammar IDs.
 static inline uint32_t sq_grammar_offset(const SQTree *tree) {
   return tree->layout.end +
-         (sq_presence_offset(tree) ? (uint32_t)sq_presence_size(tree) : 0) +
-         sq_header(tree)->supertype_dictionary_count * ((tree->supertype_count + 63) / 64) * 8;
+         (sq_presence_offset(tree) ? (uint32_t)sq_presence_size(tree) : 0);
 }
 
 static inline uint32_t sq_grammar_words(const SQTree *tree) {

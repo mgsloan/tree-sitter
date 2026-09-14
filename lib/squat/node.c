@@ -172,7 +172,7 @@ bool sq_node_has_supertype(SQNode node, TSSymbol symbol) {
 
     uint32_t words = (tree->supertype_count + 63) / 64;
     uint64_t word;
-    memcpy(&word, tree->data + sq_dictionary_offset(tree) + ((size_t)value * words + i / 64) * 8,
+    memcpy(&word, (const uint8_t *)tree->supertype_grammar->masks + ((size_t)value * words + i / 64) * 8,
            8);
     return (word >> (i % 64)) & 1;
   }

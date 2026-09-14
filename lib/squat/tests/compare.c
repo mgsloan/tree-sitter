@@ -706,7 +706,7 @@ static void exercise(const TSLanguage *language, const char *source, uint32_t le
       changed.group_capacity = UINT32_MAX;
       break;
     case 2:
-      changed.supertype_dictionary_count = 257;
+      changed.supertype_dictionary_count ^= 1;
       break;
     case 3:
       changed.format_flags ^= SQ_PRESENCE;
@@ -720,8 +720,8 @@ static void exercise(const TSLanguage *language, const char *source, uint32_t le
   }
 
   if (sq_tree_group_count(packed) > 32 && length <= 4096) {
-    // Large enough for an index, but explicitly omit it. The dictionary (when
-    // required by the grammar) must immediately follow the ordinary columns.
+    // Large enough for an index, but explicitly omit it. Optional grammar
+    // overrides must then immediately follow the ordinary columns.
     options.symbol_presence = false;
     SQTree *without_index = sq_tree_pack(tree, options, &error);
     CHECK(without_index && !(sq_header(without_index)->format_flags & SQ_PRESENCE));
@@ -867,6 +867,22 @@ int main(int argc, char **argv) {
   const TSLanguage *(*language_fn)(void) = (const TSLanguage *(*)(void))dlsym(library, argv[2]);
   CHECK(language_fn);
   const TSLanguage *language = language_fn();
+  TSLanguage synthetic = *language;
+  TSSymbolMetadata *metadata = NULL;
+  if (getenv("SQ_TEST_SUPERTYPES")) {
+    uint32_t symbols = language->symbol_count + language->alias_count;
+    metadata = malloc(symbols * sizeof(*metadata));
+    CHECK(metadata);
+    memcpy(metadata, language->symbol_metadata, symbols * sizeof(*metadata));
+    unsigned remaining = (unsigned)atoi(getenv("SQ_TEST_SUPERTYPES"));
+    for (uint32_t i = 0; i < symbols; i++) {
+      metadata[i].supertype = i >= language->token_count && !metadata[i].visible && remaining;
+      if (metadata[i].supertype) remaining--;
+    }
+    CHECK(!remaining);
+    synthetic.symbol_metadata = metadata;
+    language = &synthetic;
+  }
   input_name = "edited positions";
   edited_positions(language);
   const char *samples[] = {"",
@@ -931,6 +947,7 @@ int main(int argc, char **argv) {
   }
 
   printf("ok: %s (%d files plus edge cases)\n", argv[2], argc - 3);
+  free(metadata);
   dlclose(library);
   printf("seek mismatches: %u\n", seek_mismatches);
   printf("expected field mismatches: %u\n", expected_field_mismatches);
