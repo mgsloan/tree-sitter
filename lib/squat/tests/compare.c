@@ -603,7 +603,9 @@ static void exercise(const TSLanguage *language, const char *source, uint32_t le
   const void *bytes = sq_tree_data(compact, &size);
   uint8_t *unaligned = malloc((size_t)size + 1);
   CHECK(unaligned);
-  memcpy(unaligned + 1, bytes, size);
+  CHECK(sq_tree_compact_size(packed) == size);
+  CHECK(sq_tree_copy_compact(packed, unaligned + 1, size, &error));
+  CHECK(!memcmp(unaligned + 1, bytes, size));
   SQTree *loaded = sq_tree_from_bytes(language, unaligned + 1, size, &error);
   CHECK(loaded && loaded->storage == SQ_STORAGE_COPIED);
   CHECK(loaded->data != unaligned + 1);
@@ -620,6 +622,8 @@ static void exercise(const TSLanguage *language, const char *source, uint32_t le
   CHECK(!mprotect(mapping, mapped_size, PROT_READ));
   SQTree *borrowed = sq_tree_from_bytes_borrowed(language, mapping, size, &error);
   CHECK(borrowed && borrowed->storage == SQ_STORAGE_BORROWED && borrowed->data == mapping);
+  CHECK(sq_tree_copy_compact(borrowed, unaligned + 1, size, &error));
+  CHECK(!memcmp(unaligned + 1, bytes, size));
   compare_tree(tree, borrowed, false);
   SQTree *owned = sq_tree_repack(borrowed, &error);
   CHECK(owned && owned->storage == SQ_STORAGE_COLOCATED);

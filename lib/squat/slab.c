@@ -273,6 +273,45 @@ bool sq_grow_data(SQTree **tree_pointer, uint32_t size, SQError *error) {
   return true;
 }
 
+// Shared by resizing and direct serialization. Serialization initializes only
+// gaps; used column bytes are copied once into the final destination.
+static void copy_columns(const SQTree *tree, uint8_t *data, const SQLayout *next,
+                         bool initialize_padding) {
+  uint32_t position = sizeof(SQHeader);
+#define COPY(column, length) do { \
+    size_t bytes = (size_t)(length); \
+    if (initialize_padding) memset(data + position, 0, next->column - position); \
+    memcpy(data + next->column, tree->data + tree->layout.column, bytes); \
+    position = next->column + (uint32_t)bytes; \
+  } while (0)
+  // Prefix-filled reverse-preorder columns retain both physical indexes and
+  // packed lane phase across growth. Copy their used words, including padding.
+  uint32_t groups = sq_header(tree)->group_count, slots = groups * SQ_GROUP_SIZE;
+  COPY(waste, sq_column_size(groups, SQ_WASTE_BITS));
+  COPY(start_byte_base, sq_array_size(groups, 4));
+  COPY(start_byte_delta, sq_array_size(slots, 1));
+  COPY(end_byte_base, sq_array_size(groups, 4));
+  COPY(end_byte_delta, sq_array_size(slots, 2));
+  COPY(span_base, sq_array_size(groups, 4));
+  COPY(span_delta, sq_array_size(slots, 1));
+  COPY(symbol, sq_column_size(slots, next->symbol_bits));
+  COPY(grammar_symbol, sq_column_size(slots, next->symbol_bits));
+  COPY(field, sq_column_size(slots, next->field_bits));
+  COPY(supertype, sq_array_size(slots, 1));
+  COPY(last, sq_column_size(slots, 1));
+  COPY(extra, sq_column_size(slots, 1));
+  COPY(error, sq_column_size(slots, 1));
+  COPY(missing, sq_column_size(slots, 1));
+#if SQ_INCLUDE_POINTS
+  COPY(start_point_base, sq_array_size(groups, 8));
+  COPY(start_point, sq_array_size(slots, 2));
+  COPY(end_point_base, sq_array_size(groups, 8));
+  COPY(end_point, sq_array_size(slots, 2));
+#endif
+  if (initialize_padding) memset(data + position, 0, next->end - position);
+#undef COPY
+}
+
 // Rebuild column locations while preserving their prefix-filled lane indexes.
 // Builder finalization can reserve a new empty suffix in the same allocation;
 // ordinary resizing instead copies the tree's existing serialized suffix.
@@ -324,46 +363,41 @@ static bool resize_tree(SQTree **tree_pointer, uint32_t capacity, uint32_t trail
   memcpy(data, &old, sizeof(old));
   ((SQHeader *)data)->group_capacity = capacity;
 
-  // Prefix-filled reverse-preorder columns retain both physical indexes and
-  // packed lane phase across growth. Copy their used words, including padding.
-  uint32_t groups = old.group_count, slots = groups * SQ_GROUP_SIZE;
-  memcpy(data + next.waste, tree->data + tree->layout.waste, sq_column_size(groups, SQ_WASTE_BITS));
-  memcpy(data + next.start_byte_base, tree->data + tree->layout.start_byte_base,
-         sq_array_size(groups, 4));
-  memcpy(data + next.start_byte_delta, tree->data + tree->layout.start_byte_delta,
-         sq_array_size(slots, 1));
-  memcpy(data + next.end_byte_base, tree->data + tree->layout.end_byte_base,
-         sq_array_size(groups, 4));
-  memcpy(data + next.end_byte_delta, tree->data + tree->layout.end_byte_delta,
-         sq_array_size(slots, 2));
-  memcpy(data + next.span_base, tree->data + tree->layout.span_base, sq_array_size(groups, 4));
-  memcpy(data + next.span_delta, tree->data + tree->layout.span_delta, sq_array_size(slots, 1));
-  memcpy(data + next.symbol, tree->data + tree->layout.symbol,
-         sq_column_size(slots, next.symbol_bits));
-  memcpy(data + next.grammar_symbol, tree->data + tree->layout.grammar_symbol,
-         sq_column_size(slots, next.symbol_bits));
-  memcpy(data + next.field, tree->data + tree->layout.field,
-         sq_column_size(slots, next.field_bits));
-  memcpy(data + next.supertype, tree->data + tree->layout.supertype, sq_array_size(slots, 1));
-  memcpy(data + next.last, tree->data + tree->layout.last, sq_column_size(slots, 1));
-  memcpy(data + next.extra, tree->data + tree->layout.extra, sq_column_size(slots, 1));
-  memcpy(data + next.error, tree->data + tree->layout.error, sq_column_size(slots, 1));
-  memcpy(data + next.missing, tree->data + tree->layout.missing, sq_column_size(slots, 1));
-#if SQ_INCLUDE_POINTS
-  memcpy(data + next.start_point_base, tree->data + tree->layout.start_point_base,
-         sq_array_size(groups, 8));
-  memcpy(data + next.start_point, tree->data + tree->layout.start_point,
-         sq_array_size(slots, 2));
-  memcpy(data + next.end_point_base, tree->data + tree->layout.end_point_base,
-         sq_array_size(groups, 8));
-  memcpy(data + next.end_point, tree->data + tree->layout.end_point,
-         sq_array_size(slots, 2));
-#endif
+  copy_columns(tree, data, &next, false);
   if (preserve_trailing) {
     memcpy(data + next.end, tree->data + tree->layout.end, trailing_size);
   }
   free_storage(tree);
   *tree_pointer = replacement;
+  return true;
+}
+
+uint32_t sq_tree_compact_size(const SQTree *tree) {
+  SQLayout layout;
+  if (!tree || !sq_layout(tree->language, sq_header(tree)->group_count, &layout)) return 0;
+  return layout.end + (tree->size - tree->layout.end);
+}
+
+bool sq_tree_copy_compact(const SQTree *tree, void *destination, size_t length, SQError *error) {
+  sq_fail(error, SQ_OK);
+  uint32_t size = sq_tree_compact_size(tree);
+  if (!destination || !size || length != size) {
+    sq_fail(error, SQ_ERROR_ARGUMENT);
+    return false;
+  }
+  SQLayout next;
+  if (!sq_layout(tree->language, sq_header(tree)->group_count, &next)) {
+    sq_fail(error, SQ_ERROR_OVERFLOW);
+    return false;
+  }
+  // Destination may be uninitialized and unaligned (e.g. an LMDB reservation).
+  // Initialize padding too; no typed loads or stores into destination are used.
+  uint8_t *data = destination;
+  SQHeader header = *sq_header(tree);
+  header.group_capacity = header.group_count;
+  memcpy(data, &header, sizeof(header));
+  copy_columns(tree, data, &next, true);
+  memcpy(data + next.end, tree->data + tree->layout.end, tree->size - tree->layout.end);
   return true;
 }
 

@@ -349,6 +349,37 @@ impl Tree {
         let raw = unsafe { ffi::sq_tree_repack(self.0.as_ptr(), &mut status) };
         NonNull::new(raw).map(Self).ok_or_else(|| error(status))
     }
+    /// Size of the compact serialized slab, excluding transient spare capacity.
+    pub fn compact_size(&self) -> usize {
+        unsafe { ffi::sq_tree_compact_size(self.0.as_ptr()) as usize }
+    }
+
+    /// Copy used columns directly into a compact destination without allocating
+    /// an intermediate tree. Requires exactly `compact_size()` bytes; arbitrary
+    /// destination alignment is supported. Success initializes every byte.
+    pub fn copy_compact_into<'a>(
+        &self,
+        destination: &'a mut [std::mem::MaybeUninit<u8>],
+    ) -> Result<&'a mut [u8], Error> {
+        let mut status = 0;
+        let ok = unsafe {
+            ffi::sq_tree_copy_compact(
+                self.0.as_ptr(),
+                destination.as_mut_ptr().cast(),
+                destination.len(),
+                &mut status,
+            )
+        };
+        if !ok {
+            return Err(error(status));
+        }
+        // The native writer initializes header, columns, padding, and tail on
+        // success. It accepts unaligned storage and never reads destination.
+        Ok(unsafe {
+            std::slice::from_raw_parts_mut(destination.as_mut_ptr().cast(), destination.len())
+        })
+    }
+
     pub fn as_bytes(&self) -> &[u8] {
         let mut length = 0;
         let data = unsafe { ffi::sq_tree_data(self.0.as_ptr(), &mut length) };
@@ -873,6 +904,13 @@ mod ffi {
             error: *mut i32,
         ) -> *mut c_void;
         pub fn sq_tree_repack(tree: *const c_void, error: *mut i32) -> *mut c_void;
+        pub fn sq_tree_compact_size(tree: *const c_void) -> u32;
+        pub fn sq_tree_copy_compact(
+            tree: *const c_void,
+            destination: *mut c_void,
+            length: usize,
+            error: *mut i32,
+        ) -> bool;
         pub fn sq_tree_data(tree: *const c_void, length: *mut u32) -> *const c_void;
         pub fn sq_tree_language(tree: *const c_void) -> *const c_void;
         pub fn sq_tree_delete(tree: *mut c_void);

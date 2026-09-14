@@ -102,6 +102,12 @@ SQTree *sq_tree_from_bytes_borrowed_safety_checked(const TSLanguage *, const voi
 
 // Returns an independent compact copy; nodes in the original remain valid.
 SQTree *sq_tree_repack(const SQTree *, SQError *);
+// Compact serialization without an intermediate slab allocation. Returns zero
+// for a null tree. copy requires exactly compact_size bytes, disjoint from the
+// source. Destination need not be initialized or aligned; success initializes
+// every byte. The source and all its nodes remain unchanged.
+uint32_t sq_tree_compact_size(const SQTree *);
+bool sq_tree_copy_compact(const SQTree *, void *destination, size_t length, SQError *);
 uint32_t sq_tree_group_count(const SQTree *);
 uint32_t sq_tree_group_capacity(const SQTree *);
 uint32_t sq_tree_slot_count(const SQTree *);
