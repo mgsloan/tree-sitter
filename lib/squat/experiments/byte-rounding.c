@@ -162,10 +162,12 @@ static uint64_t field_queries(void *arg) {
 // Field queries use real field names; fieldless grammars reuse structural patterns.
 static void structural_source(Input *in, char *source, size_t capacity, bool fields) {
   struct Pattern { char text[512]; uint32_t count; } patterns[512] = {0};
-  unsigned count = 0;
+  unsigned count = 0, depth = 0, capacity_nodes = 64;
+  TSNode *ancestors = malloc(capacity_nodes * sizeof(TSNode)); assert(ancestors);
   TSTreeCursor cursor = ts_tree_cursor_new(ts_tree_root_node(in->parsed));
   for (;;) {
-    TSNode child = ts_tree_cursor_current_node(&cursor), parent = ts_node_parent(child);
+    TSNode child = ts_tree_cursor_current_node(&cursor);
+    TSNode parent = depth ? ancestors[depth - 1] : (TSNode){0};
     const char *field = ts_tree_cursor_current_field_name(&cursor);
     if (!ts_node_is_null(parent) && ts_node_is_named(parent) && ts_node_is_named(child) &&
         !ts_node_is_error(parent) && !ts_node_is_error(child) && (!fields || field)) {
@@ -178,13 +180,21 @@ static void structural_source(Input *in, char *source, size_t capacity, bool fie
       if (j < count) patterns[j].count++;
       else if (count < 512) { strcpy(patterns[count].text, pattern); patterns[count++].count = 1; }
     }
-    if (ts_tree_cursor_goto_first_child(&cursor)) continue;
+    if (ts_tree_cursor_goto_first_child(&cursor)) {
+      if (depth == capacity_nodes) {
+        capacity_nodes *= 2;
+        ancestors = realloc(ancestors, capacity_nodes * sizeof(TSNode)); assert(ancestors);
+      }
+      ancestors[depth++] = child;
+      continue;
+    }
     while (!ts_tree_cursor_goto_next_sibling(&cursor)) {
       if (!ts_tree_cursor_goto_parent(&cursor)) goto finished_patterns;
+      assert(depth); depth--;
     }
   }
 finished_patterns:
-  ts_tree_cursor_delete(&cursor); source[0] = 0;
+  ts_tree_cursor_delete(&cursor); free(ancestors); source[0] = 0;
   for (unsigned k = 0; k < 12 && k < count; k++) {
     unsigned best = 0;
     for (unsigned j = 1; j < count; j++) if (patterns[j].count > patterns[best].count) best = j;
@@ -224,6 +234,10 @@ static void prepare_query(Input *in, const TSLanguage *language) {
     uint32_t offset; TSQueryError error;
     in->query[query_kind] = sq_query_new(language, source, (uint32_t)strlen(source), &offset, &error);
     assert(in->query[query_kind]);
+    if (!in->query_cursor) in->query_cursor = sq_query_cursor_new();
+    assert(in->query_cursor);
+    // The driver may omit repeated validation after this binary/input passed.
+    if (getenv("SQ_SKIP_QUERY_VALIDATION")) continue;
     TSQuery *mainline = ts_query_new(language, source, (uint32_t)strlen(source), &offset, &error);
     assert(mainline);
     TSQueryCursor *cursor = ts_query_cursor_new();
@@ -342,8 +356,10 @@ int main(int argc, char **argv) {
          "\"symbol_bits\":%u,\"field_bits\":%u,\"modes\":{", batch.count,
          (unsigned long long)nodes, (unsigned long long)slab, (unsigned long long)retained,
          (unsigned long long)compact, batch.inputs[0].tree->layout.symbol_bits, batch.inputs[0].tree->layout.field_bits);
-  for (unsigned op = 0; op < (end_to_end ? 10u : 6u); op++) {
-    printf("%s\"%s\":", op ? "," : "", names[op]); measure(ops[op], &batch, repeats, .008);
+  const unsigned primary[] = {5, 8, 9, 6, 7, 2};
+  for (unsigned i = 0; i < 6; i++) {
+    unsigned op = end_to_end ? primary[i] : i;
+    printf("%s\"%s\":", i ? "," : "", names[op]); measure(ops[op], &batch, repeats, .008);
   }
   puts("}}");
   for (unsigned i = 0; i < batch.count; i++) {

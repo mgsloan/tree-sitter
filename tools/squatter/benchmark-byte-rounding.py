@@ -146,13 +146,17 @@ def main():
     parser.add_argument('--points', default='1')
     parser.add_argument('--variants', default='exact,r7,r6,r5,r4,r2,r10,r9,r6_9,r6_10')
     parser.add_argument('--rounds', type=int, default=1)
+    parser.add_argument('--round-start', type=int, default=0, help='First round number when continuing a run')
     parser.add_argument('--repeats', type=int, default=5)
     parser.add_argument('--cpu', type=int, default=2)
+    parser.add_argument('--loader', help='Guest ELF loader for binaries built on another host')
+    parser.add_argument('--validate-once', action='store_true', help='Validate queries in round zero; repeat only timings afterward')
     parser.add_argument('--cases', default='')
     parser.add_argument('--tag', default='sweep')
     parser.add_argument('--micro', action='store_true')
     parser.add_argument('--end-to-end', action='store_true', help='Include cursor/iterator walks and structural/field queries')
     args = parser.parse_args()
+    if args.validate_once and args.round_start: parser.error('--validate-once requires --round-start 0')
     if args.end_to_end: os.environ['SQ_END_TO_END'] = '1'
     out = args.output.resolve(); out.mkdir(parents=True, exist_ok=True)
     points = list(map(int, args.points.split(','))); variants = args.variants.split(',')
@@ -170,20 +174,25 @@ def main():
     if args.micro:
         meta['micro'] = json.loads(run(['taskset', '-c', args.cpu, out/'exact-p1/bench', '--micro', args.repeats]).stdout)
         save(output, meta); return
-    for round_number in range(args.rounds):
+    for round_number in range(args.round_start, args.round_start + args.rounds):
         for point in points:
-            for index, case in enumerate(cases):
+            for case in cases:
+                index = manifest['cases'].index(case)
                 order = variants.copy(); random.Random(1729 + round_number * 1000 + index).shuffle(order)
                 for variant in order:
-                    command = ['taskset', '-c', args.cpu, out / f'{variant}-p{point}' / 'bench',
+                    command = ['taskset', '-c', args.cpu, *([args.loader] if args.loader else []), out / f'{variant}-p{point}' / 'bench',
                                case['library'], case['symbol'], args.repeats, *case['sources']]
                     frequency = Path(f'/sys/devices/system/cpu/cpu{args.cpu}/cpufreq/scaling_cur_freq')
                     before_khz = int(frequency.read_text()) if frequency.exists() else None
-                    result = run(command)
+                    validate = not args.validate_once or round_number == 0
+                    environment = dict(os.environ)
+                    environment.pop('SQ_SKIP_QUERY_VALIDATION', None)
+                    if not validate: environment['SQ_SKIP_QUERY_VALIDATION'] = '1'
+                    result = run(command, env=environment)
                     after_khz = int(frequency.read_text()) if frequency.exists() else None
                     measured = json.loads(result.stdout)
                     records.append(dict(round=round_number, case=case['name'], variant=variant,
-                                        points=point, before_khz=before_khz, after_khz=after_khz, measured=measured))
+                                        points=point, query_validation=validate, before_khz=before_khz, after_khz=after_khz, measured=measured))
                     save(output, meta)
                 print(f'round {round_number + 1}: p{point} {case["name"]}', flush=True)
     meta['finished'] = time.time(); save(output, meta)
