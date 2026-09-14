@@ -19,6 +19,7 @@ POLICIES = {
     'symbol9': (0, 9, 0), 'symbol10': (0, 10, 0),
     'fieldonly': (20, 0, 0), 'symbolonly': (0, 20, 0), 'both': (20, 20, 0),
     'super': (0, 0, 1), 'superpow2': (0, 0, 2),
+    'fieldless': (31, 0, 0), 'fieldlesssuper': (31, 0, 1),
 }
 kernel.VARIANTS = list(POLICIES)
 
@@ -141,6 +142,31 @@ static uint8_t probe_supertype_bits(uint32_t count, uint32_t dictionary_count) {
             '  if (tree->layout.supertype_bits) exercise_column(tree, tree->layout.supertype, tree->layout.supertype_bits, SQ_GROUP_SIZE, tag++, fill);'), patches)
         kernel.edit(source, 'lib/squat/tests/supertypes.c', lambda s: s.replace(
             'layout.supertype_bits == 16', 'layout.supertype_bits == (SQ_SUPER_VARIABLE ? 9 : 16)'), patches)
+        if variant in ('fieldless', 'fieldlesssuper'):
+            kernel.edit(source, 'lib/squat/slab.c', lambda s: s.replace(
+                '  uint8_t bits = sq_width(max);',
+                '  if (field && max == 0) return 0;\n  uint8_t bits = sq_width(max);').replace(
+                'layout->field_lanes = (uint8_t)(64 / layout->field_bits);',
+                'layout->field_lanes = layout->field_bits ? (uint8_t)(64 / layout->field_bits) : 0;'), patches)
+            kernel.edit(source, 'lib/squat/internal.h', lambda s: s.replace(
+                'static inline uint32_t sq_node_field_value(SQNode node) {',
+                'static inline uint32_t sq_node_field_value(SQNode node) {\n  if (!node.tree->layout.field_bits) return 0;'), patches)
+            kernel.edit(source, 'lib/squat/pack.c', lambda s: s.replace(
+                '  start_lanes(&builder->field_lane,',
+                '  if (tree->layout.field_bits) start_lanes(&builder->field_lane,').replace(
+                '      put_lane(&builder->field_lane, frame->field);',
+                '      if (builder->tree->layout.field_bits) put_lane(&builder->field_lane, frame->field);\n      else ts_assert(frame->field == 0);'), patches)
+            kernel.edit(source, 'lib/squat/iterator.c', lambda s: s.replace(
+                '  cache->unpack(tree->data + tree->layout.field,',
+                '  if (!tree->layout.field_bits) memset(cache->field, 0, sizeof(cache->field));\n  else cache->unpack(tree->data + tree->layout.field,'), patches)
+            kernel.edit(source, 'lib/squat/tests/unit.c', lambda s: s.replace(
+                '  exercise_column(tree, tree->layout.field, tree->layout.field_bits, SQ_GROUP_SIZE, tag++, fill);',
+                '  if (tree->layout.field_bits) exercise_column(tree, tree->layout.field, tree->layout.field_bits, SQ_GROUP_SIZE, tag++, fill);').replace(
+                'tree->layout.field_lanes == 64 / tree->layout.field_bits',
+                'tree->layout.field_lanes == (tree->layout.field_bits ? 64 / tree->layout.field_bits : 0)').replace(
+                'assert(sq_node_field_value(node) == sq_get_packed(tree->data, tree->layout.field,\n                                                    slot, tree->layout.field_bits));',
+                'assert(sq_node_field_value(node) == (tree->layout.field_bits ? sq_get_packed(tree->data, tree->layout.field,\n                                                    slot, tree->layout.field_bits) : 0));'), patches)
+
 
     def rust_harness(self, s):
         return s.replace('job.kind == "highlights" || job.kind == "tags"', 'job.kind == "highlights" || job.kind == "tags" || job.kind == "supertype"')
