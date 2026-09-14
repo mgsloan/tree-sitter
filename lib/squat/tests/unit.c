@@ -3,7 +3,7 @@
 #include <stdio.h>
 #include "supertype_fixture.h"
 
-static void fieldless_tests(void) {
+static void empty_column_tests(void) {
   const char *names[] = {"end", "node"};
   const TSSymbolMetadata metadata[] = {{0}, {.visible = true, .named = true}};
   const TSLanguage language = {.abi_version = TREE_SITTER_LANGUAGE_VERSION,
@@ -15,8 +15,10 @@ static void fieldless_tests(void) {
   assert(tree && !tree->layout.field_bits && !tree->layout.field_lanes);
   assert(sq_column_size(SQ_GROUP_SIZE, 0) == 0);
   assert(tree->layout.field == tree->layout.supertype);
+  assert(!tree->layout.supertype_bits);
+  assert(tree->layout.supertype == tree->layout.last);
   sq_header(tree)->group_count = 1;
-  // A missing field column must not read bytes belonging to the next column.
+  // Missing columns must not read bytes belonging to the next column.
   tree->data[tree->layout.field] = 0xff;
   for (unsigned waste = 0; waste < SQ_GROUP_SIZE; waste++) {
     sq_set_packed(tree->data, tree->layout.waste, 0, SQ_WASTE_BITS, waste);
@@ -25,9 +27,14 @@ static void fieldless_tests(void) {
     assert(sq_tree_group_field_equal(tree, 0, 1) == 0);
     assert(sq_tree_group_field_equal(tree, 0, UINT32_MAX) == 0);
     assert(sq_tree_group_field_equal(tree, 1, 0) == 0);
+    assert(sq_tree_group_supertype_equal(tree, 0, 0) == used);
+    assert(sq_tree_group_supertype_equal(tree, 0, 1) == 0);
+    assert(sq_tree_group_supertype_equal(tree, 1, 0) == 0);
     for (unsigned slot = 0; slot < SQ_GROUP_SIZE - waste; slot++) {
       assert(sq_node_field_value((SQNode){tree, slot}) == 0);
       assert(sq_node_field_id((SQNode){tree, slot}) == 0);
+      assert(sq_node_supertype((SQNode){tree, slot}) == 0);
+      assert(!sq_node_has_supertype((SQNode){tree, slot}, 1));
     }
   }
   sq_tree_delete(tree);
@@ -217,7 +224,9 @@ static void exercise_columns(SQTree *tree, bool fill) {
   exercise_column(tree, tree->layout.start_point, 16, SQ_GROUP_SIZE, tag++, fill);
   exercise_column(tree, tree->layout.end_point, 16, SQ_GROUP_SIZE, tag++, fill);
 #endif
-  exercise_column(tree, tree->layout.supertype, tree->layout.supertype_bits, SQ_GROUP_SIZE, tag++, fill);
+  if (tree->layout.supertype_bits) {
+    exercise_column(tree, tree->layout.supertype, tree->layout.supertype_bits, SQ_GROUP_SIZE, tag++, fill);
+  }
   exercise_column(tree, tree->layout.symbol, tree->layout.symbol_bits, SQ_GROUP_SIZE, tag++, fill);
   if (tree->layout.field_bits) {
     exercise_column(tree, tree->layout.field, tree->layout.field_bits, SQ_GROUP_SIZE, tag++, fill);
@@ -339,7 +348,7 @@ static void sparse_grammar_tests(bool dictionary) {
 }
 
 int main(void) {
-  fieldless_tests();
+  empty_column_tests();
   sparse_grammar_tests(false);
   sparse_grammar_tests(true);
   equality_tests();
@@ -350,6 +359,7 @@ int main(void) {
   for (uint32_t symbols = 2; symbols <= 32768; symbols *= 2) {
     TSSymbolMetadata *metadata = calloc(symbols, sizeof(TSSymbolMetadata));
     assert(metadata);
+    metadata[1].supertype = true;
     TSLanguage language = {.abi_version = TREE_SITTER_LANGUAGE_VERSION,
                            .symbol_count = symbols,
                            .field_count = symbols - 1,

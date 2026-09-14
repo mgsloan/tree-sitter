@@ -56,8 +56,17 @@ static uint32_t column_offset(uint64_t *next, uint64_t bytes) {
 }
 
 bool sq_layout(const TSLanguage *language, uint32_t capacity, bool wide_supertypes, SQLayout *layout) {
-  if (!capacity || capacity > UINT32_MAX / SQ_GROUP_SIZE) return false;
-  layout->supertype_bits = wide_supertypes ? 16 : 8;
+  if (!sq_language_compatible(language) || !capacity || capacity > UINT32_MAX / SQ_GROUP_SIZE) {
+    return false;
+  }
+  bool has_supertypes = false;
+  for (uint32_t symbol = 0; symbol < language->symbol_count + language->alias_count; symbol++) {
+    if (language->symbol_metadata[symbol].supertype) {
+      has_supertypes = true;
+      break;
+    }
+  }
+  layout->supertype_bits = has_supertypes ? (wide_supertypes ? 16 : 8) : 0;
   layout->symbol_bits = sq_width(language->symbol_count + language->alias_count + 1);
   layout->field_bits = language->field_count ? sq_width(language->field_count) : 0;
   layout->symbol_lanes = (uint8_t)(64 / layout->symbol_bits);

@@ -26,13 +26,13 @@ _Static_assert(SQ_ITERATOR_UNPACK_SLOTS >= SQ_GROUP_SIZE &&
 _Static_assert(SQ_COLUMN_ALIGNMENT == 8 || SQ_COLUMN_ALIGNMENT == 64,
                "supported experimental column alignments");
 #define SQ_VERSION                                                                                 \
-  (UINT32_C(0x535100a0) |                                                                          \
+  (UINT32_C(0x535100b0) |                                                                          \
    (SQ_GROUP_SIZE == 32   ? 2u                                                                     \
     : SQ_GROUP_SIZE == 64 ? 4u                                                                     \
                           : 0u) |                                                                  \
    (SQ_COLUMN_ALIGNMENT == 64 ? 8u : 0u))
 
-// Version 10: omit the field column when the grammar has no fields.
+// Version 11: also omit the supertype column when the grammar has no supertypes.
 #define SQ_LAYOUT_FLAGS (SQ_INCLUDE_POINTS ? 0u : 0x100u)
 #define SQ_PRESENCE 0x200u
 #define SQ_WIDE_SUPERTYPES 0x400u
@@ -319,6 +319,7 @@ static inline uint32_t sq_node_end_point_key(SQNode node) {
 #endif
 
 static inline uint32_t sq_node_supertype(SQNode node) {
+  if (!node.tree->layout.supertype_bits) return 0;
   return node.tree->layout.supertype_bits == 16
       ? sq_get_u16(node.tree->data, node.tree->layout.supertype, node.slot)
       : sq_get_u8(node.tree->data, node.tree->layout.supertype, node.slot);

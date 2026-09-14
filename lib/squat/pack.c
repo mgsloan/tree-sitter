@@ -362,7 +362,7 @@ static bool close_group(Builder *builder) {
   uint8_t *start_byte_delta = data + tree->layout.start_byte_delta + first;
   uint8_t *end_byte_delta = data + tree->layout.end_byte_delta + (size_t)first * 2;
   uint32_t supertype_offset = tree->layout.supertype;
-  bool wide_supertypes = tree->layout.supertype_bits == 16;
+  uint8_t supertype_bits = tree->layout.supertype_bits;
 #if SQ_INCLUDE_POINTS
   uint8_t *start_point = data + tree->layout.start_point + (size_t)first * 2;
   uint8_t *end_point = data + tree->layout.end_point + (size_t)first * 2;
@@ -384,9 +384,9 @@ static bool close_group(Builder *builder) {
     memcpy(end_point + (size_t)i * 2, &end, sizeof(end));
 #endif
 
-    if (wide_supertypes) {
+    if (supertype_bits == 16) {
       sq_set_u16(data, supertype_offset, first + i, builder->pending[i].super);
-    } else {
+    } else if (supertype_bits) {
       sq_set_u8(data, supertype_offset, first + i, (uint8_t)builder->pending[i].super);
     }
   }
