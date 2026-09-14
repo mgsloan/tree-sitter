@@ -15,6 +15,7 @@ def main():
     parser.add_argument('runs', nargs='+', type=Path)
     parser.add_argument('--output', type=Path)
     parser.add_argument('--audit-output', type=Path)
+    parser.add_argument('--keep-all', action='store_true', help='Sensitivity check without control-based block rejection')
     args = parser.parse_args()
     rows = []
     for path in args.runs:
@@ -34,13 +35,14 @@ def main():
                   for m in base['modes']}
         if sum(not .9 <= r <= 1.1 for r in ratios.values()) >= 2 or any(not .75 <= r <= 4/3 for r in ratios.values()):
             rejected[key] = ratios
+    if args.keep_all: rejected.clear()
     rows = [r for r in rows if (r['run'], r['round'], r['points'], r['case']) not in rejected]
     accepted = defaultdict(int)
     for key in blocks:
         if key not in rejected: accepted[(key[2], key[3])] += 1
     if args.audit_output:
         args.audit_output.write_text(json.dumps(dict(
-            rule="Reject whole block: r7/exact outside 0.9..1.1 for >=2 modes, or outside 0.75..4/3 for any mode",
+            rule="No rejection (--keep-all)" if args.keep_all else "Reject whole block: r7/exact outside 0.9..1.1 for >=2 modes, or outside 0.75..4/3 for any mode",
             rejected=[dict(run=k[0], round=k[1], points=k[2], case=k[3], control_ratios=v) for k,v in rejected.items()],
             accepted=[dict(points=k[0], case=k[1], blocks=v) for k,v in sorted(accepted.items())]), indent=2)+'\n')
     print(f'Accepted {len(blocks)-len(rejected)}/{len(blocks)} paired blocks')

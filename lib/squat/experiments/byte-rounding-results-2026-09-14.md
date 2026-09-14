@@ -1,5 +1,7 @@
 # Byte-rounded symbol and field storage — 2026-09-14
 
+The [GCP query and full-walk follow-up](byte-rounding-cloud-results-2026-09-14.md) is now the primary evidence for the recommendation. These earlier local measurements remain supporting evidence.
+
 Recommend **5–7 → 8 bits** and **13–15 → 16 bits** as the balanced default. Keep 2–4 and 9–12 bits packed at their minimum widths. Existing 8- and 16-bit widths stay unchanged. The production runtime is unchanged; the implementation is supplied as an isolated [experiment patch](byte-rounding.patch).
 
 The 5-bit cutoff improves cached attribute traversal by 3.6% with points and 4.2% without points, and random ID reads by approximately 10–11%, for 1.3%/1.9% more retained tree memory. Packing and the tested queries are approximately unchanged. These are elapsed-time reductions, based on grammar-balanced paired measurements.
