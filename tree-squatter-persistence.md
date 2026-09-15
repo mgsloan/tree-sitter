@@ -53,7 +53,8 @@ PROJECT/.tree-squatter/
 
 On big-endian systems, use `PROJECT/.tree-squatter-be/` instead, so moving or
 copying a project between architectures cannot open an opposite-endian LMDB
-environment. Both directory names are excluded from source paths.
+environment. Squatter payloads use canonical little-endian bytes on both hosts;
+this separation is for LMDB. Both directory names are excluded from source paths.
 
 The application sidecar is only for OS-released coordination; LMDB owns all stored
 content and metadata. Never manipulate LMDB's lock table/file directly. Do not
@@ -131,8 +132,9 @@ representation identities separate. Runtime ABI compatibility alone does not
 establish identical parsing.
 
 Squatter must export identity from its actual compiled C layout: slab version,
-endianness, group size, alignment, points mode, and other interpretation switches.
-Cargo feature names alone are insufficient. Output-preserving optimization kernels
+group size, alignment, points mode, and other interpretation switches. Canonical
+little-endian encoding makes host endianness and pointer width irrelevant to
+representation identity. Cargo feature names alone are insufficient. Output-preserving optimization kernels
 need not change a compatibility epoch.
 
 Persisted packing differences enter variant identity. Allocation hints such as

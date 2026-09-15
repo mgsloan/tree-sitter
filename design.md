@@ -38,7 +38,7 @@ stored in preorder. This was not done because it would cause physical node indic
 
 ```rs
 struct SlabHeader {
-  /// Native-endian format/version, point/group/alignment flags, optional index, supertype index width.
+  /// Little-endian format/version, point/group/alignment flags, optional index, supertype index width.
   /// Point absence is stored per tree; point APIs then use byte offsets as columns on row zero.
   format_flags: u32,
   group_count: u32,
@@ -123,6 +123,15 @@ locate an override, falling back to the raw display ID. Iterator attribute
 access resolves this per node; grammar IDs are not bulk-unpacked or cached.
 Display-symbol scans retain their dense column; grammar-symbol scans correct
 the display equality mask at override slots.
+
+Little-endian representation is used on big-endian systems. This is
+for simplicity and support for inter-machine communication. Since
+big-endian is very rare for host architecture, it is fine for it to
+have some performance impacts due to using a non-native
+representation.
+
+Persistence still uses `.tree-squatter-be/` on big-endian hosts
+because LMDB itself is endian-dependent.
 
 # Symbol presence bitmaps
 
