@@ -31,6 +31,9 @@ the estimate was too large, it is left that way, but can also be compacted.
 
 `supertypes` state is inherited on descent.
 
+While the traversal is done in reverse preorder, the physical nodes **could** be
+stored in preorder. This was not done because it would cause physical node indices to shift when growing the allocation.
+
 # Slab data
 
 ```rs
