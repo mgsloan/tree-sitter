@@ -149,6 +149,20 @@ A `pack_tree` function will be provided which packs a Tree-sitter tree to bytes.
 The Rust API will export types and functions for this squat representation, along with traits that work with both the mainline and the squat representation. This way code can be written that is specialized to both representations.
 
 
+# Queries
+
+Queries use the Tree-sitter query language and cursor API over packed trees.
+Eligible rooted patterns execute directly over packed columns; other patterns
+use the general NFA. Symbol scans, direct plans, and state staging remain enabled
+when a cursor has a finite match limit.
+
+A match limit bounds capture-list storage. It does not define which matches must
+survive when the limit is exceeded. Execution strategies may discover and evict
+matches in different orders, so limited queries need not return mainline's subset.
+Every returned match must still satisfy the query, and the cursor reports that
+the limit was exceeded.
+
+
 # Corpus analysis tool
 
 `crates/corpus-analysis` provides a binary of the same name that provides the following commands using mainline Tree-sitter from this repository:
@@ -205,7 +219,14 @@ Omission of files 100kb to 1mb is intentional. The theory is that these files ju
 
 The comparison contract covers freshly parsed mainline trees and their packed equivalents, including parses of mutated source text. Supported attributes are public symbol/type, grammar symbol/type, start/end bytes and stored points, named/extra/missing/error/has-error flags, `has_changes` (false for these fresh trees), child and named-child counts, and logical descendant counts. Point-free trees instead expose byte offsets as columns on row zero. The contract also compares parent/child/sibling relationships, child field IDs/names, and named-child navigation. Nodes are identified across representations by their visible preorder ordinal, not their pointer or physical slot. Seek results use the same identity, including null results.
 
-Query comparisons cover match/capture order, pattern and capture IDs, and captured-node identities, including field, anchor, and supertype semantics. Any text predicates use the same source bytes in both runs. The contract excludes parse-state and next-parse-state accessors, incremental edit/reparse behavior, and `node_string` equality while exact unexpected-character rendering is deferred. These exclusions apply to the walk and cold-parse comparisons as well.
+Without a finite match limit, query comparisons cover match/capture order,
+pattern and capture IDs, and captured-node identities, including field, anchor,
+and supertype semantics. Any text predicates use the same source bytes in both
+runs. Limited queries validate returned matches but do not compare their subset
+or order with mainline. The contract excludes parse-state and next-parse-state
+accessors, incremental edit/reparse behavior, and `node_string` equality while
+exact unexpected-character rendering is deferred. These exclusions apply to the
+walk and cold-parse comparisons as well.
 
 It takes the following CLI arguments:
 

@@ -3767,7 +3767,6 @@ uint32_t sq_query_cursor_match_limit(const SQQueryCursor *self) {
 }
 
 void sq_query_cursor_set_match_limit(SQQueryCursor *self, uint32_t limit) {
-  self->execution_needs_fallback = self->execution_active;
   self->capture_list_pool.max_capture_list_count = limit;
 }
 
@@ -4575,12 +4574,12 @@ static void sq_query_cursor__capture(SQQueryCursor *self, QueryState *state, Que
 }
 
 // Stage the remaining input before an insertion or removal would shift a large
-// suffix. New branches then move only the current state's other branches.
-// Finite-limit eviction needs to see every state, so it keeps the ordinary array.
+// suffix. New branches then move only the current state's other branches. Pending
+// states are not eviction candidates, so finite limits may retain a different
+// subset than an unstaged execution.
 static void sq_query_cursor__stage_remaining_states(SQQueryCursor *self, uint32_t index) {
   uint32_t remaining = self->states.size - index - 1;
-  if (remaining >= 32 && !self->pending_states.size &&
-      self->capture_list_pool.max_capture_list_count == UINT32_MAX) {
+  if (remaining >= 32 && !self->pending_states.size) {
     array_extend(&self->pending_states, remaining, self->states.contents + index + 1);
     self->states.size = index + 1;
     QUERY_EXEC_COUNT(self, staged_states, remaining);
@@ -5806,9 +5805,12 @@ bool sq_query_cursor_next_capture(SQQueryCursor *self, SQQueryMatch *match,
     if (capture_list_pool_is_empty(&self->capture_list_pool) && found_unfinished_state) {
       LOG("  abandon state. index:%u, pattern:%u, offset:%u.\n", first_unfinished_state_index,
           first_unfinished_pattern_index, first_unfinished_capture_byte);
-      capture_list_pool_release(
-          &self->capture_list_pool,
-          array_get(&self->states, first_unfinished_state_index)->capture_list_id);
+      QueryState *state = array_get(&self->states, first_unfinished_state_index);
+      capture_list_pool_release(&self->capture_list_pool, state->capture_list_id);
+      if (self->execution_active) {
+        query_execution_release_state(self, state);
+      }
+
       self->dirty_patterns |= UINT64_C(1) << (first_unfinished_pattern_index % 64);
       array_erase(&self->states, first_unfinished_state_index);
     }

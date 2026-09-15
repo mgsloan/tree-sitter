@@ -355,7 +355,7 @@ unsupported:
 static void sq_query_cursor__execution_start(SQQueryCursor *self, SQNode root) {
   if (!self->query || !root.tree || root.tree->language != self->query->language ||
       !self->query->execution_plan.supported || sq_node_has_error(root) ||
-      self->max_start_depth != UINT32_MAX || sq_query_cursor_match_limit(self) != UINT32_MAX ||
+      self->max_start_depth != UINT32_MAX ||
       !sq_query__range_is_unrestricted(&self->included_range) ||
       !sq_query__range_is_unrestricted(&self->containing_range)) {
     return;
@@ -698,6 +698,13 @@ static bool sq_query_cursor__execution_advance(SQQueryCursor *self, bool stop_on
     bool did_match = false;
     for (uint32_t index = 0; index < self->states.size;) {
       QueryState *state = &self->states.contents[index];
+      if (state->dead) {
+        capture_list_pool_release(&self->capture_list_pool, state->capture_list_id);
+        query_execution_release_state(self, state);
+        array_erase(&self->states, index);
+        continue;
+      }
+
       QueryExecutionState *position = &self->execution_states.contents[state->heap_insert_order];
       if (position->next != node) {
         index++;
@@ -727,6 +734,11 @@ static bool sq_query_cursor__execution_advance(SQQueryCursor *self, bool stop_on
       if (step->capture_ids[0] != NONE) {
         sq_query_cursor__capture(self, state, step,
                                  sq_position_node(self->execution_root.tree, node));
+        if (state->dead) {
+          query_execution_release_state(self, state);
+          array_erase(&self->states, index);
+          continue;
+        }
       }
 
       state->step_index = (plan->local_patterns & ((uint64_t)1 << state->pattern_index))

@@ -35,8 +35,11 @@ report `SQ_QUERY_UNSUPPORTED_RANGE`: visible-only traversal does not reproduce
 all mainline partial capture ordering in these cases. This is an exposed limitation, not a passing
 comparison exemption. Callback cadence is representation-dependent.
 
-Whole-query plans retain the shared capture coordinator. Unsupported plans use
-the NFA before emitting anything. Setters during planned execution defer NFA
+Whole-query plans retain the shared capture coordinator, including finite match
+limits. Unsupported plans use the NFA before emitting anything. Match limits do
+not disable symbol scans, whole-query plans, or NFA state staging; because these
+change discovery and eviction order, a limited execution may retain a different
+valid subset than mainline. Other setters during planned execution defer NFA
 restoration until advancement, preserving borrowed capture storage. Progress
 callbacks run at bounded event intervals in both paths; timeout-enabled corpus
 runs can therefore exercise plans too.

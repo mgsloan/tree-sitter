@@ -1,5 +1,6 @@
 #define _POSIX_C_SOURCE 200809L
 #include <tree_sitter/squat_query.h>
+#include "../query_internal.h"
 #include "field_lookup.h"
 #include <assert.h>
 #include <dlfcn.h>
@@ -68,6 +69,16 @@ static void compare_node(const Identities *ids, TSNode node, SQNode packed) {
   for (uint32_t index = 0; index < ids->count; index++) {
     if (ts_node_eq(node, ids->nodes[index])) {
       CHECK(sq_node_eq(packed, ids->packed[index]));
+      return;
+    }
+  }
+
+  CHECK(false);
+}
+
+static void check_packed_node(const Identities *ids, SQNode node) {
+  for (uint32_t index = 0; index < ids->count; index++) {
+    if (sq_node_eq(node, ids->packed[index])) {
       return;
     }
   }
@@ -174,7 +185,7 @@ static void run_query(const TSLanguage *language, TSTree *tree, SQTree *packed,
   sq_query_delete(query);
   query = copy;
   for (optimized = 0; optimized < 2; optimized++) {
-    for (mode = 0; mode < 8; mode++) {
+    for (mode = 0; mode < 9; mode++) {
       TSQueryCursor *a = ts_query_cursor_new();
       SQQueryCursor *b = sq_query_cursor_new();
       sq_query_cursor_set_optimized(b, optimized);
@@ -197,6 +208,11 @@ static void run_query(const TSLanguage *language, TSTree *tree, SQTree *packed,
                                         mode == 6 ? &options : NULL);
       sq_query_cursor_exec_with_options(b, query, sq_tree_root_node(packed),
                                         mode == 6 ? &options : NULL);
+      if (mode == 8) {
+        ts_query_cursor_set_match_limit(a, 2);
+        sq_query_cursor_set_match_limit(b, 2);
+      }
+
       for (event = 0; event < 100000; event++) {
         TSQueryMatch expected;
         SQQueryMatch actual;
@@ -224,6 +240,11 @@ static void run_query(const TSLanguage *language, TSTree *tree, SQTree *packed,
           expected_field_query_mismatches++;
         }
 
+        if ((mode == 4 || mode == 8) && optimized &&
+            !ts_node_has_error(ts_tree_root_node(tree)) && !strcmp(source, "(_) @node")) {
+          CHECK(sq_query_cursor__execution_stats(b).planned);
+        }
+
         if ((mode == 2 || mode == 5) && sq_query_cursor_error(b) == SQ_QUERY_UNSUPPORTED_RANGE) {
           CHECK(!found_b && event == 0);
           break;
@@ -237,6 +258,25 @@ static void run_query(const TSLanguage *language, TSTree *tree, SQTree *packed,
           } else {
             continue;
           }
+        }
+
+        // A finite match limit bounds storage, not which valid matches survive.
+        // Different execution strategies may therefore return different subsets.
+        if (mode == 4 || mode == 8) {
+          if (found_b) {
+            CHECK(actual.pattern_index < sq_query_pattern_count(query));
+            CHECK(capture_b < actual.capture_count);
+            for (uint32_t index = 0; index < actual.capture_count; index++) {
+              CHECK(actual.captures[index].index < sq_query_capture_count(query));
+              check_packed_node(ids, actual.captures[index].node);
+            }
+          }
+
+          if (!found_a && !found_b) {
+            break;
+          }
+
+          continue;
         }
 
         CHECK(found_a == found_b);
@@ -302,7 +342,10 @@ static void run_query(const TSLanguage *language, TSTree *tree, SQTree *packed,
       }
 
       CHECK(event < 100000);
-      CHECK(ts_query_cursor_did_exceed_match_limit(a) == sq_query_cursor_did_exceed_match_limit(b));
+      if (mode != 4 && mode != 8) {
+        CHECK(ts_query_cursor_did_exceed_match_limit(a) ==
+              sq_query_cursor_did_exceed_match_limit(b));
+      }
       ts_query_cursor_delete(a);
       sq_query_cursor_delete(b);
     }
@@ -332,6 +375,7 @@ static void exercise(const TSLanguage *language, const char *source, uint32_t le
       "(_ . (_) @first)",
       "(_ (_) @last .)",
       "(_ (_) @first . (_) @second)",
+      "(_ . (_) @first . (_) @second)",
       "(_ (_)+ @children) @parent",
       "(_ (_)* @children) @parent",
       "(_ (_)? @child . (_) @last)",
