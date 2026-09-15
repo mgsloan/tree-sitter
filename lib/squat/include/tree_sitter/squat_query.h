@@ -64,6 +64,9 @@ bool sq_query_cursor_set_containing_point_range(SQQueryCursor *self, TSPoint sta
 
 bool sq_query_cursor_next_match(SQQueryCursor *self, SQQueryMatch *match);
 void sq_query_cursor_remove_match(SQQueryCursor *self, uint32_t match_id);
+// Advance to a capture event. The match is a provisional snapshot: it may gain
+// captures or lose longest-match filtering, and captures may repeat across
+// states. Event order is unspecified. Use next_match for completed, longest matches.
 bool sq_query_cursor_next_capture(SQQueryCursor *self, SQQueryMatch *match,
                                   uint32_t *capture_index);
 void sq_query_cursor_set_max_start_depth(SQQueryCursor *self, uint32_t max_start_depth);

@@ -466,6 +466,10 @@ impl<'tree> QueryExecution<'_, '_, 'tree, '_> {
     pub fn next_match(&mut self) -> Option<QueryMatch<'_, 'tree>> {
         self.next(false).map(|(result, _)| result)
     }
+    /// Advance to a capture event, returning a provisional match snapshot.
+    /// It may gain captures or lose longest-match filtering, and captures may
+    /// repeat across states. Event order is unspecified. Use `next_match` for
+    /// completed, longest matches.
     pub fn next_capture(&mut self) -> Option<(QueryMatch<'_, 'tree>, usize)> {
         self.next(true)
     }

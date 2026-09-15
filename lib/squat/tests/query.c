@@ -11,6 +11,9 @@
 static const char *query_source;
 static unsigned mode, optimized, event;
 static const char *input_source;
+static const char *presence_query =
+    "(object (pair key: (string) @key value: (string) @value)) @object";
+static const char *presence_source = "[{\"x\":1},{\"x\":2},{\"x\":\"yes\"}]";
 static unsigned expected_field_query_mismatches;
 #define CHECK(value)                                                                               \
   do {                                                                                             \
@@ -164,6 +167,19 @@ static bool cancel(TSQueryCursorState *state) {
   return true;
 }
 
+static bool capture_in_range(TSNode node) {
+  uint32_t start = mode == 2 ? 1 : 0;
+  uint32_t end = mode == 2 ? 12 : UINT32_MAX;
+  if (ts_node_end_byte(node) <= start || ts_node_start_byte(node) >= end) {
+    return false;
+  }
+  if (mode == 5) {
+    TSPoint start_point = ts_node_start_point(node), end_point = ts_node_end_point(node);
+    return (end_point.row || end_point.column > 1) && start_point.row < 1;
+  }
+  return true;
+}
+
 static void run_query(const TSLanguage *language, TSTree *tree, SQTree *packed,
                       const Identities *ids, const char *source) {
   query_source = source;
@@ -186,6 +202,9 @@ static void run_query(const TSLanguage *language, TSTree *tree, SQTree *packed,
   query = copy;
   for (optimized = 0; optimized < 2; optimized++) {
     for (mode = 0; mode < 9; mode++) {
+      size_t capture_slots = (size_t)sq_query_capture_count(query) * ids->count;
+      bool *seen = calloc(sq_query_pattern_count(query) * capture_slots + 1, sizeof(bool));
+      CHECK(seen);
       TSQueryCursor *a = ts_query_cursor_new();
       SQQueryCursor *b = sq_query_cursor_new();
       sq_query_cursor_set_optimized(b, optimized);
@@ -279,27 +298,38 @@ static void run_query(const TSLanguage *language, TSTree *tree, SQTree *packed,
           continue;
         }
 
+        if (mode != 0) {
+          if (found_b) {
+            CHECK(actual.pattern_index < sq_query_pattern_count(query));
+            CHECK(capture_b < actual.capture_count);
+            for (uint32_t index = 0; index < actual.capture_count; index++) {
+              CHECK(actual.captures[index].index < sq_query_capture_count(query));
+              check_packed_node(ids, actual.captures[index].node);
+            }
+            SQQueryCapture capture = actual.captures[capture_b];
+            for (uint32_t index = 0; index < ids->count; index++) {
+              if (sq_node_eq(capture.node, ids->packed[index])) {
+                CHECK(capture_in_range(ids->nodes[index]));
+                seen[actual.pattern_index * capture_slots + capture.index * ids->count + index] = true;
+                break;
+              }
+            }
+            if (mode == 7 && event % 2 == 0) {
+              sq_query_cursor_remove_match(b, actual.id);
+            }
+          }
+          if (found_a && mode == 7 && event % 2 == 0) {
+            ts_query_cursor_remove_match(a, expected.id);
+          }
+          if (!found_a && !found_b) {
+            break;
+          }
+          continue;
+        }
+
         CHECK(found_a == found_b);
         if (!found_a) {
           break;
-        }
-
-        if (getenv("SQ_QUERY_TRACE") && mode == 2 && strstr(query_source, "(_)+") &&
-            strstr(input_source, "true")) {
-          fprintf(stderr, "event %u capture %u/%u\n", event, capture_a, capture_b);
-          for (uint32_t i = 0; i < expected.capture_count; i++) {
-            fprintf(stderr, " A %u %s [%u,%u]\n", expected.captures[i].index,
-                    ts_node_type(expected.captures[i].node),
-                    ts_node_start_byte(expected.captures[i].node),
-                    ts_node_end_byte(expected.captures[i].node));
-          }
-
-          for (uint32_t i = 0; i < actual.capture_count; i++) {
-            fprintf(stderr, " B %u %s [%u,%u]\n", actual.captures[i].index,
-                    sq_node_type(actual.captures[i].node),
-                    sq_node_start_byte(actual.captures[i].node),
-                    sq_node_end_byte(actual.captures[i].node));
-          }
         }
 
         if (expected.pattern_index != actual.pattern_index ||
@@ -311,43 +341,56 @@ static void run_query(const TSLanguage *language, TSTree *tree, SQTree *packed,
 
         CHECK(expected.pattern_index == actual.pattern_index);
         CHECK(expected.capture_count == actual.capture_count);
-        if (capture_a != capture_b) {
-          fprintf(stderr, "input: %s\nexpected capture %u, actual %u\n", input_source, capture_a,
-                  capture_b);
-          for (uint32_t i = 0; i < expected.capture_count; i++) {
-            fprintf(stderr, " main %u %s [%u,%u]\n", expected.captures[i].index,
-                    ts_node_type(expected.captures[i].node),
-                    ts_node_start_byte(expected.captures[i].node),
-                    ts_node_end_byte(expected.captures[i].node));
-          }
-
-          for (uint32_t i = 0; i < actual.capture_count; i++) {
-            fprintf(stderr, " slab %u %s [%u,%u]\n", actual.captures[i].index,
-                    sq_node_type(actual.captures[i].node),
-                    sq_node_start_byte(actual.captures[i].node),
-                    sq_node_end_byte(actual.captures[i].node));
-          }
-        }
-
-        CHECK(capture_a == capture_b);
         for (uint32_t index = 0; index < expected.capture_count; index++) {
           CHECK(expected.captures[index].index == actual.captures[index].index);
           compare_node(ids, expected.captures[index].node, actual.captures[index].node);
         }
-
-        if (mode == 7 && event % 2 == 0) {
-          ts_query_cursor_remove_match(a, expected.id);
-          sq_query_cursor_remove_match(b, actual.id);
-        }
       }
 
       CHECK(event < 100000);
+#ifdef TS_QUERY_EXEC_STATS
+      if (mode == 0 && source == presence_query && input_source == presence_source) {
+        QueryExecutionStats stats = sq_query_cursor__execution_stats(b);
+        if (optimized) {
+          CHECK(stats.presence_rejections > 0);
+        }
+        printf("capture presence filter optimized %u: %llu active steps, %llu captures, "
+               "%llu rejected roots\n",
+               optimized, (unsigned long long)stats.active_steps,
+               (unsigned long long)stats.materialized_captures,
+               (unsigned long long)stats.presence_rejections);
+      }
+#endif
+      if ((mode == 1 || mode == 2 || mode == 3 || mode == 5) &&
+          sq_query_cursor_error(b) == SQ_QUERY_OK) {
+        // Provisional states may add events, but completed captures must survive.
+        ts_query_cursor_exec(a, mainline, ts_tree_root_node(tree));
+        TSQueryMatch match;
+        while (ts_query_cursor_next_match(a, &match)) {
+          if (expected_mainline_field_match(ids, &match, negated_field)) {
+            continue;
+          }
+          for (uint32_t capture = 0; capture < match.capture_count; capture++) {
+            if (!capture_in_range(match.captures[capture].node)) {
+              continue;
+            }
+            for (uint32_t index = 0; index < ids->count; index++) {
+              if (ts_node_eq(match.captures[capture].node, ids->nodes[index])) {
+                CHECK(seen[match.pattern_index * capture_slots +
+                           match.captures[capture].index * ids->count + index]);
+                break;
+              }
+            }
+          }
+        }
+      }
       if (mode != 4 && mode != 8) {
         CHECK(ts_query_cursor_did_exceed_match_limit(a) ==
               sq_query_cursor_did_exceed_match_limit(b));
       }
       ts_query_cursor_delete(a);
       sq_query_cursor_delete(b);
+      free(seen);
     }
   }
 
@@ -379,6 +422,7 @@ static void exercise(const TSLanguage *language, const char *source, uint32_t le
       "(_ (_)+ @children) @parent",
       "(_ (_)* @children) @parent",
       "(_ (_)? @child . (_) @last)",
+      presence_query,
       "[(_) (_)] @alternative",
       "((_) @text (#eq? @text \"x\"))",
       "((_) @text (#match? @text \"^[a-z]+$\"))",
@@ -457,6 +501,7 @@ int main(int argc, char **argv) {
   const char *samples[] = {"",
                            "x",
                            "{\"x\": [1, 2, 3], \"y\": true}",
+                           presence_source,
                            "{\"x\": [1,",
                            "function f(x) { return x + 1; }",
                            "type X = typeof obj.member;",
@@ -480,7 +525,7 @@ int main(int argc, char **argv) {
     free(source);
   }
 
-  printf("ok: query matches, full capture snapshots, ranges, limits, removal, and optimization "
+  printf("ok: query matches, capture coverage, ranges, limits, removal, and optimization "
          "modes: %s\n",
          argv[2]);
   printf("expected negated-field query mismatches: %u\n", expected_field_query_mismatches);

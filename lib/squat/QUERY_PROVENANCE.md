@@ -28,12 +28,13 @@ bindings, including their quantified and empty-capture behavior. Unknown host
 predicates are exposed as metadata. Predicate evaluation receives source bytes,
 not reconstructed text. Query compilation and regex compilation happen once.
 
-C supports matches, full ordered capture snapshots, query copying/disabling,
+C supports matches, provisional capture snapshots, query copying/disabling,
 limits, match removal, maximum start depth, progress callbacks, and simple rooted
 ranges. Branching/rootless queries with bounded byte/point ranges explicitly
-report `SQ_QUERY_UNSUPPORTED_RANGE`: visible-only traversal does not reproduce
-all mainline partial capture ordering in these cases. This is an exposed limitation, not a passing
-comparison exemption. Callback cadence is representation-dependent.
+report `SQ_QUERY_UNSUPPORTED_RANGE`. This restriction predates the relaxed capture
+contract and remains until range coverage is validated. Capture event order,
+snapshot contents, and duplicate counts need not match mainline; completed matches
+remain exact. Callback cadence is representation-dependent.
 
 Whole-query plans retain the shared capture coordinator, including finite match
 limits. Unsupported plans use the NFA before emitting anything. Match limits do

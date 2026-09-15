@@ -224,6 +224,11 @@ are borrowed until the next cursor mutation. The query, tree, and callback paylo
 must outlive execution. C exposes text predicates as metadata; the Rust wrapper
 evaluates equality, regex, and membership predicates against supplied source bytes.
 
+Capture iteration returns provisional snapshots. A state may gain
+captures or be discarded by longest-match filtering; different states may emit
+the same capture. Event order, snapshot contents, and duplicate counts need not match mainline.
+Use match iteration for completed, longest matches.
+
 Root filtering combines exact masked SWAR comparisons with the optional symbol
 presence index. Mandatory symbol/field requirements use intersected group masks.
 Local and anchored-child plans share the NFA's ordered capture coordinator; other

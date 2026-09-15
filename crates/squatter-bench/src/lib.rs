@@ -689,6 +689,7 @@ pub fn run(check_only: bool) -> Result<()> {
         "cursor_contract": "walk-forward reads O(1) bulk attributes, excluding counts, fields, and depth from the Rust snapshot; cursor-forward measures native navigation",
         "workload_order": "rotate by batch and every two repeats, retaining both backend orders for each rotation",
         "query_engine": "slab NFA and structural plans adapted from ../main", "seek_contract": if arguments.strict_seeks { "strict" } else { "only hidden-seek.css differences are counted and ignored" },
+        "query_contract": "exact completed matches; captures cover completed captures, with event order, provisional snapshots, and duplicates allowed to differ; coverage checked outside timing",
     });
     fs::write(
         output_path("run.json"),
@@ -1012,6 +1013,24 @@ pub fn run(check_only: bool) -> Result<()> {
                     .zip(squat_observations)
                 {
                     let message = match (&expected, &actual) {
+                        (Ok(Observation::Query(expected)), Ok(Observation::Query(actual)))
+                            if benchmark == "query-captures" =>
+                        {
+                            // Validate coverage outside the timed capture traversal.
+                            queries[&pair.source.input.grammar]
+                                .mainline(
+                                    pair.mainline.root_node(),
+                                    pair.mainline_ids.as_ref().unwrap(),
+                                    &pair.source.bytes,
+                                    false,
+                                )
+                                .and_then(|matches| {
+                                    queries::check_capture_coverage(expected, &matches)?;
+                                    queries::check_capture_coverage(actual, &matches)
+                                })
+                                .err()
+                                .map(|error| error.to_string())
+                        }
                         (Ok(expected), Ok(actual)) => difference(expected, actual),
                         (a, b) => Some(format!(
                             "mainline: {:?}; squat: {:?}",

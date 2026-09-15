@@ -95,7 +95,9 @@ event. Without an explicit `cold-parse` selector,
 prerequisite parsing uses a reusable
 per-grammar `PackContext` and is reported as `setup-parse`. Workload and backend
 order rotate across batches and repeats. Comparisons use visible preorder
-ordinals, and query results remain strict.
+ordinals. Completed query matches remain strict. Capture checks validate coverage
+of completed matches, allowing different event order, provisional snapshots, and
+duplicate counts. Coverage checking runs outside the timed traversal.
 
 The single known seek discrepancy is permitted only for the checked-in
 `hidden-seek.css` fixture unless `--strict-seeks` is used. Other seek differences

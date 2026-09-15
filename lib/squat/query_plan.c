@@ -53,14 +53,13 @@ static void sq_query__prepare_steps(SQQuery *query) {
   }
 }
 
-// Only inspect the linear prefix through the first capture. A rejected start
-// could never own captures, so removing it cannot unblock a partial snapshot.
+// Required steps can reject a start even after captures. Capture iteration
+// exposes provisional states, whose snapshot timing is not part of the contract.
 static void sq_query__prepare_presence(SQQuery *query) {
   for (uint32_t index = 0; index < query->pattern_map.size; index++) {
     PatternEntry *entry = &query->pattern_map.contents[index];
     const QueryStep *root = &query->steps.contents[entry->step_index];
-    if (!entry->is_rooted || root->depth || root->capture_ids[0] != NONE ||
-        root->alternative_index != NONE) {
+    if (!entry->is_rooted || root->depth || root->alternative_index != NONE) {
       continue;
     }
 
@@ -76,10 +75,6 @@ static void sq_query__prepare_presence(SQQuery *query) {
 
       if ((step->symbol && step->symbol != ts_builtin_sym_error) || step->field) {
         required = step;
-      }
-
-      if (step->capture_ids[0] != NONE) {
-        break;
       }
     }
 

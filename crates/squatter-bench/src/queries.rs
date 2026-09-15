@@ -3,6 +3,7 @@ use anyhow::{Context, Result, bail, ensure};
 use corpus_analysis::{QuerySource, digest};
 use serde::Serialize;
 use std::{
+    collections::HashSet,
     fs,
     time::{Duration, Instant},
 };
@@ -31,7 +32,61 @@ pub struct Record {
     query: usize,
     pattern: usize,
     capture: Option<usize>,
-    nodes: Vec<(u32, usize)>,
+    nodes: Vec<(u32, usize, usize)>,
+}
+
+// Provisional snapshots and duplicate events need not agree across backends.
+// Every capture of a completed match must still appear in each stream.
+pub fn check_capture_coverage(events: &[Record], matches: &[Record]) -> Result<()> {
+    let mut seen = HashSet::new();
+    for event in events {
+        let index = event.capture.context("missing capture index")?;
+        let node = event.nodes.get(index).context("invalid capture index")?;
+        seen.insert((event.query, event.pattern, *node));
+    }
+    for result in matches {
+        for node in &result.nodes {
+            // Capture ranges exclude nodes ending at the range's start.
+            if node.2 == 0 {
+                continue;
+            }
+            ensure!(
+                seen.contains(&(result.query, result.pattern, *node)),
+                "missing completed capture: query {}, pattern {}, node {:?}",
+                result.query,
+                result.pattern,
+                node
+            );
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn capture_coverage_allows_provisional_states_but_requires_completed_captures() {
+        let record = |capture, nodes| Record {
+            query: 0,
+            pattern: 0,
+            capture,
+            nodes,
+        };
+        let matches = vec![record(None, vec![(0, 1, 2), (1, 2, 3), (2, 0, 0)])];
+        let mut events = vec![
+            record(Some(0), vec![(0, 1, 2)]),
+            record(Some(0), vec![(0, 1, 2)]),
+            record(Some(0), vec![(1, 3, 4)]),
+        ];
+        assert!(check_capture_coverage(&events, &matches).is_err());
+        events.push(record(Some(1), vec![(0, 1, 2), (1, 2, 3)]));
+        events.reverse();
+        assert!(check_capture_coverage(&events, &matches).is_ok());
+        events.push(record(Some(1), vec![]));
+        assert!(check_capture_coverage(&events, &matches).is_err());
+    }
 }
 impl Queries {
     pub fn load(language: &Language, sources: &[QuerySource]) -> Result<Self> {
@@ -122,7 +177,7 @@ impl Queries {
                 let nodes: Vec<_> = result
                     .captures()
                     .iter()
-                    .map(|entry| (entry.index, ids[&(entry.node.id())]))
+                    .map(|entry| (entry.index, ids[&(entry.node.id())], entry.node.end_byte()))
                     .collect();
                 total_captures += nodes.len();
                 ensure!(
@@ -186,10 +241,33 @@ impl Queries {
                 let Some((result, capture)) = next else {
                     break;
                 };
+                ensure!(
+                    result.pattern_index < pair.squat.pattern_count(),
+                    "invalid pattern index"
+                );
+                if let Some(index) = capture {
+                    result
+                        .captures
+                        .get(index)
+                        .context("invalid capture index")?;
+                }
+                ensure!(
+                    result
+                        .captures
+                        .iter()
+                        .all(|entry| (entry.index as usize) < pair.squat.capture_names().len()),
+                    "invalid capture name index"
+                );
                 let nodes: Vec<_> = result
                     .captures
                     .iter()
-                    .map(|entry| (entry.index, ids[&(entry.node.slot() as usize)]))
+                    .map(|entry| {
+                        (
+                            entry.index,
+                            ids[&(entry.node.slot() as usize)],
+                            entry.node.end_byte(),
+                        )
+                    })
                     .collect();
                 total_captures += nodes.len();
                 ensure!(
