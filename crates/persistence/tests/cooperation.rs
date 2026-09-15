@@ -47,7 +47,7 @@ impl Owner {
             .args(["--exact", "child_work_owner", "--ignored", "--nocapture"])
             .env(
                 "TSQ_WORK_LOCK",
-                root.join(".tree-squatter/cooperation.lock"),
+                root.join(CACHE_DIRECTORY).join("cooperation.lock"),
             )
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())

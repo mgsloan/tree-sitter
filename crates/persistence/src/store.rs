@@ -316,7 +316,7 @@ impl Store {
     }
 
     fn open_impl(root: &Path, map_size: usize, create: bool) -> Result<Arc<Self>, CacheError> {
-        let cache = root.join(".tree-squatter");
+        let cache = root.join(crate::CACHE_DIRECTORY);
         if !create {
             for name in ["data.mdb", "lock.mdb", "cooperation.lock"] {
                 fs::metadata(cache.join(name))?;

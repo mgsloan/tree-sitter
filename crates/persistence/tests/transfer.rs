@@ -27,7 +27,7 @@ fn transfer_survives_producer_and_keeps_original_capture() {
     fs::write(root.path().join("file.json"), "[1,2,3]").unwrap();
     let producer = Persistence::open_existing(root.path(), Options::default()).unwrap();
     let loaded = load(&producer, WritePolicy::Transfer);
-    assert!(!root.path().join(".tree-squatter").exists());
+    assert!(!root.path().join(CACHE_DIRECTORY).exists());
     let pending = loaded.pending_write.unwrap();
     let mut bytes = vec![];
     pending.write_transfer(&mut bytes).unwrap();
@@ -140,5 +140,5 @@ fn outside_root_sources_cannot_be_transferred() {
     std::os::unix::fs::symlink(outside.path(), root.path().join("file.json")).unwrap();
     let cache = Persistence::open_existing(root.path(), Options::default()).unwrap();
     assert!(load(&cache, WritePolicy::Transfer).pending_write.is_none());
-    assert!(!root.path().join(".tree-squatter").exists());
+    assert!(!root.path().join(CACHE_DIRECTORY).exists());
 }

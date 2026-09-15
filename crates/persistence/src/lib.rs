@@ -28,6 +28,13 @@ use std::{
 };
 use store::Store;
 
+/// Cache directory name for the target's native byte order.
+pub const CACHE_DIRECTORY: &str = if cfg!(target_endian = "big") {
+    ".tree-squatter-be"
+} else {
+    ".tree-squatter"
+};
+
 #[derive(Clone, Debug)]
 pub struct Options {
     /// Fixed LMDB map ceiling, a multiple of the system page size. Full maps cause

@@ -8,8 +8,8 @@ use std::{
     },
 };
 use tree_squatter_persistence::{
-    Grammar, GrammarFingerprint, LoadError, LoadOptions, Options, Persistence, WriteOutcome,
-    WritePolicy,
+    CACHE_DIRECTORY, Grammar, GrammarFingerprint, LoadError, LoadOptions, Options, Persistence,
+    WriteOutcome, WritePolicy,
 };
 
 fn grammar() -> Grammar {
@@ -60,7 +60,7 @@ fn miss_hit_and_old_reader_survives_update() {
     assert_eq!(reader.source(), first.source());
     drop(cache);
     assert!(reader.tree().root_node().preorder().count() > 4);
-    let mut files: Vec<_> = fs::read_dir(root.path().join(".tree-squatter"))
+    let mut files: Vec<_> = fs::read_dir(root.path().join(CACHE_DIRECTORY))
         .unwrap()
         .map(|entry| entry.unwrap().file_name())
         .collect();
@@ -234,11 +234,11 @@ fn packing_variants_and_invalid_syntax_are_cacheable() {
 fn unavailable_cache_and_full_map_fall_back() {
     let blocked = tempfile::tempdir().unwrap();
     fs::write(blocked.path().join("input.json"), "true").unwrap();
-    fs::write(blocked.path().join(".tree-squatter"), "do not change").unwrap();
+    fs::write(blocked.path().join(CACHE_DIRECTORY), "do not change").unwrap();
     let cache = Persistence::open(blocked.path(), Options::default()).unwrap();
     assert!(!load(&cache).cache_hit());
     assert_eq!(
-        fs::read(blocked.path().join(".tree-squatter")).unwrap(),
+        fs::read(blocked.path().join(CACHE_DIRECTORY)).unwrap(),
         b"do not change"
     );
 
@@ -319,7 +319,7 @@ fn source_symlink_outside_root_and_cache_symlinks() {
     assert!(!load(&cache).cache_hit());
     let other = tempfile::tempdir().unwrap();
     fs::write(other.path().join("input.json"), "1").unwrap();
-    symlink(outside.path(), other.path().join(".tree-squatter")).unwrap();
+    symlink(outside.path(), other.path().join(CACHE_DIRECTORY)).unwrap();
     let cache = Persistence::open(other.path(), Options::default()).unwrap();
     assert!(!load(&cache).cache_hit());
     assert!(!outside.path().join("data.mdb").exists());
@@ -365,7 +365,7 @@ fn independent_reader_opens_while_writer_admission_is_held() {
     let lock = fs::OpenOptions::new()
         .read(true)
         .write(true)
-        .open(root.path().join(".tree-squatter/cooperation.lock"))
+        .open(root.path().join(CACHE_DIRECTORY).join("cooperation.lock"))
         .unwrap();
     lock.lock().unwrap();
     let output = std::process::Command::new(std::env::current_exe().unwrap())
@@ -454,7 +454,7 @@ fn writer_death_releases_admission_without_stale_files() {
         .args(["--exact", "child_writer_lock", "--ignored", "--nocapture"])
         .env(
             "TSQ_TEST_LOCK",
-            root.path().join(".tree-squatter/cooperation.lock"),
+            root.path().join(CACHE_DIRECTORY).join("cooperation.lock"),
         )
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

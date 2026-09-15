@@ -29,7 +29,10 @@ pub(crate) fn path(path: &Path) -> Result<(PathBuf, Vec<u8>), crate::LoadError> 
             _ => return Err(crate::LoadError::InvalidPath),
         }
     }
-    if clean.as_os_str().is_empty() || clean.starts_with(".tree-squatter") {
+    if clean.as_os_str().is_empty()
+        || clean.starts_with(".tree-squatter")
+        || clean.starts_with(".tree-squatter-be")
+    {
         return Err(crate::LoadError::InvalidPath);
     }
     let mut encoded = vec![if cfg!(windows) { 1 } else { 0 }];
@@ -129,7 +132,15 @@ mod tests {
     use super::*;
     #[test]
     fn paths_are_unambiguous() {
-        for invalid in ["", ".", "../a", "a/../b", "/a", ".tree-squatter/a"] {
+        for invalid in [
+            "",
+            ".",
+            "../a",
+            "a/../b",
+            "/a",
+            ".tree-squatter/a",
+            ".tree-squatter-be/a",
+        ] {
             assert!(path(Path::new(invalid)).is_err(), "{invalid}");
         }
         assert_eq!(
