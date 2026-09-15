@@ -102,7 +102,8 @@ int main(int argc, char **argv) {
     for (unsigned variant = 0; variant < 8; variant++) {
       SQPackOptions options = {.initial_group_capacity = variant & 1,
                               .repack = (variant & 2) != 0,
-                              .symbol_presence = (variant & 4) != 0};
+                              .symbol_presence = (variant & 4) != 0,
+                              .points = true};
       SQTree *ordinary = sq_tree_pack(parsed, options, &error);
       SQTree *cached = sq_pack_context_pack(context, parsed, options, &error);
       assert(error == SQ_OK);

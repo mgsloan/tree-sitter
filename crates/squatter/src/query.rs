@@ -1,5 +1,4 @@
 //! Compiled queries and borrowed, streaming results over immutable slabs.
-#[cfg(feature = "points")]
 use crate::RawPoint;
 use crate::{Node, RawNode};
 use regex::bytes::Regex;
@@ -9,7 +8,6 @@ use std::{
     ptr::NonNull,
     time::{Duration, Instant},
 };
-#[cfg(feature = "points")]
 use tree_sitter::Point;
 use tree_sitter::{Language, QueryPredicate, QueryPredicateArg};
 
@@ -372,7 +370,6 @@ impl QueryCursor {
         };
         unsafe { ffi::sq_query_cursor_set_byte_range(self.raw.as_ptr(), start, end) }
     }
-    #[cfg(feature = "points")]
     pub fn set_point_range(&mut self, range: std::ops::Range<Point>) -> bool {
         let (Ok(start), Ok(end)) = (
             RawPoint::try_from(range.start),
@@ -576,7 +573,6 @@ mod ffi {
         ) -> bool;
         pub fn sq_query_cursor_remove_match(cursor: *mut c_void, id: u32);
         pub fn sq_query_cursor_set_byte_range(cursor: *mut c_void, start: u32, end: u32) -> bool;
-        #[cfg(feature = "points")]
         pub fn sq_query_cursor_set_point_range(
             cursor: *mut c_void,
             start: RawPoint,

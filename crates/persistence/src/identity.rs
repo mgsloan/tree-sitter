@@ -61,10 +61,17 @@ pub(crate) struct Request {
     pub source_key: [u8; 72],
     pub tree_key: [u8; 104],
     pub header: Vec<u8>,
+    pub points: bool,
 }
 
 impl Request {
-    pub fn new(path: Vec<u8>, source: &[u8], grammar: &Grammar, presence: bool) -> Self {
+    pub fn new(
+        path: Vec<u8>,
+        source: &[u8],
+        grammar: &Grammar,
+        presence: bool,
+        points: bool,
+    ) -> Self {
         let path_id = digest("tree-squatter path v1", &path);
         let mut source_key = [0; 72];
         source_key[..32].copy_from_slice(&path_id);
@@ -76,11 +83,12 @@ impl Request {
         identity.extend_from_slice(&representation());
         // Compact whole-file/raw-byte mode; transient capacity is not identity.
         identity.extend_from_slice(&u64::from(presence).to_le_bytes());
+        identity.extend_from_slice(&u64::from(points).to_le_bytes());
         let variant = digest("tree-squatter cache variant v1", &identity);
         let mut tree_key = [0; 104];
         tree_key[..72].copy_from_slice(&source_key);
         tree_key[72..].copy_from_slice(&variant);
-        let mut header = b"TSQENT01".to_vec();
+        let mut header = b"TSQENT02".to_vec();
         header.extend_from_slice(&source_key[32..]);
         header.extend_from_slice(&identity);
         header.extend_from_slice(&variant);
@@ -89,6 +97,7 @@ impl Request {
             source_key,
             tree_key,
             header,
+            points,
         }
     }
 
@@ -132,16 +141,17 @@ mod tests {
             path: vec![],
             source_key: [0; 72],
             tree_key: [0; 104],
-            header: vec![7; 184],
+            header: vec![7; 192],
+            points: true,
         };
         let encoded = request.encode(b"slab");
-        assert_eq!(&encoded[184..192], &4u64.to_le_bytes());
+        assert_eq!(&encoded[192..200], &4u64.to_le_bytes());
         assert_eq!(request.decode(&encoded), Some(b"slab".as_slice()));
         for end in 0..encoded.len() {
             assert!(request.decode(&encoded[..end]).is_none());
         }
         let mut bad = encoded.clone();
-        bad[184..192].copy_from_slice(&u64::MAX.to_le_bytes());
+        bad[192..200].copy_from_slice(&u64::MAX.to_le_bytes());
         assert!(request.decode(&bad).is_none());
         let mut bad = encoded.clone();
         bad.push(0);

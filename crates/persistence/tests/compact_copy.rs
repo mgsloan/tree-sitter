@@ -1,10 +1,14 @@
 use std::mem::MaybeUninit;
-use tree_sitter_squatter::{PackOptions, Tree};
+use tree_sitter::{Language, Point};
+use tree_sitter_squatter::{PackOptions, Query, QueryCursor, Tree};
+
+fn language() -> Language {
+    unsafe { Language::from_raw(tree_sitter_json::LANGUAGE.into_raw()().cast()) }
+}
 
 #[test]
 fn compact_copy_matches_repack_for_padded_and_compact_trees() {
-    let language =
-        unsafe { tree_sitter::Language::from_raw(tree_sitter_json::LANGUAGE.into_raw()().cast()) };
+    let language = language();
     let mut parser = tree_sitter::Parser::new();
     parser.set_language(&language).unwrap();
     for source in [
@@ -14,13 +18,14 @@ fn compact_copy_matches_repack_for_padded_and_compact_trees() {
     ] {
         let native = parser.parse(&source, None).unwrap();
         for presence in [false, true] {
-            for repack in [false, true] {
+            for (repack, points) in [(false, false), (false, true), (true, false), (true, true)] {
                 let tree = Tree::pack_with_options(
                     &native,
                     PackOptions {
                         initial_group_capacity: 1024,
                         repack,
                         symbol_presence: presence,
+                        points,
                     },
                 )
                 .unwrap();
@@ -60,4 +65,54 @@ fn compact_copy_matches_repack_for_padded_and_compact_trees() {
             }
         }
     }
+}
+
+#[test]
+fn point_free_trees_use_byte_offsets_as_single_line_points() {
+    let language = language();
+    let source = b"[\n  1,\n  2\n]";
+    let mut parser = tree_sitter::Parser::new();
+    parser.set_language(&language).unwrap();
+    let native = parser.parse(source, None).unwrap();
+    let tree = Tree::pack_with_options(
+        &native,
+        PackOptions {
+            points: false,
+            ..PackOptions::default()
+        },
+    )
+    .unwrap();
+    assert!(!tree.has_points());
+    for node in tree.root_node().preorder() {
+        assert_eq!(node.start_position(), Point::new(0, node.start_byte()));
+        assert_eq!(node.end_position(), Point::new(0, node.end_byte()));
+    }
+    assert_eq!(
+        tree.root_node().descendant_for_byte_range(3, 4),
+        tree.root_node()
+            .descendant_for_point_range(Point::new(0, 3), Point::new(0, 4))
+    );
+
+    let query = Query::new(&language, "(_) @node").unwrap();
+    let captures = |cursor: &mut QueryCursor| {
+        let mut execution = cursor.execute(&query, tree.root_node(), source);
+        let mut ranges = Vec::new();
+        while let Some((result, index)) = execution.next_capture() {
+            ranges.push(result.captures[index].node.byte_range());
+        }
+        ranges
+    };
+    let mut byte_cursor = QueryCursor::new();
+    assert!(byte_cursor.set_byte_range(3..4));
+    let mut point_cursor = QueryCursor::new();
+    assert!(point_cursor.set_point_range(Point::new(0, 3)..Point::new(0, 4)));
+    assert_eq!(captures(&mut byte_cursor), captures(&mut point_cursor));
+
+    let compact = tree.repack().unwrap();
+    let loaded = Tree::from_bytes(&language, compact.as_bytes()).unwrap();
+    assert!(!loaded.has_points());
+    assert_eq!(
+        loaded.root_node().end_position(),
+        Point::new(0, source.len())
+    );
 }

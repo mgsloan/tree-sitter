@@ -35,7 +35,6 @@ const BENCHMARKS: &[&str] = &[
     "scan-forward",
     "scan-iterator-cached",
     "seek-byte",
-    #[cfg(feature = "points")]
     "seek-point",
     "cold-parse",
 ];
@@ -432,7 +431,7 @@ fn observe<'tree, N: tree_sitter_squatter::traits::NodeLike<'tree>>(
     ids: Option<&compare::Identities>,
     benchmark: &str,
     bytes: &[usize],
-    _points: &[Point],
+    points: &[Point],
     traversal_iterations: usize,
 ) -> Result<Observation<'tree>> {
     match benchmark {
@@ -455,11 +454,10 @@ fn observe<'tree, N: tree_sitter_squatter::traits::NodeLike<'tree>>(
             ids.unwrap(),
             bytes,
         ))),
-        #[cfg(feature = "points")]
         "seek-point" => Ok(Observation::Seek(compare::seek_points(
             root,
             ids.unwrap(),
-            _points,
+            points,
         ))),
         _ => unreachable!(),
     }
@@ -673,7 +671,7 @@ pub fn run(check_only: bool) -> Result<()> {
     )?;
     let batches = input_batches(&inputs, arguments.batch_size, pressure.carousel_bytes());
     let mut manifest = serde_json::json!({
-        "schema": 2, "purpose": if check_only { "correctness" } else { "benchmark" }, "parse_benchmark": parse_benchmark, "reuse_pack_context": !cold_parse, "point_positions": tree_sitter_squatter::HAS_POINT_POSITIONS, "arguments": arguments, "benchmarks": benchmarks, "seed": arguments.seed,
+        "schema": 2, "purpose": if check_only { "correctness" } else { "benchmark" }, "parse_benchmark": parse_benchmark, "reuse_pack_context": !cold_parse, "arguments": arguments, "benchmarks": benchmarks, "seed": arguments.seed,
         "inputs": inputs, "planned": inputs.len(), "completed": 0, "failed": 0, "partial": true,
         "coverage": coverage, "registry": registry, "counter_status": if check_only { "disabled for correctness" } else { &meter.counter_status },
         "tool": {"checkout": git_identity(Path::new(".")), "container_revision": std::env::var("SQUAT_TOOL_SHA").ok(), "source_sha256": std::env::var("SQUAT_SOURCE_SHA256").ok(),

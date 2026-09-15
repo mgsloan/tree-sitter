@@ -27,7 +27,7 @@ static void exercise(uint32_t count, bool repack) {
   supertype_fixture(&fixture, 9, true);
   TSLanguage language = fixture.language;
   SQError error;
-  Builder builder = {.tree = sq_allocate(&language, 1, &error), .words = 1,
+  Builder builder = {.tree = sq_allocate(&language, 1, true, &error), .words = 1,
                      .language = &language, .symbol_count = 11, .symbol_space = 13,
                      .error = &error};
   assert(builder.tree);
@@ -96,7 +96,7 @@ static void direct_mask_tests(void) {
     supertype_fixture(&fixture, bits, true);
     const TSLanguage *language = &fixture.language;
     SQError error;
-    Builder builder = {.tree = sq_allocate(language, 1, &error), .words = 1,
+    Builder builder = {.tree = sq_allocate(language, 1, true, &error), .words = 1,
                        .language = language, .small_supertypes = true,
                        .symbol_count = language->symbol_count,
                        .symbol_space = language->symbol_count + 2, .error = &error};

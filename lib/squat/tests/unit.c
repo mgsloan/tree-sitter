@@ -26,7 +26,7 @@ static void empty_column_tests(void) {
                                .symbol_names = names,
                                .symbol_metadata = metadata};
   SQError error;
-  SQTree *tree = sq_allocate(&language, 1, &error);
+  SQTree *tree = sq_allocate(&language, 1, true, &error);
   assert(tree && !tree->layout.field_bits && !tree->layout.field_lanes);
   assert(sq_column_size(SQ_GROUP_SIZE, 0) == 0);
   assert(tree->layout.field == tree->layout.supertype);
@@ -202,7 +202,6 @@ static void exercise_column(SQTree *tree, uint32_t offset, uint8_t bits, uint32_
   }
 }
 
-#if SQ_INCLUDE_POINTS
 static void exercise_u64_column(SQTree *tree, uint32_t offset, unsigned tag, bool fill) {
   for (uint32_t index = 0; index < 2; index++) {
     uint64_t expected = index * UINT64_C(0x123456789abcdef) + tag;
@@ -216,7 +215,6 @@ static void exercise_u64_column(SQTree *tree, uint32_t offset, unsigned tag, boo
     }
   }
 }
-#endif
 
 static void exercise_columns(SQTree *tree, bool fill) {
   unsigned tag = 0;
@@ -224,10 +222,8 @@ static void exercise_columns(SQTree *tree, bool fill) {
   exercise_column(tree, tree->layout.span_base, 32, 1, tag++, fill);
   exercise_column(tree, tree->layout.start_byte_base, 32, 1, tag++, fill);
   exercise_column(tree, tree->layout.end_byte_base, 32, 1, tag++, fill);
-#if SQ_INCLUDE_POINTS
   exercise_u64_column(tree, tree->layout.start_point_base, tag++, fill);
   exercise_u64_column(tree, tree->layout.end_point_base, tag++, fill);
-#endif
   exercise_column(tree, tree->layout.last, 1, SQ_GROUP_SIZE, tag++, fill);
   exercise_column(tree, tree->layout.extra, 1, SQ_GROUP_SIZE, tag++, fill);
   exercise_column(tree, tree->layout.error, 1, SQ_GROUP_SIZE, tag++, fill);
@@ -235,10 +231,8 @@ static void exercise_columns(SQTree *tree, bool fill) {
   exercise_column(tree, tree->layout.span_delta, 8, SQ_GROUP_SIZE, tag++, fill);
   exercise_column(tree, tree->layout.start_byte_delta, 8, SQ_GROUP_SIZE, tag++, fill);
   exercise_column(tree, tree->layout.end_byte_delta, 16, SQ_GROUP_SIZE, tag++, fill);
-#if SQ_INCLUDE_POINTS
   exercise_column(tree, tree->layout.start_point, 16, SQ_GROUP_SIZE, tag++, fill);
   exercise_column(tree, tree->layout.end_point, 16, SQ_GROUP_SIZE, tag++, fill);
-#endif
   if (tree->layout.supertype_bits) {
     exercise_column(tree, tree->layout.supertype, tree->layout.supertype_bits, SQ_GROUP_SIZE, tag++, fill);
   }
@@ -304,7 +298,7 @@ static void sparse_grammar_tests(bool dictionary) {
   language.state_count = language.large_state_count = 1;
   SQError error;
   const uint32_t groups = (130 + SQ_GROUP_SIZE - 1) / SQ_GROUP_SIZE;
-  SQTree *tree = sq_allocate(&language, groups + 3, &error);
+  SQTree *tree = sq_allocate(&language, groups + 3, true, &error);
   assert(tree);
   sq_header(tree)->group_count = groups;
   sq_set_packed(tree->data, tree->layout.waste, groups - 1, SQ_WASTE_BITS,
@@ -381,7 +375,7 @@ int main(void) {
                            .field_count = symbols - 1,
                            .symbol_metadata = metadata};
     SQError error;
-    SQTree *tree = sq_allocate(&language, 3, &error);
+    SQTree *tree = sq_allocate(&language, 3, true, &error);
     assert(tree && error == SQ_OK);
     sq_header(tree)->group_count = 2;
     exercise_columns(tree, true);

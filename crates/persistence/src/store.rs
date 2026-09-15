@@ -53,7 +53,7 @@ mod tests {
         .unwrap();
         assert!(tree.group_capacity() > tree.group_count());
         let original = tree.as_bytes().to_vec();
-        let request = Request::new(b"test.json".to_vec(), b"[1]", &grammar, true);
+        let request = Request::new(b"test.json".to_vec(), b"[1]", &grammar, true, true);
         // Cancel after the reservation has been filled, immediately before
         // commit: no source, tree, path, or current-generation record may escape.
         let checks = std::cell::Cell::new(0);
@@ -430,10 +430,11 @@ impl Store {
         // Safety validation does not reconstruct auxiliary index membership.
         let tree =
             tree_sitter_squatter::Tree::from_bytes_safety_checked(&grammar.language, slab).ok()?;
-        if tree
-            .root_node()
-            .preorder()
-            .any(|node| node.end_byte() > source.len())
+        if tree.has_points() != request.points
+            || tree
+                .root_node()
+                .preorder()
+                .any(|node| node.end_byte() > source.len())
         {
             return None;
         }

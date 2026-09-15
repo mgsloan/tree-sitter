@@ -82,8 +82,8 @@ compares the earliest preorder node's start column, since the column base may be
 zero or describe a different row. After selecting a candidate, it scans end
 coordinates when the subtree root is within 512 groups. Longer distances use
 span-based parent traversal, avoiding the large-file regressions of an
-unrestricted end scan. Point search and its sibling descent fallback compile
-only with `SQ_INCLUDE_POINTS`; byte descent uses integer offsets directly.
+unrestricted end scan. Point-free trees use the sibling descent fallback;
+byte descent uses integer offsets directly.
 
 Byte search compares the selected group's start deltas with SSE2 when available,
 masking out unused lanes and slots outside the subtree. Point search compares its
@@ -293,7 +293,7 @@ operation at all four window sizes.
 ## Memory benchmark
 
 The historical measured memory comparison covers mainline and Squatter,
-default/compact packing, and point-enabled/byte-only builds.
+default/compact packing, and stored/synthetic point configurations.
 It measures live allocations from the implementation, rather than estimating
 storage from public nodes. Retained sizes include the tree object and auxiliary
 allocations; the parser is released first. Construction peaks are separate.
@@ -301,12 +301,8 @@ allocations; the parser is released first. Construction peaks are separate.
 On Linux/glibc with GNU-compatible linker wrapping, build and run:
 
 ```sh
-make -C lib/squat BUILD=../../build/squat-memory/points \
-  CFLAGS="-O3 -g -DSQ_INCLUDE_POINTS=1" \
-  ../../build/squat-memory/points/memory-bench
-make -C lib/squat BUILD=../../build/squat-memory/bytes \
-  CFLAGS="-O3 -g -DSQ_INCLUDE_POINTS=0" \
-  ../../build/squat-memory/bytes/memory-bench
+make -C lib/squat BUILD=../../build/squat-memory CFLAGS="-O3 -g" \
+  ../../build/squat-memory/memory-bench
 python3 lib/squat/experiments/memory.py --output build/squat-memory/results.json
 ```
 
@@ -334,40 +330,16 @@ point modes, cached/uncached walks, queries, compact packing, and retained memor
 
 ## Optional point positions
 
-Points are enabled by default. A byte-only C build removes the two point
-node columns, their two group bases, packing constraints and temporary point
-positions, iterator cache entries, and query cursor point ranges:
+Points are stored by default. Set `SQPackOptions.points` to false to omit the two
+point node columns and their two group bases for an individual tree. Point APIs
+then treat its input as one long line: every row is zero and every column is the
+corresponding byte offset. `sq_tree_has_points` distinguishes stored source
+positions from these synthetic positions.
 
-```sh
-make -C lib/squat BUILD=../../build/squat-byte-only \
-  CFLAGS="-O2 -DSQ_INCLUDE_POINTS=0" check all
-```
+The 16-byte header records point storage in `format_flags`, and every build loads
+either layout.
 
-Compile callers with the same `SQ_INCLUDE_POINTS` value. With points disabled,
-point getters, point-range seeks, query point-range setters, point column equality functions,
-and point snapshot members are **absent** from the C API. Byte getters, seeks,
-and query ranges retain their existing behavior. The SIMD cache reconstructs
-only the two byte-coordinate columns.
-
-Rust exposes the same choice as a default-enabled `points` Cargo feature:
-
-```sh
-cargo build -p tree-sitter-squatter --no-default-features
-cargo build --release -p squatter-bench --no-default-features
-```
-
-Dependent crates can use `tree-sitter-squatter` with `default-features = false`.
-Cargo features are additive: all dependents must leave `points` disabled for a
-byte-only library. `HAS_POINT_POSITIONS` reports the linked Rust library setting.
-Point methods and attribute fields are omitted from Rust as well. Configure Rust
-through Cargo features; a generated C assertion prevents incompatible CFLAGS
-from silently changing the FFI snapshot layout.
-
-The 16-byte version-9 header records point support in `format_flags`. Each build
-rejects the other mode before interpreting columns. Regenerate older slabs and
-slabs from another point mode; they are incompatible with this format.
-
-Historical validation covers both modes, API omission, sanitizers, and
+Historical validation covers both modes, sanitizers, and
 original/mutated corpus checks.
 
 
@@ -377,9 +349,8 @@ Named equality functions replace the old `SQColumn` selector. For example,
 `sq_tree_group_field_equal(tree, group, value)` replaces
 `sq_tree_group_equal(tree, group, SQ_COLUMN_FIELD, value)`. Each previously
 exposed encoded column has its own function, including byte deltas and point keys,
-supertypes, raw display symbols, and grammar symbols. Point functions remain
-absent from byte-only builds. These are exact physical-lane masks, with the same
-SWAR kernel and encoded-value semantics.
+supertypes, raw display symbols, and grammar symbols. These are exact
+physical-lane masks, with the same SWAR kernel and encoded-value semantics.
 
 Iterator caches likewise use named lane arrays. A field-only request fills only
 fields; a snapshot fills the remaining named attributes once per unpack window.

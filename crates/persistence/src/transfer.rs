@@ -5,8 +5,8 @@ use crate::{
 use std::io::{self, Read, Write};
 use std::sync::Arc;
 
-const MAGIC: &[u8; 8] = b"TSQXFR01";
-const HEADER_LEN: usize = 184;
+const MAGIC: &[u8; 8] = b"TSQXFR02";
+const HEADER_LEN: usize = 192;
 const PREFIX_LEN: usize = 8 + 3 * 8 + HEADER_LEN;
 
 fn invalid() -> io::Error {
@@ -99,6 +99,7 @@ impl Persistence {
             &source,
             grammar,
             self.options.symbol_presence,
+            self.options.points,
         ));
         if request.header.as_slice() != &prefix[32..] {
             return Err(invalid().into());
@@ -108,10 +109,11 @@ impl Persistence {
             &bytes[path_len + source_len..],
         )
         .map_err(io::Error::other)?;
-        if tree
-            .root_node()
-            .preorder()
-            .any(|node| node.end_byte() > source.len())
+        if tree.has_points() != request.points
+            || tree
+                .root_node()
+                .preorder()
+                .any(|node| node.end_byte() > source.len())
         {
             return Err(invalid().into());
         }

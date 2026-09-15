@@ -189,16 +189,18 @@ static bool validate_nodes(SQTree *tree, SQError *error) {
   uint32_t groups = sq_tree_group_count(tree), symbols = sq_symbols(tree);
   uint32_t root_slot = groups * SQ_GROUP_SIZE - sq_group_waste(tree, groups - 1) - 1;
   uint32_t dictionary_count = sq_header(tree)->supertype_dictionary_count;
+  bool points = sq_tree_has_points(tree);
   for (uint32_t group = groups; group-- > 0;) {
     uint32_t first = group * SQ_GROUP_SIZE;
     uint32_t group_end = first + SQ_GROUP_SIZE - sq_group_waste(tree, group);
     uint32_t span_base = sq_group_span_base(tree, group);
     uint32_t start_byte_base = sq_group_start_byte_base(tree, group);
     uint32_t end_byte_base = sq_group_end_byte_base(tree, group);
-#if SQ_INCLUDE_POINTS
-    TSPoint start_base = sq_point_from_key(sq_group_start_point_base(tree, group));
-    TSPoint end_base = sq_point_from_key(sq_group_end_point_base(tree, group));
-#endif
+    TSPoint start_base = {0}, end_base = {0};
+    if (points) {
+      start_base = sq_point_from_key(sq_group_start_point_base(tree, group));
+      end_base = sq_point_from_key(sq_group_end_point_base(tree, group));
+    }
     for (uint32_t slot = group_end; slot-- > first;) {
       SQNode node = {tree, slot};
       while (depth && ends[depth - 1] > slot) depth--;
@@ -238,22 +240,22 @@ static bool validate_nodes(SQTree *tree, SQError *error) {
           start_byte_base + start_byte_delta > end_byte_base - end_byte_delta) {
         goto invalid;
       }
-#if SQ_INCLUDE_POINTS
-      uint32_t start_delta = sq_node_start_point_key(node);
-      uint32_t end_delta = sq_node_end_point_key(node);
-      if ((uint64_t)start_base.row + (start_delta >> 8) > UINT32_MAX ||
-          (uint64_t)start_base.column + (start_delta & UINT8_MAX) > UINT32_MAX ||
-          end_base.row < (end_delta >> 8) || end_base.column < (end_delta & UINT8_MAX)) {
-        goto invalid;
+      if (points) {
+        uint32_t start_delta = sq_node_start_point_key(node);
+        uint32_t end_delta = sq_node_end_point_key(node);
+        if ((uint64_t)start_base.row + (start_delta >> 8) > UINT32_MAX ||
+            (uint64_t)start_base.column + (start_delta & UINT8_MAX) > UINT32_MAX ||
+            end_base.row < (end_delta >> 8) || end_base.column < (end_delta & UINT8_MAX)) {
+          goto invalid;
+        }
+        TSPoint start = {.row = start_base.row + (start_delta >> 8),
+                         .column = start_base.column + (start_delta & UINT8_MAX)};
+        TSPoint finish = {.row = end_base.row - (end_delta >> 8),
+                          .column = end_base.column - (end_delta & UINT8_MAX)};
+        if (start.row > finish.row || (start.row == finish.row && start.column > finish.column)) {
+          goto invalid;
+        }
       }
-      TSPoint start = {.row = start_base.row + (start_delta >> 8),
-                       .column = start_base.column + (start_delta & UINT8_MAX)};
-      TSPoint finish = {.row = end_base.row - (end_delta >> 8),
-                        .column = end_base.column - (end_delta & UINT8_MAX)};
-      if (start.row > finish.row || (start.row == finish.row && start.column > finish.column)) {
-        goto invalid;
-      }
-#endif
 
       if (depth == capacity) {
         if (capacity > SIZE_MAX / 2 / sizeof(uint32_t)) {
@@ -430,13 +432,14 @@ static SQTree *load_bytes(const TSLanguage *language, const void *bytes, size_t 
 
   memcpy(&header, bytes, sizeof(header));
   if (!header.group_count || header.group_count > header.group_capacity ||
-      (header.format_flags & ~(SQ_PRESENCE | SQ_WIDE_SUPERTYPES | SQ_GRAMMAR_OVERRIDES)) != (SQ_VERSION | SQ_LAYOUT_FLAGS)) {
+      (header.format_flags &
+       ~(SQ_NO_POINTS | SQ_PRESENCE | SQ_WIDE_SUPERTYPES | SQ_GRAMMAR_OVERRIDES)) != SQ_VERSION) {
     goto invalid;
   }
-
   SQLayout layout;
   if (!language || !sq_layout(language, header.group_capacity,
-                              (header.format_flags & SQ_WIDE_SUPERTYPES) != 0, &layout) ||
+                              (header.format_flags & SQ_WIDE_SUPERTYPES) != 0,
+                              !(header.format_flags & SQ_NO_POINTS), &layout) ||
       layout.end > length) {
     goto invalid;
   }
@@ -462,7 +465,8 @@ static SQTree *load_bytes(const TSLanguage *language, const void *bytes, size_t 
   // repeating that grammar-sized scan; the allocation covers the caller's length,
   // which is already bounded, and every later rejection releases the tree.
   SQTree *tree =
-      sq_allocate_loaded(language, header.group_capacity, bytes, (uint32_t)length, borrowed, error);
+      sq_allocate_loaded(language, header.group_capacity, bytes, (uint32_t)length, borrowed,
+                         !(header.format_flags & SQ_NO_POINTS), error);
   if (!tree) return NULL;
   uint32_t dictionary_count = tree->supertype_grammar ? tree->supertype_grammar->count : 0;
   if (header.supertype_dictionary_count != dictionary_count ||

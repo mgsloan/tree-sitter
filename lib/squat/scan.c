@@ -73,15 +73,17 @@ uint64_t sq_tree_group_end_byte_delta_equal(const SQTree *tree, uint32_t group, 
   return tree ? group_equal(tree, group, tree->layout.end_byte_delta, 16, value) : 0;
 }
 
-#if SQ_INCLUDE_POINTS
 uint64_t sq_tree_group_start_point_equal(const SQTree *tree, uint32_t group, uint32_t value) {
-  return tree ? group_equal(tree, group, tree->layout.start_point, 16, value) : 0;
+  return tree && sq_tree_has_points(tree)
+             ? group_equal(tree, group, tree->layout.start_point, 16, value)
+             : 0;
 }
 
 uint64_t sq_tree_group_end_point_equal(const SQTree *tree, uint32_t group, uint32_t value) {
-  return tree ? group_equal(tree, group, tree->layout.end_point, 16, value) : 0;
+  return tree && sq_tree_has_points(tree)
+             ? group_equal(tree, group, tree->layout.end_point, 16, value)
+             : 0;
 }
-#endif
 
 uint64_t sq_tree_group_supertype_equal(const SQTree *tree, uint32_t group, uint32_t value) {
   return tree ? group_equal(tree, group, tree->layout.supertype, tree->layout.supertype_bits, value) : 0;

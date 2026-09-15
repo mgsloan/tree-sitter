@@ -27,7 +27,6 @@ static SQNode reference(SQNode node, uint32_t left, uint32_t right, bool named) 
   }
 }
 
-#if SQ_INCLUDE_POINTS
 static int point_cmp(TSPoint left, TSPoint right) {
   return left.row != right.row ? (left.row > right.row ? 1 : -1)
                                : (left.column > right.column) - (left.column < right.column);
@@ -72,11 +71,9 @@ static SQNode reference_point(SQNode node, TSPoint start, TSPoint end, bool name
     }
   }
 }
-#endif
 
 static uint64_t checks;
 static const char *path;
-#if SQ_INCLUDE_POINTS
 static uint64_t point_checks;
 static TSPoint *source_points;
 static uint32_t source_size;
@@ -103,12 +100,9 @@ static void check_point(SQNode node, TSPoint start, TSPoint end) {
     point_checks++;
   }
 }
-#endif
 
 static void check(SQNode node, uint32_t left, uint32_t right) {
-#if SQ_INCLUDE_POINTS
   check_point(node, point_at(left), point_at(right));
-#endif
   for (unsigned named = 0; named < 2; named++) {
     SQNode expected = reference(node, left, right, named);
     SQNode actual = named ? sq_node_named_descendant_for_byte_range(node, left, right)
@@ -137,7 +131,6 @@ static void exercise(TSParser *parser, const char *source, uint32_t size) {
   assert(tree && error == SQ_OK);
   SQNode root = sq_tree_root_node(tree);
   uint64_t state = 42;
-#if SQ_INCLUDE_POINTS
   source_size = size;
   source_points = malloc(((size_t)size + 1) * sizeof(TSPoint));
   assert(source_points);
@@ -153,7 +146,6 @@ static void exercise(TSParser *parser, const char *source, uint32_t size) {
   check_point(root, (TSPoint){UINT32_MAX, 0}, (TSPoint){UINT32_MAX, UINT32_MAX});
   check_point(root, (TSPoint){1, 0}, (TSPoint){0, UINT32_MAX});
   check_point(root, (TSPoint){0, UINT32_MAX}, (TSPoint){1, 0});
-#endif
   check(sq_null(), 0, 0);
   check(root, 0, UINT32_MAX);
   check(root, UINT32_MAX, UINT32_MAX);
@@ -182,9 +174,7 @@ static void exercise(TSParser *parser, const char *source, uint32_t size) {
     }
   }
 
-#if SQ_INCLUDE_POINTS
   free(source_points);
-#endif
   sq_tree_delete(tree);
   ts_tree_delete(parsed);
 }
@@ -227,9 +217,7 @@ int main(int argc, char **argv) {
   }
 
   printf("%u files, %llu exact seek comparisons\n", files, (unsigned long long)checks);
-#if SQ_INCLUDE_POINTS
   printf("%llu exact point seek comparisons\n", (unsigned long long)point_checks);
-#endif
   free(line);
   fclose(inputs);
   ts_parser_delete(parser);

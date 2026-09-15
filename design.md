@@ -39,6 +39,7 @@ stored in preorder. This was not done because it would cause physical node indic
 ```rs
 struct SlabHeader {
   /// Native-endian format/version, point/group/alignment flags, optional index, supertype index width.
+  /// Point absence is stored per tree; point APIs then use byte offsets as columns on row zero.
   format_flags: u32,
   group_count: u32,
   /// Actual allocated capacity, including growth beyond the initial estimate.
@@ -202,7 +203,7 @@ Omission of files 100kb to 1mb is intentional. The theory is that these files ju
 
 * `cold-parse`: Cold parse time.
 
-The comparison contract covers freshly parsed mainline trees and their packed equivalents, including parses of mutated source text. Supported attributes are public symbol/type, grammar symbol/type, start/end bytes and points, named/extra/missing/error/has-error flags, `has_changes` (false for these fresh trees), child and named-child counts, and logical descendant counts. It also compares parent/child/sibling relationships, child field IDs/names, and named-child navigation. Nodes are identified across representations by their visible preorder ordinal, not their pointer or physical slot. Seek results use the same identity, including null results.
+The comparison contract covers freshly parsed mainline trees and their packed equivalents, including parses of mutated source text. Supported attributes are public symbol/type, grammar symbol/type, start/end bytes and stored points, named/extra/missing/error/has-error flags, `has_changes` (false for these fresh trees), child and named-child counts, and logical descendant counts. Point-free trees instead expose byte offsets as columns on row zero. The contract also compares parent/child/sibling relationships, child field IDs/names, and named-child navigation. Nodes are identified across representations by their visible preorder ordinal, not their pointer or physical slot. Seek results use the same identity, including null results.
 
 Query comparisons cover match/capture order, pattern and capture IDs, and captured-node identities, including field, anchor, and supertype semantics. Any text predicates use the same source bytes in both runs. The contract excludes parse-state and next-parse-state accessors, incremental edit/reparse behavior, and `node_string` equality while exact unexpected-character rendering is deferred. These exclusions apply to the walk and cold-parse comparisons as well.
 

@@ -34,6 +34,9 @@ pub struct Options {
     /// write fallback, never forced resize. Invalid options disable caching.
     pub map_size: usize,
     pub symbol_presence: bool,
+    /// Store source row/column positions. Point-free trees expose byte offsets
+    /// as columns on row zero.
+    pub points: bool,
     /// Maximum cooperative wait in synchronous loads; zero allows duplicate work immediately.
     pub cooperation_wait: std::time::Duration,
     pub read: ReadPolicy,
@@ -43,6 +46,7 @@ impl Default for Options {
         Self {
             map_size: 256 * 1024 * 1024,
             symbol_presence: true,
+            points: true,
             cooperation_wait: std::time::Duration::from_millis(50),
             read: ReadPolicy::Owned,
         }
@@ -178,6 +182,7 @@ pub struct PendingLoad {
     grammar: Grammar,
     store: Option<Arc<Store>>,
     symbol_presence: bool,
+    points: bool,
     write: WritePolicy,
     read: ReadPolicy,
     persistable: bool,
@@ -433,6 +438,7 @@ impl Persistence {
             &source,
             grammar,
             self.options.symbol_presence,
+            self.options.points,
         ));
         // Symlinked files outside the project can be read but are not persisted.
         let persistable = source_path
@@ -445,6 +451,7 @@ impl Persistence {
             grammar: grammar.clone(),
             store: store.cloned(),
             symbol_presence: self.options.symbol_presence,
+            points: self.options.points,
             write: options.write,
             read: self.options.read,
             persistable,
@@ -562,6 +569,7 @@ impl PendingLoad {
             // directly into reserved LMDB storage, off the parse path.
             repack: false,
             symbol_presence: self.symbol_presence,
+            points: self.points,
             initial_group_capacity: 0,
         };
         let packed = if let Some(packing) = packing {

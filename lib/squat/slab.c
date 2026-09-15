@@ -1,7 +1,7 @@
 #include "internal.h"
 
 uint64_t sq_representation_id(void) {
-  return (uint64_t)(SQ_VERSION | SQ_LAYOUT_FLAGS) | ((uint64_t)SQ_GROUP_SIZE << 32) |
+  return (uint64_t)SQ_VERSION | ((uint64_t)SQ_GROUP_SIZE << 32) |
          ((uint64_t)SQ_COLUMN_ALIGNMENT << 40) | ((uint64_t)sizeof(size_t) << 48);
 }
 
@@ -88,7 +88,8 @@ static uint32_t column_offset(uint64_t *next, uint64_t bytes) {
   return result;
 }
 
-bool sq_layout(const TSLanguage *language, uint32_t capacity, bool wide_supertypes, SQLayout *layout) {
+bool sq_layout(const TSLanguage *language, uint32_t capacity, bool wide_supertypes, bool points,
+               SQLayout *layout) {
   if (!sq_language_compatible(language) || !capacity || capacity > UINT32_MAX / SQ_GROUP_SIZE) {
     return false;
   }
@@ -124,12 +125,10 @@ bool sq_layout(const TSLanguage *language, uint32_t capacity, bool wide_supertyp
   layout->extra = column_offset(&next, sq_column_size(slots, 1));
   layout->error = column_offset(&next, sq_column_size(slots, 1));
   layout->missing = column_offset(&next, sq_column_size(slots, 1));
-#if SQ_INCLUDE_POINTS
-  layout->start_point_base = column_offset(&next, sq_array_size(capacity, 8));
-  layout->start_point = column_offset(&next, sq_array_size(slots, 2));
-  layout->end_point_base = column_offset(&next, sq_array_size(capacity, 8));
-  layout->end_point = column_offset(&next, sq_array_size(slots, 2));
-#endif
+  layout->start_point_base = column_offset(&next, points ? sq_array_size(capacity, 8) : 0);
+  layout->start_point = column_offset(&next, points ? sq_array_size(slots, 2) : 0);
+  layout->end_point_base = column_offset(&next, points ? sq_array_size(capacity, 8) : 0);
+  layout->end_point = column_offset(&next, points ? sq_array_size(slots, 2) : 0);
 
   // Accumulate in u64 and reject overflow before exposing any offsets.
   if (next > UINT32_MAX) return false;
@@ -175,7 +174,7 @@ bool sq_language_compatible(const TSLanguage *language) {
 
 static SQTree *allocate_tree(const TSLanguage *language, uint32_t capacity, uint32_t payload_size,
                              SQStorage storage, const TSSymbol *supertypes,
-                             uint32_t supertype_count, SQError *error) {
+                             uint32_t supertype_count, bool points, SQError *error) {
   sq_fail(error, SQ_OK);
   if (!sq_language_compatible(language)) {
     sq_fail(error, SQ_ERROR_LANGUAGE);
@@ -199,7 +198,7 @@ static SQTree *allocate_tree(const TSLanguage *language, uint32_t capacity, uint
     if (!grammar) return NULL;
   }
   SQLayout layout;
-  if (!sq_layout(language, capacity, grammar && grammar->count > 256, &layout)) {
+  if (!sq_layout(language, capacity, grammar && grammar->count > 256, points, &layout)) {
     sq_supertype_grammar_release(grammar);
     sq_fail(error, SQ_ERROR_OVERFLOW);
     return NULL;
@@ -257,16 +256,18 @@ static SQTree *allocate_tree(const TSLanguage *language, uint32_t capacity, uint
   return tree;
 }
 
-SQTree *sq_allocate(const TSLanguage *language, uint32_t capacity, SQError *error) {
-  return sq_allocate_cached(language, capacity, NULL, 0, error);
+SQTree *sq_allocate(const TSLanguage *language, uint32_t capacity, bool points, SQError *error) {
+  return sq_allocate_cached(language, capacity, NULL, 0, points, error);
 }
 
 SQTree *sq_allocate_cached(const TSLanguage *language, uint32_t capacity,
-                           const TSSymbol *supertypes, uint32_t count, SQError *error) {
-  SQTree *tree = allocate_tree(language, capacity, 0, SQ_STORAGE_COLOCATED, supertypes, count, error);
+                           const TSSymbol *supertypes, uint32_t count, bool points,
+                           SQError *error) {
+  SQTree *tree = allocate_tree(language, capacity, 0, SQ_STORAGE_COLOCATED, supertypes, count,
+                               points, error);
   if (tree) {
     *sq_header(tree) =
-        (SQHeader){.format_flags = SQ_VERSION | SQ_LAYOUT_FLAGS |
+        (SQHeader){.format_flags = SQ_VERSION | (!points ? SQ_NO_POINTS : 0) |
                          (tree->layout.supertype_bits == 16 ? SQ_WIDE_SUPERTYPES : 0),
                    .group_capacity = capacity,
                    .supertype_dictionary_count = tree->supertype_grammar ? tree->supertype_grammar->count : 0};
@@ -276,10 +277,10 @@ SQTree *sq_allocate_cached(const TSLanguage *language, uint32_t capacity,
 }
 
 SQTree *sq_allocate_loaded(const TSLanguage *language, uint32_t capacity, const void *bytes,
-                           uint32_t length, bool borrowed, SQError *error) {
+                           uint32_t length, bool borrowed, bool points, SQError *error) {
   SQTree *tree = allocate_tree(language, capacity, length,
                                borrowed ? SQ_STORAGE_BORROWED : SQ_STORAGE_COLOCATED, NULL, 0,
-                               error);
+                               points, error);
   if (tree) {
     if (borrowed) {
       // This storage is only read. Mutable helpers reject borrowed descriptors.
@@ -353,12 +354,11 @@ static void copy_columns(const SQTree *tree, uint8_t *data, const SQLayout *next
   COPY(extra, sq_column_size(slots, 1));
   COPY(error, sq_column_size(slots, 1));
   COPY(missing, sq_column_size(slots, 1));
-#if SQ_INCLUDE_POINTS
-  COPY(start_point_base, sq_array_size(groups, 8));
-  COPY(start_point, sq_array_size(slots, 2));
-  COPY(end_point_base, sq_array_size(groups, 8));
-  COPY(end_point, sq_array_size(slots, 2));
-#endif
+  bool points = sq_tree_has_points(tree);
+  COPY(start_point_base, points ? sq_array_size(groups, 8) : 0);
+  COPY(start_point, points ? sq_array_size(slots, 2) : 0);
+  COPY(end_point_base, points ? sq_array_size(groups, 8) : 0);
+  COPY(end_point, points ? sq_array_size(slots, 2) : 0);
   if (initialize_padding) memset(data + position, 0, next->end - position);
 #undef COPY
 }
@@ -381,7 +381,8 @@ static bool resize_tree(SQTree **tree_pointer, uint32_t capacity, uint32_t trail
   }
 
   SQLayout next;
-  if (!sq_layout(tree->language, capacity, tree->layout.supertype_bits == 16, &next)) {
+  if (!sq_layout(tree->language, capacity, tree->layout.supertype_bits == 16,
+                 sq_tree_has_points(tree), &next)) {
     sq_fail(error, SQ_ERROR_OVERFLOW);
     return false;
   }
@@ -426,7 +427,8 @@ static bool resize_tree(SQTree **tree_pointer, uint32_t capacity, uint32_t trail
 uint32_t sq_tree_compact_size(const SQTree *tree) {
   SQLayout layout;
   if (!tree || !sq_layout(tree->language, sq_header(tree)->group_count,
-                          tree->layout.supertype_bits == 16, &layout)) return 0;
+                          tree->layout.supertype_bits == 16, sq_tree_has_points(tree), &layout))
+    return 0;
   return layout.end + (tree->size - tree->layout.end);
 }
 
@@ -439,7 +441,7 @@ bool sq_tree_copy_compact(const SQTree *tree, void *destination, size_t length, 
   }
   SQLayout next;
   if (!sq_layout(tree->language, sq_header(tree)->group_count,
-                 tree->layout.supertype_bits == 16, &next)) {
+                 tree->layout.supertype_bits == 16, sq_tree_has_points(tree), &next)) {
     sq_fail(error, SQ_ERROR_OVERFLOW);
     return false;
   }
@@ -523,6 +525,10 @@ uint32_t sq_tree_group_capacity(const SQTree *tree) {
 
 uint32_t sq_tree_slot_count(const SQTree *tree) {
   return sq_tree_group_count(tree) * SQ_GROUP_SIZE;
+}
+
+bool sq_tree_has_points(const SQTree *tree) {
+  return tree && !(sq_header(tree)->format_flags & SQ_NO_POINTS);
 }
 
 const char *sq_error_string(SQError error) {

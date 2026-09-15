@@ -201,7 +201,9 @@ int main(int argc, char **argv) {
   require(occupancy > 0 && occupancy <= 100, "invalid capacity occupancy percentage");
   uint32_t initial_capacity = getenv("SQ_CAPACITY_PERCENT")
       ? (uint32_t)((uint64_t)nodes * 100 / (SQ_GROUP_SIZE * occupancy) + 1) : 0;
-  printf("{\"points\":%d,\"group_size\":%u,\"source_bytes\":%ld,\"nodes\":%u,", SQ_INCLUDE_POINTS,
+  const char *point_option = getenv("SQ_POINTS");
+  bool points = !point_option || strcmp(point_option, "0");
+  printf("{\"points\":%d,\"group_size\":%u,\"source_bytes\":%ld,\"nodes\":%u,", points,
          SQ_GROUP_SIZE, length, nodes);
   print_usage("mainline", mainline);
   putchar(',');
@@ -211,6 +213,7 @@ int main(int argc, char **argv) {
   for (unsigned compact = 0; compact < 2; compact++) {
     peak = live;
     SQPackOptions options = sq_pack_options_default();
+    options.points = points;
     options.repack = compact;
     options.initial_group_capacity = initial_capacity;
     SQError error;

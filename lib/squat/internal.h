@@ -33,7 +33,7 @@ _Static_assert(SQ_COLUMN_ALIGNMENT == 8 || SQ_COLUMN_ALIGNMENT == 64,
    (SQ_COLUMN_ALIGNMENT == 64 ? 8u : 0u))
 
 // Version 12: measured ID width rounding and compact direct supertype masks.
-#define SQ_LAYOUT_FLAGS (SQ_INCLUDE_POINTS ? 0u : 0x100u)
+#define SQ_NO_POINTS 0x100u
 #define SQ_PRESENCE 0x200u
 #define SQ_WIDE_SUPERTYPES 0x400u
 #define SQ_GRAMMAR_OVERRIDES 0x800u
@@ -65,12 +65,10 @@ typedef struct {
   uint32_t extra;
   uint32_t error;
   uint32_t missing;
-#if SQ_INCLUDE_POINTS
   uint32_t start_point_base;
   uint32_t start_point;
   uint32_t end_point_base;
   uint32_t end_point;
-#endif
   uint32_t end;
   uint8_t symbol_bits, field_bits, supertype_bits;
   // Grammar-wide decoder constants; runtime-only, never serialized.
@@ -138,7 +136,8 @@ static inline uint64_t sq_array_size(uint32_t count, unsigned bytes) {
   return ((uint64_t)count * bytes + 7) & ~UINT64_C(7);
 }
 
-bool sq_layout(const TSLanguage *, uint32_t capacity, bool wide_supertypes, SQLayout *);
+bool sq_layout(const TSLanguage *, uint32_t capacity, bool wide_supertypes, bool points,
+               SQLayout *);
 
 // Packed words store their first lane in the low bits. On big-endian hosts,
 // reverse byte/halfword positions within each word before a native load.
@@ -268,7 +267,6 @@ static inline uint32_t sq_group_end_byte_base(const SQTree *tree, uint32_t group
   return sq_get_u32(tree->data, tree->layout.end_byte_base, group);
 }
 
-#if SQ_INCLUDE_POINTS
 static inline uint64_t sq_point_key(TSPoint point) {
   return (uint64_t)point.row << 32 | point.column;
 }
@@ -288,7 +286,6 @@ static inline uint64_t sq_group_start_point_base(const SQTree *tree, uint32_t gr
 static inline uint64_t sq_group_end_point_base(const SQTree *tree, uint32_t group) {
   return sq_get_u64(tree->data, tree->layout.end_point_base, group);
 }
-#endif
 
 static inline uint32_t sq_node_last_flag(SQNode node) {
   return sq_get_bit(node.tree->data, node.tree->layout.last, node.slot);
@@ -318,7 +315,6 @@ static inline uint32_t sq_node_end_byte_delta(SQNode node) {
   return sq_get_u16(node.tree->data, node.tree->layout.end_byte_delta, node.slot);
 }
 
-#if SQ_INCLUDE_POINTS
 static inline uint32_t sq_node_start_point_key(SQNode node) {
   return sq_get_u16(node.tree->data, node.tree->layout.start_point, node.slot);
 }
@@ -326,7 +322,6 @@ static inline uint32_t sq_node_start_point_key(SQNode node) {
 static inline uint32_t sq_node_end_point_key(SQNode node) {
   return sq_get_u16(node.tree->data, node.tree->layout.end_point, node.slot);
 }
-#endif
 
 static inline uint32_t sq_node_supertype(SQNode node) {
   if (!node.tree->layout.supertype_bits) return 0;
@@ -393,15 +388,16 @@ static inline uint32_t sq_position_group(const SQTree *tree, uint32_t group) {
 }
 
 SQNode sq_null(void);
-SQTree *sq_allocate(const TSLanguage *, uint32_t, SQError *);
+SQTree *sq_allocate(const TSLanguage *, uint32_t, bool points, SQError *);
 bool sq_language_compatible(const TSLanguage *);
-SQTree *sq_allocate_cached(const TSLanguage *, uint32_t, const TSSymbol *, uint32_t, SQError *);
+SQTree *sq_allocate_cached(const TSLanguage *, uint32_t, const TSSymbol *, uint32_t, bool points,
+                           SQError *);
 
 // Builder operations may move a colocated descriptor. Refresh the caller's
 // pointer before reading it again; finalized public trees never move.
 size_t sq_runtime_size(const TSLanguage *);
 SQTree *sq_allocate_loaded(const TSLanguage *, uint32_t, const void *, uint32_t, bool borrowed,
-                           SQError *);
+                           bool points, SQError *);
 bool sq_resize(SQTree **, uint32_t, SQError *);
 bool sq_prepare_final(SQTree **, uint32_t capacity, uint32_t trailing_size, SQError *);
 bool sq_grow_data(SQTree **, uint32_t, SQError *);

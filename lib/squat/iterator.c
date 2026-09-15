@@ -15,10 +15,8 @@ typedef struct {
   SQUnpackCoordinates coordinates;
   uint32_t start_byte[SQ_ITERATOR_UNPACK_SLOTS];
   uint32_t end_byte[SQ_ITERATOR_UNPACK_SLOTS];
-#if SQ_INCLUDE_POINTS
   uint64_t start_point[SQ_ITERATOR_UNPACK_SLOTS];
   uint64_t end_point[SQ_ITERATOR_UNPACK_SLOTS];
-#endif
 #endif
   uint16_t symbol[SQ_ITERATOR_UNPACK_SLOTS];
   uint16_t field[SQ_ITERATOR_UNPACK_SLOTS];
@@ -138,7 +136,6 @@ static void fill_coordinate(const SQTree *tree, const UnpackCache *cache, uint32
   }
 }
 
-#if SQ_INCLUDE_POINTS
 static void fill_point(const SQTree *tree, const UnpackCache *cache, uint32_t point_offset,
                        uint32_t base_offset, bool subtract, uint64_t *out) {
   uint32_t count = cache_slot_count(tree, cache);
@@ -157,7 +154,6 @@ static void fill_point(const SQTree *tree, const UnpackCache *cache, uint32_t po
   }
 }
 #endif
-#endif
 
 static void fill_attributes(SQNodeIterator *iterator, UnpackCache *cache) {
   SQNode node = iterator->current;
@@ -175,12 +171,17 @@ static void fill_attributes(SQNodeIterator *iterator, UnpackCache *cache) {
                   false, cache->start_byte);
   fill_coordinate(tree, cache, tree->layout.end_byte_delta, tree->layout.end_byte_base, 16, true,
                   cache->end_byte);
-#if SQ_INCLUDE_POINTS
-  fill_point(tree, cache, tree->layout.start_point, tree->layout.start_point_base, false,
-             cache->start_point);
-  fill_point(tree, cache, tree->layout.end_point, tree->layout.end_point_base, true,
-             cache->end_point);
-#endif
+  if (sq_tree_has_points(tree)) {
+    fill_point(tree, cache, tree->layout.start_point, tree->layout.start_point_base, false,
+               cache->start_point);
+    fill_point(tree, cache, tree->layout.end_point, tree->layout.end_point_base, true,
+               cache->end_point);
+  } else {
+    for (uint32_t index = 0; index < count; index++) {
+      cache->start_point[index] = cache->start_byte[index];
+      cache->end_point[index] = cache->end_byte[index];
+    }
+  }
 #endif
   cache->attributes_filled = true;
 }
@@ -211,10 +212,8 @@ void sq_node_iterator_attributes(SQNodeIterator *iterator, SQCursorAttributes *o
 #if SQ_ITERATOR_CACHE_ALL == 2
   out->start_byte = cache->start_byte[lane];
   out->end_byte = cache->end_byte[lane];
-#if SQ_INCLUDE_POINTS
   out->start_point = sq_point_from_key(cache->start_point[lane]);
   out->end_point = sq_point_from_key(cache->end_point[lane]);
-#endif
   out->is_extra = sq_node_extra_flag(node);
   out->is_missing = sq_node_missing_flag(node);
   out->has_error = sq_node_error_flag(node);

@@ -55,16 +55,12 @@ bool sq_query_cursor_did_exceed_match_limit(const SQQueryCursor *self);
 uint32_t sq_query_cursor_match_limit(const SQQueryCursor *self);
 void sq_query_cursor_set_match_limit(SQQueryCursor *self, uint32_t limit);
 bool sq_query_cursor_set_byte_range(SQQueryCursor *self, uint32_t start_byte, uint32_t end_byte);
-#if SQ_INCLUDE_POINTS
 bool sq_query_cursor_set_point_range(SQQueryCursor *self, TSPoint start_point, TSPoint end_point);
-#endif
 
 bool sq_query_cursor_set_containing_byte_range(SQQueryCursor *self, uint32_t start_byte,
                                                uint32_t end_byte);
-#if SQ_INCLUDE_POINTS
 bool sq_query_cursor_set_containing_point_range(SQQueryCursor *self, TSPoint start_point,
                                                 TSPoint end_point);
-#endif
 
 bool sq_query_cursor_next_match(SQQueryCursor *self, SQQueryMatch *match);
 void sq_query_cursor_remove_match(SQQueryCursor *self, uint32_t match_id);

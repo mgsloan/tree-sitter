@@ -2,19 +2,17 @@
 #include "../src/tree.h"
 
 // Only the current group's absolute values are staged. Frame coordinates are
-// computed once left-to-right, then consumed right-to-left when points are
-// enabled (multiline extents lose the starting column). Byte-only frames
-// subtract child lengths while traversing instead. No recursive C calls.
+// Point positions are computed once left-to-right, then consumed right-to-left
+// because multiline extents lose the starting column. Point-free frames
+// subtract byte lengths while traversing instead. No recursive C calls.
 typedef struct {
   uint32_t span;
   uint32_t start_byte;
   uint32_t end_byte;
-#if SQ_INCLUDE_POINTS
   uint32_t start_row;
   uint32_t end_row;
   uint32_t start_column;
   uint32_t end_column;
-#endif
 } PackValues;
 
 typedef struct {
@@ -31,11 +29,7 @@ typedef struct {
   uint8_t bits;
 } LaneCursor;
 
-#if SQ_INCLUDE_POINTS
 typedef Length PackPosition;
-#else
-typedef uint32_t PackPosition;
-#endif
 
 typedef struct {
   uint32_t offset, length;
@@ -65,7 +59,7 @@ typedef struct {
   // chase builder->tree->language each time.
   const TSLanguage *language;
   uint32_t symbol_count, language_field_count;
-  bool small_supertypes;
+  bool small_supertypes, points;
 
   // Packed IDs and flags are written as each node is accepted rather than when
   // its group closes; see open_group.
@@ -99,15 +93,10 @@ typedef struct {
   EmitNode node;
   const Subtree *children;
   const TSSymbol *aliases;
-#if SQ_INCLUDE_POINTS
   PackPosition inline_position;
-#else
   uint32_t child_end_byte;
-#endif
   uint64_t child_mask;
-#if SQ_INCLUDE_POINTS
   uint32_t position_mark, position_offset;
-#endif
   uint32_t field_mark, field_offset, field_length;
   uint32_t mask_mark, child_mask_offset;
   uint32_t remaining, structural;
@@ -141,9 +130,7 @@ struct SQPackContext {
 // accessor repeats the inline/heap test. Decode the needed fields once.
 typedef struct {
   uint32_t child_count, visible_child_count;
-#if !SQ_INCLUDE_POINTS
   uint32_t size_bytes, padding_bytes;
-#endif
   bool visible, extra;
 } ChildFacts;
 
@@ -152,29 +139,24 @@ static inline ChildFacts child_facts(Subtree subtree) {
   if (subtree.data.is_inline) {
     facts.child_count = 0;
     facts.visible_child_count = 0;
-    facts.visible = subtree.data.visible;
-    facts.extra = subtree.data.extra;
-#if !SQ_INCLUDE_POINTS
     facts.size_bytes = subtree.data.size_bytes;
     facts.padding_bytes = subtree.data.padding_bytes;
-#endif
+    facts.visible = subtree.data.visible;
+    facts.extra = subtree.data.extra;
   } else {
     const SubtreeHeapData *data = subtree.ptr;
     facts.child_count = data->child_count;
 
     // visible_child_count shares a union with terminal-only members.
     facts.visible_child_count = data->child_count ? data->visible_child_count : 0;
-    facts.visible = data->visible;
-    facts.extra = data->extra;
-#if !SQ_INCLUDE_POINTS
     facts.size_bytes = data->size.bytes;
     facts.padding_bytes = data->padding.bytes;
-#endif
+    facts.visible = data->visible;
+    facts.extra = data->extra;
   }
   return facts;
 }
 
-#if SQ_INCLUDE_POINTS
 static bool reserve_positions(Builder *builder, uint32_t count, uint32_t *offset) {
   uint64_t needed = (uint64_t)builder->position_count + count;
   if (needed > UINT32_MAX || needed > SIZE_MAX / sizeof(PackPosition)) goto allocation;
@@ -201,7 +183,6 @@ allocation:
   sq_fail(builder->error, SQ_ERROR_ALLOCATION);
   return false;
 }
-#endif
 
 static bool reserve_fields(Builder *builder, uint32_t count, uint32_t *offset) {
   uint64_t needed = (uint64_t)builder->field_count + count;
@@ -331,9 +312,9 @@ static bool close_group(Builder *builder) {
   // this choice if minimum subtree spans or column positions become useful.
   // End columns keep their actual maxima for the base-minus-delta encoding.
   if (builder->max.span <= UINT8_MAX) builder->base.span = 0;
-#if SQ_INCLUDE_POINTS
-  if (builder->max.start_column <= UINT8_MAX) builder->base.start_column = 0;
-#endif
+  if (builder->points && builder->max.start_column <= UINT8_MAX) {
+    builder->base.start_column = 0;
+  }
 
   uint32_t group = header->group_count++;
   uint32_t first = group * SQ_GROUP_SIZE;
@@ -342,12 +323,12 @@ static bool close_group(Builder *builder) {
   sq_set_u32(tree->data, tree->layout.span_base, group, builder->base.span);
   sq_set_u32(tree->data, tree->layout.start_byte_base, group, builder->base.start_byte);
   sq_set_u32(tree->data, tree->layout.end_byte_base, group, builder->max.end_byte);
-#if SQ_INCLUDE_POINTS
-  TSPoint start_base = {builder->base.start_row, builder->base.start_column};
-  TSPoint end_base = {builder->max.end_row, builder->max.end_column};
-  sq_set_u64(tree->data, tree->layout.start_point_base, group, sq_point_key(start_base));
-  sq_set_u64(tree->data, tree->layout.end_point_base, group, sq_point_key(end_base));
-#endif
+  if (builder->points) {
+    TSPoint start_base = {builder->base.start_row, builder->base.start_column};
+    TSPoint end_base = {builder->max.end_row, builder->max.end_column};
+    sq_set_u64(tree->data, tree->layout.start_point_base, group, sq_point_key(start_base));
+    sq_set_u64(tree->data, tree->layout.end_point_base, group, sq_point_key(end_base));
+  }
 
   set_group_flags(tree->data, tree->layout.last, group, builder->last_flags);
   set_group_flags(tree->data, tree->layout.extra, group, builder->extra_flags);
@@ -363,26 +344,25 @@ static bool close_group(Builder *builder) {
   uint8_t *end_byte_delta = data + tree->layout.end_byte_delta + (size_t)first * 2;
   uint32_t supertype_offset = tree->layout.supertype;
   uint8_t supertype_bits = tree->layout.supertype_bits;
-#if SQ_INCLUDE_POINTS
-  uint8_t *start_point = data + tree->layout.start_point + (size_t)first * 2;
-  uint8_t *end_point = data + tree->layout.end_point + (size_t)first * 2;
-#endif
-  PackValues base = builder->base, max = builder->max;
+  bool points = builder->points;
+  uint8_t *start_point = points ? data + tree->layout.start_point + (size_t)first * 2 : NULL;
+  uint8_t *end_point = points ? data + tree->layout.end_point + (size_t)first * 2 : NULL;
+  const PackValues *base = &builder->base, *max = &builder->max;
   for (uint32_t i = 0; i < builder->count; i++) {
     const PackValues *values = &builder->pending[i].values;
 
-    span_delta[i] = (uint8_t)(values->span - base.span);
-    start_byte_delta[i] = (uint8_t)(values->start_byte - base.start_byte);
-    uint16_t end_byte = (uint16_t)(max.end_byte - values->end_byte);
+    span_delta[i] = (uint8_t)(values->span - base->span);
+    start_byte_delta[i] = (uint8_t)(values->start_byte - base->start_byte);
+    uint16_t end_byte = (uint16_t)(max->end_byte - values->end_byte);
     memcpy(end_byte_delta + (size_t)i * 2, &end_byte, sizeof(end_byte));
-#if SQ_INCLUDE_POINTS
-    uint16_t start = (uint16_t)((values->start_row - base.start_row) << 8) |
-                     (uint16_t)(values->start_column - base.start_column);
-    uint16_t end = (uint16_t)((max.end_row - values->end_row) << 8) |
-                   (uint16_t)(max.end_column - values->end_column);
-    memcpy(start_point + (size_t)i * 2, &start, sizeof(start));
-    memcpy(end_point + (size_t)i * 2, &end, sizeof(end));
-#endif
+    if (points) {
+      uint16_t start = (uint16_t)((values->start_row - base->start_row) << 8) |
+                       (uint16_t)(values->start_column - base->start_column);
+      uint16_t end = (uint16_t)((max->end_row - values->end_row) << 8) |
+                     (uint16_t)(max->end_column - values->end_column);
+      memcpy(start_point + (size_t)i * 2, &start, sizeof(start));
+      memcpy(end_point + (size_t)i * 2, &end, sizeof(end));
+    }
 
     if (supertype_bits == 16) {
       sq_set_u16(data, supertype_offset, first + i, builder->pending[i].super);
@@ -429,7 +409,15 @@ static bool group_fits(const Builder *builder, const PackValues *value, PackValu
                        PackValues *max) {
   // emit closes a full group before staging the candidate.
   if (!builder->count) {
-    *base = *max = *value;
+    base->span = max->span = value->span;
+    base->start_byte = max->start_byte = value->start_byte;
+    base->end_byte = max->end_byte = value->end_byte;
+    if (builder->points) {
+      base->start_row = max->start_row = value->start_row;
+      base->end_row = max->end_row = value->end_row;
+      base->start_column = max->start_column = value->start_column;
+      base->end_column = max->end_column = value->end_column;
+    }
     return true;
   }
 
@@ -445,20 +433,20 @@ static bool group_fits(const Builder *builder, const PackValues *value, PackValu
   if (!extend_range(value->end_byte, builder->base.end_byte, builder->max.end_byte, UINT16_MAX,
                     &base->end_byte, &max->end_byte))
     return false;
-#if SQ_INCLUDE_POINTS
-  base->start_row = value->start_row;
-  max->start_row = builder->max.start_row;
-  if (max->start_row - base->start_row > UINT8_MAX) return false;
-  if (!extend_range(value->end_row, builder->base.end_row, builder->max.end_row, UINT8_MAX,
-                    &base->end_row, &max->end_row))
-    return false;
-  if (!extend_range(value->start_column, builder->base.start_column, builder->max.start_column,
-                    UINT8_MAX, &base->start_column, &max->start_column))
-    return false;
-  if (!extend_range(value->end_column, builder->base.end_column, builder->max.end_column, UINT8_MAX,
-                    &base->end_column, &max->end_column))
-    return false;
-#endif
+  if (builder->points) {
+    base->start_row = value->start_row;
+    max->start_row = builder->max.start_row;
+    if (max->start_row - base->start_row > UINT8_MAX) return false;
+    if (!extend_range(value->end_row, builder->base.end_row, builder->max.end_row, UINT8_MAX,
+                      &base->end_row, &max->end_row))
+      return false;
+    if (!extend_range(value->start_column, builder->base.start_column, builder->max.start_column,
+                      UINT8_MAX, &base->start_column, &max->start_column))
+      return false;
+    if (!extend_range(value->end_column, builder->base.end_column, builder->max.end_column,
+                      UINT8_MAX, &base->end_column, &max->end_column))
+      return false;
+  }
   return true;
 }
 
@@ -493,12 +481,9 @@ static bool emit(Builder *builder, const EmitNode *frame) {
   // regardless of the stored cost, so the recorded flag is the same predicate.
   bool has_error = missing || error_cost > 0;
   TSSymbol raw_symbol = frame->alias ? frame->alias : grammar;
-#if SQ_INCLUDE_POINTS
-  Length end = length_add(frame->position, size);
   uint32_t start_byte = frame->position.bytes;
-#else
-  uint32_t start_byte = frame->position;
-#endif
+  Length end = {0};
+  if (builder->points) end = length_add(frame->position, size);
   uint16_t super;
   const uint64_t *mask = builder->words == 1 ? &frame->mask
                          : builder->words > 1 ? builder->masks + frame->mask_offset
@@ -526,12 +511,12 @@ static bool emit(Builder *builder, const EmitNode *frame) {
     Pending *slot = &builder->pending[builder->count];
     slot->values.start_byte = start_byte;
     slot->values.end_byte = start_byte + size.bytes;
-#if SQ_INCLUDE_POINTS
-    slot->values.start_row = frame->position.extent.row;
-    slot->values.end_row = end.extent.row;
-    slot->values.start_column = frame->position.extent.column;
-    slot->values.end_column = end.extent.column;
-#endif
+    if (builder->points) {
+      slot->values.start_row = frame->position.extent.row;
+      slot->values.end_row = end.extent.row;
+      slot->values.start_column = frame->position.extent.column;
+      slot->values.end_column = end.extent.column;
+    }
 
     // Retrying after close_group includes newly abandoned slots in the span.
     // The saved boundary still marks the same lower physical slot.
@@ -542,8 +527,17 @@ static bool emit(Builder *builder, const EmitNode *frame) {
         return false;
       }
 
-      builder->base = base;
-      builder->max = max;
+      if (builder->points) {
+        builder->base = base;
+        builder->max = max;
+      } else {
+        builder->base.span = base.span;
+        builder->base.start_byte = base.start_byte;
+        builder->base.end_byte = base.end_byte;
+        builder->max.span = max.span;
+        builder->max.start_byte = max.start_byte;
+        builder->max.end_byte = max.end_byte;
+      }
       uint32_t bit = builder->count;
       builder->last_flags |= (uint64_t)!frame->later << bit;
       builder->extra_flags |= (uint64_t)extra << bit;
@@ -596,10 +590,8 @@ static bool init_frame(Builder *builder, Frame *frame, const Subtree *subtree_po
   frame->node.alias = alias;
   frame->node.later = later;
   frame->visible = visible;
-#if SQ_INCLUDE_POINTS
   frame->position_mark = builder->position_count;
   frame->position_offset = SQ_NONE;
-#endif
   frame->field_mark = builder->field_count;
   frame->field_offset = SQ_NONE;
   frame->field_length = 0;
@@ -613,42 +605,38 @@ static bool init_frame(Builder *builder, Frame *frame, const Subtree *subtree_po
     frame->children = ts_subtree_children(subtree);
     frame->aliases =
         ts_language_alias_sequence(builder->language, subtree.ptr->production_id);
-#if SQ_INCLUDE_POINTS
-    if (count > 1 && !reserve_positions(builder, count, &frame->position_offset)) return false;
-
-    // Extents cannot be recovered by subtracting a multiline child's size, so
-    // every child start is computed here. One inline/heap test per child covers
-    // its padding, size, and extra flag.
-    PackPosition *positions = count == 1 ? &frame->inline_position
-                                         : builder->positions + frame->position_offset;
-#else
-    frame->child_end_byte = position + subtree.ptr->size.bytes;
-#endif
+    PackPosition *positions = NULL;
+    if (builder->points) {
+      if (count > 1 && !reserve_positions(builder, count, &frame->position_offset)) return false;
+      // Extents cannot be recovered by subtracting a multiline child's size.
+      positions = count == 1 ? &frame->inline_position
+                             : builder->positions + frame->position_offset;
+    } else {
+      frame->child_end_byte = position.bytes + subtree.ptr->size.bytes;
+    }
     uint32_t structural = 0;
     for (uint32_t i = 0; i < count; i++) {
       Subtree child = frame->children[i];
-#if SQ_INCLUDE_POINTS
-      Length padding, size;
       bool extra;
-      if (child.data.is_inline) {
-        padding = (Length){child.data.padding_bytes,
-                           {child.data.padding_rows, child.data.padding_columns}};
-        size = (Length){child.data.size_bytes, {0, child.data.size_bytes}};
-        extra = child.data.extra;
-      } else {
-        padding = child.ptr->padding;
-        size = child.ptr->size;
-        extra = child.ptr->extra;
-      }
+      if (builder->points) {
+        Length padding, size;
+        if (child.data.is_inline) {
+          padding = (Length){child.data.padding_bytes,
+                             {child.data.padding_rows, child.data.padding_columns}};
+          size = (Length){child.data.size_bytes, {0, child.data.size_bytes}};
+          extra = child.data.extra;
+        } else {
+          padding = child.ptr->padding;
+          size = child.ptr->size;
+          extra = child.ptr->extra;
+        }
 
-      if (i) position = length_add(position, padding);
-      positions[i] = position;
-      position = length_add(position, size);
-#else
-      // Aliases and fields use child indexes excluding extras. Keep this
-      // count, but do not calculate or store any forward byte positions.
-      bool extra = ts_subtree_extra(child);
-#endif
+        if (i) position = length_add(position, padding);
+        positions[i] = position;
+        position = length_add(position, size);
+      } else {
+        extra = ts_subtree_extra(child);
+      }
       structural += !extra;
     }
 
@@ -705,7 +693,7 @@ static bool init_frame(Builder *builder, Frame *frame, const Subtree *subtree_po
 }
 
 SQPackOptions sq_pack_options_default(void) {
-  return (SQPackOptions){.repack = false, .symbol_presence = true};
+  return (SQPackOptions){.repack = false, .symbol_presence = true, .points = true};
 }
 
 typedef struct {
@@ -890,8 +878,8 @@ static SQTree *pack_tree(SQPackContext *context, const TSTree *tree,
 
   SQTree *result = context
       ? sq_allocate_cached(context->language, capacity, context->supertypes,
-                           context->supertype_count, error)
-      : sq_allocate(ts_tree_language(tree), capacity, error);
+                           context->supertype_count, options.points, error)
+      : sq_allocate(ts_tree_language(tree), capacity, options.points, error);
   if (!result) {
     return NULL;
   }
@@ -903,6 +891,7 @@ static SQTree *pack_tree(SQPackContext *context, const TSTree *tree,
                      .symbol_count = result->language->symbol_count + result->language->alias_count,
                      .language_field_count = result->language->field_count,
                      .small_supertypes = result->supertype_count <= 8,
+                     .points = options.points,
                      .error = error};
   size_t depth = 0, stack_capacity = 32;
   Frame *stack = NULL;
@@ -939,14 +928,10 @@ static SQTree *pack_tree(SQPackContext *context, const TSTree *tree,
     memset(builder.masks + zero_mask_offset, 0, (size_t)builder.words * sizeof(uint64_t));
   }
 
-#if SQ_INCLUDE_POINTS
   PackPosition root_position = {
       .bytes = root.context[0],
       .extent = {root.context[1], root.context[2]},
   };
-#else
-  PackPosition root_position = root.context[0];
-#endif
   if (!init_frame(&builder, &stack[0], (const Subtree *)root.id, root_position,
                   (TSSymbol)root.context[3], 0, true, false, 0, zero_mask_offset)) {
     goto failure;
@@ -959,13 +944,12 @@ static SQTree *pack_tree(SQPackContext *context, const TSTree *tree,
       uint32_t index = --frame->remaining;
       const Subtree *child = &frame->children[index];
       ChildFacts facts = child_facts(*child);
-#if !SQ_INCLUDE_POINTS
-      // Advance even for hidden leaves skipped below. The first child's
-      // padding belongs to the parent, so it must not be subtracted here.
-      uint32_t position = frame->child_end_byte - facts.size_bytes;
-      frame->child_end_byte = index ? position - facts.padding_bytes
-                                    : position;
-#endif
+      uint32_t position_byte = 0;
+      if (!builder.points) {
+        // The first child's padding belongs to the parent.
+        position_byte = frame->child_end_byte - facts.size_bytes;
+        frame->child_end_byte = index ? position_byte - facts.padding_bytes : position_byte;
+      }
       bool extra = facts.extra;
       if (!extra) {
         --frame->structural;
@@ -989,11 +973,12 @@ static SQTree *pack_tree(SQPackContext *context, const TSTree *tree,
         continue;
       }
 
-#if SQ_INCLUDE_POINTS
-      PackPosition position = frame->position_offset != SQ_NONE
-                                  ? builder.positions[frame->position_offset + index]
-                                  : frame->inline_position;
-#endif
+      PackPosition position =
+          builder.points
+              ? (frame->position_offset != SQ_NONE
+                     ? builder.positions[frame->position_offset + index]
+                     : frame->inline_position)
+              : (PackPosition){.bytes = position_byte};
       // Only the one-word mode initializes this value. Other modes carry no
       // mask, or use child_mask_offset in the arena.
       uint64_t child_mask = builder.words == 1 ? frame->child_mask : 0;
@@ -1056,9 +1041,7 @@ static SQTree *pack_tree(SQPackContext *context, const TSTree *tree,
         goto failure;
       }
 
-#if SQ_INCLUDE_POINTS
       builder.position_count = frame->position_mark;
-#endif
       builder.field_count = frame->field_mark;
       builder.mask_count = frame->mask_mark;
       depth--;

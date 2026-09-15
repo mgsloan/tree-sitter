@@ -33,11 +33,7 @@ use std::{
     ptr::NonNull,
 };
 use tree_sitter::Language;
-#[cfg(feature = "points")]
 use tree_sitter::Point;
-
-/// Whether this library includes row/column storage and point APIs.
-pub const HAS_POINT_POSITIONS: bool = cfg!(feature = "points");
 
 /// Slab version and actual C build configuration (not a grammar/runtime identity).
 pub fn representation_id() -> u64 {
@@ -86,6 +82,9 @@ pub struct PackOptions {
     pub initial_group_capacity: u32,
     pub repack: bool,
     pub symbol_presence: bool,
+    /// Store source row/column positions. Without them, point APIs return byte
+    /// offsets as columns on row zero.
+    pub points: bool,
 }
 impl Default for PackOptions {
     fn default() -> Self {
@@ -93,6 +92,7 @@ impl Default for PackOptions {
             initial_group_capacity: 0,
             repack: false,
             symbol_presence: true,
+            points: true,
         }
     }
 }
@@ -271,12 +271,20 @@ impl Tree {
         parser: &mut tree_sitter::Parser,
         source: impl AsRef<[u8]>,
     ) -> Result<Self, Error> {
+        Self::parse_with_options(parser, source, PackOptions::default())
+    }
+    /// Fresh parse followed by conversion with the requested slab configuration.
+    pub fn parse_with_options(
+        parser: &mut tree_sitter::Parser,
+        source: impl AsRef<[u8]>,
+        options: PackOptions,
+    ) -> Result<Self, Error> {
         let source = source.as_ref();
         if source.len() > u32::MAX as usize {
             return Err(Error::Overflow);
         }
         let tree = parser.parse(source, None).ok_or(Error::InvalidArgument)?;
-        Self::pack(&tree)
+        Self::pack_with_options(&tree, options)
     }
     /// Loads a native-endian slab using the exact matching grammar.
     ///
@@ -400,6 +408,10 @@ impl Tree {
     pub fn slot_count(&self) -> u32 {
         unsafe { ffi::sq_tree_slot_count(self.0.as_ptr()) }
     }
+    /// Whether this tree stores the source's row/column positions.
+    pub fn has_points(&self) -> bool {
+        unsafe { ffi::sq_tree_has_points(self.0.as_ptr()) }
+    }
     pub fn group_has_symbol(&self, group: u32, symbol: u16) -> bool {
         unsafe { ffi::sq_tree_group_has_symbol(self.0.as_ptr(), group, symbol) }
     }
@@ -426,18 +438,15 @@ struct RawNode {
 }
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
-#[cfg(feature = "points")]
 struct RawPoint {
     row: u32,
     column: u32,
 }
-#[cfg(feature = "points")]
 impl From<RawPoint> for Point {
     fn from(p: RawPoint) -> Self {
         Point::new(p.row as usize, p.column as usize)
     }
 }
-#[cfg(feature = "points")]
 impl TryFrom<Point> for RawPoint {
     type Error = std::num::TryFromIntError;
     fn try_from(p: Point) -> Result<Self, Self::Error> {
@@ -567,11 +576,9 @@ impl<'tree> Node<'tree> {
     pub fn end_byte(self) -> usize {
         (unsafe { ffi::sq_node_end_byte(self.raw) }) as usize
     }
-    #[cfg(feature = "points")]
     pub fn start_position(self) -> Point {
         unsafe { ffi::sq_node_start_point(self.raw) }.into()
     }
-    #[cfg(feature = "points")]
     pub fn end_position(self) -> Point {
         unsafe { ffi::sq_node_end_point(self.raw) }.into()
     }
@@ -670,7 +677,6 @@ impl<'tree> Node<'tree> {
             )
         })
     }
-    #[cfg(feature = "points")]
     pub fn descendant_for_point_range(self, start: Point, end: Point) -> Option<Self> {
         Self::from_raw(unsafe {
             ffi::sq_node_descendant_for_point_range(
@@ -680,7 +686,6 @@ impl<'tree> Node<'tree> {
             )
         })
     }
-    #[cfg(feature = "points")]
     pub fn named_descendant_for_point_range(self, start: Point, end: Point) -> Option<Self> {
         Self::from_raw(unsafe {
             ffi::sq_node_named_descendant_for_point_range(
@@ -825,9 +830,7 @@ struct RawCursorAttributes {
     grammar_name: *const std::ffi::c_char,
     start_byte: u32,
     end_byte: u32,
-    #[cfg(feature = "points")]
     start_point: RawPoint,
-    #[cfg(feature = "points")]
     end_point: RawPoint,
     symbol: u16,
     grammar_symbol: u16,
@@ -851,9 +854,7 @@ impl RawCursorAttributes {
             grammar_id: self.grammar_symbol,
             start_byte: self.start_byte as usize,
             end_byte: self.end_byte as usize,
-            #[cfg(feature = "points")]
             start_position: self.start_point.into(),
-            #[cfg(feature = "points")]
             end_position: self.end_point.into(),
             is_named: self.is_named,
             is_extra: self.is_extra,
@@ -923,6 +924,7 @@ mod ffi {
         pub fn sq_tree_group_count(tree: *const c_void) -> u32;
         pub fn sq_tree_group_capacity(tree: *const c_void) -> u32;
         pub fn sq_tree_slot_count(tree: *const c_void) -> u32;
+        pub fn sq_tree_has_points(tree: *const c_void) -> bool;
         pub fn sq_tree_group_has_symbol(tree: *const c_void, group: u32, symbol: u16) -> bool;
         pub fn sq_node_child_by_field_id(node: RawNode, field: u16) -> RawNode;
         pub fn sq_node_child_by_field_name(
@@ -949,9 +951,7 @@ mod ffi {
         pub fn sq_node_grammar_type(node: RawNode) -> *const c_char;
         pub fn sq_node_start_byte(node: RawNode) -> u32;
         pub fn sq_node_end_byte(node: RawNode) -> u32;
-        #[cfg(feature = "points")]
         pub fn sq_node_start_point(node: RawNode) -> RawPoint;
-        #[cfg(feature = "points")]
         pub fn sq_node_end_point(node: RawNode) -> RawPoint;
         pub fn sq_node_is_named(node: RawNode) -> bool;
         pub fn sq_node_is_extra(node: RawNode) -> bool;
@@ -983,13 +983,11 @@ mod ffi {
             start: u32,
             end: u32,
         ) -> RawNode;
-        #[cfg(feature = "points")]
         pub fn sq_node_descendant_for_point_range(
             node: RawNode,
             start: RawPoint,
             end: RawPoint,
         ) -> RawNode;
-        #[cfg(feature = "points")]
         pub fn sq_node_named_descendant_for_point_range(
             node: RawNode,
             start: RawPoint,

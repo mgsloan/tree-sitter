@@ -3,13 +3,6 @@
 
 #include <tree_sitter/api.h>
 
-#ifndef SQ_INCLUDE_POINTS
-#define SQ_INCLUDE_POINTS 1
-#endif
-#if SQ_INCLUDE_POINTS != 0 && SQ_INCLUDE_POINTS != 1
-#error "SQ_INCLUDE_POINTS must be 0 or 1"
-#endif
-
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -26,16 +19,12 @@ typedef struct {
 typedef struct SQCursor SQCursor;
 typedef struct SQNodeIterator SQNodeIterator;
 
-// Compile callers and this library with the same SQ_INCLUDE_POINTS setting.
-// Point APIs and snapshot members are absent in byte-only builds.
 // A constant-time snapshot. Strings borrow the tree's retained language.
 // Child and descendant counts are available through explicit node APIs.
 typedef struct {
   const char *type, *grammar_type;
   uint32_t start_byte, end_byte;
-#if SQ_INCLUDE_POINTS
   TSPoint start_point, end_point;
-#endif
   TSSymbol symbol, grammar_symbol;
   TSFieldId field_id;
   bool is_named, is_extra, is_missing, is_error, has_error;
@@ -56,6 +45,9 @@ typedef struct {
   uint32_t initial_group_capacity;
   bool repack;
   bool symbol_presence;
+  // Store source row/column positions. Point APIs use byte offsets on row zero
+  // when these columns are omitted.
+  bool points;
 } SQPackOptions;
 
 const char *sq_error_string(SQError);
@@ -113,6 +105,8 @@ bool sq_tree_copy_compact(const SQTree *, void *destination, size_t length, SQEr
 uint32_t sq_tree_group_count(const SQTree *);
 uint32_t sq_tree_group_capacity(const SQTree *);
 uint32_t sq_tree_slot_count(const SQTree *);
+// False means point APIs expose byte offsets as columns on row zero.
+bool sq_tree_has_points(const SQTree *);
 SQNode sq_tree_root_node(const SQTree *);
 
 // Invalid/wasted slots return null. Physical slots are stable across repacking.
@@ -124,11 +118,10 @@ SQNode sq_tree_node_at_slot(const SQTree *, uint32_t);
 uint64_t sq_tree_group_span_delta_equal(const SQTree *, uint32_t group, uint32_t value);
 uint64_t sq_tree_group_start_byte_delta_equal(const SQTree *, uint32_t group, uint32_t value);
 uint64_t sq_tree_group_end_byte_delta_equal(const SQTree *, uint32_t group, uint32_t value);
-#if SQ_INCLUDE_POINTS
 // Point keys store the row delta in the high byte and column delta in the low byte.
+// Point-free trees have no encoded point lanes, so these functions return zero.
 uint64_t sq_tree_group_start_point_equal(const SQTree *, uint32_t group, uint32_t value);
 uint64_t sq_tree_group_end_point_equal(const SQTree *, uint32_t group, uint32_t value);
-#endif
 
 uint64_t sq_tree_group_supertype_equal(const SQTree *, uint32_t group, uint32_t value);
 uint64_t sq_tree_group_symbol_equal(const SQTree *, uint32_t group, uint32_t value);
@@ -146,10 +139,8 @@ const char *sq_node_type(SQNode);
 const char *sq_node_grammar_type(SQNode);
 uint32_t sq_node_start_byte(SQNode);
 uint32_t sq_node_end_byte(SQNode);
-#if SQ_INCLUDE_POINTS
 TSPoint sq_node_start_point(SQNode);
 TSPoint sq_node_end_point(SQNode);
-#endif
 
 bool sq_node_is_named(SQNode);
 bool sq_node_is_extra(SQNode);
@@ -186,10 +177,8 @@ SQNode sq_node_first_child_for_byte(SQNode, uint32_t);
 SQNode sq_node_first_named_child_for_byte(SQNode, uint32_t);
 SQNode sq_node_descendant_for_byte_range(SQNode, uint32_t, uint32_t);
 SQNode sq_node_named_descendant_for_byte_range(SQNode, uint32_t, uint32_t);
-#if SQ_INCLUDE_POINTS
 SQNode sq_node_descendant_for_point_range(SQNode, TSPoint, TSPoint);
 SQNode sq_node_named_descendant_for_point_range(SQNode, TSPoint, TSPoint);
-#endif
 // Preorder traversal stays within this node's tree, and returns null at ends.
 SQNode sq_node_next_preorder(SQNode);
 SQNode sq_node_prev_preorder(SQNode);

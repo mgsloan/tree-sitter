@@ -197,7 +197,7 @@ fn cancellation_never_creates_entry() {
 #[test]
 fn packing_variants_and_invalid_syntax_are_cacheable() {
     let root = tempfile::tempdir().unwrap();
-    fs::write(root.path().join("input.json"), "[1,").unwrap();
+    fs::write(root.path().join("input.json"), "[\n1,").unwrap();
     let a = Persistence::open(root.path(), Options::default()).unwrap();
     let b = Persistence::open(
         root.path(),
@@ -207,10 +207,26 @@ fn packing_variants_and_invalid_syntax_are_cacheable() {
         },
     )
     .unwrap();
+    let c = Persistence::open(
+        root.path(),
+        Options {
+            points: false,
+            ..Options::default()
+        },
+    )
+    .unwrap();
     assert!(!load(&a).cache_hit());
     assert!(!load(&b).cache_hit());
+    let without_points = load(&c);
+    assert!(!without_points.cache_hit());
+    assert!(!without_points.tree().has_points());
+    let root = without_points.tree().root_node();
+    assert_eq!(root.start_position().row, 0);
+    assert_eq!(root.end_position().row, 0);
+    assert_eq!(root.end_position().column, root.end_byte());
     assert!(load(&a).cache_hit());
     assert!(load(&b).cache_hit());
+    assert!(load(&c).cache_hit());
     assert!(load(&a).tree().root_node().has_error());
 }
 

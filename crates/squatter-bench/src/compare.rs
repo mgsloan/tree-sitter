@@ -1,7 +1,6 @@
 use anyhow::{Result, ensure};
 use std::collections::HashMap;
 use tree_sitter::Language;
-#[cfg(feature = "points")]
 use tree_sitter::Point;
 use tree_sitter_squatter::traits::{Attributes, CursorLike, NodeLike};
 
@@ -63,7 +62,6 @@ fn digest_attributes(mut value: u64, attributes: &Attributes<'_>) -> u64 {
     ] {
         mix(part);
     }
-    #[cfg(feature = "points")]
     for part in [
         attributes.start_position.row as u64,
         attributes.start_position.column as u64,
@@ -266,7 +264,6 @@ pub fn seek_bytes<'tree, N: NodeLike<'tree>>(
         })
         .collect()
 }
-#[cfg(feature = "points")]
 pub fn seek_points<'tree, N: NodeLike<'tree>>(
     root: N,
     ids: &Identities,

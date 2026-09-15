@@ -22,14 +22,17 @@ static inline void sq_attributes_with_ids(SQNode node, uint32_t symbol, uint32_t
   uint32_t group = node.slot / SQ_GROUP_SIZE;
   out->start_byte = sq_group_start_byte_base(node.tree, group) + sq_node_start_byte_delta(node);
   out->end_byte = sq_group_end_byte_base(node.tree, group) - sq_node_end_byte_delta(node);
-#if SQ_INCLUDE_POINTS
-  uint64_t start_point = sq_group_start_point_base(node.tree, group) +
-                         sq_expand_point_key((uint16_t)sq_node_start_point_key(node));
-  uint64_t end_point = sq_group_end_point_base(node.tree, group) -
-                       sq_expand_point_key((uint16_t)sq_node_end_point_key(node));
-  out->start_point = sq_point_from_key(start_point);
-  out->end_point = sq_point_from_key(end_point);
-#endif
+  if (sq_tree_has_points(node.tree)) {
+    uint64_t start_point = sq_group_start_point_base(node.tree, group) +
+                           sq_expand_point_key((uint16_t)sq_node_start_point_key(node));
+    uint64_t end_point = sq_group_end_point_base(node.tree, group) -
+                         sq_expand_point_key((uint16_t)sq_node_end_point_key(node));
+    out->start_point = sq_point_from_key(start_point);
+    out->end_point = sq_point_from_key(end_point);
+  } else {
+    out->start_point = (TSPoint){0, out->start_byte};
+    out->end_point = (TSPoint){0, out->end_byte};
+  }
   out->is_extra = sq_node_extra_flag(node);
   out->is_missing = sq_node_missing_flag(node);
   out->has_error = sq_node_error_flag(node);

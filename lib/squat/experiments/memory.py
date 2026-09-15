@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """Measure actual tree allocations on the saved, hashed iterator corpora.
 
-Build memory-bench in build/squat-memory/{points,bytes} first. This runner can
+Build memory-bench in build/squat-memory first. This runner can
 also run inside the corpus container with --loader /lib64/ld-linux-x86-64.so.2.
 """
 
 import argparse
 import hashlib
 import json
+import os
 import platform
 import subprocess
 from pathlib import Path
@@ -57,7 +58,7 @@ def main():
     parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parents[3])
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--loader", type=Path)
-    parser.add_argument("--binary-root", type=Path, help="Directory containing points/ and bytes/ probes")
+    parser.add_argument("--binary-root", type=Path, help="Directory containing memory-bench")
     parser.add_argument("--repeats", type=int, default=2)
     args = parser.parse_args()
     if args.repeats < 1:
@@ -70,15 +71,14 @@ def main():
     manifest_path = root / "build/squat-iterator/absolute-build-manifest.json"
     manifest = json.loads(manifest_path.read_text())
     binary_root = args.binary_root.resolve() if args.binary_root else root / "build/squat-memory"
-    binaries = {mode: binary_root / mode / "memory-bench"
-                for mode in ["points", "bytes"]}
+    binary = binary_root / "memory-bench"
     metadata = {
         "platform": platform.platform(),
         "libc": platform.libc_ver(),
         "repeats": args.repeats,
         "seed": 42,
         "input_manifest_sha256": digest(manifest_path.read_bytes()),
-        "binaries": {mode: digest(path.read_bytes()) for mode, path in binaries.items()},
+        "binary": digest(binary.read_bytes()),
         "sources": {str(path.relative_to(root)): digest(path.read_bytes())
                     for path in sorted((root / "lib/squat").rglob("*.c"))
                     if "tests" not in path.parts},
@@ -124,10 +124,12 @@ def main():
                     source_path = inputs_directory / source_hash
                     source_path.write_bytes(source)
                     measurements = {}
-                    for mode, binary in binaries.items():
+                    for mode in ["points", "bytes"]:
                         command = ([str(args.loader)] if args.loader else []) + [
                             str(binary), str(library), entry["symbol"], str(source_path)]
-                        repeats = [json.loads(subprocess.check_output(command, text=True))
+                        environment = {**os.environ, "SQ_POINTS": "1" if mode == "points" else "0"}
+                        repeats = [json.loads(subprocess.check_output(
+                                       command, text=True, env=environment))
                                    for _ in range(args.repeats)]
                         assert all(row == repeats[0] for row in repeats), (relative, mode)
                         measurements[mode] = repeats[0]

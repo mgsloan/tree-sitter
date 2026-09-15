@@ -26,11 +26,9 @@ static bool strings_equal(const char *a, const char *b) {
   return a && b ? !strcmp(a, b) : a == b;
 }
 
-#if SQ_INCLUDE_POINTS
 static bool points_equal(TSPoint a, TSPoint b) {
   return a.row == b.row && a.column == b.column;
 }
-#endif
 
 typedef struct {
   TSNode *mainline;
@@ -123,10 +121,8 @@ static void compare_node(Nodes *nodes, uint32_t i) {
   CHECK(strings_equal(ts_node_grammar_type(a), sq_node_grammar_type(b)));
   CHECK(ts_node_start_byte(a) == sq_node_start_byte(b));
   CHECK(ts_node_end_byte(a) == sq_node_end_byte(b));
-#if SQ_INCLUDE_POINTS
   CHECK(points_equal(ts_node_start_point(a), sq_node_start_point(b)));
   CHECK(points_equal(ts_node_end_point(a), sq_node_end_point(b)));
-#endif
   CHECK(ts_node_is_named(a) == sq_node_is_named(b));
   CHECK(ts_node_is_extra(a) == sq_node_is_extra(b));
   CHECK(ts_node_is_missing(a) == sq_node_is_missing(b));
@@ -174,11 +170,9 @@ static void compare_cursor_state(SQCursor *cursor) {
   CHECK(strcmp(actual.grammar_type, sq_node_grammar_type(node)) == 0);
   CHECK(actual.start_byte == sq_node_start_byte(node));
   CHECK(actual.end_byte == sq_node_end_byte(node));
-#if SQ_INCLUDE_POINTS
   TSPoint start = sq_node_start_point(node), end = sq_node_end_point(node);
   CHECK(actual.start_point.row == start.row && actual.start_point.column == start.column);
   CHECK(actual.end_point.row == end.row && actual.end_point.column == end.column);
-#endif
   CHECK(actual.field_id == sq_node_field_id(node));
   CHECK(actual.is_named == sq_node_is_named(node));
   CHECK(actual.is_extra == sq_node_is_extra(node));
@@ -235,10 +229,8 @@ static void compare_group_equality(const SQTree *tree) {
     compare_equal_column(tree, group, sq_tree_group_start_byte_delta_equal,
                          sq_node_start_byte_delta);
     compare_equal_column(tree, group, sq_tree_group_end_byte_delta_equal, sq_node_end_byte_delta);
-#if SQ_INCLUDE_POINTS
     compare_equal_column(tree, group, sq_tree_group_start_point_equal, sq_node_start_point_key);
     compare_equal_column(tree, group, sq_tree_group_end_point_equal, sq_node_end_point_key);
-#endif
     compare_equal_column(tree, group, sq_tree_group_supertype_equal, sq_node_supertype);
     compare_equal_column(tree, group, sq_tree_group_symbol_equal, sq_node_symbol_id);
     compare_equal_column(tree, group, sq_tree_group_grammar_symbol_equal, sq_node_grammar_id);
@@ -558,30 +550,24 @@ static void check_pack_bases(const SQTree *tree) {
   for (uint32_t group = 0; group < sq_tree_group_count(tree); group++) {
     uint32_t count = SQ_GROUP_SIZE - sq_group_waste(tree, group);
     uint32_t span_min = UINT32_MAX, span_max = 0;
-#if SQ_INCLUDE_POINTS
     uint32_t column_min = UINT32_MAX, column_max = 0, end_column_max = 0;
-#endif
     for (uint32_t lane = 0; lane < count; lane++) {
       SQNode node = {tree, group * SQ_GROUP_SIZE + lane};
       uint32_t span = node.slot - sq_node_first_slot(node);
       if (span < span_min) span_min = span;
       if (span > span_max) span_max = span;
-#if SQ_INCLUDE_POINTS
       uint32_t column = sq_node_start_point(node).column;
       if (column < column_min) column_min = column;
       if (column > column_max) column_max = column;
       uint32_t end_column = sq_node_end_point(node).column;
       if (end_column > end_column_max) end_column_max = end_column;
-#endif
     }
 
     CHECK(sq_group_span_base(tree, group) == (span_max <= UINT8_MAX ? 0 : span_min));
-#if SQ_INCLUDE_POINTS
     TSPoint start_base = sq_point_from_key(sq_group_start_point_base(tree, group));
     TSPoint end_base = sq_point_from_key(sq_group_end_point_base(tree, group));
     CHECK(start_base.column == (column_max <= UINT8_MAX ? 0 : column_min));
     CHECK(end_base.column == end_column_max);
-#endif
   }
 }
 
@@ -803,10 +789,8 @@ static void edited_positions(const TSLanguage *language) {
     CHECK(!sq_node_is_null(node));
     CHECK(ts_node_start_byte(expected) == sq_node_start_byte(node));
     CHECK(ts_node_end_byte(expected) == sq_node_end_byte(node));
-#if SQ_INCLUDE_POINTS
     CHECK(points_equal(ts_node_start_point(expected), sq_node_start_point(node)));
     CHECK(points_equal(ts_node_end_point(expected), sq_node_end_point(node)));
-#endif
     node = sq_node_next_preorder(node);
     if (ts_tree_cursor_goto_first_child(&cursor)) continue;
     bool moved = false;
@@ -820,6 +804,66 @@ static void edited_positions(const TSLanguage *language) {
   sq_tree_delete(cached);
   sq_tree_delete(packed);
   sq_pack_context_delete(context);
+  ts_tree_delete(tree);
+  ts_parser_delete(parser);
+}
+
+static void omitted_points(const TSLanguage *language) {
+  TSParser *parser = ts_parser_new();
+  CHECK(ts_parser_set_language(parser, language));
+  const char *source = "[\n  1,\n  2\n]";
+  TSTree *tree = ts_parser_parse_string(parser, NULL, source, (uint32_t)strlen(source));
+  CHECK(tree);
+  SQPackOptions options = sq_pack_options_default();
+  options.points = false;
+  SQError error;
+  SQTree *packed = sq_tree_pack(tree, options, &error);
+  CHECK(packed && error == SQ_OK && !sq_tree_has_points(packed));
+  CHECK(packed->layout.start_point_base == packed->layout.end);
+  CHECK(packed->layout.start_point == packed->layout.end);
+  CHECK(packed->layout.end_point_base == packed->layout.end);
+  CHECK(packed->layout.end_point == packed->layout.end);
+
+  for (SQNode node = sq_tree_root_node(packed); node.tree; node = sq_node_next_preorder(node)) {
+    TSPoint start = sq_node_start_point(node), end = sq_node_end_point(node);
+    CHECK(start.row == 0 && start.column == sq_node_start_byte(node));
+    CHECK(end.row == 0 && end.column == sq_node_end_byte(node));
+    SQCursorAttributes attributes;
+    sq_node_attributes(node, &attributes);
+    CHECK(points_equal(attributes.start_point, start));
+    CHECK(points_equal(attributes.end_point, end));
+  }
+
+  SQNode root = sq_tree_root_node(packed);
+  SQNode by_byte = sq_node_descendant_for_byte_range(root, 3, 4);
+  SQNode by_point = sq_node_descendant_for_point_range(root, (TSPoint){0, 3}, (TSPoint){0, 4});
+  CHECK(sq_node_eq(by_byte, by_point));
+  CHECK(!sq_tree_group_start_point_equal(packed, 0, 0));
+  CHECK(!sq_tree_group_end_point_equal(packed, 0, 0));
+
+  SQNodeIterator *iterator = sq_node_iterator_new(root, true);
+  CHECK(iterator);
+  for (SQNode node = sq_node_iterator_next(iterator); node.tree;
+       node = sq_node_iterator_next(iterator)) {
+    SQCursorAttributes attributes;
+    sq_node_iterator_attributes(iterator, &attributes);
+    CHECK(attributes.start_point.row == 0 && attributes.start_point.column == attributes.start_byte);
+    CHECK(attributes.end_point.row == 0 && attributes.end_point.column == attributes.end_byte);
+  }
+  sq_node_iterator_delete(iterator);
+
+  SQTree *compact = sq_tree_repack(packed, &error);
+  CHECK(compact && !sq_tree_has_points(compact));
+  uint32_t size;
+  const void *bytes = sq_tree_data(compact, &size);
+  SQTree *loaded = sq_tree_from_bytes(language, bytes, size, &error);
+  CHECK(loaded && !sq_tree_has_points(loaded));
+  CHECK(sq_node_start_point(sq_tree_root_node(loaded)).row == 0);
+  CHECK(sq_node_end_point(sq_tree_root_node(loaded)).column == strlen(source));
+
+  sq_tree_delete(loaded);
+  sq_tree_delete(compact);
+  sq_tree_delete(packed);
   ts_tree_delete(tree);
   ts_parser_delete(parser);
 }
@@ -890,6 +934,8 @@ int main(int argc, char **argv) {
   }
   input_name = "edited positions";
   edited_positions(language);
+  input_name = "omitted points";
+  omitted_points(language);
   const char *samples[] = {"",
                            "x",
                            "{\"a\": [1, true, null], \"b\": {\"c\": 2}}",
