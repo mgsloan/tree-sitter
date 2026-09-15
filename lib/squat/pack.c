@@ -386,8 +386,10 @@ static bool close_group(Builder *builder) {
 
     if (supertype_bits == 16) {
       sq_set_u16(data, supertype_offset, first + i, builder->pending[i].super);
-    } else if (supertype_bits) {
+    } else if (supertype_bits == 8) {
       sq_set_u8(data, supertype_offset, first + i, (uint8_t)builder->pending[i].super);
+    } else if (supertype_bits) {
+      sq_set_packed(data, supertype_offset, first + i, supertype_bits, builder->pending[i].super);
     }
   }
 

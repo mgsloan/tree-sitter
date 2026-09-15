@@ -3,6 +3,21 @@
 #include <stdio.h>
 #include "supertype_fixture.h"
 
+static void width_policy_tests(void) {
+  const struct { uint32_t max; uint8_t field, symbol; } cases[] = {
+    {0, 0, 0}, {1, 1, 1}, {3, 2, 2}, {4, 4, 4}, {7, 4, 4},
+    {15, 4, 4}, {16, 8, 8}, {31, 8, 8}, {63, 8, 8}, {127, 8, 8},
+    {255, 8, 8}, {256, 9, 9}, {511, 9, 9}, {512, 10, 10},
+    {1023, 10, 10}, {1024, 11, 16}, {2047, 11, 16},
+    {4095, 12, 16}, {8191, 13, 16}, {16383, 14, 16},
+    {32767, 15, 16}, {65535, 16, 16},
+  };
+  for (unsigned i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+    assert(sq_field_width(cases[i].max) == cases[i].field);
+    assert(sq_symbol_width(cases[i].max) == cases[i].symbol);
+  }
+}
+
 static void empty_column_tests(void) {
   const char *names[] = {"end", "node"};
   const TSSymbolMetadata metadata[] = {{0}, {.visible = true, .named = true}};
@@ -42,7 +57,7 @@ static void empty_column_tests(void) {
 
 static void equality_tests(void) {
   uint64_t state = 42;
-  for (uint8_t bits = 2; bits <= 32; bits++) {
+  for (uint8_t bits = 1; bits <= 32; bits++) {
     uint64_t lane_mask = (UINT64_C(1) << bits) - 1;
     for (unsigned trial = 0; trial < 10000; trial++) {
       state = state * UINT64_C(6364136223846793005) + 1;
@@ -348,6 +363,7 @@ static void sparse_grammar_tests(bool dictionary) {
 }
 
 int main(void) {
+  width_policy_tests();
   empty_column_tests();
   sparse_grammar_tests(false);
   sparse_grammar_tests(true);

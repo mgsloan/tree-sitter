@@ -459,7 +459,7 @@ static void sq_query__prepare_symbol_filter(SQQuery *query) {
 
   filter->symbol_count = count;
   memcpy(filter->symbols, query->scan_targets.contents, count * sizeof(uint16_t));
-  uint32_t width = sq_width(query->language->symbol_count + query->language->alias_count + 1);
+  uint32_t width = sq_symbol_width(query->language->symbol_count + query->language->alias_count + 1);
   if (width < 2) {
     width = 2;
   }

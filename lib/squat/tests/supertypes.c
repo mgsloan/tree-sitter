@@ -89,6 +89,58 @@ static void exercise(uint32_t count, bool repack) {
   free(saved);
 }
 
+static void direct_mask_tests(void) {
+  const uint8_t widths[] = {0, 1, 2, 4, 4, 8, 8, 8, 8};
+  for (unsigned bits = 0; bits <= 8; bits++) {
+    SupertypeFixture fixture;
+    supertype_fixture(&fixture, bits, true);
+    const TSLanguage *language = &fixture.language;
+    SQError error;
+    Builder builder = {.tree = sq_allocate(language, 1, &error), .words = 1,
+                       .language = language, .small_supertypes = true,
+                       .symbol_count = language->symbol_count,
+                       .symbol_space = language->symbol_count + 2, .error = &error};
+    assert(builder.tree && builder.tree->layout.supertype_bits == widths[bits]);
+    Subtree leaf = {.data = {.is_inline = true, .symbol = 1}};
+    uint32_t slots[256];
+    unsigned count = 1u << bits;
+    for (unsigned mask = 0; mask < count; mask++) {
+      EmitNode node = {.subtree = &leaf, .mask = mask, .boundary = distance(&builder),
+                       .later = mask != 0};
+      assert(emit(&builder, &node));
+      slots[mask] = distance(&builder) - 1;
+    }
+    EmitNode root = {.subtree = &leaf, .boundary = 0};
+    assert(emit(&builder, &root) && close_group(&builder));
+    unsigned groups = sq_tree_group_count(builder.tree);
+    assert(sq_prepare_final(&builder.tree, groups, 0, &error));
+    // Exercise the emitter, resize copy, and both persistence ownership modes.
+    for (unsigned pass = 0; pass < 3; pass++) {
+      assert(sq_resize(&builder.tree, groups + (pass == 1 ? 17 : 0), &error));
+      uint32_t length;
+      const void *bytes = sq_tree_data(builder.tree, &length);
+      SQTree *copy = sq_tree_from_bytes(language, bytes, length, &error);
+      SQTree *borrowed = sq_tree_from_bytes_borrowed(language, bytes, length, &error);
+      assert(copy && borrowed);
+      SQTree *trees[] = {builder.tree, copy, borrowed};
+      for (unsigned t = 0; t < 3; t++) {
+        for (unsigned mask = 0; mask < count; mask++) {
+          SQNode node = {trees[t], slots[mask]};
+          assert(sq_node_supertype(node) == mask);
+          for (unsigned bit = 0; bit < bits; bit++) {
+            assert(sq_node_has_supertype(node, bit + 2) == ((mask & (1u << bit)) != 0));
+          }
+          assert(sq_tree_group_supertype_equal(trees[t], slots[mask] / SQ_GROUP_SIZE, mask)
+                 & (UINT64_C(1) << (slots[mask] % SQ_GROUP_SIZE)));
+        }
+      }
+      sq_tree_delete(copy);
+      sq_tree_delete(borrowed);
+    }
+    sq_tree_delete(builder.tree);
+  }
+}
+
 static void dictionary_tests(void) {
   SQError error = SQ_OK;
   SupertypeFixture fixture;
@@ -241,6 +293,7 @@ static void concurrent_cache(void) {
 }
 
 int main(void) {
+  direct_mask_tests();
   dictionary_tests();
   concurrent_cache();
   for (unsigned repack = 0; repack < 2; repack++) {

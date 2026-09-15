@@ -35,12 +35,29 @@ uint8_t *sq_reallocate_data(uint8_t *data, size_t old_size, size_t new_size) {
 }
 
 uint8_t sq_width(uint32_t max) {
-  uint8_t bits = 2;
-  while ((max >>= 1) > 1) {
+  uint8_t bits = 0;
+  while (max) {
     bits++;
+    max >>= 1;
   }
-
   return bits;
+}
+
+// Small powers of two permit byte loads with constant shifts. Keep compact
+// 1/2/4-bit columns; the query and walk benchmarks favor 3->4 and 5..7->8.
+static uint8_t small_width(uint8_t bits) {
+  return bits == 3 ? 4 : bits >= 5 && bits <= 7 ? 8 : bits;
+}
+
+uint8_t sq_field_width(uint32_t max) {
+  return small_width(sq_width(max));
+}
+
+uint8_t sq_symbol_width(uint32_t max) {
+  uint8_t bits = small_width(sq_width(max));
+  // Symbols justify the space cost earlier than field IDs. Preserve 9/10-bit
+  // packing; 11/12 use five lanes per word and 13..16 already use four.
+  return bits >= 11 && bits < 16 ? 16 : bits;
 }
 
 uint64_t sq_column_size(uint32_t count, uint8_t bits) {
@@ -59,16 +76,17 @@ bool sq_layout(const TSLanguage *language, uint32_t capacity, bool wide_supertyp
   if (!sq_language_compatible(language) || !capacity || capacity > UINT32_MAX / SQ_GROUP_SIZE) {
     return false;
   }
-  bool has_supertypes = false;
+  uint32_t supertype_count = 0;
   for (uint32_t symbol = 0; symbol < language->symbol_count + language->alias_count; symbol++) {
     if (language->symbol_metadata[symbol].supertype) {
-      has_supertypes = true;
-      break;
+      supertype_count++;
     }
   }
-  layout->supertype_bits = has_supertypes ? (wide_supertypes ? 16 : 8) : 0;
-  layout->symbol_bits = sq_width(language->symbol_count + language->alias_count + 1);
-  layout->field_bits = language->field_count ? sq_width(language->field_count) : 0;
+  // Larger grammars retain byte/halfword dictionary IDs.
+  layout->supertype_bits = supertype_count <= 8 ? small_width((uint8_t)supertype_count)
+                                               : (wide_supertypes ? 16 : 8);
+  layout->symbol_bits = sq_symbol_width(language->symbol_count + language->alias_count + 1);
+  layout->field_bits = sq_field_width(language->field_count);
   layout->symbol_lanes = (uint8_t)(64 / layout->symbol_bits);
   layout->field_lanes = layout->field_bits ? (uint8_t)(64 / layout->field_bits) : 0;
   layout->symbol_mask = (uint32_t)((UINT64_C(1) << layout->symbol_bits) - 1);
@@ -85,7 +103,7 @@ bool sq_layout(const TSLanguage *language, uint32_t capacity, bool wide_supertyp
   layout->span_delta = column_offset(&next, sq_array_size(slots, 1));
   layout->symbol = column_offset(&next, sq_column_size(slots, layout->symbol_bits));
   layout->field = column_offset(&next, sq_column_size(slots, layout->field_bits));
-  layout->supertype = column_offset(&next, sq_array_size(slots, layout->supertype_bits / 8));
+  layout->supertype = column_offset(&next, sq_column_size(slots, layout->supertype_bits));
   layout->last = column_offset(&next, sq_column_size(slots, 1));
   layout->extra = column_offset(&next, sq_column_size(slots, 1));
   layout->error = column_offset(&next, sq_column_size(slots, 1));
@@ -375,7 +393,7 @@ static bool resize_tree(SQTree **tree_pointer, uint32_t capacity, uint32_t trail
   memcpy(data + next.field, tree->data + tree->layout.field,
          sq_column_size(slots, next.field_bits));
   memcpy(data + next.supertype, tree->data + tree->layout.supertype,
-         sq_array_size(slots, next.supertype_bits / 8));
+         sq_column_size(slots, next.supertype_bits));
   memcpy(data + next.last, tree->data + tree->layout.last, sq_column_size(slots, 1));
   memcpy(data + next.extra, tree->data + tree->layout.extra, sq_column_size(slots, 1));
   memcpy(data + next.error, tree->data + tree->layout.error, sq_column_size(slots, 1));

@@ -26,13 +26,13 @@ _Static_assert(SQ_ITERATOR_UNPACK_SLOTS >= SQ_GROUP_SIZE &&
 _Static_assert(SQ_COLUMN_ALIGNMENT == 8 || SQ_COLUMN_ALIGNMENT == 64,
                "supported experimental column alignments");
 #define SQ_VERSION                                                                                 \
-  (UINT32_C(0x535100b0) |                                                                          \
+  (UINT32_C(0x535100c0) |                                                                          \
    (SQ_GROUP_SIZE == 32   ? 2u                                                                     \
     : SQ_GROUP_SIZE == 64 ? 4u                                                                     \
                           : 0u) |                                                                  \
    (SQ_COLUMN_ALIGNMENT == 64 ? 8u : 0u))
 
-// Version 11: also omit the supertype column when the grammar has no supertypes.
+// Version 12: measured ID width rounding and compact direct supertype masks.
 #define SQ_LAYOUT_FLAGS (SQ_INCLUDE_POINTS ? 0u : 0x100u)
 #define SQ_PRESENCE 0x200u
 #define SQ_WIDE_SUPERTYPES 0x400u
@@ -131,6 +131,8 @@ uint8_t *sq_reallocate_data(uint8_t *data, size_t old_size, size_t new_size);
 uint64_t sq_lane_starts(uint8_t bits);
 uint64_t sq_equal_lanes(uint64_t word, uint32_t value, uint8_t bits);
 uint8_t sq_width(uint32_t max);
+uint8_t sq_field_width(uint32_t max);
+uint8_t sq_symbol_width(uint32_t max);
 uint64_t sq_column_size(uint32_t count, uint8_t bits);
 static inline uint64_t sq_array_size(uint32_t count, unsigned bytes) {
   return ((uint64_t)count * bytes + 7) & ~UINT64_C(7);
@@ -205,6 +207,10 @@ static inline uint32_t sq_get_packed(const uint8_t *data, uint32_t offset, uint3
   switch (bits) {
   case 1:
     return sq_get_bit(data, offset, index);
+  case 2:
+    return (sq_get_u8(data, offset, index / 4) >> ((index % 4) * 2)) & 3u;
+  case 4:
+    return (sq_get_u8(data, offset, index / 2) >> ((index % 2) * 4)) & 15u;
   case 8:
     return sq_get_u8(data, offset, index);
   case 16:
@@ -227,6 +233,10 @@ static inline uint32_t sq_get_packed_cached(const uint8_t *data, uint32_t offset
   switch (bits) {
   case 1:
     return sq_get_bit(data, offset, index);
+  case 2:
+    return (sq_get_u8(data, offset, index / 4) >> ((index % 4) * 2)) & 3u;
+  case 4:
+    return (sq_get_u8(data, offset, index / 2) >> ((index % 2) * 4)) & 15u;
   case 8:
     return sq_get_u8(data, offset, index);
   case 16:
@@ -320,9 +330,8 @@ static inline uint32_t sq_node_end_point_key(SQNode node) {
 
 static inline uint32_t sq_node_supertype(SQNode node) {
   if (!node.tree->layout.supertype_bits) return 0;
-  return node.tree->layout.supertype_bits == 16
-      ? sq_get_u16(node.tree->data, node.tree->layout.supertype, node.slot)
-      : sq_get_u8(node.tree->data, node.tree->layout.supertype, node.slot);
+  return sq_get_packed(node.tree->data, node.tree->layout.supertype, node.slot,
+                       node.tree->layout.supertype_bits);
 }
 
 static inline uint32_t sq_node_symbol_id(SQNode node) {

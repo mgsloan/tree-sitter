@@ -846,7 +846,7 @@ static void packing_tests(void) {
     }
   }
 
-  CHECK(sq_width(0) == 2 && sq_width(3) == 2 && sq_width(4) == 3 && sq_width(255) == 8 &&
+  CHECK(sq_width(0) == 0 && sq_width(3) == 2 && sq_width(4) == 3 && sq_width(255) == 8 &&
         sq_width(256) == 9);
 }
 
