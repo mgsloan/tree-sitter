@@ -94,6 +94,9 @@ struct Arguments {
     /// Stable condition name recorded for matrix summarization.
     #[arg(long)]
     pressure_label: Option<String>,
+    /// Traversals performed inside each allocation-free digest measurement.
+    #[arg(long, default_value_t = 1)]
+    digest_iterations: usize,
     /// Pin the benchmark thread to this Linux CPU.
     #[arg(long)]
     benchmark_cpu: Option<usize>,
@@ -427,11 +430,13 @@ fn observe<'tree, N: tree_sitter_squatter::traits::NodeLike<'tree>>(
     benchmark: &str,
     bytes: &[usize],
     _points: &[Point],
+    digest_iterations: usize,
 ) -> Result<Observation<'tree>> {
     match benchmark {
-        "digest-forward" | "digest-iterator-cached" => {
-            Ok(Observation::Digest(compare::digest(root)?))
-        }
+        "digest-forward" | "digest-iterator-cached" => Ok(Observation::Digest(compare::digest(
+            root,
+            digest_iterations,
+        )?)),
         "cursor-forward" | "iterator-forward" | "iterator-forward-cached" => Ok(
             Observation::Navigation(compare::navigate(root.cursor()?, ids.unwrap())),
         ),
@@ -604,8 +609,8 @@ pub fn run(check_only: bool) -> Result<()> {
         );
     }
     ensure!(
-        arguments.repeat > 0 && arguments.batch_size > 0,
-        "repeat and batch size must be positive"
+        arguments.repeat > 0 && arguments.batch_size > 0 && arguments.digest_iterations > 0,
+        "repeat, batch size, and digest iterations must be positive"
     );
     ensure!(
         Path::new(&arguments.output).components().count() == 1
@@ -927,6 +932,7 @@ pub fn run(check_only: bool) -> Result<()> {
                                         benchmark,
                                         &pair.seek_bytes,
                                         &pair.seek_points,
+                                        arguments.digest_iterations,
                                     )
                                 },
                             ));
@@ -967,6 +973,7 @@ pub fn run(check_only: bool) -> Result<()> {
                                         return compare::digest_iterator(
                                             pair.squat.root_node(),
                                             true,
+                                            arguments.digest_iterations,
                                         )
                                         .map(Observation::Digest);
                                     }
@@ -976,6 +983,7 @@ pub fn run(check_only: bool) -> Result<()> {
                                         benchmark,
                                         &pair.seek_bytes,
                                         &pair.seek_points,
+                                        arguments.digest_iterations,
                                     )
                                 },
                             ));

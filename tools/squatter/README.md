@@ -88,8 +88,10 @@ The shared workload set is:
 - `cold-parse`, comparing parse against parse plus one-shot packing
 
 The digest workloads avoid result vectors and identity maps so cache experiments
-measure tree traversal rather than benchmark bookkeeping. Without an explicit
-`cold-parse` selector, prerequisite parsing uses a reusable
+measure tree traversal rather than benchmark bookkeeping. Use
+`--digest-iterations` to put repeated editor-like passes inside one measurement,
+after a single pressure event. Without an explicit `cold-parse` selector,
+prerequisite parsing uses a reusable
 per-grammar `PackContext` and is reported as `setup-parse`. Workload and backend
 order rotate across batches and repeats. Comparisons use visible preorder
 ordinals, and query results remain strict.

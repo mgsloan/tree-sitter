@@ -75,8 +75,7 @@ fn digest_attributes(mut value: u64, attributes: &Attributes<'_>) -> u64 {
     value
 }
 
-/// Allocation-free attribute traversal for resident-set and cache experiments.
-pub fn digest<'tree, N: NodeLike<'tree>>(root: N) -> Result<Digest> {
+fn digest_once<'tree, N: NodeLike<'tree>>(root: N) -> Result<Digest> {
     let mut cursor = root.cursor()?;
     let mut nodes = 0;
     let mut value = 42;
@@ -97,7 +96,17 @@ pub fn digest<'tree, N: NodeLike<'tree>>(root: N) -> Result<Digest> {
     }
 }
 
-pub fn digest_iterator(root: tree_sitter_squatter::Node<'_>, cached: bool) -> Result<Digest> {
+/// Allocation-free attribute traversal for resident-set and cache experiments.
+pub fn digest<'tree, N: NodeLike<'tree>>(root: N, iterations: usize) -> Result<Digest> {
+    let mut result = Digest { nodes: 0, value: 0 };
+    for _ in 0..iterations {
+        result = std::hint::black_box(digest_once(root)?);
+    }
+    result.nodes *= iterations;
+    Ok(result)
+}
+
+fn digest_iterator_once(root: tree_sitter_squatter::Node<'_>, cached: bool) -> Result<Digest> {
     let mut iterator = root.node_iterator(cached)?;
     let mut nodes = 0;
     let mut value = 42;
@@ -106,6 +115,19 @@ pub fn digest_iterator(root: tree_sitter_squatter::Node<'_>, cached: bool) -> Re
         nodes += 1;
     }
     Ok(Digest { nodes, value })
+}
+
+pub fn digest_iterator(
+    root: tree_sitter_squatter::Node<'_>,
+    cached: bool,
+    iterations: usize,
+) -> Result<Digest> {
+    let mut result = Digest { nodes: 0, value: 0 };
+    for _ in 0..iterations {
+        result = std::hint::black_box(digest_iterator_once(root, cached)?);
+    }
+    result.nodes *= iterations;
+    Ok(result)
 }
 
 pub fn walk<'tree, N: NodeLike<'tree>>(root: N, ids: &Identities) -> Result<Vec<Record<'tree>>> {
