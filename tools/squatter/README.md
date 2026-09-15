@@ -83,14 +83,15 @@ The shared workload set is:
 - `query-matches` and `query-captures`
 - `walk-forward` and `cursor-forward`
 - cached and uncached iterator navigation/attribute walks
-- allocation-free cursor and cached-iterator attribute digests
+- allocation-free cursor and cached-iterator attribute digests and scans
 - `seek-byte` and, in point-enabled builds, `seek-point`
 - `cold-parse`, comparing parse against parse plus one-shot packing
 
-The digest workloads avoid result vectors and identity maps so cache experiments
-measure tree traversal rather than benchmark bookkeeping. Use
-`--digest-iterations` to put repeated editor-like passes inside one measurement,
-after a single pressure event. Without an explicit `cold-parse` selector,
+The digest and scan workloads avoid result vectors and identity maps so cache
+experiments measure tree traversal rather than benchmark bookkeeping. Scans
+also avoid per-node checksum arithmetic. Use `--traversal-iterations` to put
+repeated editor-like passes inside one measurement, after a single pressure
+event. Without an explicit `cold-parse` selector,
 prerequisite parsing uses a reusable
 per-grammar `PackContext` and is reported as `setup-parse`. Workload and backend
 order rotate across batches and repeats. Comparisons use visible preorder

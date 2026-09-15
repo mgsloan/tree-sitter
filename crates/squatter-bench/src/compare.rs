@@ -130,6 +130,56 @@ pub fn digest_iterator(
     Ok(result)
 }
 
+fn scan_once<'tree, N: NodeLike<'tree>>(root: N) -> Result<usize> {
+    let mut cursor = root.cursor()?;
+    let mut nodes = 0;
+    loop {
+        std::hint::black_box(cursor.attributes());
+        nodes += 1;
+        if cursor.goto_first_child() {
+            continue;
+        }
+        loop {
+            if cursor.goto_next_sibling() {
+                break;
+            }
+            if !cursor.goto_parent() {
+                return Ok(nodes);
+            }
+        }
+    }
+}
+
+pub fn scan<'tree, N: NodeLike<'tree>>(root: N, iterations: usize) -> Result<usize> {
+    let mut nodes = 0;
+    for _ in 0..iterations {
+        nodes += std::hint::black_box(scan_once(root)?);
+    }
+    Ok(nodes)
+}
+
+fn scan_iterator_once(root: tree_sitter_squatter::Node<'_>, cached: bool) -> Result<usize> {
+    let mut iterator = root.node_iterator(cached)?;
+    let mut nodes = 0;
+    while iterator.next().is_some() {
+        std::hint::black_box(iterator.attributes().unwrap());
+        nodes += 1;
+    }
+    Ok(nodes)
+}
+
+pub fn scan_iterator(
+    root: tree_sitter_squatter::Node<'_>,
+    cached: bool,
+    iterations: usize,
+) -> Result<usize> {
+    let mut nodes = 0;
+    for _ in 0..iterations {
+        nodes += std::hint::black_box(scan_iterator_once(root, cached)?);
+    }
+    Ok(nodes)
+}
+
 pub fn walk<'tree, N: NodeLike<'tree>>(root: N, ids: &Identities) -> Result<Vec<Record<'tree>>> {
     let mut cursor = root.cursor()?;
     let mut records = Vec::with_capacity(ids.len());

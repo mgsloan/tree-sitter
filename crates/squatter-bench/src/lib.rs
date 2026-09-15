@@ -32,6 +32,8 @@ const BENCHMARKS: &[&str] = &[
     "walk-iterator-cached",
     "digest-forward",
     "digest-iterator-cached",
+    "scan-forward",
+    "scan-iterator-cached",
     "seek-byte",
     #[cfg(feature = "points")]
     "seek-point",
@@ -94,9 +96,9 @@ struct Arguments {
     /// Stable condition name recorded for matrix summarization.
     #[arg(long)]
     pressure_label: Option<String>,
-    /// Traversals performed inside each allocation-free digest measurement.
-    #[arg(long, default_value_t = 1)]
-    digest_iterations: usize,
+    /// Traversals performed inside each allocation-free measurement.
+    #[arg(long, alias = "digest-iterations", default_value_t = 1)]
+    traversal_iterations: usize,
     /// Pin the benchmark thread to this Linux CPU.
     #[arg(long)]
     benchmark_cpu: Option<usize>,
@@ -419,6 +421,7 @@ fn accumulate(
 #[derive(Debug, Eq, PartialEq)]
 enum Observation<'tree> {
     Digest(compare::Digest),
+    Scan(usize),
     Walk(Vec<compare::Record<'tree>>),
     Seek(Vec<Option<usize>>),
     Navigation(Vec<usize>),
@@ -430,12 +433,16 @@ fn observe<'tree, N: tree_sitter_squatter::traits::NodeLike<'tree>>(
     benchmark: &str,
     bytes: &[usize],
     _points: &[Point],
-    digest_iterations: usize,
+    traversal_iterations: usize,
 ) -> Result<Observation<'tree>> {
     match benchmark {
         "digest-forward" | "digest-iterator-cached" => Ok(Observation::Digest(compare::digest(
             root,
-            digest_iterations,
+            traversal_iterations,
+        )?)),
+        "scan-forward" | "scan-iterator-cached" => Ok(Observation::Scan(compare::scan(
+            root,
+            traversal_iterations,
         )?)),
         "cursor-forward" | "iterator-forward" | "iterator-forward-cached" => Ok(
             Observation::Navigation(compare::navigate(root.cursor()?, ids.unwrap())),
@@ -464,6 +471,9 @@ fn difference(expected: &Observation<'_>, actual: &Observation<'_>) -> Option<St
     match (expected, actual) {
         (Observation::Digest(a), Observation::Digest(b)) => {
             Some(format!("digest differs: expected {a:?}, actual {b:?}"))
+        }
+        (Observation::Scan(a), Observation::Scan(b)) => {
+            Some(format!("scan count differs: expected {a}, actual {b}"))
         }
         (Observation::Walk(a), Observation::Walk(b)) => {
             let index = a
@@ -609,8 +619,8 @@ pub fn run(check_only: bool) -> Result<()> {
         );
     }
     ensure!(
-        arguments.repeat > 0 && arguments.batch_size > 0 && arguments.digest_iterations > 0,
-        "repeat, batch size, and digest iterations must be positive"
+        arguments.repeat > 0 && arguments.batch_size > 0 && arguments.traversal_iterations > 0,
+        "repeat, batch size, and traversal iterations must be positive"
     );
     ensure!(
         Path::new(&arguments.output).components().count() == 1
@@ -691,9 +701,9 @@ pub fn run(check_only: bool) -> Result<()> {
     let mut pack_contexts = BTreeMap::new();
     let mut queries = BTreeMap::new();
     let wants_queries = benchmarks.iter().any(|name| name.starts_with("query-"));
-    let wants_identities = benchmarks
-        .iter()
-        .any(|name| name == "cold-parse" || !name.starts_with("digest-"));
+    let wants_identities = benchmarks.iter().any(|name| {
+        name == "cold-parse" || !(name.starts_with("digest-") || name.starts_with("scan-"))
+    });
     let mut failures = Failures::default();
     let mut results = BTreeMap::new();
     let mut completed = BTreeSet::new();
@@ -932,7 +942,7 @@ pub fn run(check_only: bool) -> Result<()> {
                                         benchmark,
                                         &pair.seek_bytes,
                                         &pair.seek_points,
-                                        arguments.digest_iterations,
+                                        arguments.traversal_iterations,
                                     )
                                 },
                             ));
@@ -973,9 +983,17 @@ pub fn run(check_only: bool) -> Result<()> {
                                         return compare::digest_iterator(
                                             pair.squat.root_node(),
                                             true,
-                                            arguments.digest_iterations,
+                                            arguments.traversal_iterations,
                                         )
                                         .map(Observation::Digest);
+                                    }
+                                    if benchmark == "scan-iterator-cached" {
+                                        return compare::scan_iterator(
+                                            pair.squat.root_node(),
+                                            true,
+                                            arguments.traversal_iterations,
+                                        )
+                                        .map(Observation::Scan);
                                     }
                                     observe(
                                         pair.squat.root_node(),
@@ -983,7 +1001,7 @@ pub fn run(check_only: bool) -> Result<()> {
                                         benchmark,
                                         &pair.seek_bytes,
                                         &pair.seek_points,
-                                        arguments.digest_iterations,
+                                        arguments.traversal_iterations,
                                     )
                                 },
                             ));
