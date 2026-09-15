@@ -28,9 +28,9 @@ use std::{
 };
 use store::Store;
 
-/// Cache directory name for the target's native byte order.
+/// Cache directory path for the target's native byte order.
 pub const CACHE_DIRECTORY: &str = if cfg!(target_endian = "big") {
-    ".tree-squatter-be"
+    ".tree-squatter/big-endian"
 } else {
     ".tree-squatter"
 };

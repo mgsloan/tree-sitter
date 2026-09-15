@@ -51,10 +51,10 @@ PROJECT/.tree-squatter/
   cooperation.lock  # application work/writer-admission locks; no cached contents
 ```
 
-On big-endian systems, use `PROJECT/.tree-squatter-be/` instead, so moving or
+On big-endian systems, use `PROJECT/.tree-squatter/big-endian/` instead, so moving or
 copying a project between architectures cannot open an opposite-endian LMDB
 environment. Squatter payloads use canonical little-endian bytes on both hosts;
-this separation is for LMDB. Both directory names are excluded from source paths.
+this separation is for LMDB. The entire `.tree-squatter/` directory is excluded from source paths.
 
 The application sidecar is only for OS-released coordination; LMDB owns all stored
 content and metadata. Never manipulate LMDB's lock table/file directly. Do not
