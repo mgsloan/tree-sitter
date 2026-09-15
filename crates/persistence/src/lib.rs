@@ -576,7 +576,9 @@ impl PendingLoad {
         let tree = parser.parse_with_options(
             &mut |offset, _| self.source.get(offset..).unwrap_or_default(),
             None,
-            Some(tree_sitter::ParseOptions::new().progress_callback(&mut progress)),
+            options
+                .cancellation
+                .map(|_| tree_sitter::ParseOptions::new().progress_callback(&mut progress)),
         );
         let Some(tree) = tree else {
             parser.reset();
