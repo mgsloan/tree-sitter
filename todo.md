@@ -29,3 +29,5 @@
 - [ ] Put grammar-derived tables in LMDB?
 
 - [ ] Consider allowing persistent cache waiters
+
+- [ ] Make sure that the worker contexts also reuse a TreeSitter parser
