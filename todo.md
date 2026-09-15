@@ -2,11 +2,7 @@
 
 - [ ] Review and polish design.md.
 
-- [ ] Make sure that the worker contexts also reuse a TreeSitter parser
-
 - [ ] Dig into how grammars are identified in persistence.  And what can be done to increase forward/back compat
-
-- [ ] Big endian compatibility test
 
 # Backburner
 
