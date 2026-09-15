@@ -3,6 +3,7 @@
 #include <assert.h>
 #include <dlfcn.h>
 #include <stdio.h>
+#include "language_clone.h"
 #include "supertype_fixture.h"
 
 static size_t fail_at, allocations;
@@ -62,7 +63,7 @@ int main(int argc, char **argv) {
   const TSLanguage *(*language_fn)(void) = (const TSLanguage *(*)(void))dlsym(library, argv[2]);
   assert(language_fn);
   const TSLanguage *language = language_fn();
-  TSLanguage synthetic = *language;
+  TSLanguage synthetic = test_clone_language(language);
   TSSymbolMetadata *synthetic_metadata = NULL;
   if (getenv("CONTEXT_SUPERTYPES")) {
     unsigned count = (unsigned)atoi(getenv("CONTEXT_SUPERTYPES"));
@@ -91,7 +92,7 @@ int main(int argc, char **argv) {
     TSTree *parsed = ts_parser_parse_string(parser, NULL, source, (uint32_t)length);
     assert(parsed);
     free(source);
-    TSLanguage other_language = *language;
+    TSLanguage other_language = test_clone_language(language);
     SQPackContext *other = sq_pack_context_new(&other_language, &error);
     assert(other);
     assert(!sq_pack_context_pack(other, parsed, sq_pack_options_default(), &error));

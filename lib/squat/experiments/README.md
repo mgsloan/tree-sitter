@@ -1,10 +1,9 @@
 # Experiment harnesses
 
-This directory contains source harnesses for Squatter layout, query, conversion,
-memory, and traversal experiments. The generated JSON data, written reports, and
-experimental patches have been removed from the working tree and remain
-available in git history.
+This directory contains the small set of durable native diagnostic probes:
+layout and packing, retained memory, slab loading, packed-column scans, and ID
+unpacking. Top-level comparisons live in `crates/squatter-bench`; correctness
+programs live in `lib/squat/tests`.
 
-Several harnesses are built directly by `lib/squat/Makefile` or copied by the
-drivers under `tools/squatter`; they are retained as executable development
-infrastructure.
+Revision-specific and completed encoding experiments remain available in Git
+history rather than being maintained as executable infrastructure.

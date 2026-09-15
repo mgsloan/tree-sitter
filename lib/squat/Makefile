@@ -23,7 +23,7 @@ $(BUILD)/libtree-sitter-squat.a: $(SOURCES:%.c=$(BUILD)/%.o)
 $(BUILD)/runtime.o: $(ROOT)/lib/src/lib.c | $(BUILD)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -std=c11 -D_DEFAULT_SOURCE -c $< -o $@
 
-$(BUILD)/compare: tests/compare.c tests/field_lookup.h $(BUILD)/libtree-sitter-squat.a $(BUILD)/runtime.o
+$(BUILD)/compare: tests/compare.c tests/field_lookup.h tests/language_clone.h $(BUILD)/libtree-sitter-squat.a $(BUILD)/runtime.o
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) $(filter %.c %.a %.o,$^) -ldl -o $@
 
 test: $(BUILD)/compare
@@ -58,29 +58,7 @@ $(BUILD)/query-check: tests/query.c tests/field_lookup.h $(BUILD)/libtree-sitter
 $(BUILD)/unpack-bench: experiments/unpack.c $(BUILD)/libtree-sitter-squat.a $(BUILD)/runtime.o
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) $(filter %.c %.a %.o,$^) -o $@
 
-# GCC/x86-64 probe; its private columns retain the production encoding.
-$(BUILD)/zero-base-bench: experiments/zero-base.c $(BUILD)/libtree-sitter-squat.a $(BUILD)/runtime.o
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) $^ -ldl -o $@
-
-$(BUILD)/end255-bench: experiments/end255.c $(BUILD)/libtree-sitter-squat.a $(BUILD)/runtime.o
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) $^ -ldl -o $@
-
-# Batches of already-parsed trees, so per-tree setup shows against per-node work.
-$(BUILD)/setup-bench: experiments/setup.c $(BUILD)/libtree-sitter-squat.a $(BUILD)/runtime.o
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) $^ -ldl -o $@
-
-# Calibrated batches expose layout effects on trees from files up to 1 KiB.
-$(BUILD)/tiny-layout-bench: experiments/tiny-layout.c $(BUILD)/libtree-sitter-squat.a $(BUILD)/runtime.o
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) $^ -ldl -o $@
-
-# O(1) attribute walks against mainline; pass zero seek rounds for walks alone.
-$(BUILD)/walk-bench: experiments/walk.c $(BUILD)/libtree-sitter-squat.a $(BUILD)/runtime.o
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) $^ -ldl -o $@
-
-$(BUILD)/capacity-bench: experiments/capacity.c $(BUILD)/libtree-sitter-squat.a $(BUILD)/runtime.o
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) $^ -ldl -o $@
-
-$(BUILD)/context-check: tests/context.c tests/supertype_fixture.h $(BUILD)/libtree-sitter-squat.a $(BUILD)/runtime.o
+$(BUILD)/context-check: tests/context.c tests/supertype_fixture.h tests/language_clone.h $(BUILD)/libtree-sitter-squat.a $(BUILD)/runtime.o
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) $(filter %.c %.a %.o,$^) -ldl \
 	  -Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc -o $@
 
@@ -96,8 +74,4 @@ $(BUILD)/memory-bench: experiments/memory.c $(BUILD)/libtree-sitter-squat.a $(BU
 
 # Public-API probe for comparing persisted bytes with another build.
 $(BUILD)/slab-compatibility: tests/slab-compatibility.c $(BUILD)/libtree-sitter-squat.a $(BUILD)/runtime.o
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) $^ -ldl -o $@
-
-# Calibrated identical-attribute walks: individual/bulk getters and iterator cache.
-$(BUILD)/attributes-bench: experiments/attributes.c $(BUILD)/libtree-sitter-squat.a $(BUILD)/runtime.o
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) $^ -ldl -o $@

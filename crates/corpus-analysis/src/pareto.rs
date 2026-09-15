@@ -668,11 +668,6 @@ fn analyze(arguments: &[String]) -> Result<()> {
     Ok(())
 }
 
-fn main() -> Result<()> {
-    let arguments: Vec<String> = std::env::args().skip(1).collect();
-    run(&arguments)
-}
-
 pub fn run(arguments: &[String]) -> Result<()> {
     match arguments.first().map(String::as_str) {
         Some("extract") => extract_files(&arguments[1..]),

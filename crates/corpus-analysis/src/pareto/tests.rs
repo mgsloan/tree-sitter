@@ -6,7 +6,7 @@ fn node(start: u64) -> Record {
 
 fn squat_configs() -> Vec<Configuration> {
     configurations(
-        &serde_json::from_str(include_str!("search.json")).unwrap(),
+        &serde_json::from_str(include_str!("../../pareto-search.json")).unwrap(),
         &[700, 700, 40, 31],
     )
     .unwrap()
@@ -27,7 +27,8 @@ fn squat_trial_changes_one_axis_at_each_capacity() {
             assert_eq!(c.widths[1], 0);
         }
     }
-    let mut search: Search = serde_json::from_str(include_str!("search.json")).unwrap();
+    let mut search: Search =
+        serde_json::from_str(include_str!("../../pareto-search.json")).unwrap();
     search.capacities.push(16);
     assert!(configurations(&search, &[700, 700, 40, 31]).is_err());
 }

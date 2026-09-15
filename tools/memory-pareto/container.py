@@ -31,13 +31,13 @@ def image_id(reference):
 
 def classification(selected):
     """Use an explicit suffix map for the corpus languages and common support files."""
-    path = Path(__file__).with_name("extensions.json")
+    path = ROOT / "crates/corpus-analysis/extensions.json"
     suffixes = json.loads(path.read_text())
     missing = set(suffixes.values()) - selected
     if missing:
         raise ValueError("extension map references unselected grammars: " + ", ".join(sorted(missing)))
     return dict(suffixes=suffixes, first_lines=[],
-                inputs=[dict(path="tools/memory-pareto/extensions.json", sha256=sha256(path))])
+                inputs=[dict(path="crates/corpus-analysis/extensions.json", sha256=sha256(path))])
 
 
 def stage(corpus, target, repositories):
@@ -84,9 +84,11 @@ def stage(corpus, target, repositories):
 
 
 def build_context(target):
-    # The runtime crates inherit workspace metadata. Copy tracked source only,
-    # plus the current tool files (including edits not yet committed).
-    paths = command(["git", "-C", ROOT, "ls-files", "-z", "Cargo.toml", "lib", "crates/language"]).split("\0")
+    # The runtime crates inherit workspace metadata. Include non-ignored working
+    # tree additions so a pre-commit validation builds exactly the current tool.
+    paths = command(["git", "-C", ROOT, "ls-files", "--cached", "--others",
+                     "--exclude-standard", "-z", "Cargo.toml", "Cargo.lock",
+                     "lib", "crates"]).split("\0")
     for name in filter(None, paths):
         source = ROOT / name
         if source.is_file():

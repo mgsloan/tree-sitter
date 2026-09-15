@@ -16,6 +16,7 @@ fn grammar() -> Grammar {
 }
 
 #[test]
+#[ignore = "subprocess helper"]
 fn child_work_owner() {
     let Some(path) = std::env::var_os("TSQ_WORK_LOCK") else {
         return;
@@ -43,7 +44,7 @@ struct Owner(Child);
 impl Owner {
     fn start(root: &Path) -> Self {
         let mut child = Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", "child_work_owner", "--nocapture"])
+            .args(["--exact", "child_work_owner", "--ignored", "--nocapture"])
             .env(
                 "TSQ_WORK_LOCK",
                 root.join(".tree-squatter/cooperation.lock"),

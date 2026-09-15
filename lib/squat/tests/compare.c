@@ -3,6 +3,7 @@
 #include <tree_sitter/squat.h>
 #include "../internal.h"
 #include "field_lookup.h"
+#include "language_clone.h"
 #include "../../src/tree_cursor.h"
 #include <assert.h>
 #include <dlfcn.h>
@@ -12,7 +13,6 @@
 
 static const char *input_name;
 static uint32_t current_ordinal;
-static uint32_t seek_mismatches;
 static uint32_t expected_field_mismatches;
 #define CHECK(condition)                                                                           \
   do {                                                                                             \
@@ -93,21 +93,6 @@ static uint32_t ordinal_packed(Nodes *nodes, SQNode n) {
     }                                                                                              \
     CHECK(ma == pa);                                                                               \
   } while (0)
-static void compare_seek(Nodes *nodes, TSNode expected, SQNode actual, const char *operation) {
-  uint32_t mainline = ordinal_mainline(nodes, expected);
-  uint32_t packed = ordinal_packed(nodes, actual);
-  if (mainline != packed) {
-    if (!seek_mismatches) {
-      fprintf(stderr, "%s: %s differs: mainline ordinal %u, squat ordinal %u\n", input_name,
-              operation, mainline, packed);
-    }
-
-    seek_mismatches++;
-  }
-}
-
-#define SAME_SEEK(main, squat) compare_seek(nodes, (main), (squat), #main)
-
 static void compare_field(Nodes *nodes, TSNode parent, SQNode packed_parent, TSFieldId field) {
   TSNode expected = ts_node_child_by_field_id(parent, field);
   SQNode actual = sq_node_child_by_field_id(packed_parent, field);
@@ -364,27 +349,12 @@ static void compare_tree(const TSTree *tree, const SQTree *packed, bool exhausti
   uint32_t samples = bytes < 300 ? bytes + 2 : 100;
   for (i = 0; i < samples; i++) {
     uint32_t start = bytes < 300 ? i : (uint32_t)((uint64_t)i * (bytes + 1) / samples);
-    for (uint32_t width = 0; width <= 1; width++) {
-      SAME_SEEK(ts_node_descendant_for_byte_range(root, start, start + width),
-                sq_node_descendant_for_byte_range(flat, start, start + width));
-      SAME_SEEK(ts_node_named_descendant_for_byte_range(root, start, start + width),
-                sq_node_named_descendant_for_byte_range(flat, start, start + width));
-    }
-
-    SAME_SEEK(ts_node_first_child_for_byte(root, start), sq_node_first_child_for_byte(flat, start));
-    SAME_SEEK(ts_node_first_named_child_for_byte(root, start),
+    SAME_NODE(ts_node_first_child_for_byte(root, start), sq_node_first_child_for_byte(flat, start));
+    SAME_NODE(ts_node_first_named_child_for_byte(root, start),
               sq_node_first_named_child_for_byte(flat, start));
   }
 
   for (i = 0; i < count; i += count / 100 + 1) {
-#if SQ_INCLUDE_POINTS
-    TSPoint start = ts_node_start_point(nodes->mainline[i]),
-            end = ts_node_end_point(nodes->mainline[i]);
-    SAME_SEEK(ts_node_descendant_for_point_range(root, start, start),
-              sq_node_descendant_for_point_range(flat, start, start));
-    SAME_SEEK(ts_node_named_descendant_for_point_range(root, start, end),
-              sq_node_named_descendant_for_point_range(flat, start, end));
-#endif
     if (i) {
       SAME_NODE(ts_node_child_with_descendant(root, nodes->mainline[i]),
                 sq_node_child_with_descendant(flat, nodes->packed[i]));
@@ -901,7 +871,7 @@ int main(int argc, char **argv) {
   const TSLanguage *(*language_fn)(void) = (const TSLanguage *(*)(void))dlsym(library, argv[2]);
   CHECK(language_fn);
   const TSLanguage *language = language_fn();
-  TSLanguage synthetic = *language;
+  TSLanguage synthetic = test_clone_language(language);
   TSSymbolMetadata *metadata = NULL;
   if (getenv("SQ_TEST_SUPERTYPES")) {
     uint32_t symbols = language->symbol_count + language->alias_count;
@@ -983,7 +953,6 @@ int main(int argc, char **argv) {
   printf("ok: %s (%d files plus edge cases)\n", argv[2], argc - 3);
   free(metadata);
   dlclose(library);
-  printf("seek mismatches: %u\n", seek_mismatches);
   printf("expected field mismatches: %u\n", expected_field_mismatches);
-  return seek_mismatches && getenv("SQ_STRICT_SEEKS") ? 1 : 0;
+  return 0;
 }

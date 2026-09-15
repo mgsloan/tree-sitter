@@ -9,12 +9,6 @@ use std::{
     time::Duration,
 };
 
-// Keep the existing, independently tested Pareto explorer as the single source
-// of its storage model. This subcommand adds the design's requested entry point.
-#[allow(dead_code)]
-#[path = "../../../tools/memory-pareto/main.rs"]
-mod memory_pareto;
-
 #[derive(Parser)]
 #[command(about = "Deterministic Tree-sitter corpus sampling and storage experiments")]
 struct Arguments {
@@ -287,7 +281,7 @@ fn sample(arguments: Sample) -> Result<()> {
 fn main() -> Result<()> {
     match Arguments::parse().command {
         Command::Sample(arguments) => sample(arguments),
-        Command::MemoryPareto { arguments } => memory_pareto::run(&arguments),
+        Command::MemoryPareto { arguments } => corpus_analysis::pareto::run(&arguments),
     }
 }
 

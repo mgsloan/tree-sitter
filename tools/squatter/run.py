@@ -12,11 +12,6 @@ import time
 import tomllib
 
 ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_REPOS = ["ripgrep", "black", "fastapi", "esbuild", "caddy", "nodebb", "vue-core", "redis", "zstd", "jq", "catch2",
-                 "act", "hypothesis", "jinja", "c-ares", "entt", "Chart.js", "less.js", "helm"]
-DEFAULT_GRAMMARS = ["json", "python", "c", "cpp", "tsx", "typescript", "html", "css", "yaml", "go", "bash"]
-
-
 def run(command, **kwargs):
     return subprocess.run(command, check=True, **kwargs)
 
@@ -34,6 +29,7 @@ def revision(path):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--code-corpora", type=Path, default=ROOT / "../../code-corpora")
+    parser.add_argument("--matrix", type=Path, default=ROOT / "tools/squatter/matrix.toml")
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--repo", action="append")
     parser.add_argument("--grammar", action="append")
@@ -48,12 +44,23 @@ def main():
     parser.add_argument("--skip-mutated", action="store_true")
     parser.add_argument("--skip-sampling", action="store_true")
     parser.add_argument("--skip-benchmarks", action="store_true")
+    parser.add_argument("--checks-only", action="store_true",
+                        help="run the shared correctness oracle once instead of benchmarking")
     parser.add_argument("--unoptimized-query", action="store_true")
     parser.add_argument("--benchmark", action="append", help="benchmark selector; repeatable")
+    parser.add_argument("--pressure-profile", action="append",
+                        help="matrix pressure profile; repeatable (default: isolated)")
+    parser.add_argument("--pressure-bytes", type=int)
+    parser.add_argument("--benchmark-cpu", type=int)
+    parser.add_argument("--pressure-cpu", type=int)
     args = parser.parse_args()
+    matrix_path = args.matrix.resolve()
+    matrix_bytes = matrix_path.read_bytes()
+    matrix = tomllib.loads(matrix_bytes.decode())
     corpus = args.code_corpora.resolve()
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
+    (output / "matrix.toml").write_bytes(matrix_bytes)
     snapshot = output / "source"
     snapshot.mkdir()
     source_hash = hashlib.sha256()
@@ -82,9 +89,9 @@ def main():
     if subprocess.run(["podman", "image", "exists", image]).returncode:
         raise SystemExit(f"build image is not cached: {image}; select an installed image with --image")
     selected = {entry["name"]: entry for entry in tomllib.loads((corpus / "selected-grammars.toml").read_text())["repo"]}
-    grammar_names = args.grammar or DEFAULT_GRAMMARS
-    repositories = args.repo or DEFAULT_REPOS
-    suffixes = json.loads((ROOT / "tools/memory-pareto/extensions.json").read_text())
+    grammar_names = args.grammar or matrix["selection"]["grammars"]
+    repositories = args.repo or matrix["selection"]["repositories"]
+    suffixes = json.loads((ROOT / "crates/corpus-analysis/extensions.json").read_text())
     buckets = collections.defaultdict(list)
     coverage = collections.Counter()
     for split in ["train", "training", "test"]:
@@ -132,7 +139,8 @@ def main():
             staged.append(dict(path=relative, split=split, grammar=grammar, bucket=bucket, bytes=size, sha256=sha256(destination)))
     if not staged:
         raise SystemExit("no files staged; inspect repository selection")
-    provenance = dict(code_corpora_sha=revision(corpus), tool_sha=revision(ROOT), source_sha256=source_hash.hexdigest(), image=image,
+    provenance = dict(code_corpora_sha=revision(corpus), tool_sha=revision(ROOT), source_sha256=source_hash.hexdigest(),
+                      matrix_sha256=hashlib.sha256(matrix_bytes).hexdigest(), image=image,
                       seed=args.seed, repositories=repositories, coverage=dict(coverage), inputs=staged,
                       tool_dirty=bool(run(["git", "-C", str(ROOT), "status", "--porcelain"], capture_output=True, text=True).stdout),
                       missing_repositories=[name for name in repositories if not any((corpus / split / name).is_dir() for split in ["train", "training", "test"])],
@@ -210,28 +218,53 @@ cc -shared -fPIC -O2 -I"$source" "$@" -o "/out/grammars/$name.so"
     if not args.skip_sampling:
         execute("sampling", f'''{loader} /out/target/release/corpus-analysis sample --code-corpora /out/corpus --registry /out/registry.json --output /out/samplings --seed "$1" --per-bucket "$2"''', str(args.seed), str(args.per_bucket))
     # POSIX sh has no array slice: shift before forwarding remaining arguments.
-    command = f'''repeat=$1; seed=$2; name=$3; shift 3; {loader} /out/target/release/squatter-bench --code-corpora /out/corpus --registry /out/registry.json --all --repeat "$repeat" --seed "$seed" --output-directory /out/bench-outputs --output "$name" "$@"'''
+    program = "squatter-check" if args.checks_only else "squatter-bench"
+    command = f'''repeat=$1; seed=$2; name=$3; shift 3; {loader} /out/target/release/{program} --code-corpora /out/corpus --registry /out/registry.json --all --repeat "$repeat" --seed "$seed" --output-directory /out/bench-outputs --output "$name" "$@"'''
     extra = ["--count", str(args.count)] if args.count is not None else []
     extra += args.benchmark or []
     if args.unoptimized_query:
         extra += ["--unoptimized-query"]
+    profiles = args.pressure_profile or ["isolated"]
+    if args.checks_only and profiles != ["isolated"]:
+        parser.error("--checks-only supports only the isolated pressure profile")
+    unknown_profiles = set(profiles) - set(matrix["pressure"])
+    if unknown_profiles:
+        parser.error("unknown pressure profiles: " + ", ".join(sorted(unknown_profiles)))
     if not args.skip_benchmarks:
-        execute("benchmark", command, str(args.repeat), str(args.seed), "baseline", *extra)
-        if not args.skip_mutated:
-            execute("mutated", command, str(args.repeat), str(args.seed), "mutated", "--mutate", *extra)
+        for profile_name in profiles:
+            profile = matrix["pressure"][profile_name]
+            pressure = ["--pressure", profile["mode"], "--pressure-label", profile_name]
+            if "duty_percent" in profile:
+                pressure += ["--pressure-duty-percent", str(profile["duty_percent"])]
+            if args.pressure_bytes is not None:
+                pressure += ["--pressure-bytes", str(args.pressure_bytes)]
+            if args.benchmark_cpu is not None:
+                pressure += ["--benchmark-cpu", str(args.benchmark_cpu)]
+            if args.pressure_cpu is not None:
+                pressure += ["--pressure-cpu", str(args.pressure_cpu)]
+            prefix = "check-" if args.checks_only else ""
+            name = f"{prefix}original-{profile_name}"
+            execute(name, command, str(args.repeat), str(args.seed), name, *pressure, *extra)
+            if not args.skip_mutated:
+                name = f"{prefix}mutated-{profile_name}"
+                execute(name, command, str(args.repeat), str(args.seed), name,
+                        "--mutate", *pressure, *extra)
     if not args.skip_layouts:
-        for group, alignment in [(16, 8), (32, 8), (64, 8), (16, 64)]:
-            directory = f"/out/layout-{group}-{alignment}"
-            execute(f"build-layout-{group}-{alignment}",
+        for layout in matrix["layout"]:
+            group = layout["group_size"]
+            alignment = layout["alignment"]
+            layout_name = layout["name"]
+            directory = f"/out/layout-{layout_name}"
+            execute(f"build-layout-{layout_name}",
                 '''make -C /work/lib/squat -j4 BUILD="$1" CFLAGS="-O3 -g -DSQ_GROUP_SIZE=$2 -DSQ_COLUMN_ALIGNMENT=$3" "$1/layout-bench" "$1/compare" check''', directory, str(group), str(alignment))
             for grammar in registry["grammars"]:
                 files = ["/out/corpus/" + entry["path"] for entry in staged if entry["grammar"] == grammar]
                 symbol = registry["grammars"][grammar]["symbol"]
-                execute(f"layout-{group}-{alignment}-{grammar}",
+                execute(f"layout-{layout_name}-{grammar}",
                     '''program=$1; grammar=$2; symbol=$3; shift 3; "$program/layout-bench" "/out/grammars/$grammar.so" "$symbol" "$@"''', directory, grammar, symbol, *files)
                 small_files = ["/out/corpus/" + entry["path"] for entry in staged
                                if entry["grammar"] == grammar and entry["bytes"] < 4096]
-                execute(f"check-layout-{group}-{alignment}-{grammar}",
+                execute(f"check-layout-{layout_name}-{grammar}",
                     '''program=$1; grammar=$2; symbol=$3; shift 3; "$program/compare" "/out/grammars/$grammar.so" "$symbol" "$@"''', directory, grammar, symbol, *small_files)
         execute("scan-kernels", '''make -C /work/lib/squat -j4 BUILD=/out/scan CFLAGS="-O3 -g" /out/scan/scan-bench && /out/scan/scan-bench''')
     failed = [entry for entry in provenance["operations"] if entry["status"] != "passed"]

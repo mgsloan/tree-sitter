@@ -6,6 +6,7 @@ mod clippy;
 mod embed_sources;
 mod fetch;
 mod generate;
+mod squat;
 mod test;
 mod test_schema;
 mod upgrade_wasmtime;
@@ -47,6 +48,8 @@ enum Commands {
     GenerateWasmExports,
     /// Run the test suite
     Test(Test),
+    /// Test and benchmark the Squatter packed-tree implementation.
+    Squat(Squat),
     /// Run the Wasm test suite
     TestWasm,
     /// Test the Rust binding in a WebAssembly web environment.
@@ -169,6 +172,12 @@ struct Test {
 }
 
 #[derive(Args)]
+struct Squat {
+    #[command(subcommand)]
+    command: squat::Command,
+}
+
+#[derive(Args)]
 struct UpgradeWasmtime {
     /// The version to upgrade to.
     #[arg(long, short)]
@@ -242,6 +251,7 @@ fn run() -> Result<()> {
         Commands::GenerateTestSchema => test_schema::run_test_schema()?,
         Commands::GenerateWasmExports => generate::run_wasm_exports()?,
         Commands::Test(test_options) => test::run(&test_options)?,
+        Commands::Squat(options) => squat::run(options.command)?,
         Commands::TestWasm => test::run_wasm()?,
         Commands::TestRustWasmWeb => test::run_rust_wasm_web()?,
         Commands::UpgradeWasmtime(upgrade_wasmtime_options) => {

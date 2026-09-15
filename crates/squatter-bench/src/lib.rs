@@ -1,5 +1,6 @@
 mod compare;
 mod measure;
+mod pressure;
 mod queries;
 
 use anyhow::{Context, Result, bail, ensure};
@@ -73,12 +74,121 @@ struct Arguments {
     max_file_bytes: u64,
     #[arg(long)]
     repack: bool,
-    /// Investigate known mainline seek differences; otherwise count and ignore them.
+    /// Treat the known hidden-seek fixture difference as a failure.
     #[arg(long)]
     strict_seeks: bool,
     /// Disable squat query scan/plan shortcuts for an ablation run.
     #[arg(long)]
     unoptimized_query: bool,
+    /// Cache-residency pressure applied to every timed operation.
+    #[arg(long, value_enum, default_value_t)]
+    pressure: pressure::Mode,
+    /// Pressure working-set bytes; defaults to twice the detected LLC size.
+    #[arg(long)]
+    pressure_bytes: Option<usize>,
+    /// Active share of each 10ms tenant quantum.
+    #[arg(long, default_value_t = 10)]
+    pressure_duty_percent: u8,
+    /// Stable condition name recorded for matrix summarization.
+    #[arg(long)]
+    pressure_label: Option<String>,
+    /// Pin the benchmark thread to this Linux CPU.
+    #[arg(long)]
+    benchmark_cpu: Option<usize>,
+    /// Pin the concurrent pressure tenant to this Linux CPU.
+    #[arg(long)]
+    pressure_cpu: Option<usize>,
+}
+
+fn measured<T>(
+    enabled: bool,
+    meter: &mut Meter,
+    pressure: &mut pressure::Pressure,
+    operation: impl FnOnce() -> T,
+) -> (T, Metrics) {
+    if !enabled {
+        return (operation(), Metrics::default());
+    }
+    pressure.before_measurement();
+    meter.measure(operation)
+}
+
+fn input_batches(
+    inputs: &[Input],
+    maximum_files: usize,
+    source_bytes: Option<usize>,
+) -> Vec<&[Input]> {
+    let mut result = Vec::new();
+    let mut start = 0;
+    while start < inputs.len() {
+        let mut end = start;
+        let mut bytes = 0usize;
+        while end < inputs.len()
+            && source_bytes.map_or(end - start < maximum_files, |target| bytes < target)
+        {
+            bytes = bytes.saturating_add(inputs[end].bytes as usize);
+            end += 1;
+        }
+        result.push(&inputs[start..end]);
+        start = end;
+    }
+    result
+}
+
+fn pressure_report(pressure: &pressure::Pressure, batches: &[&[Input]]) -> serde_json::Value {
+    let mut report = pressure.report();
+    report["available_source_bytes"] =
+        inputs_bytes(batches.iter().flat_map(|batch| batch.iter())).into();
+    if pressure.carousel_bytes().is_some() {
+        report["carousel_batch_source_bytes"] = serde_json::json!(
+            batches
+                .iter()
+                .map(|batch| inputs_bytes(batch.iter()))
+                .collect::<Vec<_>>()
+        );
+    }
+    report
+}
+
+fn inputs_bytes<'a>(inputs: impl Iterator<Item = &'a Input>) -> u64 {
+    inputs.map(|input| input.bytes).sum()
+}
+
+#[cfg(test)]
+mod batch_tests {
+    use super::*;
+
+    fn input(path: &str, bytes: u64) -> Input {
+        Input {
+            path: path.into(),
+            grammar: "json".into(),
+            bytes,
+        }
+    }
+
+    #[test]
+    fn batches_support_file_counts_and_source_working_sets() {
+        let inputs = [input("a", 4), input("b", 7), input("c", 1)];
+        assert_eq!(
+            input_batches(&inputs, 2, None)
+                .iter()
+                .map(|batch| batch.len())
+                .collect::<Vec<_>>(),
+            [2, 1]
+        );
+        let carousel = input_batches(&inputs, 1, Some(10));
+        assert_eq!(
+            carousel.iter().map(|batch| batch.len()).collect::<Vec<_>>(),
+            [2, 1]
+        );
+        assert_eq!(
+            carousel
+                .iter()
+                .map(|batch| inputs_bytes(batch.iter()))
+                .collect::<Vec<_>>(),
+            [11, 1]
+        );
+    }
 }
 
 struct Source {
@@ -467,8 +577,15 @@ fn git_identity(directory: &Path) -> serde_json::Value {
     serde_json::json!({"revision": revision, "dirty": dirty})
 }
 
-fn main() -> Result<()> {
-    let arguments = Arguments::parse();
+pub fn run(check_only: bool) -> Result<()> {
+    let mut arguments = Arguments::parse();
+    if check_only {
+        arguments.repeat = 1;
+        ensure!(
+            matches!(arguments.pressure, pressure::Mode::None),
+            "squatter-check does not accept cache pressure"
+        );
+    }
     ensure!(
         arguments.repeat > 0 && arguments.batch_size > 0,
         "repeat and batch size must be positive"
@@ -515,10 +632,18 @@ fn main() -> Result<()> {
             .open(output_path("files.jsonl"))?,
     );
     let mut meter = Meter::new();
+    let mut pressure = pressure::Pressure::new(
+        arguments.pressure,
+        arguments.pressure_bytes,
+        arguments.pressure_duty_percent,
+        arguments.benchmark_cpu,
+        arguments.pressure_cpu,
+    )?;
+    let batches = input_batches(&inputs, arguments.batch_size, pressure.carousel_bytes());
     let mut manifest = serde_json::json!({
-        "schema": 1, "parse_benchmark": parse_benchmark, "reuse_pack_context": !cold_parse, "point_positions": tree_sitter_squatter::HAS_POINT_POSITIONS, "arguments": arguments, "benchmarks": benchmarks, "seed": arguments.seed,
+        "schema": 2, "purpose": if check_only { "correctness" } else { "benchmark" }, "parse_benchmark": parse_benchmark, "reuse_pack_context": !cold_parse, "point_positions": tree_sitter_squatter::HAS_POINT_POSITIONS, "arguments": arguments, "benchmarks": benchmarks, "seed": arguments.seed,
         "inputs": inputs, "planned": inputs.len(), "completed": 0, "failed": 0, "partial": true,
-        "coverage": coverage, "registry": registry, "counter_status": meter.counter_status,
+        "coverage": coverage, "registry": registry, "counter_status": if check_only { "disabled for correctness" } else { &meter.counter_status },
         "tool": {"checkout": git_identity(Path::new(".")), "container_revision": std::env::var("SQUAT_TOOL_SHA").ok(), "source_sha256": std::env::var("SQUAT_SOURCE_SHA256").ok(),
                  // When explicitly invoked through ld-linux, current_exe points
                  // at the loader. argv[0] still names the benchmark executable.
@@ -528,11 +653,12 @@ fn main() -> Result<()> {
         "machine": {"architecture": std::env::consts::ARCH, "os": std::env::consts::OS,
                     "cpuinfo": fs::read_to_string("/proc/cpuinfo").ok().and_then(|text| text.lines().find(|line| line.starts_with("model name")).map(str::to_owned))},
         "build": {"debug_assertions": cfg!(debug_assertions), "package_version": env!("CARGO_PKG_VERSION")},
+        "pressure": pressure_report(&pressure, &batches),
         "field_contract": "field API differences expected only when squat agrees with mainline visible-child fields; ERROR parents have no fields",
         "iterator_contract": "native preorder; walks read O(1) bulk attributes; cached attribute walks use the unpack cache; navigation-only caches are idle; mainline uses its forward cursor",
         "cursor_contract": "walk-forward reads O(1) bulk attributes, excluding counts, fields, and depth from the Rust snapshot; cursor-forward measures native navigation",
         "workload_order": "rotate by batch and every two repeats, retaining both backend orders for each rotation",
-        "query_engine": "slab NFA and structural plans adapted from ../main", "seek_contract": if arguments.strict_seeks { "strict" } else { "known differences counted but ignored by user request" },
+        "query_engine": "slab NFA and structural plans adapted from ../main", "seek_contract": if arguments.strict_seeks { "strict" } else { "only hidden-seek.css differences are counted and ignored" },
     });
     fs::write(
         output_path("run.json"),
@@ -549,7 +675,7 @@ fn main() -> Result<()> {
     let mut failed_files = BTreeSet::new();
     let mut ignored_seek_differences = 0usize;
     let mut expected_field_differences = 0usize;
-    'batches: for (batch_index, batch) in inputs.chunks(arguments.batch_size).enumerate() {
+    'batches: for (batch_index, batch) in batches.into_iter().enumerate() {
         let mut sources = Vec::new();
         for input in batch {
             let loaded = (|| -> Result<Source> {
@@ -628,14 +754,18 @@ fn main() -> Result<()> {
                             .pack_with_options(&parsed, options)?
                     })
                 };
-                let ((mainline, mainline_time), (squat, squat_time)) =
-                    if (batch_index + repeat) % 2 == 0 {
-                        (meter.measure(parse_mainline), meter.measure(parse_squat))
-                    } else {
-                        let squat = meter.measure(parse_squat);
-                        let mainline = meter.measure(parse_mainline);
-                        (mainline, squat)
-                    };
+                let ((mainline, mainline_time), (squat, squat_time)) = if (batch_index + repeat) % 2
+                    == 0
+                {
+                    (
+                        measured(!check_only, &mut meter, &mut pressure, parse_mainline),
+                        measured(!check_only, &mut meter, &mut pressure, parse_squat),
+                    )
+                } else {
+                    let squat = measured(!check_only, &mut meter, &mut pressure, parse_squat);
+                    let mainline = measured(!check_only, &mut meter, &mut pressure, parse_mainline);
+                    (mainline, squat)
+                };
                 match (mainline, squat) {
                     (Ok(mainline), Ok(squat)) => {
                         let ids = (
@@ -753,62 +883,72 @@ fn main() -> Result<()> {
                     let run_mainline = (pass == 0) == mainline_first;
                     for pair in &pairs {
                         if run_mainline {
-                            mainline_observations.push(meter.measure(|| {
-                                if benchmark.starts_with("query-") {
-                                    return queries[&pair.source.input.grammar]
-                                        .mainline(
-                                            pair.mainline.root_node(),
-                                            &pair.mainline_ids,
-                                            &pair.source.bytes,
-                                            benchmark == "query-captures",
-                                        )
-                                        .map(Observation::Query);
-                                }
-                                observe(
-                                    pair.mainline.root_node(),
-                                    &pair.mainline_ids,
-                                    benchmark,
-                                    &pair.seek_bytes,
-                                    &pair.seek_points,
-                                )
-                            }));
+                            mainline_observations.push(measured(
+                                !check_only,
+                                &mut meter,
+                                &mut pressure,
+                                || {
+                                    if benchmark.starts_with("query-") {
+                                        return queries[&pair.source.input.grammar]
+                                            .mainline(
+                                                pair.mainline.root_node(),
+                                                &pair.mainline_ids,
+                                                &pair.source.bytes,
+                                                benchmark == "query-captures",
+                                            )
+                                            .map(Observation::Query);
+                                    }
+                                    observe(
+                                        pair.mainline.root_node(),
+                                        &pair.mainline_ids,
+                                        benchmark,
+                                        &pair.seek_bytes,
+                                        &pair.seek_points,
+                                    )
+                                },
+                            ));
                         } else {
-                            squat_observations.push(meter.measure(|| {
-                                if benchmark.starts_with("query-") {
-                                    return queries[&pair.source.input.grammar]
-                                        .squat(
+                            squat_observations.push(measured(
+                                !check_only,
+                                &mut meter,
+                                &mut pressure,
+                                || {
+                                    if benchmark.starts_with("query-") {
+                                        return queries[&pair.source.input.grammar]
+                                            .squat(
+                                                pair.squat.root_node(),
+                                                &pair.squat_ids,
+                                                &pair.source.bytes,
+                                                benchmark == "query-captures",
+                                                !arguments.unoptimized_query,
+                                            )
+                                            .map(Observation::Query);
+                                    }
+                                    if benchmark.starts_with("walk-iterator") {
+                                        return compare::walk_iterator(
                                             pair.squat.root_node(),
                                             &pair.squat_ids,
-                                            &pair.source.bytes,
-                                            benchmark == "query-captures",
-                                            !arguments.unoptimized_query,
+                                            benchmark.ends_with("-cached"),
                                         )
-                                        .map(Observation::Query);
-                                }
-                                if benchmark.starts_with("walk-iterator") {
-                                    return compare::walk_iterator(
+                                        .map(Observation::Walk);
+                                    }
+                                    if benchmark.starts_with("iterator-forward") {
+                                        return compare::navigate_iterator(
+                                            pair.squat.root_node(),
+                                            &pair.squat_ids,
+                                            benchmark.ends_with("-cached"),
+                                        )
+                                        .map(Observation::Navigation);
+                                    }
+                                    observe(
                                         pair.squat.root_node(),
                                         &pair.squat_ids,
-                                        benchmark.ends_with("-cached"),
+                                        benchmark,
+                                        &pair.seek_bytes,
+                                        &pair.seek_points,
                                     )
-                                    .map(Observation::Walk);
-                                }
-                                if benchmark.starts_with("iterator-forward") {
-                                    return compare::navigate_iterator(
-                                        pair.squat.root_node(),
-                                        &pair.squat_ids,
-                                        benchmark.ends_with("-cached"),
-                                    )
-                                    .map(Observation::Navigation);
-                                }
-                                observe(
-                                    pair.squat.root_node(),
-                                    &pair.squat_ids,
-                                    benchmark,
-                                    &pair.seek_bytes,
-                                    &pair.seek_points,
-                                )
-                            }));
+                                },
+                            ));
                         }
                     }
                 }
@@ -825,7 +965,9 @@ fn main() -> Result<()> {
                             b.as_ref().err()
                         )),
                     };
-                    let ignore = !arguments.strict_seeks && benchmark.starts_with("seek-");
+                    let known_fixture = pair.source.input.path.ends_with("hidden-seek.css");
+                    let ignore =
+                        !arguments.strict_seeks && benchmark.starts_with("seek-") && known_fixture;
                     let ignored = message.is_some() && ignore;
                     let failed = message.is_some() && !ignore;
                     if ignored {
@@ -909,6 +1051,10 @@ fn main() -> Result<()> {
             .map(|(name, queries)| (name, &queries.reports))
             .collect::<BTreeMap<_, _>>(),
     )?;
+    manifest["pressure"] = pressure_report(
+        &pressure,
+        &input_batches(&inputs, arguments.batch_size, pressure.carousel_bytes()),
+    );
     manifest["grammar_sha256"] = serde_json::to_value(
         grammars
             .iter()

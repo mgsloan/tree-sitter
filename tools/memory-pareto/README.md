@@ -13,8 +13,9 @@ The search is deliberately limited to **40 configurations**:
 The fields are subtree size, start byte, end byte, start row, end row, start
 column, and end column. Ends always use group-maximum-minus-end deltas; other
 fields use group minima. There are no combinations, alternative coordinate
-encodings, base choices, exception policies, or packing modes. `search.json`
-can restrict the capacity sweep; the eight width variants are fixed in code.
+encodings, base choices, exception policies, or packing modes.
+`crates/corpus-analysis/pareto-search.json` can restrict the capacity sweep; the
+eight width variants are fixed in code.
 
 ## Run locally
 
@@ -76,7 +77,7 @@ loaded parser library must match its artifact checksum. Quarantined, failed,
 and absent grammars remain unavailable in the inventory. Grammar compilation
 and corpus downloading are not performed by this tool.
 
-Classification uses the checked-in `extensions.json` map for the 17 corpus
+Classification uses the checked-in `crates/corpus-analysis/extensions.json` map for the 17 corpus
 languages and common support files. JavaScript/JSX use TSX and C/C++ headers use
 C++. The mapping names code-corpora catalog entries (for example `csharp`, whose
 parser exports `tree_sitter_c_sharp`). It requires no local Zed installation or
@@ -130,8 +131,7 @@ python3 tools/memory-pareto/run_corpus.py summarize --directory PATH_TO_RESULTS
 ## Development checks
 
 ```sh
-cargo test --manifest-path tools/memory-pareto/Cargo.toml
-python3 -m unittest discover -s tools/memory-pareto -p 'test_*.py'
+cargo xtask squat test quick
 ```
 
 Integration tests additionally use `PARETO_BINARY` and `PARETO_JSON_LIBRARY` to
@@ -139,8 +139,9 @@ exercise extraction, weighted exports, the catalog-to-summary pipeline, and real
 SIGINT/SIGTERM cancellation. Rust tests compare grouping and allocation with a
 literal reference and the Pareto sweep with pairwise dominance.
 
-The binary also exposes `extract LIBRARY SYMBOL GRAMMAR OUTPUT SOURCE...`,
-`analyze RECORDS SEARCH OUTPUT`, and `run LIBRARY SYMBOL GRAMMAR SOURCES SEARCH OUTPUT`.
+The `corpus-analysis memory-pareto` command and its compatibility binary expose
+`extract LIBRARY SYMBOL GRAMMAR OUTPUT SOURCE...`, `analyze RECORDS SEARCH OUTPUT`,
+and `run LIBRARY SYMBOL GRAMMAR SOURCES SEARCH OUTPUT`.
 Set `CODE_CORPORA_SHA` to the full corpus Git SHA when writing standalone analysis
 reports. Output reports use exclusive creation. Generated results are ignored;
 no historical measurements are retained here.

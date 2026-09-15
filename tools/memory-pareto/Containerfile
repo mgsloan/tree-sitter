@@ -3,7 +3,7 @@ ARG GRAMMARS_IMAGE
 FROM ${BUILD_IMAGE} AS build
 WORKDIR /src
 COPY . .
-RUN cargo build --locked --release --manifest-path tools/memory-pareto/Cargo.toml
+RUN cargo build --locked --release -p corpus-analysis --bin tree-sitter-memory-pareto
 
 FROM ${GRAMMARS_IMAGE}
 ARG BUILD_IMAGE
@@ -12,6 +12,8 @@ ARG TOOL_REVISION
 ARG TOOL_SOURCE_SHA256
 LABEL memory-pareto.tool-revision=${TOOL_REVISION} memory-pareto.tool-source-sha256=${TOOL_SOURCE_SHA256}
 LABEL memory-pareto.build-image=${BUILD_IMAGE} memory-pareto.grammars-image=${GRAMMARS_IMAGE}
-COPY --from=build /src/tools/memory-pareto/target/release/tree-sitter-memory-pareto /opt/memory-pareto/tree-sitter-memory-pareto
-COPY tools/memory-pareto/run_corpus.py tools/memory-pareto/search.json tools/memory-pareto/exclusions.json /opt/memory-pareto/
+COPY --from=build /src/target/release/tree-sitter-memory-pareto /opt/memory-pareto/tree-sitter-memory-pareto
+COPY tools/memory-pareto/run_corpus.py /opt/memory-pareto/
+COPY crates/corpus-analysis/pareto-search.json /opt/memory-pareto/search.json
+COPY crates/corpus-analysis/pareto-exclusions.json /opt/memory-pareto/exclusions.json
 ENTRYPOINT ["python3", "/opt/memory-pareto/run_corpus.py"]

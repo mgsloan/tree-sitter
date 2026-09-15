@@ -60,7 +60,7 @@ fn cpu_ms() -> f64 {
     #[cfg(unix)]
     {
         let mut time = std::mem::MaybeUninit::<libc::timespec>::uninit();
-        if unsafe { libc::clock_gettime(libc::CLOCK_PROCESS_CPUTIME_ID, time.as_mut_ptr()) } == 0 {
+        if unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, time.as_mut_ptr()) } == 0 {
             let time = unsafe { time.assume_init() };
             return time.tv_sec as f64 * 1000.0 + time.tv_nsec as f64 / 1e6;
         }

@@ -6,6 +6,7 @@ use std::{
 use tree_squatter_persistence::*;
 
 #[test]
+#[ignore = "subprocess helper"]
 fn child_snapshot_holder() {
     use std::io::{Read, Write};
     let Some(root) = std::env::var_os("TSQ_SNAPSHOT_ROOT") else {
@@ -31,7 +32,12 @@ fn crashed_snapshot_reader_slot_is_reclaimable() {
     let cache = cache(root.path());
     load(&cache);
     let mut child = Command::new(std::env::current_exe().unwrap())
-        .args(["--exact", "child_snapshot_holder", "--nocapture"])
+        .args([
+            "--exact",
+            "child_snapshot_holder",
+            "--ignored",
+            "--nocapture",
+        ])
         .env("TSQ_SNAPSHOT_ROOT", root.path())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

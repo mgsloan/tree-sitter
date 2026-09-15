@@ -1,391 +1,121 @@
-# Corpus comparisons and experiments
+# Squatter tests and benchmarks
 
-Run the full offline workflow with the corpus checkout at `../../code-corpora`:
-
-```sh
-python3 tools/squatter/run.py --output build/squat-corpus --per-bucket 4 --repeat 3
-```
-
-This snapshots the tool sources, stages deterministic source files, compiles local
-grammars in the corpus's pinned build image, builds the Rust tools, creates sample
-lists, compares both backends on original and mutated inputs, and measures layout
-and equality variants. Each operation has its own log and status. Input hashes,
-tool snapshot hash, grammar pins and binary hashes, and image identity are kept
-in `container-run.json`. Output directories must be new. No checkout is modified.
-
-The convenience runner selects eleven available grammars and a bounded selection
-of training and holdout repositories. `--repo` and `--grammar` are repeatable; `--per-bucket` applies
-per split, grammar, and size bucket. Files over `--max-file-bytes` (default 4 MiB) are excluded.
-Use repeatable `--benchmark` selectors to run a subset.
-Coverage counts and missing repositories are recorded. The underlying tools can
-operate on the full corpus, with a configurable default limit of 16 MiB per file.
-The runner currently requires x86-64 Linux, Podman, Cargo, and the cached corpus
-build image; it invokes the container's ELF loader for host-built Rust binaries.
-
-## Individual tools
-
-Inside a compatible grammar container, use its artifact directory directly:
+The supported infrastructure has one public command surface:
 
 ```sh
-corpus-analysis sample --code-corpora /corpus --output /out/samplings
-squatter-bench --code-corpora /corpus --samplings /out/samplings \
-  walk-forward cursor-forward cold-parse train-small --repeat 5 --output example
-corpus-analysis memory-pareto --help
+cargo xtask squat test quick
+cargo xtask squat test corpus --output build/squat-check
+cargo xtask squat test sanitize --output build/squat-sanitize
+cargo xtask squat bench -- --output build/squat-run --repeat 5
 ```
 
-Alternatively, `--registry registry.json` supplies grammar metadata:
+`quick` runs the hermetic Rust, native C, and Python tests. `corpus` runs both
+native and Rust comparisons against bounded, deterministically staged inputs.
+`sanitize` runs the native corpus contract under ASan and UBSan. Corpus and
+benchmark output directories must be new.
 
-```json
-{
-  "grammars": {
-    "json": {"library": "json.so", "symbol": "tree_sitter_json", "sha": "grammar revision",
-      "queries": [{"name": "highlights", "path": "highlights.scm", "sha256": "query hash"}]}
-  }
-}
-```
+The implementation consists of:
 
-Library and query paths are relative to the registry file. Optional `library_sha256` is
-verified before loading. The built-in suffix map can be replaced by `suffixes`.
-Artifact catalogs, when present, restrict loading to entries marked `built`.
+- `corpus-analysis`, which owns corpus inventory, grammar registries,
+  deterministic sampling and mutation, and the memory Pareto model.
+- `squatter-check`, the untuned correctness entry point shared with the
+  benchmark workloads.
+- `squatter-bench`, the paired mainline/Squatter measurement executable.
+- `run.py`, the sole Podman/staging driver.
+- `summarize.py`, the sole supported result summarizer.
+- `matrix.toml`, the declarative grammar, repository, layout, and pressure
+  matrix.
 
-Sampling emits `train-*` and `test-*` newline-separated relative-path lists for
-tiny, small, normal, large, and unusual. The 100 KiB–1 MiB gap is intentional.
-Unusual files add a new parent/field/child combination, an arity threshold
-crossing, or a missing-node symbol. Grammar-specific novelty is compared against
-tiny/small/normal coverage. Already-selected large files are not duplicated.
-Directory symlinks, including the `training -> train` alias, are skipped.
+One-off encoding probes and revision-specific cloud packaging scripts are kept
+in Git history rather than maintained as repository tools.
 
-`squatter-bench` accepts benchmark names, sampling names, and file paths as
-positionals. It also supports `--all`, `--count`, `--repeat`, `--mutate`, `--seed`,
-`--short-circuit`, `--batch-size`, and `--repack`. Named hash domains isolate file
-selection, mutations, and seek positions. All repeats use identical bytes.
+## Corpus runner
 
-## Measurement contract
-
-Explicit `cold-parse` runs include a fresh parser and one-shot conversion on
-every repeat. Runs without that selector reuse one `PackContext` per grammar
-across files and batches; their prerequisite parse/conversion timing is recorded
-as `setup-parse`, with context creation outside timing. Run metadata records
-`parse_benchmark` and `reuse_pack_context`; summaries also accept older manifests
-whose prerequisite rows were always called `cold-parse`.
-
-Other benchmarks run each backend over a whole batch before switching;
-the first backend alternates by batch and repeat. Visible preorder ordinals
-identify nodes across representations. Comparison and identity-map setup are
-outside timed regions. Walk timings include recording O(1) node attributes.
-
-Seek differences are counted but ignored by default at the human's request;
-`--strict-seeks` makes them fail again.
-
-Field-lookup API differences are expected only when squat agrees with mainline's
-visible-child cursor (with no fields on ERROR parents). Any other field mismatch
-fails. `expected_field_differences` records the count in run metadata and each
-file's `cold-parse` record, separately from ignored seek differences. Counts are
-per checked node/field pair across repeats, not unique nodes; they are collected
-by the untimed relationship checks when `cold-parse` is selected. Large trees use
-the existing relationship-check sampling stride. Query results remain strict.
-
-Outputs are `NAME-files.jsonl`, `NAME-languages.jsonl`, `NAME-aggregate.jsonl`, and
-`NAME-run.json`. File metrics are medians of repeats; ratios are medians of paired
-repeat ratios (squat divided by mainline). Summaries report the requested six
-percentiles over per-file values. Short-circuiting flushes collected data and
-marks summaries partial. Failed files and the first failure are recorded.
-
-Linux hardware counters cover this thread's userspace instructions, cache
-references, and cache misses, with multiplexing correction. Restricted kernels
-leave those values null and record the reason; zeros are not substituted. Wall
-time and process CPU time remain available. Cache event definitions depend on
-the CPU; no synthetic cache-hit count is inferred from unlike events.
-
-Layout builds measure actual packing and bytes for 16/32/64 slots and 8/64-byte
-column alignment. Sparse grammar IDs, variable-width supertypes, and interleaved
-symbol/field storage are explicitly byte estimates, not implemented access paths.
-The scan microbenchmark compares scalar, portable SWAR, popcount SWAR, compiler
-AVX2, explicit SSE2, and explicit AVX2 with correctness checks and tail handling.
-
-The CLI-control regression uses an existing completed run with a CSS grammar:
+Run the default isolated matrix with the corpus checkout at
+`../../code-corpora`:
 
 ```sh
-python3 tools/squatter/test-controls.py build/squat-corpus
+python3 tools/squatter/run.py --output build/squat-run --per-bucket 4 --repeat 3
 ```
 
-It checks absolute paths, default/strict seek behavior, partial-result flushing,
-and repeatable sampling. It needs fresh `controls` and `control-samplings`
-subdirectories and the pinned CSS grammar's known seek discrepancy.
+The runner snapshots tracked tool sources, stages deterministic source files,
+compiles pinned grammar libraries in the corpus build image, and runs offline
+containers. `container-run.json` records input hashes, source and grammar
+identities, the exact copied matrix, commands, and operation status. `--repo`,
+`--grammar`, and `--benchmark` are repeatable selectors.
 
-## Query comparisons
+The matrix defines four pressure profiles:
 
-The runner stages query files from each grammar and matching language definitions
-in the corpus's Zed and extension checkouts. The registry records their original
-paths and SHA-256 hashes. Query compilation and regex compilation are outside the
-timed region. Both compilers must agree on acceptance; jointly rejected queries
-are recorded with both errors, and a grammar with no accepted queries fails.
-A custom registry must provide query sources when running query benchmarks.
+- `isolated`: no deliberate cache disturbance.
+- `carousel`: rotate actual workloads through files totaling twice the LLC size.
+- `wash`: one traversal of a randomized working set before each measurement.
+- `bursty`: a randomized concurrent tenant active for 10% of each 10ms quantum.
 
-Both engines evaluate built-in equality, regex, and membership predicates against
-identical source bytes. Other host predicates are metadata, as in mainline's Rust
-bindings. `query-captures` compares full partial-match snapshots, capture indexes,
-pattern IDs, and visible node identities in emission order. Collection is timed
-for both backends. No query-result differences are ignored. `--unoptimized-query` disables squat
-scan/plan shortcuts while retaining the capture coordinator, for ablation runs.
-
-Each query has a 30-second execution timeout. Each file/operation allows four
-million captured-node entries in recorded snapshots. Exceeding either budget is
-a failed comparison, never a successful truncated result. Generated large files
-can require quadratic snapshot storage; start broad query checks with:
+Run a paired sensitivity matrix with:
 
 ```sh
-python3 tools/squatter/run.py --output build/squat-queries \
-  --max-file-bytes 102400 --per-bucket 2 --repeat 3 --skip-layouts \
-  --benchmark query-matches --benchmark query-captures
+python3 tools/squatter/run.py --output build/squat-pressure --skip-layouts \
+  --pressure-profile isolated --pressure-profile carousel \
+  --pressure-profile wash --pressure-profile bursty \
+  --benchmark-cpu 0 --pressure-cpu 2 --repeat 7
+python3 tools/squatter/summarize.py build/squat-pressure \
+  --output build/squat-pressure-summary.json
 ```
 
-The query layout/ablation matrix reuses a completed source snapshot and its exact
-staged bytes. It builds 16/32/64-slot variants and compares each against mainline,
-including mutations, the unoptimized 16-slot executor, and repacked slabs:
+Unless `--pressure-bytes` is supplied, pressure modes use twice the LLC size
+reported by Linux sysfs, falling back to 32 MiB. Carousel uses aggregate source
+bytes as a stable proxy for its logical resident set; wash and tenant allocate
+their buffer once. The summarizer reports each backend's pressured/isolated
+slowdown and `Squatter slowdown / mainline slowdown`; values below one mean that
+Squatter retained more performance under pressure.
 
-```sh
-python3 tools/squatter/query-variants.py build/squat-queries --repeat 3
-python3 tools/squatter/summarize-queries.py build/squat-queries --output query-results.json
-```
+Use different physical cores that share an LLC. Do not place the tenant on an
+SMT sibling when the goal is shared-cache rather than execution-unit pressure.
+Affinity is Linux-only and is recorded in every run manifest.
 
-`query-variants.json` records compiler flags, executable hashes, commands, and
-individual pass/fail status. Existing matrix manifests are never overwritten.
-The summary checks query and input identities and requires complete passing runs.
-Its cross-variant ratios compare separate per-file medians; the mainline/squat
-ratios within each run retain the paired-repeat contract.
+`--checks-only` is an internal runner mode used by `xtask`: it invokes
+`squatter-check`, forces one repeat, and supports only the isolated profile.
 
-## Cursor comparisons
+## Workloads and measurement
 
-The forward workloads separate navigation from attribute decoding:
+The shared workload set is:
 
-| Selector | Work timed |
-|---|---|
-| `cursor-forward` | Native traversal and node identities |
-| `walk-forward` | Traversal and O(1) node attributes |
+- `query-matches` and `query-captures`
+- `walk-forward` and `cursor-forward`
+- cached and uncached iterator navigation/attribute walks
+- `seek-byte` and, in point-enabled builds, `seek-point`
+- `cold-parse`, comparing parse against parse plus one-shot packing
 
-Both use the ordinary `Cursor` and compare against mainline on identical bytes.
-Cursor creation, destruction, and result collection are timed. Attribute walks
-use constant-time bulk snapshots for byte/point coordinates, symbols, names, and
-flags. Child, named-child, and descendant counts are separate APIs because they
-can scan children or packed groups. Fields and depth are excluded from the Rust
-snapshot (the native bulk call also reads the constant-time field ID).
-Counts are compared in sampled, untimed relationship checks;
-cursor fields and depths are checked at every visited node outside timing.
-Historical bulk-attribute timings use a different workload and are not directly
-comparable. Cached cursors and reverse traversal workloads have been removed.
+Without an explicit `cold-parse` selector, prerequisite parsing uses a reusable
+per-grammar `PackContext` and is reported as `setup-parse`. Workload and backend
+order rotate across batches and repeats. Comparisons use visible preorder
+ordinals, and query results remain strict.
 
-For the smaller C attribute set (coordinates, symbol, named/error flags), build
-`make -C lib/squat ../../build/squat/walk-bench` and run
-`walk-bench LIBRARY SYMBOL SOURCE REPEATS 0`. Set `SQ_SQUAT_FIRST=0` or `1` to
-alternate the first measured backend between processes. The zero argument
-disables the optional seek workload.
+The single known seek discrepancy is permitted only for the checked-in
+`hidden-seek.css` fixture unless `--strict-seeks` is used. Other seek differences
+fail; there is no blanket seek-error suppression.
 
-```sh
-python3 tools/squatter/run.py --output build/squat-cursors \
-  --max-file-bytes 102400 --per-bucket 2 --repeat 5 --skip-layouts --skip-sampling \
-  --benchmark cursor-forward --benchmark walk-forward
-```
+Every measurement reports wall time, benchmark-thread CPU time, and, when Linux
+permits them, thread-scoped userspace instructions, cache references, and cache
+misses. Pressure-worker instructions and CPU time are not charged to the
+benchmark thread. Hardware cache-event definitions remain CPU-specific.
 
-Use `--image IMAGE_ID` if the corpus's pinned image is not cached locally.
-To include larger files, use `--max-file-bytes 4194304 --per-bucket 1` and a fresh
-output directory.
+Each invocation writes `NAME-{files,languages,aggregate}.jsonl` and
+`NAME-run.json`. File ratios are paired within repeats. Incomplete and failed
+runs retain partial data and explicit status.
 
-## Iterator comparisons
+## Native tests and retained microbenchmarks
 
-`walk-iterator` and `walk-iterator-cached` record the same O(1) node attributes
-as `walk-forward`, using the iterator's constant-time bulk attribute API. They do
-not reconstruct depth. `iterator-forward` and `iterator-forward-cached` measure
-node identity traversal alone, alongside `cursor-forward`. Mainline uses its ordinary
-forward cursor for all corresponding workloads. All four new selectors are in
-the default benchmark set. Iterator creation and destruction are timed.
+`make -C lib/squat check` runs hermetic packed-column and supertype tests. The
+container corpus check additionally runs structural comparison, queries, exact
+seeks, and pack-context reuse for each staged grammar.
 
-The optional unpack cache is exercised by `walk-iterator-cached`; it remains idle
-in navigation-only workloads. The default cache stores three variable-width IDs
-as u16 and reconstructs six absolute coordinate columns as u32 with SIMD
-broadcast-base arithmetic. Source identities and selected build flags must
-accompany kernel or group-size ablations. Group size changes the slab
-layout too, so those comparisons are not isolated unpack-kernel comparisons.
+Only durable native probes remain under `lib/squat/experiments`:
 
-## Running uploaded binaries on a benchmark VM
+- `layout.c`: packing time, occupancy, and actual layout bytes.
+- `memory.c`/`memory.py`: retained allocations and construction peaks.
+- `load.c`: deserialization cost from an existing slab.
+- `scan.c` and `unpack.c`: explanatory scan/decoder microkernels.
 
-`benchmark-upload.py` runs a prepared bundle without a remote build. The bundle
-contains `binaries/{ids,all,scalar,swar,avx2,group32,group64}/squatter-bench`,
-`unpack-{16,32,64}`, `local-build-manifest.json`, and
-`{bounded,large}/{corpus,registry.json}`. Grammar/query paths in each registry
-must resolve on the target machine; the saved grammar hashes are still checked.
-
-```sh
-python3 benchmark-upload.py ~/squatter-benchmark --cpu 0 --repeat 9
-```
-
-The runner invokes the guest's ELF loader explicitly, allowing binaries with a
-build-host Nix interpreter path to run against compatible guest libraries. It
-pins one CPU, runs variants sequentially, reverses variant order for the second
-sample, and alternates original/mutated order. It records binary hashes, CPU and
-libc details, exact commands, and `/proc/stat` snapshots around each operation.
-It requires a new `cloud-results` directory and stops on any failed comparison.
-No credentials or cloud provisioning are part of this runner.
-
-`--large-variants ids all` narrows the large-file matrix. Large runs select the
-six traversal workloads; the harness still records prerequisite parse timings,
-but does not run the additional cold-parse relationship checks. The bounded
-matrix includes those checks. `--resume` skips completed operations only when
-their commands and binary hashes match, and refuses to overwrite unfinished
-operations; preserve interrupted artifacts separately first.
-
-After downloading `cloud-results`, validate and preserve the complete matrix:
-
-```sh
-python3 tools/squatter/summarize-iterators.py build/squat-iterator/cloud-results \
-  build/squat-iterator/iterator-run.json --output iterator-results.json
-```
-
-The summary checks uploaded/measured binary identities, completed repeats, and
-matching input hashes, node counts, and workload coverage. Cache/iterator ratios
-compare separate per-file medians; mainline timings provide a drift control.
-Files originally at least 1 MiB also receive their own summaries so small inputs
-do not obscure large-tree behavior. Group-size variants change the slab layout
-and must be interpreted separately from unpack-kernel-only variants.
-
-For independent unpack windows, build four binaries with
-`SQ_GROUP_SIZE=16` and `SQ_ITERATOR_UNPACK_SLOTS=16/32/64/128`. Keep the input
-sample and remaining compiler flags identical. A focused matrix can use:
-
-```sh
-python3 benchmark-upload.py ~/squatter-benchmark --output-name window-results \
-  --repeat 5 --variants window16 window32 window64 window128 \
-  --benchmarks walk-iterator walk-iterator-cached --unpack-sizes 128
-python3 tools/squatter/summarize-iterators.py build/squat-iterator/window-results \
-  build/squat-iterator/iterator-run.json --baseline window16 --output window-results.json
-```
-
-The summarizer also requires equal slab sizes and group counts for variants with
-identical group sizes. `--unpack-sizes` selects uploaded `unpack-N` microbenchmark
-binaries; the microbenchmark CSV records both group size and unpack-window size.
-
-The main harness rotates workload order by batch and after every two repeats,
-so each rotation sees both backend orders. For a fully balanced single-file
-measurement, use twice as many repeats as selected non-parse workloads (or a
-multiple thereof). Earlier saved iterator matrices used fixed workload order;
-their mainline controls expose a warming effect in small navigation workloads.
-
-
-For absolute u32 coordinate-cache windows, build the same source four times with
-`SQ_GROUP_SIZE=16`, `SQ_ITERATOR_CACHE_ALL=2`, and
-`SQ_ITERATOR_UNPACK_SLOTS=16/32/64/128`. Compare each cached walk with its own
-uncached walk; the old delta cache is not part of this experiment. For example:
-
-```sh
-python3 benchmark-upload.py ~/squatter-benchmark --repeat 8 \
-  --variants absolute16 absolute32 absolute64 absolute128 \
-  --output-name absolute-results --unpack-sizes \
-  --benchmarks walk-iterator walk-iterator-cached
-```
-
-An empty `--unpack-sizes` skips standalone ID-unpack microbenchmarks. Eight repeats
-balance the two attribute workloads across both workload positions and backend
-orders. The full results retain mainline timing controls and per-file medians.
-
-
-## Byte-only builds
-
-Build `squatter-bench` with `--no-default-features` to omit row/column support.
-The default workload list then excludes `seek-point`; explicitly requesting it
-returns an error. Attribute comparisons cover only fields present in that build,
-and run metadata records `point_positions: false`. Byte seeks, queries, cursor
-walks, and both iterator walks remain checked against mainline. Use Cargo's
-`points` feature to select the matching C and Rust APIs, rather than overriding
-`SQ_INCLUDE_POINTS` through CFLAGS in a Cargo build.
-
-This changes the serialized layout and may change group occupancy, so compare
-like build configurations when isolating iterator cache-window effects.
-
-## Paired seek profiling
-
-From the repository root, compare the current seek implementation with a frozen
-`node.c` on the same packed trees:
-
-```sh
-python3 tools/squatter/benchmark-seek.py --output build/seek-profile/points --points 1
-python3 tools/squatter/benchmark-seek.py --output build/seek-profile/bytes --points 0
-```
-
-Each output directory must be empty. The default uses the frozen 10,000-file
-bundle at `build/squat-corpus-10k`; select another with `--bundle`. Use
-`--files-per-grammar 20` for a pilot or `--grammar typescript` for one language.
-The default baseline is `220ee121c`. Baseline and current code use the current
-slab layout, so this probe is suitable for seek changes, not layout comparisons.
-
-Every query is checked before timing. The probe records five alternating timing
-pairs, their individual samples, and median thread CPU times for original and
-mutated files, with empty and mixed-range workloads. Build/input hashes and
-commands are saved with the results. Parsing and packing are outside the timer.
-
-Add `--profile point --rounds 3000 --perf-event EVENT` to sample with a supported
-`perf` event; `byte`, `before-point`, and `before-byte` select the other paths.
-Historical reports contain the hybrid results, cloud strategy comparison, and
-local profiles for the retained optimizations and repeated large-file
-comparisons.
-
-## Cloud idle shutdown
-
-The two-vCPU benchmark VM uses `cloud-idle.py`, installed as
-`/usr/local/bin/squatter-idle`. Wrap the whole driver, including all sequential
-runs, to keep it active even when an SSH connection drops:
-
-```sh
-nohup squatter-idle run -- python3 benchmark-upload.py BUNDLE [OPTIONS] \
-  > driver.log 2>&1 < /dev/null &
-squatter-idle status
-```
-
-On `squatter-benchmark`, the enabled `squatter-idle.timer` calls the following
-root service every minute (`OnBootSec=1min`, `OnUnitActiveSec=1min`,
-`AccuracySec=1s`). Its timer is wanted by `timers.target`:
-
-```ini
-[Service]
-Type=oneshot
-ExecStartPre=/usr/bin/install -d -o mgsloan -g mgsloan /run/squatter-benchmark
-ExecStart=/usr/local/bin/squatter-idle check
-```
-
-The VM powers off after 1,800 seconds without a wrapped job, within the timer's
-one-minute resolution. A running job holds a shared lock inherited by its
-children; shutdown requires the exclusive lock. The final job completion resets
-the idle timestamp. `/run` and monotonic time prevent stale reboot timestamps or
-wall-clock changes from shortening the grace period. Run setup work through the
-same wrapper when it needs to keep the machine active. The existing GCP maximum
-runtime is an independent hard limit, and the boot disk survives shutdown.
-
-Check `systemctl is-enabled squatter-idle.timer` and
-`systemctl list-timers squatter-idle.timer`. Local shutdown-policy tests run with
-`python3 tools/squatter/test-cloud-idle.py`; they mock the poweroff command.
-
-`/etc/tmpfiles.d/squatter-benchmark.conf` contains
-`d /run/squatter-benchmark 0755 mgsloan mgsloan -`, so jobs can start before the
-first timer tick after reboot. The timestamp is replaced atomically.
-
-### Isolated O(1) attribute walks
-
-Build `make -C lib/squat ../../build/squat/attributes-bench` and run
-`build/squat/attributes-bench GRAMMAR.so tree_sitter_LANGUAGE 7 SOURCE...`.
-Use a distinct `BUILD` directory and `CFLAGS` containing
-`-DSQ_INCLUDE_POINTS=0` for a byte-only build. The JSON contains calibrated
-whole-batch CPU times for mainline, individual getters, cursor/node bulk getters,
-and individual/uncached-bulk/cached-bulk preorder iterators. All modes consume
-identical O(1) attributes; counts, fields, and depth are excluded from the
-checksum. C bulk snapshots still decode their O(1) field ID. Complete strings
-and snapshots are compared outside timing; timing consumes only the first byte
-of each type string. Parsing and packing are excluded, cursor/iterator creation
-and deletion are included. This probe excludes the Rust benchmark's observation
-allocation and collection costs.
-
-`SQ_ROTATION` changes the first mode; subsequent samples rotate automatically.
-For profiling, `SQ_PROFILE_MODE=0..6` and `SQ_PROFILE_ROUNDS=N` repeat one mode
-after the common validation and calibration. Profile output includes those
-setup phases, so inspect the dominant symbols rather than treating percentages
-as exact steady-state attribution.
-
-Historical reports contain the cloud bulk-walk and decoder-cache results.
+Top-level performance decisions should be based on `squatter-bench`; native
+microbenchmarks are diagnostic evidence.

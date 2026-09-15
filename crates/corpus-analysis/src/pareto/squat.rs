@@ -1,4 +1,4 @@
-//! Storage model for the repository-root design.md, using schema-2 input trees.
+//! Storage model for the repository-root design, using schema-2 input trees.
 use super::*;
 
 /// Lay out each complete field array once, after the number of groups is known.

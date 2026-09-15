@@ -398,6 +398,7 @@ fn legacy_backend_round_trip() {
 }
 
 #[test]
+#[ignore = "subprocess helper"]
 fn child_writer_lock() {
     use std::io::{Read, Write};
     let Some(path) = std::env::var_os("TSQ_TEST_LOCK") else {
@@ -434,7 +435,7 @@ fn writer_death_releases_admission_without_stale_files() {
         .unwrap();
     let write = result.pending_write.unwrap();
     let mut child = Command::new(std::env::current_exe().unwrap())
-        .args(["--exact", "child_writer_lock", "--nocapture"])
+        .args(["--exact", "child_writer_lock", "--ignored", "--nocapture"])
         .env(
             "TSQ_TEST_LOCK",
             root.path().join(".tree-squatter/cooperation.lock"),

@@ -23,7 +23,6 @@ def main():
     parser.add_argument("--image", help="defaults to the corpus lock's build image ID")
     parser.add_argument("--sanitize", action="store_true")
     parser.add_argument("--queries", action="store_true", help="also compare query execution")
-    parser.add_argument("--strict-seeks", action="store_true", help="treat known seek differences as failures")
     parser.add_argument("--timeout", type=int, default=300)
     args = parser.parse_args()
     corpus = args.code_corpora.resolve()
@@ -41,19 +40,16 @@ def main():
         "image": image,
         "sanitize": args.sanitize,
         "queries": args.queries,
-        "strict_seeks": args.strict_seeks,
         "grammars": [],
     }
     common = ["podman", "run", "--rm", "--network=none", "--cap-drop=all",
               "--security-opt=no-new-privileges", "--memory=4g", "--cpus=4", "--pids-limit=256",
               "--entrypoint", "sh", "-v", f"{ROOT}:/work:ro", "-v", f"{output}:/out:rw"]
-    if args.strict_seeks:
-        common += ["-e", "SQ_STRICT_SEEKS=1"]
     if args.queries:
         common += ["-e", "SQ_CHECK_QUERIES=1"]
     flags = "-O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer" if args.sanitize else "-O2 -g"
-    query_target = " /out/query-check" if args.queries else ""
-    run(common + [image, "-c", f"make -C /work/lib/squat -j4 BUILD=/out CFLAGS='{flags}' all check{query_target}"], timeout=args.timeout)
+    corpus_targets = " /out/query-check /out/seek-check /out/context-check"
+    run(common + [image, "-c", f"make -C /work/lib/squat -j4 BUILD=/out CFLAGS='{flags}' all check{corpus_targets}"], timeout=args.timeout)
     failures = 0
     for name in grammars:
         started = time.monotonic()
@@ -88,7 +84,10 @@ case "$name" in
   typescript|tsx) set -- "$@" /work/lib/squat/tests/fixtures/inherited-field.ts ;;
   css) set -- "$@" /work/lib/squat/tests/fixtures/hidden-seek.css ;;
 esac
+printf '%s\n' "$@" > /tmp/squat-sources
 ASAN_OPTIONS=detect_leaks=1 /out/compare "/out/$name.so" "$symbol" "$@"
+ASAN_OPTIONS=detect_leaks=1 /out/seek-check "/out/$name.so" "$symbol" /tmp/squat-sources
+ASAN_OPTIONS=detect_leaks=1 /out/context-check "/out/$name.so" "$symbol" "$@"
 if test "${SQ_CHECK_QUERIES:-0}" = 1; then
   ASAN_OPTIONS=detect_leaks=1 /out/query-check "/out/$name.so" "$symbol"
 fi
@@ -99,12 +98,6 @@ fi
                                   "sh", source_path, symbol, name, flags],
                         stdout=log, stderr=subprocess.STDOUT, timeout=args.timeout)
                 record["status"] = "passed"
-                log_text = (output / f"{name}.log").read_text()
-                import re
-                mismatches = re.search(r"seek mismatches: (\d+)", log_text)
-                record["seek_mismatches"] = int(mismatches[1]) if mismatches else 0
-                if record["seek_mismatches"]:
-                    record["status"] = "structural-pass-seek-differences"
             except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as failure:
                 record.update(status="failed", reason=str(failure))
                 failures += 1

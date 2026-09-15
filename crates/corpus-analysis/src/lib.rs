@@ -1,4 +1,6 @@
 //! Corpus inventory, grammar loading, and deterministic input preparation.
+pub mod pareto;
+
 use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -99,7 +101,7 @@ pub struct Registry {
     pub code_corpora_sha: String,
 }
 fn default_suffixes() -> BTreeMap<String, String> {
-    serde_json::from_str(include_str!("../../../tools/memory-pareto/extensions.json")).unwrap()
+    serde_json::from_str(include_str!("../extensions.json")).unwrap()
 }
 impl Registry {
     pub fn read(path: &Path) -> Result<Self> {

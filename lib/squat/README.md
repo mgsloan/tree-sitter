@@ -46,8 +46,7 @@ position-calculation alternatives.
 
 `context-check` checks output equality, reuse, trimming, and ownership; setting
 `CONTEXT_FAILURES=1` also injects failure at every pack allocation and checks
-recovery. `setup-bench` accepts `SQ_REUSE_CONTEXT=1` and `SQ_BATCH_LOOPS=16` for
-paired small-file measurements with sufficient work per timed sample.
+recovery. Corpus checks run this against each staged grammar.
 
 `make -C lib/squat check` checks column packing and value-preserving growth and
 compaction, including nine-bit lane realignment. For grammar comparisons:
@@ -206,14 +205,13 @@ other query comparisons remain strict.
 Historical comparisons document the upstream inconsistency and the removed
 version-2 compatibility mechanism.
 
-Known mainline seek differences are counted but ignored by default, as requested
-by the human. Use `--strict-seeks` for the container runner or `SQ_STRICT_SEEKS=1`
-for the C executable to investigate them. The fixture `tests/fixtures/hidden-seek.css`
-is a minimal valid-input repro. No hidden-node or seek-barrier index is stored.
+The known mainline difference in `tests/fixtures/hidden-seek.css` is counted but
+ignored by `squatter-bench` unless `--strict-seeks` is used. Other differences
+fail. No hidden-node or seek-barrier index is stored.
 
 `tests/seek.c` compares byte seeks and, when enabled, point seeks exactly with the
-previous sibling-descent algorithms, independently of those mainline differences. Build it with
-`make -C lib/squat ../../build/squat/seek-check`, then run
+previous sibling-descent algorithms, independently of mainline differences.
+Build it with `make -C lib/squat ../../build/squat/seek-check`, then run
 `build/squat/seek-check GRAMMAR_LIBRARY GRAMMAR_SYMBOL SOURCE_LIST`, where
 `SOURCE_LIST` contains one source path per line. It checks named/unnamed ranges,
 subtree roots, boundaries, and malformed variants of every input.

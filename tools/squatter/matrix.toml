@@ -1,0 +1,40 @@
+[selection]
+repositories = [
+  "ripgrep", "black", "fastapi", "esbuild", "caddy", "nodebb", "vue-core",
+  "redis", "zstd", "jq", "catch2", "act", "hypothesis", "jinja", "c-ares",
+  "entt", "Chart.js", "less.js", "helm",
+]
+grammars = ["json", "python", "c", "cpp", "tsx", "typescript", "html", "css", "yaml", "go", "bash"]
+
+[pressure.isolated]
+mode = "none"
+
+[pressure.wash]
+mode = "wash"
+
+[pressure.carousel]
+mode = "carousel"
+
+[pressure.bursty]
+mode = "tenant"
+duty_percent = 10
+
+[[layout]]
+name = "group16-align8"
+group_size = 16
+alignment = 8
+
+[[layout]]
+name = "group32-align8"
+group_size = 32
+alignment = 8
+
+[[layout]]
+name = "group64-align8"
+group_size = 64
+alignment = 8
+
+[[layout]]
+name = "group16-align64"
+group_size = 16
+alignment = 64

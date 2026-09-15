@@ -1,70 +1,173 @@
 #!/usr/bin/env python3
-"""Summarize completed layout logs without hiding per-file or provenance data."""
+"""Validate and summarize every supported result in one Squatter run directory."""
+
 import argparse
 import csv
+import hashlib
 import io
 import json
 from pathlib import Path
 import statistics
+import tomllib
+
+
+def read(path):
+    return json.loads(path.read_text())
+
+
+def rows(path):
+    return [json.loads(line) for line in path.read_text().splitlines()]
+
+
+def quantiles(values):
+    ordered = sorted(values)
+    if not ordered:
+        return None
+
+    def at(fraction):
+        position = fraction * (len(ordered) - 1)
+        low = int(position)
+        high = min(low + 1, len(ordered) - 1)
+        return ordered[low] + (ordered[high] - ordered[low]) * (position - low)
+
+    return dict(zip(("min", "p10", "median", "p90", "max"),
+                    (at(value) for value in (0, .1, .5, .9, 1))))
+
+
+def benchmark_results(directory):
+    results = {}
+    for manifest_path in sorted((directory / "bench-outputs").glob("*-run.json")):
+        manifest = read(manifest_path)
+        if manifest["partial"] or manifest["failed"] or manifest["failures"]["count"]:
+            raise SystemExit(f"incomplete or failed benchmark: {manifest_path}")
+        name = manifest_path.name.removesuffix("-run.json")
+        records = rows(manifest_path.with_name(name + "-files.jsonl"))
+        keyed = {(row["path"], row["benchmark"]): row for row in records}
+        if len(keyed) != len(records):
+            raise SystemExit(f"duplicate benchmark rows: {manifest_path}")
+        profile = manifest["arguments"].get("pressure_label") or manifest["pressure"]["mode"]
+        key = (manifest["arguments"]["mutate"], profile)
+        if key in results:
+            raise SystemExit(f"duplicate mutation/pressure condition: {manifest_path}")
+        results[key] = (manifest, keyed)
+    return results
+
+
+def pressure_summary(results):
+    records = []
+    summaries = []
+    baselines = {}
+    for key, value in results.items():
+        if value[0]["pressure"]["mode"] == "none":
+            if key[0] in baselines:
+                raise SystemExit(f"multiple isolated baselines for mutated={key[0]}")
+            baselines[key[0]] = value
+    for (mutated, profile), (manifest, pressured) in results.items():
+        mode = manifest["pressure"]["mode"]
+        if mode == "none":
+            continue
+        if mutated not in baselines:
+            raise SystemExit(f"pressure profile {profile} has no matching isolated run")
+        baseline_manifest, baseline = baselines[mutated]
+        if baseline.keys() != pressured.keys():
+            raise SystemExit(f"pressure mode {mode} changed benchmark coverage")
+        for field in ("registry", "grammar_sha256", "benchmarks"):
+            if baseline_manifest[field] != manifest[field]:
+                raise SystemExit(f"pressure mode {mode} changed {field}")
+        condition = []
+        for key in sorted(pressured):
+            before = baseline[key]
+            after = pressured[key]
+            for field in ("path", "grammar", "benchmark", "source_sha256",
+                          "tested_sha256", "nodes", "slab_bytes"):
+                if before[field] != after[field]:
+                    raise SystemExit(f"pressure comparison changed {field}: {key}")
+            mainline = after["mainline"]["wall_ms"] / before["mainline"]["wall_ms"]
+            squat = after["squat"]["wall_ms"] / before["squat"]["wall_ms"]
+            record = dict(path=after["path"], grammar=after["grammar"],
+                          benchmark=after["benchmark"], mutated=mutated,
+                          pressure=profile, pressure_mode=mode,
+                          mainline_slowdown=mainline, squat_slowdown=squat,
+                          relative_slowdown=squat / mainline)
+            records.append(record)
+            condition.append(record)
+        for benchmark in sorted({row["benchmark"] for row in condition}):
+            selected = [row for row in condition if row["benchmark"] == benchmark]
+            summaries.append(dict(
+                mutated=mutated, pressure=profile, pressure_mode=mode,
+                benchmark=benchmark, files=len(selected),
+                mainline_slowdown=quantiles(row["mainline_slowdown"] for row in selected),
+                squat_slowdown=quantiles(row["squat_slowdown"] for row in selected),
+                relative_slowdown=quantiles(row["relative_slowdown"] for row in selected),
+            ))
+    return records, summaries
+
+
+def layout_summary(directory, matrix, inputs):
+    variants = {}
+    grammars = sorted({entry["grammar"] for entry in inputs})
+    for layout in matrix.get("layout", []):
+        records = []
+        for grammar in grammars:
+            path = directory / f"layout-{layout['name']}-{grammar}.log"
+            if not path.exists():
+                continue
+            lines = path.read_text().splitlines()
+            start = next(index for index, line in enumerate(lines) if line.startswith("path,"))
+            records.extend(csv.DictReader(io.StringIO("\n".join(lines[start:]))))
+        if not records:
+            continue
+        nodes = sum(int(row["nodes"]) for row in records)
+        slab_bytes = sum(int(row["slab_bytes"]) for row in records)
+        slots = sum(int(row["slots"]) for row in records)
+        variants[layout["name"]] = dict(
+            files=len(records), nodes=nodes, slab_bytes=slab_bytes,
+            bytes_per_node=slab_bytes / nodes, occupancy=nodes / slots,
+            summed_median_pack_ms=sum(float(row["median_pack_ms"]) for row in records),
+            median_file_bytes_per_node=statistics.median(
+                int(row["slab_bytes"]) / int(row["nodes"]) for row in records),
+        )
+    return variants
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("run", type=Path)
+    parser.add_argument("--matrix", type=Path,
+                        help="matrix used for the run (default: RUN/matrix.toml)")
     parser.add_argument("--output", type=Path, required=True)
-    args = parser.parse_args()
-    manifest = json.loads((args.run / "container-run.json").read_text())
-    failures = [operation for operation in manifest["operations"]
-                if operation["status"] != "passed"]
-    if failures:
-        raise SystemExit(f"run contains failed operations: {failures}")
-    variants = {}
-    records = []
-    for group, alignment in [(16, 8), (32, 8), (64, 8), (16, 64)]:
-        variant = f"{group}-{alignment}"
-        rows = []
-        for grammar in sorted({entry["grammar"] for entry in manifest["inputs"]}):
-            inputs = [entry for entry in manifest["inputs"] if entry["grammar"] == grammar]
-            path = args.run / f"layout-{variant}-{grammar}.log"
-            grammar_rows = list(csv.DictReader(io.StringIO(path.read_text())))
-            if len(grammar_rows) != len(inputs):
-                raise SystemExit(f"incomplete layout log: {path}")
-            for source, raw in zip(inputs, grammar_rows):
-                row = {key: float(value) if key == "median_pack_ms" else int(value)
-                       for key, value in raw.items()}
-                row.update(path=source["path"], grammar=grammar)
-                rows.append(row)
-        nodes = sum(row["nodes"] for row in rows)
-        size = sum(row["slab_bytes"] for row in rows)
-        variants[variant] = dict(files=len(rows), nodes=nodes, slab_bytes=size,
-            bytes_per_node=size / nodes,
-            median_file_bytes_per_node=statistics.median(row["slab_bytes"] / row["nodes"] for row in rows),
-            occupancy=nodes / sum(row["slots"] for row in rows),
-            summed_median_pack_ms=sum(row["median_pack_ms"] for row in rows))
-        if variant == "16-8":
-            variants[variant]["modeled_column_bytes"] = {
-                name: sum(row[name] for row in rows) for name in [
-                    "grammar_bytes", "sparse_grammar_bytes", "super_bytes", "var_super_bytes",
-                    "separate_symbol_field_bytes", "interleaved_symbol_field_bytes"]}
-            # Historical version-2 logs include the now-removed exception section.
-            if "field_exception_bytes" in rows[0]:
-                variants[variant]["field_exception_bytes"] = sum(row["field_exception_bytes"] for row in rows)
-        records.extend(rows)
-    scan = (args.run / "scan-kernels.log").read_text().splitlines()
-    # make output precedes CSV. The header is emitted by the executable itself.
-    start = next(index for index, line in enumerate(scan) if line.startswith("width,"))
-    kernels = list(csv.DictReader(scan[start:]))
-    result = dict(schema=1, source_sha256=manifest["source_sha256"],
-        tool_sha=manifest["tool_sha"], image=manifest["image"],
-        code_corpora_sha=manifest["code_corpora_sha"], grammars=manifest.get("grammars"),
-        inputs=manifest["inputs"], variants=variants, kernels=kernels, records=records,
-        caveats=["Convenience sample is bounded and not language-balanced by node count.",
-                 "Packing times are seven-repeat medians; scheduling and thermals add noise.",
-                 "Sparse/VarBits/interleaved columns are byte models, not measured access paths."])
-    with args.output.open("x") as output:
+    arguments = parser.parse_args()
+    manifest = read(arguments.run / "container-run.json")
+    failed = [operation for operation in manifest["operations"]
+              if operation["status"] != "passed"]
+    if failed:
+        raise SystemExit(f"run contains failed operations: {failed}")
+    matrix_path = arguments.matrix or arguments.run / "matrix.toml"
+    matrix_bytes = matrix_path.read_bytes()
+    if manifest.get("matrix_sha256") != hashlib.sha256(matrix_bytes).hexdigest():
+        raise SystemExit(f"matrix does not match run manifest: {matrix_path}")
+    matrix = tomllib.loads(matrix_bytes.decode())
+    benchmarks = benchmark_results(arguments.run)
+    pressure_records, pressure_summaries = pressure_summary(benchmarks)
+    result = dict(
+        schema=2,
+        provenance={key: manifest.get(key) for key in
+                    ("source_sha256", "matrix_sha256", "tool_sha", "image",
+                     "code_corpora_sha", "grammars")},
+        inputs=manifest["inputs"],
+        benchmark_runs={f"{'mutated' if key[0] else 'original'}/{key[1]}": value[0]
+                        for key, value in benchmarks.items()},
+        pressure_summaries=pressure_summaries,
+        pressure_records=pressure_records,
+        layouts=layout_summary(arguments.run, matrix, manifest["inputs"]),
+        ratio_contract="pressure/isolated per-file medians; relative slowdown is Squatter slowdown divided by mainline slowdown",
+    )
+    with arguments.output.open("x") as output:
         json.dump(result, output, indent=2)
         output.write("\n")
-    print(json.dumps(variants, indent=2))
+    for row in pressure_summaries:
+        print("mutated" if row["mutated"] else "original", row["pressure"],
+              row["benchmark"], "relative", f"{row['relative_slowdown']['median']:.3f}")
 
 
 if __name__ == "__main__":
