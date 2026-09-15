@@ -1,10 +1,6 @@
 # Queue
 
-- [ ] Review and polish design.md.  Have a section on the query stuff. Mention that it does not need to perfectly match upstream behavior - can be a different match order and so a different subset when match limits are used.
-
-- [ ] Put grammar-derived tables in LMDB
-
-- [ ] Big-endian specific path for the persistent cache (LMDB repr is not portable)
+- [ ] Review and polish design.md.
 
 - [ ] Make sure that the worker contexts also reuse a TreeSitter parser
 
@@ -29,3 +25,5 @@
 - [ ] Update persistence cache properly for renames
 
 - [ ] Consider allowing persistent cache waiters
+
+- [ ] Revisit grammar_symbol defaults table and persiting it in LMDB or including in generate grammars
