@@ -74,7 +74,7 @@ def main():
     for point in [1, 0]:
         lines += ['## '+('Points enabled' if point else 'Byte-only'), '']
         for column in ['field', 'symbol', 'super']:
-            lines += ['### '+column, '', '| Transition | Highlight | Tags | Cursor | Uncached | Cached | Membership | Slab | Grammars |',
+            lines += ['### '+{'field': 'Field IDs', 'symbol': 'Symbols', 'super': 'Supertype masks'}[column], '', '| Transition | Highlight | Tags | Cursor | Uncached | Cached | Membership | Slab | Grammars |',
                       '|---|---:|---:|---:|---:|---:|---:|---:|---|']
             for row in result:
                 if row['points'] == point and row['column'] == column:
