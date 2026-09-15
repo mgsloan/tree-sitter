@@ -1,6 +1,6 @@
 # Queue
 
-- [ ] Review and polish design.md
+- [ ] Review and polish design.md.  Have a section on the query stuff. Mention that it does not need to perfectly match upstream behavior - can be a different match order and so a different subset when match limits are used.
 
 - [ ] Put grammar-derived tables in LMDB
 
