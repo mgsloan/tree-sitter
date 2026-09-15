@@ -27,7 +27,11 @@ can be computed directly without buffering.
 If the estimate was too little, it is grown and the data is copied inplace. If
 the estimate was too large, it is left that way, but can also be compacted.
 
-## Slab data
+`min_subtree_size`, `max_byte`, `max_row`, `min_col`, and `max_col` are computed as it scans. `trailing_waste`, `min_byte`, and `min_row` are known on the last inserted node.
+
+`supertypes` state is inherited on descent.
+
+# Slab data
 
 ```rs
 struct SlabHeader {
@@ -44,11 +48,11 @@ struct SlabHeader {
 struct Node {
   /// Whether there is no later visible sibling.
   is_last_child: bool,
-  /// "extra" grammar nodes like comments. Unfortunately not inferrable from symbol.
+  /// "extra" grammar nodes like comments. Not implied by symbol.
   is_extra: bool,
   /// Whether this node or a descendant is an error symbol or is missing.
   has_error: bool,
-  /// Whether this symbol was inserted as part of error recovery (and this indicates an error).
+  /// Whether this symbol was inserted as part of error recovery.
   is_missing: bool,
 
   /// Distance to the subtree's lower physical boundary, including group waste.
@@ -66,12 +70,19 @@ struct Node {
   /// Subtract both components from end_point_base.
   end_point: u16,
 
-  /// Raw symbol after aliasing; public-symbol mapping happens on read.
+  /// Raw symbol after aliasing; public-symbol mapping happens on read. The number of bits needed is
+  /// known based on the grammar.
+  ///
+  /// Error symbols occupy the two values immediately after the grammar's real symbol range.
   display_symbol: VarBits,
 
+  /// ID of the field for this node within the parent. The number of bits needed is known based on
+  /// the grammar.
   field_id: VarBits,
 
-  /// Supertypes mask or dictionary index.
+  /// When there are 8 or fewer hidden supertypes, stores a bit mask for which of them occur in the
+  /// ancestors. When there are more than 8, all possible combinations are analyzed from the grammar
+  /// and given IDs that are used for this field.
   supertypes: VarBits,
 }
 
@@ -87,29 +98,9 @@ struct Group {
 }
 ```
 
-Note that the fields for `Node` are not actually grouped. There is one
-contiguous interval of bytes that has all `display_symbol` data.
-
-Symbol and field ids use the grammar's required width, with a minimum of two
-bits so that SWAR tricks can be used. A nine-bit column holds seven values per
-word, wasting one bit per word. Not spanning multiple words allows bitwise tricks to be much faster.
-
-Builtin error symbols are remapped to the two values immediately after the
-grammar's real symbol range, then decoded at the API boundary.
-
-Tree-sitter's hidden nodes are omitted entirely since they are not helpful for the flat representation without incremental reparse. Their effects are recorded in `supertypes`, `is_last_child`, and `field`.
-
-Field lookup uses the first visible child carrying the requested field, with no
-fields on ERROR parents. Mainline's lookup API can instead inherit through an
-alias-visible wrapper and return a grandchild whose field is absent from the
-parent's visible children. Tests count these as expected mismatches only when
-squat agrees with mainline's visible-child cursor. Other field mismatches fail.
-The sparse field-exception section remains removed. Version 9 uses a 16-byte
-header and reverse-preorder physical slots; the loader rejects earlier formats.
-
-Public symbol is mapped from raw display symbol at read time.
-
-`is_named` is looked up based on the raw `display_symbol`.
+Tree-sitter's hidden nodes are omitted entirely since they are not helpful for
+the flat representation without incremental reparse. Their effects are recorded
+in `supertypes`, `is_last_child`, and `field`.
 
 Original grammar IDs are sparse overrides of raw `display_symbol`. The
 `SQ_GRAMMAR_OVERRIDES` header flag indicates an optional section after the
@@ -129,29 +120,7 @@ access resolves this per node; grammar IDs are not bulk-unpacked or cached.
 Display-symbol scans retain their dense column; grammar-symbol scans correct
 the display equality mask at override slots.
 
-EXPERIMENT: try field interspersal
-
-EXPERIMENT: Make things align on cache lines etc
-
-EXPERIMENT: Try different node counts.
-
-## Supertypes
-
-Since hidden nodes are omitted, supertype information is needed. There are two modes, determined by the matching grammar's supertype count:
-
-1. Stored directly in the `supertypes: u8`, when there are 8 or less potential supertypes.
-
-2. An index into an immutable grammar-wide dictionary. Each entry contains `ceil(N / 64)` words, with unused high bits zero. Compiled parse-table reductions and predecessor transitions reconstruct a conservative hidden-child graph; production-specific aliases stop inheritance, and hidden extras may occur inside any production. Nonterminal extras are identified by EOF reductions in states with a null-lookahead lex mode, not ordinary self-loop gotos. Only definitions reachable from a supertype or hidden extra are explored. Unary reductions use deduplicated hidden incoming transitions; longer productions lazily build the full predecessor graph. Shared reduction action lists are visited once per state. Hidden non-supertype wrappers are collapsed to a supertype nesting graph. Enumerating `(mask, last supertype)` states reaches a fixed point, including cycles. Every singleton and the empty mask are included to cover detached recovery roots. Visible `ERROR` resets inheritance; hidden `_ERROR` adds no bit.
-
-Masks are sorted numerically (highest word first, raw grammar IDs in ascending bit order). IDs therefore depend on the matching grammar and representation version, never tree contents, parse-table iteration order, or cache history. Up to 256 dictionary entries use an 8-bit node column; larger dictionaries use 16 bits from initial allocation. More than 65,536 entries returns `SQ_ERROR_DICTIONARY_FULL` during grammar analysis, even if an individual tree would need fewer entries. No tree-local fallback changes the ID meaning. Packing uses an immutable hash table for mask-to-ID lookup rather than linear interning. With at most eight supertypes, the column is the mask itself and needs no dictionary or lookup.
-
-A synchronized, reference-counted cache is keyed by the retained `TSLanguage` identity. Trees and contexts share the dictionary; trimming a context retains it, and deleting the final owner releases the cache entry and language reference. Separate contexts can initialize and use the cache concurrently. Native grammar libraries must remain loaded while their language is in use.
-
-The dictionary is not serialized. The header records its count and width flag; loading recomputes or reuses the matching grammar's dictionary and rejects inconsistent counts/widths. Version 9 rejects older slabs because the tighter extra analysis can change dictionary IDs. Sparse grammar-symbol overrides now immediately follow the columns and optional symbol-presence index. Copying nodes between trees of the same grammar requires no dictionary remapping, though changed ancestry can still require a different inherited mask.
-
-EXPERIMENT: Make supertypes a VarBits representation. Allows omitting it when there are none.
-
-## Symbol presence bitmaps
+# Symbol presence bitmaps
 
 After the `Node`s comes an index of which public display symbols are present in a given group. This is only present if there are more than 32 groups. The builder applies public-symbol mapping to each raw `display_symbol` before indexing it, so different raw IDs with the same public ID contribute to the same entry. Queries use this public ID directly; the node columns retain raw IDs.
 
@@ -162,36 +131,6 @@ Let `G` be `group_count` rounded up to the nearest multiple of 32. After the mod
 When the symbol has a `0` bit, its entry is a descending sequence of `u32` physical slot indexes where the symbol appears, following preorder. This mode is used only when all occurrences fit in the entry; 0xFFFFFFFF fills unused parts of the sequence.
 
 When the symbol has a `1` then its entry is a bitmap where a `1` indicates that the corresponding physical group has a node with that symbol. Bits beyond `group_count` are zero. Both modes omit wasted slots and unused allocation space. The index is built after grouping fixes the physical slot indexes.
-
-EXPERIMENT: try different thresholds for symbol bitmaps
-
-## Conversion algorithm
-
-The mainline tree is walked in reverse preorder: descend through children right-to-left and emit each parent after its children, appending physical slab groups from left to right. It walks nodes until one has a field that doesn't fit or until the group is full. It saves node references for the current group, retaining `Subtree` handles for inline leaves. Group deltas are encoded only once the group's bases are final.
-
-The traversal stack tracks absolute byte/point positions, inherited fields and supertype masks, sibling status, and lower subtree boundaries. The current group's scratch entries retain the conversion-derived values needed at encoding time; these values cannot all be recovered from a node reference alone.
-
-`min_subtree_size`, `max_byte`, `max_row`, `min_col`, and `max_col` are computed as it scans. `trailing_waste`, `min_byte`, and `min_row` are known on the last inserted node. Each candidate is checked against the resulting extrema for the whole group. If it fails, the accepted group is closed and the candidate is retried in a new group at the end, recomputing its physical span after inserting padding.
-
-For a node at physical slot `i`, its decoded span is the distance to its lower
-subtree boundary: `first = i - (group_span_base + node_span_delta)`. The subtree
-occupies the valid slots in `[first, i]`. This interval includes intervening
-trailing group waste; even a leaf can have a nonzero physical span. The first
-child is the next occupied lower slot, provided it is at least `first`.
-`descendant_count` counts occupied slots in the interval, including the node.
-The next sibling is at `first - 1`, or `UINT32_MAX` when the traversal is exhausted.
-
-Construction records boundaries as physical indexes from the beginning. New
-groups and padding are appended above existing nodes, so their indexes and
-spans remain stable across growth. There is no final slot-index rebasing.
-
-`has_error` state is maintained bottom up, including errors and missing nodes under omitted hidden nodes. Conversion can also read the equivalent mainline summary, `ts_subtree_error_cost() > 0`.
-
-`supertypes` state is inherited on descent and saved for emission on ascent. A visible node receives the incoming mask; its children start a fresh mask, whereas a hidden node's children inherit the incoming mask. In either case, add the current node's own supertype bit, if any, to its children's mask. Resolved fields and sibling status likewise survive omitted hidden nodes.
-
-EXPERIMENT: try buffering the absolute values instead of writing down pointers
-
-EXPERIMENT: try eagerly filling without checking if the fields fit to reduce branching. Optimistically figure out the full group values, and then see if the nodes fit. Candidate placements remain provisional until accepted. If a split is required, recompute affected slot positions and physical subtree spans, including those of buffered ancestors, before encoding or committing traversal summaries that depend on placement.
 
 
 # C API
@@ -240,8 +179,6 @@ Omission of files 100kb to 1mb is intentional. The theory is that these files ju
 * Map of `(parent symbol, field id, child symbol)` to the max found child arity. Thresholds of 10, 50, 100 are used.  If the max found is under 10, then finding a file with more than 10 is considered unusual.  Etc etc for 50 and 100.
 
 * Set of encountered missing nodes
-
-* TODO: Consider more things that could actually reveal real bugs etc
 
 
 # Main test and benchmark

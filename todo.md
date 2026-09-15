@@ -2,6 +2,8 @@
 
 # Queue
 
+- [ ] Look into "Field lookup crosses a visible alias despite empty node-type fields"
+
 - [ ] Revisit choices of bit packing thresholds
 
 - [ ] Consider having a symbol-dependent encoding of grammar_symbol
@@ -24,7 +26,7 @@
 
   * threshold between scan and parent walk
 
-  * symbol presence cache
+  * symbol presence cache threshold
 
   * scan window
 
