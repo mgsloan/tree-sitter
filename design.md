@@ -1,14 +1,15 @@
-# Squat representation
+# Overview
 
-The idea here is to create a compact yet efficient representation for tree-sitter trees that do not require incremental reparse. Newly packed trees use one allocation containing runtime metadata followed by a contiguous persisted slab. Physical nodes are stored in reverse preorder; traversal APIs still enumerate preorder. The persisted portion contains no pointers. Trees with more than eight supertypes also retain an immutable dictionary shared with other trees and packing contexts for the same language.
+Tree-squatter provides a compact yet efficient representation for Tree-sitter
+trees.
 
-To make the representation compact without much access overhead, a statistical
-fact about preorder nodes is exploited. In the space of possible values for a
-field, their values are often clustered.
+Nodes are listed in reverse-preorder in a contiguous allocation which does not
+use pointers. These are divided into groups of 16 nodes. For fields like
+`start_byte`, an absolute base is stored for the group, and the nodes store a
+single byte offset. If a node's value exceeds what is representable, some slots
+are wasted and it gets put in the next group.
 
-So, the idea is to split the nodes into groups. Each squat group stores the absolute base value for each field. This allows most fields to be `u8`. If a node is encountered that has a field that is not representable, it gets put in a different group.
-
-## Slab layout
+# Layout
 
 * `SlabHeader`
 * Struct-of-arrays `Group` with `group_capacity`
@@ -16,60 +17,30 @@ So, the idea is to split the nodes into groups. Each squat group stores the abso
 * Symbol presence bitmaps
 * Optional sparse grammar-symbol overrides
 
-The slab can be directly written during conversion by somewhat overestimating `group_capacity` from node count. This version uses 16 slots per group, so `slot_capacity = 16 * group_capacity` and `slot_count = 16 * group_count`. Counts include partially occupied groups and their wasted slots; capacities also include unused allocation space.
+# Conversion + compaction
 
-Construction appends to the prefix of every column in reverse preorder. Active
-groups occupy indexes `0..group_count`, and physical node slots occupy
-`0..slot_count`. Unused lanes are at the high end of each group, followed by
-unused group capacity. The root is the highest occupied physical slot:
-`slot_count - Group[group_count - 1].trailing_waste - 1`.
+First, memory is allocated to hold all the data for the tree. The initial
+allocation is done by estimating `group_capacity` from node count. The mainline
+tree is traversed in reverse preorder so that `subtree_size`, `has_error`, etc
+can be computed directly without buffering.
 
-Node handles contain direct physical slots. Preorder walks toward decreasing
-slots and skips trailing group waste. Reads use the column offset and physical
-index directly; there is no `group_capacity - group_count` cache or adjustment.
-Ordered query plans translate physical slots to ascending preorder positions at
-the scan boundary. Iterator caches unpack physical windows in ascending order,
-then consume their lanes in reverse as preorder advances.
-
-Growth and compaction recompute column locations but preserve physical indexes.
-Because each column starts with its first physical lane, packed-word phase is
-unchanged even for nine-bit IDs. Used words can be copied directly. Repacking
-sets capacity to count and returns an independent tree with identical slot IDs.
-
-The runtime prefix contains `SQTree`, its supertype list, and alignment padding.
-The persisted header begins immediately afterward. Internal builder operations
-update their tree pointer when growing this combined allocation; public trees
-and their node handles never move. The copying loader instead owns a separate
-runtime prefix and payload. The borrowed loader owns only its runtime prefix and
-retains the caller's immutable, aligned payload without copying or freeing it.
-
-## Optional point positions
-
-Point storage is optional at compile time (`SQ_INCLUDE_POINTS=0` in C, or
-disabling the default `points` Cargo feature). Byte-only builds omit the two
-point columns, their group bases, packing constraints, cache lanes, and
-point APIs and snapshot members. Byte positions and byte-range APIs remain.
-The layout below describes the default build with points enabled.
-
-The 16-byte version-9 header has a format/flags word. Readers reject other
-versions, point modes, group sizes, alignments, and unknown flags. Old slabs
-must be regenerated.
+If the estimate was too little, it is grown and the data is copied inplace. If
+the estimate was too large, it is left that way, but can also be compacted.
 
 ## Slab data
 
-Despite the code below being Rust, this will be implemented in C in `lib/squat/`. Mainline Tree-sitter code will be unmodified.
-
 ```rs
 struct SlabHeader {
-    /// Native-endian format/version, point/group/alignment flags, optional index, supertype index width.
-    format_flags: u32,
-    group_count: u32,
-    /// Actual allocated capacity, including growth beyond the initial estimate.
-    group_capacity: u32,
-    /// Zero when the grammar uses direct supertype masks instead of a dictionary.
-    supertype_dictionary_count: u32,
+  /// Native-endian format/version, point/group/alignment flags, optional index, supertype index width.
+  format_flags: u32,
+  group_count: u32,
+  /// Actual allocated capacity, including growth beyond the initial estimate.
+  group_capacity: u32,
+  /// Zero when the grammar uses direct supertype masks instead of a dictionary.
+  supertype_dictionary_count: u32,
 }
 
+/// A struct of this layout is not used - instead each field is packed into columns.
 struct Node {
   /// Whether there is no later visible sibling.
   is_last_child: bool,
@@ -95,38 +66,29 @@ struct Node {
   /// Subtract both components from end_point_base.
   end_point: u16,
 
-  /// Supertypes mask or dictionary index.
-  supertypes: u8 | u16,
-
   /// Raw symbol after aliasing; public-symbol mapping happens on read.
   display_symbol: VarBits,
 
-  field: VarBits,
+  field_id: VarBits,
+
+  /// Supertypes mask or dictionary index.
+  supertypes: VarBits,
 }
 
+/// A struct of this layout is not used - instead each field is packed into columns.
 struct Group {
   /// Number of trailing wasted slots, from 0 to 15. Could be a u8.
   trailing_waste: u4,
-
   subtree_size_base: u32,
   start_byte_base: u32,
   end_byte_base: u32,
-  /// Row in the high word and column in the low word.
   start_point_base: u64,
   end_point_base: u64,
 }
 ```
 
-`SlabHeader` is a real struct but `Group` and `Node` are not. Instead the values for each field are stored contiguously (struct-of-arrays style). The header's counts, capacity, and flags, together with the matching grammar and representation version, determine the layout. After the header, columns appear in this order: group waste, start-byte base and values, end-byte base and values, span base and values, display symbol, field, supertype, the last/extra/error/missing flag bitmaps, start-point base and values, end-point base and values. Each column and each slab section starts at an eight-byte boundary; column lengths are computed from their capacities, with trailing alignment padding. Bools and `u4` values are packed into 64-bit words, and `VarBits` uses the word layout described below. The grammar determines symbol/field widths and the supertype count. Derived column offsets point to their first physical entry; unused capacity follows the active entries.
-
-`corpus-analysis memory-pareto` was used to determine that `u16` should be used
-for `end_byte_sub`. This results in `~13.6B/node` whereas `u8` was `15.6B/node`.
-After that choice, it also determined that `16` slots per group is better than
-`32`, which was `14.3B/node`.
-
-FIXME: include up-to-date memory-pareto info here
-
-Note that the fields for `Node` are not actually grouped. There is one contiguous interval of bytes that has all `display_symbol` data.
+Note that the fields for `Node` are not actually grouped. There is one
+contiguous interval of bytes that has all `display_symbol` data.
 
 Symbol and field ids use the grammar's required width, with a minimum of two
 bits so that SWAR tricks can be used. A nine-bit column holds seven values per

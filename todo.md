@@ -2,9 +2,19 @@
 
 # Queue
 
-- [ ] Make benchmarking more realistic in terms of other CPU loads / cache pressure
-
 - [ ] Revisit choices of bit packing thresholds
+
+- [ ] Consider having a symbol-dependent encoding of grammar_symbol
+
+- [ ] rename `field` to `field_id`
+
+- [ ] revisit reverse preorder choice
+
+- [ ] turn inclusion of points data into a runtime configuration
+
+- [ ] revisit bounds vs bases for anchors
+
+- [ ] Is trailing_waste needed? Consider fill for wasted slots.
 
 # Backburner
 
