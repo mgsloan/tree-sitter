@@ -324,10 +324,9 @@ commands are saved with the results. Parsing and packing are outside the timer.
 
 Add `--profile point --rounds 3000 --perf-event EVENT` to sample with a supported
 `perf` event; `byte`, `before-point`, and `before-byte` select the other paths.
-See the [hybrid results](../../lib/squat/experiments/seek-hybrid-results-2026-09-11.md),
-[cloud strategy comparison](../../lib/squat/experiments/seek-cloud-results-2026-09-11.md),
-and [local profiles](../../lib/squat/experiments/seek-profile-results-2026-09-11.md)
-for the retained optimizations and repeated large-file comparisons.
+Historical reports contain the hybrid results, cloud strategy comparison, and
+local profiles for the retained optimizations and repeated large-file
+comparisons.
 
 ## Cloud idle shutdown
 
@@ -389,4 +388,4 @@ after the common validation and calibration. Profile output includes those
 setup phases, so inspect the dominant symbols rather than treating percentages
 as exact steady-state attribution.
 
-See the [cloud bulk-walk and decoder-cache results](../../lib/squat/experiments/bulk-walk-results-2026-09-13.md).
+Historical reports contain the cloud bulk-walk and decoder-cache results.

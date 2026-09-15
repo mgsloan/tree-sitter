@@ -41,8 +41,8 @@ releases high-water scratch while keeping grammar tables; finish with
 `sq_pack_context_delete(context)`. Use separate contexts for concurrent calls,
 and keep native grammar libraries loaded while any context or tree uses them.
 The original `sq_tree_pack` remains available for independent conversions.
-[Field-cache measurements and points experiments](experiments/field-cache-points-results-2026-09-13.md)
-record the retained cache and the rejected position-calculation alternatives.
+Historical measurements record the retained cache and the rejected
+position-calculation alternatives.
 
 `context-check` checks output equality, reuse, trimming, and ownership; setting
 `CONTEXT_FAILURES=1` also injects failure at every pack allocation and checks
@@ -163,8 +163,8 @@ Analysis distinguishes nonterminal extras from ordinary recursive gotos and only
 explores hidden definitions reachable from supertypes or hidden extras. Unary
 productions avoid building the full predecessor graph. Version 9 rejects older
 slabs because the tighter analysis can change dictionary IDs.
-The [mask-analysis benchmarks](experiments/supertype-tight-results-2026-09-14.md)
-record the dictionary-size, initialization, conversion, and memory effects.
+Historical mask-analysis benchmarks record the dictionary-size, initialization,
+conversion, and memory effects.
 
 Physical columns are filled from the beginning in reverse preorder. Nodes use
 direct physical slot indexes, and preorder traversal walks toward lower slots.
@@ -203,8 +203,8 @@ exception table or conversion bookkeeping is retained for these cases.
 Negated-field queries consequently follow visible-child fields too. The C query
 test counts attributable differences for its simple `(_ !field) @parent` probes;
 other query comparisons remain strict.
-The [comparison with ../main](experiments/field-lookup-review.md) documents the
-upstream inconsistency and the removed version-2 compatibility mechanism.
+Historical comparisons document the upstream inconsistency and the removed
+version-2 compatibility mechanism.
 
 Known mainline seek differences are counted but ignored by default, as requested
 by the human. Use `--strict-seeks` for the container runner or `SQ_STRICT_SEEKS=1`
@@ -288,13 +288,13 @@ across 2/4/8 groups without changing serialization or node addresses. Every grou
 uses its own bases during reconstruction, and the final window stops at the last
 live group. The default unpack window remains one group.
 
-See the [absolute-coordinate cache benchmark](experiments/iterator-absolute-results-2026-09-09.md)
-for cached/uncached comparisons at all four window sizes.
+Historical absolute-coordinate cache benchmarks compare cached and uncached
+operation at all four window sizes.
 
 ## Memory benchmark
 
-The [measured memory comparison](experiments/memory-results-2026-09-10.md) covers
-mainline and Squatter, default/compact packing, and point-enabled/byte-only builds.
+The historical measured memory comparison covers mainline and Squatter,
+default/compact packing, and point-enabled/byte-only builds.
 It measures live allocations from the implementation, rather than estimating
 storage from public nodes. Retained sizes include the tree object and auxiliary
 allocations; the parser is released first. Construction peaks are separate.
@@ -324,12 +324,12 @@ allocations inside prebuilt grammar scanners are not intercepted; these scanners
 are destroyed with the parser before retained tree measurements. Reported peaks
 therefore cover runtime/Squatter allocations, not every construction allocation.
 
-The [column-addressing investigation](experiments/column-addressing-results-2026-09-10.md)
-records the earlier pointer/bias investigation. The subsequent version-4 format
+The historical column-addressing investigation records the earlier pointer/bias
+work. The subsequent version-4 format
 uses the smaller header and reverse preorder, which eliminates index bias entirely.
 
-The [version-4 storage results](experiments/storage-v4-results-2026-09-10.md)
-compare the new layout with version 3 on the two-vCPU cloud VM, including both
+Historical version-4 storage results compare the new layout with version 3 on
+the two-vCPU cloud VM, including both
 point modes, cached/uncached walks, queries, compact packing, and retained memory.
 
 
@@ -368,8 +368,8 @@ The 16-byte version-9 header records point support in `format_flags`. Each build
 rejects the other mode before interpreting columns. Regenerate older slabs and
 slabs from another point mode; they are incompatible with this format.
 
-[Validation and compiled allocation sizes](experiments/optional-points-validation-2026-09-10.json)
-cover both modes, API omission, sanitizers, and original/mutated corpus checks.
+Historical validation covers both modes, API omission, sanitizers, and
+original/mutated corpus checks.
 
 
 ## Named columns and bulk equality
@@ -389,5 +389,5 @@ coordinates retain absolute u32 SIMD reconstruction. Point fill expands each
 u16 key, combines it with one packed group base, and caches the absolute point
 as one u64 value.
 
-The [named-column comparison](experiments/named-columns-results-2026-09-10.md)
-records cloud timings and byte-for-byte compatibility with the storage commit.
+Historical named-column comparisons record cloud timings and byte-for-byte
+compatibility with the storage commit.
