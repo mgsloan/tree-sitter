@@ -47,7 +47,7 @@ check: $(BUILD)/unit $(BUILD)/supertype-check
 	$(BUILD)/supertype-check
 
 $(BUILD)/scan-bench: experiments/scan.c $(BUILD)/libtree-sitter-squat.a $(BUILD)/runtime.o
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) $^ -o $@
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) $(filter %.c %.a %.o,$^) -o $@
 
 $(BUILD)/layout-bench: experiments/layout.c $(BUILD)/libtree-sitter-squat.a $(BUILD)/runtime.o
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) $^ -ldl -o $@
@@ -56,7 +56,7 @@ $(BUILD)/query-check: tests/query.c tests/field_lookup.h $(BUILD)/libtree-sitter
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) $(filter %.c %.a %.o,$^) -ldl -o $@
 
 $(BUILD)/unpack-bench: experiments/unpack.c $(BUILD)/libtree-sitter-squat.a $(BUILD)/runtime.o
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) $^ -o $@
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) $(filter %.c %.a %.o,$^) -o $@
 
 # GCC/x86-64 probe; its private columns retain the production encoding.
 $(BUILD)/zero-base-bench: experiments/zero-base.c $(BUILD)/libtree-sitter-squat.a $(BUILD)/runtime.o
@@ -91,7 +91,7 @@ $(BUILD)/load-bench: experiments/load.c $(BUILD)/libtree-sitter-squat.a $(BUILD)
 # GNU ld wrapping counts runtime and Squatter allocations without changing their
 # sizes. Prebuilt grammar-internal libc calls are outside this accounting.
 $(BUILD)/memory-bench: experiments/memory.c $(BUILD)/libtree-sitter-squat.a $(BUILD)/runtime.o
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) $^ -ldl \
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) $(filter %.c %.a %.o,$^) -ldl \
 	  -Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc,--wrap=aligned_alloc,--wrap=free -o $@
 
 # Public-API probe for comparing persisted bytes with another build.
