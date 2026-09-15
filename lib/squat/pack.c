@@ -32,10 +32,6 @@ typedef struct {
 typedef Length PackPosition;
 
 typedef struct {
-  uint32_t offset, length;
-} DirectFieldSlice;
-
-typedef struct {
   SQTree *tree;
   Pending pending[SQ_GROUP_SIZE];
   uint32_t count;
@@ -47,18 +43,17 @@ typedef struct {
   uint32_t words;
   PackPosition *positions;
   uint32_t position_count, position_capacity;
-  TSFieldId *fields;
+  const TSFieldId *fields;
   const DirectFieldSlice *production_fields;
-  uint32_t field_count, field_capacity;
   uint64_t *masks;
   uint32_t mask_count, mask_capacity;
-  uint16_t *supertype_indexes;
+  const uint16_t *supertype_indexes;
   uint32_t symbol_space;
 
   // Language facts read for every frame, kept here so the hot paths do not
   // chase builder->tree->language each time.
   const TSLanguage *language;
-  uint32_t symbol_count, language_field_count;
+  uint32_t symbol_count;
   bool small_supertypes, points;
 
   // Packed IDs and flags are written as each node is accepted rather than when
@@ -97,25 +92,18 @@ typedef struct {
   uint32_t child_end_byte;
   uint64_t child_mask;
   uint32_t position_mark, position_offset;
-  uint32_t field_mark, field_offset, field_length;
+  uint32_t field_offset, field_length;
   uint32_t mask_mark, child_mask_offset;
   uint32_t remaining, structural;
   bool visible, child_later;
 } Frame;
 
 struct SQPackContext {
-  const TSLanguage *language;
-  TSSymbol *supertypes;
-  uint32_t supertype_count;
-  uint16_t *public_index;
-  DirectFieldSlice *production_fields;
-  TSFieldId *direct_fields;
-  SQSupertypeGrammar *supertype_grammar;
+  SQGrammar *grammar;
   // Retain only storage, never pending nodes or pointers into a completed slab.
   struct {
     PackPosition *positions;
     uint64_t *masks;
-    uint16_t *supertype_indexes;
     struct GrammarOverride *overrides;
     uint32_t override_capacity;
     uint32_t position_capacity, mask_capacity;
@@ -178,34 +166,6 @@ static bool reserve_positions(Builder *builder, uint32_t count, uint32_t *offset
 
   *offset = builder->position_count;
   builder->position_count += count;
-  return true;
-allocation:
-  sq_fail(builder->error, SQ_ERROR_ALLOCATION);
-  return false;
-}
-
-static bool reserve_fields(Builder *builder, uint32_t count, uint32_t *offset) {
-  uint64_t needed = (uint64_t)builder->field_count + count;
-  if (needed > UINT32_MAX || needed > SIZE_MAX / sizeof(TSFieldId)) goto allocation;
-  if (needed > builder->field_capacity) {
-    uint32_t capacity = builder->field_capacity ? builder->field_capacity : 32;
-    while (capacity < needed) {
-      if (capacity > UINT32_MAX / 2) {
-        capacity = (uint32_t)needed;
-        break;
-      }
-      capacity *= 2;
-    }
-
-    TSFieldId *next = realloc(builder->fields, (size_t)capacity * sizeof(TSFieldId));
-    if (!next) goto allocation;
-    builder->fields = next;
-    builder->field_capacity = capacity;
-  }
-
-  *offset = builder->field_count;
-  memset(builder->fields + builder->field_count, 0, (size_t)count * sizeof(TSFieldId));
-  builder->field_count += count;
   return true;
 allocation:
   sq_fail(builder->error, SQ_ERROR_ALLOCATION);
@@ -589,7 +549,6 @@ static bool init_frame(Builder *builder, Frame *frame, const Subtree *subtree_po
   frame->visible = visible;
   frame->position_mark = builder->position_count;
   frame->position_offset = SQ_NONE;
-  frame->field_mark = builder->field_count;
   frame->field_offset = SQ_NONE;
   frame->field_length = 0;
   frame->mask_mark = builder->mask_count;
@@ -643,21 +602,6 @@ static bool init_frame(Builder *builder, Frame *frame, const Subtree *subtree_po
       DirectFieldSlice slice = builder->production_fields[subtree.ptr->production_id];
       frame->field_offset = slice.offset;
       frame->field_length = slice.length;
-    } else if (frame->structural && builder->language_field_count) {
-      const TSFieldMapEntry *map, *end;
-      ts_language_field_map(builder->language, subtree.ptr->production_id, &map, &end);
-      const TSFieldMapEntry *first = map;
-      while (first < end && first->inherited) first++;
-      if (first < end) {
-        if (!reserve_fields(builder, frame->structural, &frame->field_offset)) return false;
-        frame->field_length = frame->structural;
-        for (map = first; map < end; map++) {
-          if (!map->inherited && map->child_index < frame->structural &&
-              !builder->fields[frame->field_offset + map->child_index]) {
-            builder->fields[frame->field_offset + map->child_index] = map->field_id;
-          }
-        }
-      }
     }
 
     if (builder->words == 1) {
@@ -725,15 +669,6 @@ static void descend_hidden(const Builder *builder, const TSLanguage *language, u
         DirectFieldSlice slice = builder->production_fields[data->production_id];
         if (slice.length && builder->fields[slice.offset])
           inner_field = builder->fields[slice.offset];
-      } else if (language->field_count) {
-        const TSFieldMapEntry *map, *end;
-        ts_language_field_map(language, data->production_id, &map, &end);
-        for (; map < end; map++) {
-          if (!map->inherited && map->child_index == 0) {
-            inner_field = map->field_id;
-            break;
-          }
-        }
       }
     }
 
@@ -756,9 +691,7 @@ void sq_pack_context_trim(SQPackContext *context) {
   free(context->scratch.masks);
   free(context->scratch.overrides);
   free(context->presence);
-  uint16_t *indexes = context->scratch.supertype_indexes;
   memset(&context->scratch, 0, sizeof(context->scratch));
-  context->scratch.supertype_indexes = indexes;
   context->stack = NULL;
   context->stack_capacity = 0;
   context->presence = NULL;
@@ -768,63 +701,58 @@ void sq_pack_context_trim(SQPackContext *context) {
 void sq_pack_context_delete(SQPackContext *context) {
   if (!context) return;
   sq_pack_context_trim(context);
-  ts_language_delete(context->language);
-  free(context->supertypes);
-  free(context->production_fields);
-  free(context->direct_fields);
-  sq_supertype_grammar_release(context->supertype_grammar);
+  sq_grammar_delete(context->grammar);
   free(context);
 }
 
-static SQPackContext *pack_context_new(const TSLanguage *language, const void *grammar_cache,
-                                       size_t grammar_cache_length, SQError *error) {
+static SQGrammar *grammar_new(const TSLanguage *language, const void *grammar_cache,
+                               size_t grammar_cache_length, SQError *error) {
   sq_fail(error, SQ_OK);
   if (!sq_language_compatible(language)) {
     sq_fail(error, SQ_ERROR_LANGUAGE);
     return NULL;
   }
-  SQPackContext *context = calloc(1, sizeof(SQPackContext));
-  if (!context) goto allocation;
-  context->language = ts_language_copy(language);
+  SQGrammar *grammar = calloc(1, sizeof(SQGrammar));
+  if (grammar) atomic_init(&grammar->references, 1);
+  if (!grammar) goto allocation;
+  grammar->language = ts_language_copy(language);
   uint32_t symbols = language->symbol_count + language->alias_count;
   size_t space = (size_t)symbols + 2;
-  context->supertypes = calloc(3 * space, sizeof(uint16_t));
-  if (!context->supertypes) {
-    sq_pack_context_delete(context);
+  grammar->supertypes = calloc(3 * space, sizeof(uint16_t));
+  if (!grammar->supertypes) {
+    sq_grammar_delete(grammar);
     goto allocation;
   }
-  context->scratch.supertype_indexes = context->supertypes + space;
-  context->public_index = context->supertypes + 2 * space;
+  grammar->supertype_indexes = grammar->supertypes + space;
+  grammar->public_index = grammar->supertypes + 2 * space;
   for (uint32_t symbol = 0; symbol < symbols; symbol++) {
     if (language->symbol_metadata[symbol].supertype) {
-      context->supertypes[context->supertype_count++] = (TSSymbol)symbol;
-      context->scratch.supertype_indexes[symbol] = (uint16_t)context->supertype_count;
+      grammar->supertypes[grammar->supertype_count++] = (TSSymbol)symbol;
+      grammar->supertype_indexes[symbol] = (uint16_t)grammar->supertype_count;
     }
     TSSymbol public = ts_language_public_symbol(language, (TSSymbol)symbol);
-    context->public_index[symbol] = public == ts_builtin_sym_error ? symbols
+    grammar->public_index[symbol] = public == ts_builtin_sym_error ? symbols
         : public == ts_builtin_sym_error_repeat ? symbols + 1 : public;
   }
-  if (context->supertype_count > 8) {
-    context->supertype_grammar = grammar_cache
-        ? sq_supertype_grammar_acquire_cached(language, context->supertype_count, grammar_cache,
-                                              grammar_cache_length, error)
-        : sq_supertype_grammar_acquire(language, context->supertype_count, error);
-    if (!context->supertype_grammar) {
-      sq_pack_context_delete(context);
+  if (grammar->supertype_count > 8) {
+    grammar->supertype_grammar = grammar_cache
+        ? sq_supertype_grammar_new_cached(language, grammar->supertype_count, grammar_cache,
+                                          grammar_cache_length, error)
+        : sq_supertype_grammar_new(language, grammar->supertype_count, error);
+    if (!grammar->supertype_grammar) {
+      sq_grammar_delete(grammar);
       return NULL;
     }
   } else if (grammar_cache_length) {
-    sq_pack_context_delete(context);
+    sq_grammar_delete(grammar);
     sq_fail(error, SQ_ERROR_INVALID_SLAB);
     return NULL;
   }
-  context->public_index[symbols] = (uint16_t)symbols;
-  context->public_index[symbols + 1] = (uint16_t)(symbols + 1);
-  // Immutable grammar metadata survives trim. Ordinary one-shot packing keeps
-  // its per-frame scratch so tiny trees do not pay for the entire grammar.
+  grammar->public_index[symbols] = (uint16_t)symbols;
+  grammar->public_index[symbols + 1] = (uint16_t)(symbols + 1);
   if (language->field_count && language->production_id_count) {
-    context->production_fields = calloc(language->production_id_count, sizeof(DirectFieldSlice));
-    if (!context->production_fields) goto context_allocation;
+    grammar->production_fields = calloc(language->production_id_count, sizeof(DirectFieldSlice));
+    if (!grammar->production_fields) goto grammar_allocation;
     uint64_t total = 0;
     for (uint32_t id = 0; id < language->production_id_count; id++) {
       const TSFieldMapEntry *map, *end;
@@ -834,60 +762,101 @@ static SQPackContext *pack_context_new(const TSLanguage *language, const void *g
         if (!map->inherited && (uint32_t)map->child_index + 1 > length)
           length = (uint32_t)map->child_index + 1;
       }
-      context->production_fields[id] = (DirectFieldSlice){(uint32_t)total, length};
+      grammar->production_fields[id] = (DirectFieldSlice){(uint32_t)total, length};
       total += length;
       if (total > UINT32_MAX || total > SIZE_MAX / sizeof(TSFieldId))
-        goto context_allocation;
+        goto grammar_allocation;
     }
     if (total) {
-      context->direct_fields = calloc((size_t)total, sizeof(TSFieldId));
-      if (!context->direct_fields) goto context_allocation;
+      grammar->direct_fields = calloc((size_t)total, sizeof(TSFieldId));
+      if (!grammar->direct_fields) goto grammar_allocation;
       for (uint32_t id = 0; id < language->production_id_count; id++) {
         const TSFieldMapEntry *map, *end;
         ts_language_field_map(language, id, &map, &end);
-        uint32_t offset = context->production_fields[id].offset;
+        uint32_t offset = grammar->production_fields[id].offset;
         for (; map < end; map++) {
-          if (!map->inherited && !context->direct_fields[offset + map->child_index])
-            context->direct_fields[offset + map->child_index] = map->field_id;
+          if (!map->inherited && !grammar->direct_fields[offset + map->child_index])
+            grammar->direct_fields[offset + map->child_index] = map->field_id;
         }
       }
     }
   }
-  return context;
-context_allocation:
-  sq_pack_context_delete(context);
+  return grammar;
+grammar_allocation:
+  sq_grammar_delete(grammar);
 allocation:
   sq_fail(error, SQ_ERROR_ALLOCATION);
   return NULL;
 }
 
-SQPackContext *sq_pack_context_new(const TSLanguage *language, SQError *error) {
-  return pack_context_new(language, NULL, 0, error);
+SQGrammar *sq_grammar_new(const TSLanguage *language, SQError *error) {
+  return grammar_new(language, NULL, 0, error);
 }
 
-SQPackContext *sq_pack_context_new_with_grammar_cache(const TSLanguage *language,
-                                                      const void *grammar_cache,
-                                                      size_t grammar_cache_length,
-                                                      SQError *error) {
-  if (!grammar_cache) {
+SQGrammar *sq_grammar_new_with_cache(const TSLanguage *language, const void *bytes,
+                                    size_t length, SQError *error) {
+  if (!bytes) {
     sq_fail(error, SQ_ERROR_INVALID_SLAB);
     return NULL;
   }
-  return pack_context_new(language, grammar_cache, grammar_cache_length, error);
+  return grammar_new(language, bytes, length, error);
 }
 
-uint32_t sq_pack_context_grammar_cache_size(const SQPackContext *context) {
-  size_t size = context ? sq_supertype_grammar_cache_size(context->supertype_grammar) : 0;
+SQGrammar *sq_grammar_copy(SQGrammar *grammar) {
+  if (grammar && atomic_fetch_add_explicit(&grammar->references, 1, memory_order_relaxed) >= SIZE_MAX / 2)
+    abort();
+  return grammar;
+}
+
+void sq_grammar_delete(SQGrammar *grammar) {
+  if (!grammar || atomic_fetch_sub_explicit(&grammar->references, 1, memory_order_acq_rel) != 1)
+    return;
+  sq_supertype_grammar_delete(grammar->supertype_grammar);
+  ts_language_delete(grammar->language);
+  free(grammar->supertypes);
+  free(grammar->production_fields);
+  free(grammar->direct_fields);
+  free(grammar);
+}
+
+const TSLanguage *sq_grammar_language(const SQGrammar *grammar) {
+  return grammar ? grammar->language : NULL;
+}
+
+uint32_t sq_grammar_cache_size(const SQGrammar *grammar) {
+  size_t size = grammar ? sq_supertype_grammar_cache_size(grammar->supertype_grammar) : 0;
   return size <= UINT32_MAX ? (uint32_t)size : 0;
 }
 
-bool sq_pack_context_copy_grammar_cache(const SQPackContext *context, void *destination,
-                                        size_t length, SQError *error) {
-  if (!context) {
+bool sq_grammar_copy_cache(const SQGrammar *grammar, void *destination,
+                           size_t length, SQError *error) {
+  if (!grammar) {
     sq_fail(error, SQ_ERROR_ARGUMENT);
     return false;
   }
-  return sq_supertype_grammar_copy_cache(context->supertype_grammar, destination, length, error);
+  return sq_supertype_grammar_copy_cache(grammar->supertype_grammar, destination, length, error);
+}
+
+SQPackContext *sq_pack_context_new(SQGrammar *grammar, SQError *error) {
+  sq_fail(error, SQ_OK);
+  if (!grammar) {
+    sq_fail(error, SQ_ERROR_ARGUMENT);
+    return NULL;
+  }
+  SQPackContext *context = calloc(1, sizeof(SQPackContext));
+  if (!context) {
+    sq_fail(error, SQ_ERROR_ALLOCATION);
+    return NULL;
+  }
+  context->grammar = sq_grammar_copy(grammar);
+  return context;
+}
+
+void sq_pack_context_set_grammar(SQPackContext *context, SQGrammar *grammar) {
+  if (!context || !grammar || context->grammar == grammar) return;
+  sq_grammar_copy(grammar);
+  sq_grammar_delete(context->grammar);
+  context->grammar = grammar;
 }
 
 static SQTree *pack_tree(SQPackContext *context, const TSTree *tree,
@@ -897,7 +866,7 @@ static SQTree *pack_tree(SQPackContext *context, const TSTree *tree,
     sq_fail(error, SQ_ERROR_ARGUMENT);
     return NULL;
   }
-  if (context && context->language != ts_tree_language(tree)) {
+  if (context->grammar->language != ts_tree_language(tree)) {
     sq_fail(error, SQ_ERROR_LANGUAGE);
     return NULL;
   }
@@ -910,10 +879,7 @@ static SQTree *pack_tree(SQPackContext *context, const TSTree *tree,
     capacity = ts_node_descendant_count(root) / expected_nodes_per_group + 1;
   }
 
-  SQTree *result = context
-      ? sq_allocate_cached(context->language, capacity, context->supertypes,
-                           context->supertype_count, options.points, error)
-      : sq_allocate(ts_tree_language(tree), capacity, options.points, error);
+  SQTree *result = sq_allocate(context->grammar, capacity, options.points, error);
   if (!result) {
     return NULL;
   }
@@ -923,37 +889,28 @@ static SQTree *pack_tree(SQPackContext *context, const TSTree *tree,
                      .symbol_space = sq_symbols(result),
                      .language = result->language,
                      .symbol_count = result->language->symbol_count + result->language->alias_count,
-                     .language_field_count = result->language->field_count,
                      .small_supertypes = result->supertype_count <= 8,
                      .points = options.points,
                      .error = error};
   size_t depth = 0, stack_capacity = 32;
   Frame *stack = NULL;
-  if (context) {
-    builder.positions = context->scratch.positions;
-    builder.position_capacity = context->scratch.position_capacity;
-    builder.fields = context->direct_fields;
-    builder.production_fields = context->production_fields;
-    builder.masks = context->scratch.masks;
-    builder.mask_capacity = context->scratch.mask_capacity;
-    builder.overrides = context->scratch.overrides;
-    builder.override_capacity = context->scratch.override_capacity;
-    builder.supertype_indexes = context->scratch.supertype_indexes;
-    stack = context->stack;
-    if (stack) stack_capacity = context->stack_capacity;
-  }
+  builder.positions = context->scratch.positions;
+  builder.position_capacity = context->scratch.position_capacity;
+  builder.fields = context->grammar->direct_fields;
+  builder.production_fields = context->grammar->production_fields;
+  builder.masks = context->scratch.masks;
+  builder.mask_capacity = context->scratch.mask_capacity;
+  builder.overrides = context->scratch.overrides;
+  builder.override_capacity = context->scratch.override_capacity;
+  builder.supertype_indexes = context->grammar->supertype_indexes;
+  stack = context->stack;
+  if (stack) stack_capacity = context->stack_capacity;
   if (!stack) stack = malloc(stack_capacity * sizeof(Frame));
   const TSLanguage *language = result->language;
   uint32_t symbols = language->symbol_count + language->alias_count;
-  if (builder.words && !context) {
-    builder.supertype_indexes = calloc(symbols, sizeof(uint16_t));
-  }
-  if (!stack || (builder.words && !builder.supertype_indexes)) {
+  if (!stack) {
     sq_fail(error, SQ_ERROR_ALLOCATION);
     goto failure;
-  }
-  for (uint32_t i = 0; !context && i < result->supertype_count; i++) {
-    builder.supertype_indexes[result->supertypes[i]] = (uint16_t)(i + 1);
   }
 
   uint32_t zero_mask_offset = SQ_NONE;
@@ -1076,7 +1033,6 @@ static SQTree *pack_tree(SQPackContext *context, const TSTree *tree,
       }
 
       builder.position_count = frame->position_mark;
-      builder.field_count = frame->field_mark;
       builder.mask_count = frame->mask_mark;
       depth--;
     }
@@ -1103,10 +1059,8 @@ static SQTree *pack_tree(SQPackContext *context, const TSTree *tree,
   }
 
   if (options.symbol_presence) {
-    bool ok = context
-        ? sq_build_presence_cached(builder.tree, context->public_index,
-                                   &context->presence, &context->presence_capacity, error)
-        : sq_build_presence(builder.tree, error);
+    bool ok = sq_build_presence_cached(builder.tree, context->grammar->public_index,
+                                        &context->presence, &context->presence_capacity, error);
     if (!ok) goto failure;
   }
 
@@ -1136,28 +1090,26 @@ failure:
   builder.tree = NULL;
 cleanup:
   result = builder.tree;
-  if (context) {
-    context->scratch.overrides = builder.overrides;
-    context->scratch.override_capacity = builder.override_capacity;
-    context->scratch.positions = builder.positions;
-    context->scratch.position_capacity = builder.position_capacity;
-    context->scratch.masks = builder.masks;
-    context->scratch.mask_capacity = builder.mask_capacity;
-    context->stack = stack;
-    context->stack_capacity = stack_capacity;
-  } else {
-    free(builder.overrides);
-    free(stack);
-    free(builder.positions);
-    free(builder.fields);
-    free(builder.masks);
-    free(builder.supertype_indexes);
-  }
+  context->scratch.overrides = builder.overrides;
+  context->scratch.override_capacity = builder.override_capacity;
+  context->scratch.positions = builder.positions;
+  context->scratch.position_capacity = builder.position_capacity;
+  context->scratch.masks = builder.masks;
+  context->scratch.mask_capacity = builder.mask_capacity;
+  context->stack = stack;
+  context->stack_capacity = stack_capacity;
   return result;
 }
 
-SQTree *sq_tree_pack(const TSTree *tree, SQPackOptions options, SQError *error) {
-  return pack_tree(NULL, tree, options, error);
+SQTree *sq_tree_pack(SQGrammar *grammar, const TSTree *tree, SQPackOptions options, SQError *error) {
+  if (!grammar) {
+    sq_fail(error, SQ_ERROR_ARGUMENT);
+    return NULL;
+  }
+  SQPackContext context = {.grammar = grammar};
+  SQTree *result = pack_tree(&context, tree, options, error);
+  sq_pack_context_trim(&context);
+  return result;
 }
 
 SQTree *sq_pack_context_pack(SQPackContext *context, const TSTree *tree,
@@ -1169,7 +1121,7 @@ SQTree *sq_pack_context_pack(SQPackContext *context, const TSTree *tree,
   return pack_tree(context, tree, options, error);
 }
 
-SQTree *sq_tree_parse(TSParser *parser, const char *source, uint32_t length, SQPackOptions options,
+SQTree *sq_tree_parse(SQGrammar *grammar, TSParser *parser, const char *source, uint32_t length, SQPackOptions options,
                       SQError *error) {
   if (!parser || (!source && length)) {
     sq_fail(error, SQ_ERROR_ARGUMENT);
@@ -1182,7 +1134,7 @@ SQTree *sq_tree_parse(TSParser *parser, const char *source, uint32_t length, SQP
     return NULL;
   }
 
-  SQTree *packed = sq_tree_pack(tree, options, error);
+  SQTree *packed = sq_tree_pack(grammar, tree, options, error);
   ts_tree_delete(tree);
   return packed;
 }

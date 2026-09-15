@@ -10,6 +10,7 @@ extern "C" {
 // Immutable packed trees. Link this library alongside this checkout's runtime.
 // Slabs use little-endian encoding and require the exact matching grammar.
 typedef struct SQTree SQTree;
+typedef struct SQGrammar SQGrammar;
 typedef struct {
   const SQTree *tree;
   // Physical reverse-preorder index; preorder moves downward.
@@ -54,59 +55,58 @@ const char *sq_error_string(SQError);
 // Actual compiled slab format/configuration, for persistence identity.
 uint64_t sq_representation_id(void);
 SQPackOptions sq_pack_options_default(void);
-SQTree *sq_tree_pack(const TSTree *, SQPackOptions, SQError *);
+// Prepared immutable metadata shared across contexts and trees. Native grammar
+// libraries must remain loaded until every derived handle has been released.
+// Construction copies cached dictionary bytes; their storage may be released on
+// return. Other tables are derived from the language. More than 65536 dictionary
+// masks fails with SQ_ERROR_DICTIONARY_FULL. No global registry is used.
+SQGrammar *sq_grammar_new(const TSLanguage *, SQError *);
+SQGrammar *sq_grammar_new_with_cache(const TSLanguage *, const void *, size_t, SQError *);
+SQGrammar *sq_grammar_copy(SQGrammar *);
+void sq_grammar_delete(SQGrammar *);
+const TSLanguage *sq_grammar_language(const SQGrammar *);
+// Only the costly dictionary is serialized. Zero size means no dictionary.
+uint32_t sq_grammar_cache_size(const SQGrammar *);
+bool sq_grammar_copy_cache(const SQGrammar *, void *, size_t, SQError *);
 
-// Reuse grammar metadata and scratch across conversions of one language.
-// A context retains the language (native grammar libraries must remain loaded).
-// For more than eight supertypes, compiled-table analysis produces a deterministic
-// dictionary shared by contexts and trees of this language. Initialization fails
-// with SQ_ERROR_DICTIONARY_FULL if the conservative set exceeds 65536 masks.
-// Calls reset transient state automatically, including after a failed pack.
-// One context may be used by only one thread at a time; separate contexts may
-// run concurrently. Packed trees own their storage and outlive the context.
+SQTree *sq_tree_pack(SQGrammar *, const TSTree *, SQPackOptions, SQError *);
+
+// A context retains its grammar and reuses mutable scratch. Calls reset transient
+// state even after failure. Separate contexts can share a grammar concurrently;
+// one context requires exclusive access. Output trees outlive the context.
 typedef struct SQPackContext SQPackContext;
-SQPackContext *sq_pack_context_new(const TSLanguage *, SQError *);
-// Uses a cache produced by sq_pack_context_copy_grammar_cache. Invalid or
-// mismatched bytes fail with SQ_ERROR_INVALID_SLAB; the language is still the
-// authority for all other metadata.
-SQPackContext *sq_pack_context_new_with_grammar_cache(const TSLanguage *, const void *, size_t,
-                                                      SQError *);
-// Zero means this grammar has no costly derived dictionary. copy requires the
-// exact nonzero size returned here and may write to unaligned storage.
-uint32_t sq_pack_context_grammar_cache_size(const SQPackContext *);
-bool sq_pack_context_copy_grammar_cache(const SQPackContext *, void *, size_t, SQError *);
+SQPackContext *sq_pack_context_new(SQGrammar *, SQError *);
+// Retains the new grammar without discarding scratch. Both arguments must be nonnull.
+void sq_pack_context_set_grammar(SQPackContext *, SQGrammar *);
 SQTree *sq_pack_context_pack(SQPackContext *, const TSTree *, SQPackOptions, SQError *);
-// Release high-water scratch while retaining grammar metadata. NULL is allowed.
+// Release high-water scratch while retaining the grammar. NULL is allowed.
 void sq_pack_context_trim(SQPackContext *);
 void sq_pack_context_delete(SQPackContext *);
 
 // Parse without an old tree, pack, then release the mainline tree.
-SQTree *sq_tree_parse(TSParser *, const char *, uint32_t, SQPackOptions, SQError *);
+SQTree *sq_tree_parse(SQGrammar *, TSParser *, const char *, uint32_t, SQPackOptions, SQError *);
 void sq_tree_delete(SQTree *);
 const TSLanguage *sq_tree_language(const SQTree *);
+// Borrowed handle, valid while the tree is alive.
+SQGrammar *sq_tree_grammar(const SQTree *);
 const void *sq_tree_data(const SQTree *, uint32_t *length);
 
 // Copies into one owned allocation and validates topology and auxiliary indexes.
-SQTree *sq_tree_from_bytes(const TSLanguage *, const void *, size_t, SQError *);
+SQTree *sq_tree_from_bytes(SQGrammar *, const void *, size_t, SQError *);
 
 // Copies and validates layout, topology, indexes, and coordinate arithmetic,
 // without checking auxiliary index membership or canonical padding contents.
 // Incorrect but bounded auxiliary contents may produce incorrect query results.
 // This does not verify grammar identity or the tree's agreement with source text.
-SQTree *sq_tree_from_bytes_safety_checked(const TSLanguage *, const void *, size_t, SQError *);
-SQTree *sq_tree_from_bytes_safety_checked_with_grammar_cache(const TSLanguage *, const void *,
-                                                             size_t, const void *, size_t,
-                                                             SQError *);
+SQTree *sq_tree_from_bytes_safety_checked(SQGrammar *, const void *, size_t, SQError *);
 
 // Validates without copying the slab. Bytes must remain alive and immutable
 // until this tree and its nodes/cursors are no longer used. They must be aligned
 // to 8 bytes (64 with the experimental column-alignment build). Deletion frees
 // only the runtime descriptor; the caller retains ownership of the bytes.
-SQTree *sq_tree_from_bytes_borrowed(const TSLanguage *, const void *, size_t, SQError *);
+SQTree *sq_tree_from_bytes_borrowed(SQGrammar *, const void *, size_t, SQError *);
 // Same lifetime/alignment contract, with the safety-checked validation policy.
-SQTree *sq_tree_from_bytes_borrowed_safety_checked(const TSLanguage *, const void *, size_t, SQError *);
-SQTree *sq_tree_from_bytes_borrowed_safety_checked_with_grammar_cache(
-    const TSLanguage *, const void *, size_t, const void *, size_t, SQError *);
+SQTree *sq_tree_from_bytes_borrowed_safety_checked(SQGrammar *, const void *, size_t, SQError *);
 
 uint32_t sq_tree_grammar_cache_size(const SQTree *);
 bool sq_tree_copy_grammar_cache(const SQTree *, void *, size_t, SQError *);

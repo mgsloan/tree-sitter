@@ -16,6 +16,9 @@ int main(int argc, char **argv) {
   void *lib = dlopen(argv[1], RTLD_NOW);
   const TSLanguage *(*fn)(void) = (const TSLanguage *(*)(void))dlsym(lib, argv[2]);
   const TSLanguage *language = fn();
+  SQError grammar_error;
+  SQGrammar *grammar = sq_grammar_new(language, &grammar_error);
+  if (!grammar) return 1;
   bool safety_only = getenv("SQ_SAFETY_ONLY") != NULL;
   int repeats = atoi(argv[3]), count = argc - 4, n = 0;
   uint8_t **slabs = malloc((size_t)count * sizeof(uint8_t *));
@@ -37,7 +40,7 @@ int main(int argc, char **argv) {
     SQError e;
     SQPackOptions options = sq_pack_options_default();
     options.repack = true;
-    SQTree *packed = sq_tree_pack(parsed, options, &e);
+    SQTree *packed = sq_tree_pack(grammar, parsed, options, &e);
     ts_tree_delete(parsed);
     if (!packed) return 2;
     uint32_t size = 0;
@@ -57,8 +60,8 @@ int main(int argc, char **argv) {
     for (int i = 0; i < n; i++) {
       SQError e;
       SQTree *loaded = safety_only
-                           ? sq_tree_from_bytes_safety_checked(language, slabs[i], sizes[i], &e)
-                           : sq_tree_from_bytes(language, slabs[i], sizes[i], &e);
+                           ? sq_tree_from_bytes_safety_checked(grammar, slabs[i], sizes[i], &e)
+                           : sq_tree_from_bytes(grammar, slabs[i], sizes[i], &e);
       if (!loaded) {
         fprintf(stderr, "%s\n", sq_error_string(e));
         return 1;
@@ -75,5 +78,6 @@ int main(int argc, char **argv) {
          "\"us_per_file\":%.3f}\n",
          safety_only ? "safety" : "integrity", n, (unsigned long long)bytes, best,
          best * 1e3 / n);
+  sq_grammar_delete(grammar);
   return 0;
 }

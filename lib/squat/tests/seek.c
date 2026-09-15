@@ -127,7 +127,9 @@ static void exercise(TSParser *parser, const char *source, uint32_t size) {
   TSTree *parsed = ts_parser_parse_string(parser, NULL, source, size);
   assert(parsed);
   SQError error;
-  SQTree *tree = sq_tree_pack(parsed, sq_pack_options_default(), &error);
+  SQGrammar *grammar = sq_grammar_new(ts_parser_language(parser), &error);
+  assert(grammar);
+  SQTree *tree = sq_tree_pack(grammar, parsed, sq_pack_options_default(), &error);
   assert(tree && error == SQ_OK);
   SQNode root = sq_tree_root_node(tree);
   uint64_t state = 42;
@@ -177,6 +179,7 @@ static void exercise(TSParser *parser, const char *source, uint32_t size) {
   free(source_points);
   sq_tree_delete(tree);
   ts_tree_delete(parsed);
+  sq_grammar_delete(grammar);
 }
 
 int main(int argc, char **argv) {

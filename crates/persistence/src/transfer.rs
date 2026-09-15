@@ -105,7 +105,7 @@ impl Persistence {
             return Err(invalid().into());
         }
         let tree = tree_sitter_squatter::Tree::from_bytes_safety_checked(
-            &grammar.language,
+            &grammar.prepared,
             &bytes[path_len + source_len..],
         )
         .map_err(io::Error::other)?;

@@ -4,6 +4,7 @@
 #include "../src/language.h"
 #include <limits.h>
 #include <stddef.h>
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -82,28 +83,41 @@ typedef struct SQSupertypeGrammar {
   uint64_t *masks;
   uint32_t *table;
   uint32_t count, words, supertype_count, table_capacity;
-  // Only accessed under the cache lock.
-  uint32_t references;
-  struct SQSupertypeGrammar *next;
 } SQSupertypeGrammar;
 
-SQSupertypeGrammar *sq_supertype_grammar_acquire(const TSLanguage *, uint32_t, SQError *);
-SQSupertypeGrammar *sq_supertype_grammar_acquire_cached(const TSLanguage *, uint32_t,
-                                                        const void *, size_t, SQError *);
-void sq_supertype_grammar_release(SQSupertypeGrammar *);
+SQSupertypeGrammar *sq_supertype_grammar_new(const TSLanguage *, uint32_t, SQError *);
+SQSupertypeGrammar *sq_supertype_grammar_new_cached(const TSLanguage *, uint32_t,
+                                                  const void *, size_t, SQError *);
+void sq_supertype_grammar_delete(SQSupertypeGrammar *);
 uint32_t sq_supertype_mask_id(const SQSupertypeGrammar *, const uint64_t *);
 size_t sq_supertype_grammar_cache_size(const SQSupertypeGrammar *);
 bool sq_supertype_grammar_copy_cache(const SQSupertypeGrammar *, void *, size_t, SQError *);
 
+typedef struct {
+  uint32_t offset, length;
+} DirectFieldSlice;
+
+struct SQGrammar {
+  atomic_size_t references;
+  const TSLanguage *language;
+  TSSymbol *supertypes;
+  uint32_t supertype_count;
+  uint16_t *supertype_indexes, *public_index;
+  DirectFieldSlice *production_fields;
+  TSFieldId *direct_fields;
+  SQSupertypeGrammar *supertype_grammar;
+};
+
 typedef enum { SQ_STORAGE_COLOCATED, SQ_STORAGE_BORROWED } SQStorage;
 struct SQTree {
+  SQGrammar *grammar;
   const TSLanguage *language;
   uint8_t *data;
   uint32_t size;
   SQLayout layout;
 
   // Sorted original grammar IDs, including supertype metadata in older ABIs.
-  TSSymbol *supertypes;
+  const TSSymbol *supertypes;
   uint32_t supertype_count;
   SQStorage storage;
   SQSupertypeGrammar *supertype_grammar;
@@ -137,7 +151,7 @@ static inline uint64_t sq_array_size(uint32_t count, unsigned bytes) {
   return ((uint64_t)count * bytes + 7) & ~UINT64_C(7);
 }
 
-bool sq_layout(const TSLanguage *, uint32_t capacity, bool wide_supertypes, bool points,
+bool sq_layout(const SQGrammar *, uint32_t capacity, bool wide_supertypes, bool points,
                SQLayout *);
 
 // Serialized integers are little-endian; packed words start at their low bits.
@@ -399,16 +413,14 @@ static inline uint32_t sq_position_group(const SQTree *tree, uint32_t group) {
 }
 
 SQNode sq_null(void);
-SQTree *sq_allocate(const TSLanguage *, uint32_t, bool points, SQError *);
+SQTree *sq_allocate(SQGrammar *, uint32_t, bool points, SQError *);
 bool sq_language_compatible(const TSLanguage *);
-SQTree *sq_allocate_cached(const TSLanguage *, uint32_t, const TSSymbol *, uint32_t, bool points,
-                           SQError *);
 
 // Builder operations may move a colocated descriptor. Refresh the caller's
 // pointer before reading it again; finalized public trees never move.
-size_t sq_runtime_size(const TSLanguage *);
-SQTree *sq_allocate_loaded(const TSLanguage *, uint32_t, const void *, uint32_t, bool borrowed,
-                           bool points, const void *, size_t, SQError *);
+size_t sq_runtime_size(void);
+SQTree *sq_allocate_loaded(SQGrammar *, uint32_t, const void *, uint32_t, bool borrowed,
+                           bool points, SQError *);
 bool sq_resize(SQTree **, uint32_t, SQError *);
 bool sq_prepare_final(SQTree **, uint32_t capacity, uint32_t trailing_size, SQError *);
 bool sq_grow_data(SQTree **, uint32_t, SQError *);

@@ -62,7 +62,10 @@ fn crashed_snapshot_reader_slot_is_reclaimable() {
 fn grammar() -> Grammar {
     let language =
         unsafe { tree_sitter::Language::from_raw(tree_sitter_json::LANGUAGE.into_raw()().cast()) };
-    Grammar::new(language, GrammarFingerprint([42; 32]))
+    Grammar::new(
+        tree_sitter_squatter::Grammar::new(&language).unwrap(),
+        GrammarFingerprint([42; 32]),
+    )
 }
 fn source(value: u8) -> String {
     format!("[{}0]", format!("{value},").repeat(4096))

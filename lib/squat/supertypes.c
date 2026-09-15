@@ -1,23 +1,10 @@
 #include "internal.h"
-#include <stdatomic.h>
-
-// A weak, reference-counted cache: retaining a tree/context retains its language
-// and dictionary. No permanent language pointers, and no lock on node reads.
-static atomic_flag cache_lock = ATOMIC_FLAG_INIT;
-static SQSupertypeGrammar *cache;
 
 typedef struct {
   uint32_t magic, supertype_count, count, words;
 } GrammarCacheHeader;
 
 #define GRAMMAR_CACHE_MAGIC UINT32_C(0x53514701)
-static void lock_cache(void) {
-  while (atomic_flag_test_and_set_explicit(&cache_lock, memory_order_acquire)) {}
-}
-static void unlock_cache(void) {
-  atomic_flag_clear_explicit(&cache_lock, memory_order_release);
-}
-
 static bool reserve(void **data, uint32_t *capacity, uint32_t count, size_t size) {
   if (count <= *capacity) return true;
   uint32_t next = *capacity ? *capacity : 16;
@@ -457,35 +444,12 @@ cleanup:
 #undef ALLOC
 }
 
-static void destroy_grammar(SQSupertypeGrammar *g) {
+void sq_supertype_grammar_delete(SQSupertypeGrammar *g) {
+  if (!g) return;
   ts_language_delete(g->language);
   free(g->masks);
   free(g->table);
   free(g);
-}
-
-static SQSupertypeGrammar *find_grammar(const TSLanguage *language) {
-  for (SQSupertypeGrammar *g = cache; g; g = g->next) {
-    if (g->language == language) return g;
-  }
-  return NULL;
-}
-
-static SQSupertypeGrammar *publish_grammar(SQSupertypeGrammar *g) {
-  lock_cache();
-  // Another thread may have initialized this language while we analyzed it.
-  SQSupertypeGrammar *other = find_grammar(g->language);
-  if (other) {
-    other->references++;
-    unlock_cache();
-    destroy_grammar(g);
-    return other;
-  }
-  g->references = 1;
-  g->next = cache;
-  cache = g;
-  unlock_cache();
-  return g;
 }
 
 static int compare_mask_values(const uint64_t *left, const uint64_t *right, uint32_t words) {
@@ -495,19 +459,10 @@ static int compare_mask_values(const uint64_t *left, const uint64_t *right, uint
   return 0;
 }
 
-SQSupertypeGrammar *sq_supertype_grammar_acquire_cached(const TSLanguage *language,
-                                                        uint32_t supertype_count,
-                                                        const void *data, size_t length,
-                                                        SQError *error) {
-  lock_cache();
-  SQSupertypeGrammar *existing = find_grammar(language);
-  if (existing) {
-    existing->references++;
-    unlock_cache();
-    return existing;
-  }
-  unlock_cache();
-
+SQSupertypeGrammar *sq_supertype_grammar_new_cached(const TSLanguage *language,
+                                                    uint32_t supertype_count,
+                                                    const void *data, size_t length,
+                                                    SQError *error) {
   GrammarCacheHeader header;
   if (!data || length < sizeof(header)) goto invalid;
   header = (GrammarCacheHeader){sq_get_u32(data, 0, 0), sq_get_u32(data, 0, 1),
@@ -526,7 +481,7 @@ SQSupertypeGrammar *sq_supertype_grammar_acquire_cached(const TSLanguage *langua
   g->count = header.count;
   g->masks = malloc((size_t)g->count * words * 8);
   if (!g->masks) {
-    destroy_grammar(g);
+    sq_supertype_grammar_delete(g);
     goto allocation;
   }
   const uint8_t *masks = (const uint8_t *)data + sizeof(header);
@@ -540,17 +495,17 @@ SQSupertypeGrammar *sq_supertype_grammar_acquire_cached(const TSLanguage *langua
     const uint64_t *mask = g->masks + (size_t)id * words;
     if ((mask[words - 1] & ~high_mask) ||
         (id && compare_mask_values(mask - words, mask, words) >= 0)) {
-      destroy_grammar(g);
+      sq_supertype_grammar_delete(g);
       goto invalid;
     }
   }
   uint32_t capacity = 32;
   while (capacity < g->count * 2 && capacity < (1u << 31)) capacity *= 2;
   if (!rehash(g, capacity)) {
-    destroy_grammar(g);
+    sq_supertype_grammar_delete(g);
     goto allocation;
   }
-  return publish_grammar(g);
+  return g;
 
 invalid:
   sq_fail(error, SQ_ERROR_INVALID_SLAB);
@@ -560,32 +515,13 @@ allocation:
   return NULL;
 }
 
-SQSupertypeGrammar *sq_supertype_grammar_acquire(const TSLanguage *language,
-                                                uint32_t supertype_count, SQError *error) {
-  lock_cache();
-  SQSupertypeGrammar *existing = find_grammar(language);
-  if (existing) {
-    existing->references++;
-    unlock_cache();
-    return existing;
-  }
-  unlock_cache();
+SQSupertypeGrammar *sq_supertype_grammar_new(const TSLanguage *language,
+                                             uint32_t supertype_count, SQError *error) {
   SQSupertypeGrammar *g = calloc(1, sizeof(*g));
   if (!g) { sq_fail(error, SQ_ERROR_ALLOCATION); return NULL; }
   g->language = ts_language_copy(language);
   g->supertype_count = supertype_count;
   g->words = (supertype_count + 63) / 64;
-  if (!build_dictionary(g, error)) { destroy_grammar(g); return NULL; }
-  return publish_grammar(g);
-}
-
-void sq_supertype_grammar_release(SQSupertypeGrammar *g) {
-  if (!g) return;
-  lock_cache();
-  if (--g->references) { unlock_cache(); return; }
-  SQSupertypeGrammar **link = &cache;
-  while (*link != g) link = &(*link)->next;
-  *link = g->next;
-  unlock_cache();
-  destroy_grammar(g);
+  if (!build_dictionary(g, error)) { sq_supertype_grammar_delete(g); return NULL; }
+  return g;
 }

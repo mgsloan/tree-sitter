@@ -34,6 +34,9 @@ int main(int argc, char **argv) {
   }
 
   const TSLanguage *language = language_function();
+  SQError grammar_error;
+  SQGrammar *grammar = sq_grammar_new(language, &grammar_error);
+  if (!grammar) return 1;
   TSParser *parser = ts_parser_new();
   if (!ts_parser_set_language(parser, language)) {
     return 2;
@@ -74,7 +77,7 @@ int main(int argc, char **argv) {
       SQPackOptions options = sq_pack_options_default();
       options.repack = true;
       double start = now();
-      tree = sq_tree_pack(parsed, options, &error);
+      tree = sq_tree_pack(grammar, parsed, options, &error);
       timings[repeat] = (now() - start) * 1000;
       if (!tree) {
         fprintf(stderr, "%s: %s\n", argv[file_index], sq_error_string(error));
@@ -124,6 +127,7 @@ int main(int argc, char **argv) {
   }
 
   ts_parser_delete(parser);
+  sq_grammar_delete(grammar);
   dlclose(library);
   return 0;
 }

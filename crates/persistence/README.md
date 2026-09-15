@@ -10,13 +10,18 @@ lmdb-master-sys 0.2.6; no direct sys-level transaction/cursor calls remain.
 
 ```rust,no_run
 use std::path::Path;
-use tree_squatter_persistence::{Grammar, Options, Persistence};
+use tree_squatter_persistence::{GrammarFingerprint, LoadContext, LoadOptions, Options, Persistence};
 
-fn example(grammar: &Grammar) -> Result<(), Box<dyn std::error::Error>> {
+fn example(language: &tree_sitter::Language, fingerprint: GrammarFingerprint)
+    -> Result<(), Box<dyn std::error::Error>>
+{
     let cache = Persistence::open(".", Options::default())?;
-    let mut parser = tree_sitter::Parser::new();
-    let file = cache.load(Path::new("src/main.rs"), grammar, &mut parser)?;
-    println!("{}", file.tree().root_node().kind());
+    let grammar = cache.prepare_grammar(language, fingerprint)?;
+    let mut worker = LoadContext::default();
+    let result = cache.load_with_context(
+        Path::new("src/main.rs"), &grammar, &mut worker, LoadOptions::default(),
+    )?;
+    println!("{}", result.file.tree().root_node().kind());
     Ok(())
 }
 ```
@@ -48,12 +53,15 @@ Implemented:
   returns captured publication work even before a cache exists. Bounded,
   same-build transfer decoding validates identity and structural safety before
   publication. Transfer frames are an IPC format, not a durable schema.
-- Optional per-worker `LoadContext` reuses parser and packing scratch, including
-  grammar-derived lookup tables; packing contexts are allocated only on misses.
+- Per-worker `LoadContext` reuses parser and packing scratch across grammar
+  changes, including resumable loads. Packing contexts are allocated only on misses.
+  Prepared grammars share immutable tables across workers and trees; callers retain
+  grammar handles between batches. `LoadContext::trim` releases packing scratch.
 - Parse-table-derived supertype dictionaries are stored once per grammar/runtime
-  in LMDB and reconstructed on later cache loads or packing misses. Tree and
-  dictionary publication is atomic. Linear symbol and direct-field tables remain
-  process-local.
+  in LMDB. `prepare_grammar` restores them directly from borrowed transaction bytes
+  into owned tables, without an intermediate byte buffer or retained transaction.
+  Missing/invalid dictionaries fall back to computation. Tree and dictionary
+  publication is atomic. Linear symbol and direct-field tables remain process-local.
 - Nonblocking writer admission for cooperating processes/threads; map-full,
   unavailable cache, and malformed entries fall back to a freshly parsed pair.
 - Linux parse-work ownership with crash-released locks, bounded cancellable waits,

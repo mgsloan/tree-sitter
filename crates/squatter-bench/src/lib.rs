@@ -724,7 +724,9 @@ pub fn run(check_only: bool) -> Result<()> {
                 if !cold_parse && !pack_contexts.contains_key(&input.grammar) {
                     pack_contexts.insert(
                         input.grammar.clone(),
-                        PackContext::new(&grammars[&input.grammar].language)?,
+                        PackContext::new(&tree_sitter_squatter::Grammar::new(
+                            &grammars[&input.grammar].language,
+                        )?)?,
                     );
                 }
                 if wants_queries && !queries.contains_key(&input.grammar) {
@@ -780,7 +782,11 @@ pub fn run(check_only: bool) -> Result<()> {
                         ..Default::default()
                     };
                     Ok(if cold_parse {
-                        Tree::pack_with_options(&parsed, options)?
+                        Tree::pack_with_options(
+                            &tree_sitter_squatter::Grammar::new(language)?,
+                            &parsed,
+                            options,
+                        )?
                     } else {
                         pack_contexts
                             .get_mut(&source.input.grammar)

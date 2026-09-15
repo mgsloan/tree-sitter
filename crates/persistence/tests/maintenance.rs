@@ -4,7 +4,10 @@ use tree_squatter_persistence::*;
 fn grammar() -> Grammar {
     let language =
         unsafe { tree_sitter::Language::from_raw(tree_sitter_json::LANGUAGE.into_raw()().cast()) };
-    Grammar::new(language, GrammarFingerprint([42; 32]))
+    Grammar::new(
+        tree_sitter_squatter::Grammar::new(&language).unwrap(),
+        GrammarFingerprint([42; 32]),
+    )
 }
 fn load(cache: &Persistence) -> LoadedFile {
     cache

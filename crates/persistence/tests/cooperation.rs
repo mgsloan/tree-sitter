@@ -12,7 +12,10 @@ use tree_squatter_persistence::*;
 fn grammar() -> Grammar {
     let language =
         unsafe { tree_sitter::Language::from_raw(tree_sitter_json::LANGUAGE.into_raw()().cast()) };
-    Grammar::new(language, GrammarFingerprint([42; 32]))
+    Grammar::new(
+        tree_sitter_squatter::Grammar::new(&language).unwrap(),
+        GrammarFingerprint([42; 32]),
+    )
 }
 
 #[test]
@@ -78,30 +81,26 @@ fn deferred_capture_survives_owner_death_and_source_change() {
     let path = root.path().join("file.json");
     fs::write(&path, "[1]").unwrap();
     let cache = Persistence::open(root.path(), Options::default()).unwrap();
+    let mut context = tree_squatter_persistence::LoadContext::default();
     let owner = Owner::start(root.path());
     let LoadStep::Deferred(pending) = cache
-        .load_step(
+        .load_step_with_context(
             Path::new("file.json"),
             &grammar(),
-            &mut tree_sitter::Parser::new(),
+            &mut context,
             LoadOptions::default(),
         )
         .unwrap()
     else {
         panic!("expected deferral")
     };
-    let LoadStep::Deferred(pending) = pending
-        .resume(&mut tree_sitter::Parser::new(), None)
-        .unwrap()
+    let LoadStep::Deferred(pending) = pending.resume_with_context(&mut context, None).unwrap()
     else {
         panic!("owner is still live")
     };
     fs::write(&path, "[2]").unwrap();
     drop(owner);
-    let LoadStep::Ready(result) = pending
-        .resume(&mut tree_sitter::Parser::new(), None)
-        .unwrap()
-    else {
+    let LoadStep::Ready(result) = pending.resume_with_context(&mut context, None).unwrap() else {
         panic!("dead owner retained ownership")
     };
     assert_eq!(result.file.source(), b"[1]");
@@ -201,7 +200,7 @@ fn deferred_contender_reuses_winner_publication() {
     };
     assert!(
         !winner
-            .parse_now(&mut tree_sitter::Parser::new(), None)
+            .parse_now_with_context(&mut tree_squatter_persistence::LoadContext::default(), None)
             .unwrap()
             .file
             .cache_hit()

@@ -6,15 +6,16 @@ pub struct GrammarFingerprint(pub [u8; 32]);
 
 #[derive(Clone)]
 pub struct Grammar {
-    pub(crate) language: tree_sitter::Language,
+    pub(crate) prepared: tree_sitter_squatter::Grammar,
     pub(crate) fingerprint: GrammarFingerprint,
 }
 
 impl Grammar {
-    /// The provider must pair the language with its implementation's fingerprint.
-    pub fn new(language: tree_sitter::Language, fingerprint: GrammarFingerprint) -> Self {
+    /// Pair a prepared grammar with its implementation fingerprint.
+    /// Use `Persistence::prepare_grammar` to restore persisted tables.
+    pub fn new(prepared: tree_sitter_squatter::Grammar, fingerprint: GrammarFingerprint) -> Self {
         Self {
-            language,
+            prepared,
             fingerprint,
         }
     }
@@ -52,9 +53,9 @@ pub(crate) fn runtime() -> [u8; 32] {
     std::array::from_fn(|i| nibble(hex[2 * i]) * 16 + nibble(hex[2 * i + 1]))
 }
 
-pub(crate) fn grammar_key(grammar: &Grammar) -> [u8; 64] {
+pub(crate) fn grammar_key(fingerprint: GrammarFingerprint) -> [u8; 64] {
     let mut key = [0; 64];
-    key[..32].copy_from_slice(&grammar.fingerprint.0);
+    key[..32].copy_from_slice(&fingerprint.0);
     key[32..].copy_from_slice(&runtime());
     key
 }

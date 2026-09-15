@@ -69,6 +69,9 @@ int main(int argc, char **argv) {
   assert(language_fn);
   const TSLanguage *language = language_fn();
 #endif
+  SQError grammar_error;
+  SQGrammar *grammar = sq_grammar_new(language, &grammar_error);
+  if (!grammar) return 1;
   uint32_t source_size;
   uint8_t *source = read_file(argv[3], &source_size);
   TSParser *parser = ts_parser_new();
@@ -82,7 +85,7 @@ int main(int argc, char **argv) {
     options.points = (variant & 4) == 0;
     options.symbol_presence = (variant & 8) == 0;
     SQError error;
-    SQTree *tree = sq_tree_pack(parsed, options, &error);
+    SQTree *tree = sq_tree_pack(grammar, parsed, options, &error);
     assert(tree && error == SQ_OK);
     uint32_t size;
     const void *bytes = sq_tree_data(tree, &size);
@@ -98,9 +101,9 @@ int main(int argc, char **argv) {
       uint32_t reference_size;
       uint8_t *reference = read_file(path, &reference_size);
       assert(size == reference_size && !memcmp(bytes, reference, size));
-      SQTree *copy = sq_tree_from_bytes(language, reference, size, &error);
+      SQTree *copy = sq_tree_from_bytes(grammar, reference, size, &error);
       assert(copy && error == SQ_OK);
-      SQTree *borrowed = sq_tree_from_bytes_borrowed(language, reference, size, &error);
+      SQTree *borrowed = sq_tree_from_bytes_borrowed(grammar, reference, size, &error);
       assert(borrowed && error == SQ_OK && sq_tree_data(borrowed, NULL) == reference);
       compare_trees(tree, copy);
       compare_trees(tree, borrowed);
@@ -115,6 +118,7 @@ int main(int argc, char **argv) {
   ts_tree_delete(parsed);
   ts_parser_delete(parser);
   free(source);
+  sq_grammar_delete(grammar);
 #ifndef SQ_TEST_LANGUAGE
   dlclose(library);
 #endif

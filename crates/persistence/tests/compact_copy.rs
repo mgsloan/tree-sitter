@@ -9,6 +9,7 @@ fn language() -> Language {
 #[test]
 fn compact_copy_matches_repack_for_padded_and_compact_trees() {
     let language = language();
+    let grammar = tree_sitter_squatter::Grammar::new(&language).unwrap();
     let mut parser = tree_sitter::Parser::new();
     parser.set_language(&language).unwrap();
     for source in [
@@ -20,6 +21,7 @@ fn compact_copy_matches_repack_for_padded_and_compact_trees() {
         for presence in [false, true] {
             for (repack, points) in [(false, false), (false, true), (true, false), (true, true)] {
                 let tree = Tree::pack_with_options(
+                    &grammar,
                     &native,
                     PackOptions {
                         initial_group_capacity: 1024,
@@ -41,7 +43,7 @@ fn compact_copy_matches_repack_for_padded_and_compact_trees() {
                         .copy_compact_into(&mut storage[offset..offset + tree.compact_size()])
                         .unwrap();
                     assert_eq!(actual, expected.as_bytes());
-                    Tree::from_bytes(&language, actual).unwrap();
+                    Tree::from_bytes(&grammar, actual).unwrap();
                     for byte in storage[..offset]
                         .iter()
                         .chain(&storage[offset + tree.compact_size()..])
@@ -70,11 +72,13 @@ fn compact_copy_matches_repack_for_padded_and_compact_trees() {
 #[test]
 fn point_free_trees_use_byte_offsets_as_single_line_points() {
     let language = language();
+    let grammar = tree_sitter_squatter::Grammar::new(&language).unwrap();
     let source = b"[\n  1,\n  2\n]";
     let mut parser = tree_sitter::Parser::new();
     parser.set_language(&language).unwrap();
     let native = parser.parse(source, None).unwrap();
     let tree = Tree::pack_with_options(
+        &grammar,
         &native,
         PackOptions {
             points: false,
@@ -109,7 +113,7 @@ fn point_free_trees_use_byte_offsets_as_single_line_points() {
     assert_eq!(captures(&mut byte_cursor), captures(&mut point_cursor));
 
     let compact = tree.repack().unwrap();
-    let loaded = Tree::from_bytes(&language, compact.as_bytes()).unwrap();
+    let loaded = Tree::from_bytes(&grammar, compact.as_bytes()).unwrap();
     assert!(!loaded.has_points());
     assert_eq!(
         loaded.root_node().end_position(),

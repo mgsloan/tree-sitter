@@ -88,17 +88,13 @@ static uint32_t column_offset(uint64_t *next, uint64_t bytes) {
   return result;
 }
 
-bool sq_layout(const TSLanguage *language, uint32_t capacity, bool wide_supertypes, bool points,
+bool sq_layout(const SQGrammar *grammar, uint32_t capacity, bool wide_supertypes, bool points,
                SQLayout *layout) {
-  if (!sq_language_compatible(language) || !capacity || capacity > UINT32_MAX / SQ_GROUP_SIZE) {
+  if (!grammar || !capacity || capacity > UINT32_MAX / SQ_GROUP_SIZE) {
     return false;
   }
-  uint32_t supertype_count = 0;
-  for (uint32_t symbol = 0; symbol < language->symbol_count + language->alias_count; symbol++) {
-    if (language->symbol_metadata[symbol].supertype) {
-      supertype_count++;
-    }
-  }
+  const TSLanguage *language = grammar->language;
+  uint32_t supertype_count = grammar->supertype_count;
   // Larger grammars retain byte/halfword dictionary IDs.
   layout->supertype_bits = supertype_count <= 8 ? small_width((uint8_t)supertype_count)
                                                : (wide_supertypes ? 16 : 8);
@@ -160,10 +156,8 @@ void sq_set_packed(uint8_t *data, uint32_t offset, uint32_t index, uint8_t bits,
   sq_set_u64(address, 0, 0, word);
 }
 
-size_t sq_runtime_size(const TSLanguage *language) {
-  size_t symbols = (size_t)language->symbol_count + language->alias_count;
-  size_t bytes = sizeof(SQTree) + symbols * sizeof(TSSymbol);
-  return (bytes + SQ_COLUMN_ALIGNMENT - 1) & ~(size_t)(SQ_COLUMN_ALIGNMENT - 1);
+size_t sq_runtime_size(void) {
+  return (sizeof(SQTree) + SQ_COLUMN_ALIGNMENT - 1) & ~(size_t)(SQ_COLUMN_ALIGNMENT - 1);
 }
 
 bool sq_language_compatible(const TSLanguage *language) {
@@ -172,50 +166,25 @@ bool sq_language_compatible(const TSLanguage *language) {
          (uint64_t)language->symbol_count + language->alias_count <= ts_builtin_sym_error_repeat;
 }
 
-static SQTree *allocate_tree(const TSLanguage *language, uint32_t capacity, uint32_t payload_size,
-                             SQStorage storage, const TSSymbol *supertypes,
-                             uint32_t supertype_count, bool points, const void *grammar_cache,
-                             size_t grammar_cache_length, SQError *error) {
+static SQTree *allocate_tree(SQGrammar *prepared, uint32_t capacity, uint32_t payload_size,
+                             SQStorage storage, bool points, SQError *error) {
   sq_fail(error, SQ_OK);
-  if (!sq_language_compatible(language)) {
-    sq_fail(error, SQ_ERROR_LANGUAGE);
+  if (!prepared) {
+    sq_fail(error, SQ_ERROR_ARGUMENT);
     return NULL;
   }
-
-  TSSymbol direct_supertypes[8];
-  if (!supertypes) {
-    supertype_count = 0;
-    for (uint32_t symbol = 0; symbol < language->symbol_count + language->alias_count; symbol++) {
-      if (language->symbol_metadata[symbol].supertype) {
-        if (supertype_count < 8) direct_supertypes[supertype_count] = (TSSymbol)symbol;
-        supertype_count++;
-      }
-    }
-  }
-  if (!supertypes && supertype_count <= 8) supertypes = direct_supertypes;
-  SQSupertypeGrammar *grammar = NULL;
-  if (supertype_count > 8) {
-    grammar = grammar_cache
-        ? sq_supertype_grammar_acquire_cached(language, supertype_count, grammar_cache,
-                                              grammar_cache_length, error)
-        : sq_supertype_grammar_acquire(language, supertype_count, error);
-    if (!grammar) return NULL;
-  } else if (grammar_cache_length) {
-    sq_fail(error, SQ_ERROR_INVALID_SLAB);
-    return NULL;
-  }
+  const TSLanguage *language = prepared->language;
+  SQSupertypeGrammar *grammar = prepared->supertype_grammar;
   SQLayout layout;
-  if (!sq_layout(language, capacity, grammar && grammar->count > 256, points, &layout)) {
-    sq_supertype_grammar_release(grammar);
+  if (!sq_layout(prepared, capacity, grammar && grammar->count > 256, points, &layout)) {
     sq_fail(error, SQ_ERROR_OVERFLOW);
     return NULL;
   }
 
   bool copied_load = payload_size && storage == SQ_STORAGE_COLOCATED;
   if (!payload_size) payload_size = layout.end;
-  size_t prefix = sq_runtime_size(language);
+  size_t prefix = sq_runtime_size();
   if (storage == SQ_STORAGE_COLOCATED && payload_size > SIZE_MAX - prefix) {
-    sq_supertype_grammar_release(grammar);
     sq_fail(error, SQ_ERROR_OVERFLOW);
     return NULL;
   }
@@ -224,7 +193,6 @@ static SQTree *allocate_tree(const TSLanguage *language, uint32_t capacity, uint
   SQTree *tree =
       (SQTree *)(copied_load ? allocate_uninitialized(allocation) : sq_allocate_data(allocation));
   if (!tree) {
-    sq_supertype_grammar_release(grammar);
     sq_fail(error, SQ_ERROR_ALLOCATION);
     return NULL;
   }
@@ -232,29 +200,13 @@ static SQTree *allocate_tree(const TSLanguage *language, uint32_t capacity, uint
 
   tree->supertype_grammar = grammar;
   tree->storage = storage;
-  tree->language = ts_language_copy(language);
+  tree->grammar = sq_grammar_copy(prepared);
+  tree->language = language;
   tree->layout = layout;
   tree->size = payload_size;
 
-  // Runtime metadata, including the supertype list, precedes the aligned payload.
-  // ts_language_symbol_metadata is an out-of-line call that only special-cases the
-  // two builtin error symbols, which this range never reaches. Read the array
-  // directly: this scan is proportional to the grammar, not the tree, so it
-  // otherwise dominates conversion of a small file. Keep ascending order, which
-  // fixes each supertype's bit position in the serialized column.
-  tree->supertypes = (TSSymbol *)(tree + 1);
-  if (supertypes) {
-    memcpy(tree->supertypes, supertypes, supertype_count * sizeof(TSSymbol));
-    tree->supertype_count = supertype_count;
-  } else {
-    const TSSymbolMetadata *metadata = language->symbol_metadata;
-    uint32_t symbols = (uint32_t)language->symbol_count + language->alias_count;
-    for (uint32_t symbol = 0; symbol < symbols; symbol++) {
-      if (metadata[symbol].supertype) {
-        tree->supertypes[tree->supertype_count++] = (TSSymbol)symbol;
-      }
-    }
-  }
+  tree->supertypes = prepared->supertypes;
+  tree->supertype_count = prepared->supertype_count;
 
   if (storage == SQ_STORAGE_COLOCATED) {
     tree->data = (uint8_t *)tree + prefix;
@@ -263,15 +215,8 @@ static SQTree *allocate_tree(const TSLanguage *language, uint32_t capacity, uint
   return tree;
 }
 
-SQTree *sq_allocate(const TSLanguage *language, uint32_t capacity, bool points, SQError *error) {
-  return sq_allocate_cached(language, capacity, NULL, 0, points, error);
-}
-
-SQTree *sq_allocate_cached(const TSLanguage *language, uint32_t capacity,
-                           const TSSymbol *supertypes, uint32_t count, bool points,
-                           SQError *error) {
-  SQTree *tree = allocate_tree(language, capacity, 0, SQ_STORAGE_COLOCATED, supertypes, count,
-                               points, NULL, 0, error);
+SQTree *sq_allocate(SQGrammar *grammar, uint32_t capacity, bool points, SQError *error) {
+  SQTree *tree = allocate_tree(grammar, capacity, 0, SQ_STORAGE_COLOCATED, points, error);
   if (tree) {
     sq_write_header(tree->data, (SQHeader){
         .format_flags = SQ_VERSION | (!points ? SQ_NO_POINTS : 0) |
@@ -284,12 +229,11 @@ SQTree *sq_allocate_cached(const TSLanguage *language, uint32_t capacity,
   return tree;
 }
 
-SQTree *sq_allocate_loaded(const TSLanguage *language, uint32_t capacity, const void *bytes,
-                           uint32_t length, bool borrowed, bool points, const void *grammar_cache,
-                           size_t grammar_cache_length, SQError *error) {
-  SQTree *tree = allocate_tree(language, capacity, length,
-                               borrowed ? SQ_STORAGE_BORROWED : SQ_STORAGE_COLOCATED, NULL, 0,
-                               points, grammar_cache, grammar_cache_length, error);
+SQTree *sq_allocate_loaded(SQGrammar *grammar, uint32_t capacity, const void *bytes,
+                           uint32_t length, bool borrowed, bool points, SQError *error) {
+  SQTree *tree = allocate_tree(grammar, capacity, length,
+                               borrowed ? SQ_STORAGE_BORROWED : SQ_STORAGE_COLOCATED,
+                               points, error);
   if (tree) {
     if (borrowed) {
       // This storage is only read. Mutable helpers reject borrowed descriptors.
@@ -314,7 +258,7 @@ bool sq_grow_data(SQTree **tree_pointer, uint32_t size, SQError *error) {
     return false;
   }
 
-  size_t prefix = sq_runtime_size(tree->language);
+  size_t prefix = sq_runtime_size();
   if (size > SIZE_MAX - prefix) {
     sq_fail(error, SQ_ERROR_OVERFLOW);
     return false;
@@ -328,7 +272,6 @@ bool sq_grow_data(SQTree **tree_pointer, uint32_t size, SQError *error) {
   }
 
   next->data = (uint8_t *)next + prefix;
-  next->supertypes = (TSSymbol *)(next + 1);
   *tree_pointer = tree = next;
 
   tree->size = size;
@@ -390,7 +333,7 @@ static bool resize_tree(SQTree **tree_pointer, uint32_t capacity, uint32_t trail
   }
 
   SQLayout next;
-  if (!sq_layout(tree->language, capacity, tree->layout.supertype_bits == 16,
+  if (!sq_layout(tree->grammar, capacity, tree->layout.supertype_bits == 16,
                  sq_tree_has_points(tree), &next)) {
     sq_fail(error, SQ_ERROR_OVERFLOW);
     return false;
@@ -402,7 +345,7 @@ static bool resize_tree(SQTree **tree_pointer, uint32_t capacity, uint32_t trail
     return false;
   }
 
-  size_t prefix = sq_runtime_size(tree->language);
+  size_t prefix = sq_runtime_size();
   if (total > SIZE_MAX - prefix) {
     sq_fail(error, SQ_ERROR_OVERFLOW);
     return false;
@@ -417,7 +360,6 @@ static bool resize_tree(SQTree **tree_pointer, uint32_t capacity, uint32_t trail
   memcpy(replacement, tree, prefix);
   replacement->storage = SQ_STORAGE_COLOCATED;
   replacement->data = (uint8_t *)replacement + prefix;
-  replacement->supertypes = (TSSymbol *)(replacement + 1);
   replacement->size = (uint32_t)total;
   replacement->layout = next;
   uint8_t *data = replacement->data;
@@ -435,7 +377,7 @@ static bool resize_tree(SQTree **tree_pointer, uint32_t capacity, uint32_t trail
 
 uint32_t sq_tree_compact_size(const SQTree *tree) {
   SQLayout layout;
-  if (!tree || !sq_layout(tree->language, sq_header_get(tree, group_count),
+  if (!tree || !sq_layout(tree->grammar, sq_header_get(tree, group_count),
                           tree->layout.supertype_bits == 16, sq_tree_has_points(tree), &layout))
     return 0;
   return layout.end + (tree->size - tree->layout.end);
@@ -449,7 +391,7 @@ bool sq_tree_copy_compact(const SQTree *tree, void *destination, size_t length, 
     return false;
   }
   SQLayout next;
-  if (!sq_layout(tree->language, sq_header_get(tree, group_count),
+  if (!sq_layout(tree->grammar, sq_header_get(tree, group_count),
                  tree->layout.supertype_bits == 16, sq_tree_has_points(tree), &next)) {
     sq_fail(error, SQ_ERROR_OVERFLOW);
     return false;
@@ -504,12 +446,13 @@ void sq_tree_delete(SQTree *tree) {
     return;
   }
 
-  sq_supertype_grammar_release(tree->supertype_grammar);
-  if (tree->language) {
-    ts_language_delete(tree->language);
-  }
+  sq_grammar_delete(tree->grammar);
 
   free_storage(tree);
+}
+
+SQGrammar *sq_tree_grammar(const SQTree *tree) {
+  return tree ? tree->grammar : NULL;
 }
 
 const TSLanguage *sq_tree_language(const SQTree *tree) {

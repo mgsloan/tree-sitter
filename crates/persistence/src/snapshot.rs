@@ -84,11 +84,6 @@ pub(crate) fn get(
         return None;
     }
     let slab = request.decode(store.trees.get(&snapshot.tx, &request.tree_key).ok()??)?;
-    let grammar_cache = store
-        .grammars
-        .get(&snapshot.tx, &crate::identity::grammar_key(grammar))
-        .ok()??
-        .to_vec();
     let pointer = NonNull::new(slab.as_ptr().cast_mut())?;
     let length = slab.len();
     let owner = SnapshotSlab {
@@ -98,8 +93,7 @@ pub(crate) fn get(
     };
     // The native loader checks the actual address, not merely the envelope's
     // offset. Misaligned values release their snapshot and use the owned path.
-    let tree =
-        Tree::from_owned_slab_with_grammar_cache(&grammar.language, owner, &grammar_cache).ok()?;
+    let tree = Tree::from_owned_slab(&grammar.prepared, owner).ok()?;
     if tree
         .root_node()
         .preorder()

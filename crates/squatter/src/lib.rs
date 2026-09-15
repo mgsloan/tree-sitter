@@ -2,7 +2,8 @@
 //!
 //! ```no_run
 //! # fn example(tree: &tree_sitter::Tree) -> Result<(), tree_sitter_squatter::Error> {
-//! let packed = tree_sitter_squatter::Tree::pack(tree)?;
+//! let grammar = tree_sitter_squatter::Grammar::new(&tree.language().to_owned())?;
+//! let packed = tree_sitter_squatter::Tree::pack(&grammar, tree)?;
 //! for node in packed.root_node().preorder() {
 //!     println!("{}: {:?}", node.kind(), node.byte_range());
 //! }
@@ -16,7 +17,8 @@
 //! # fn query_example(language: &tree_sitter::Language, tree: &tree_sitter::Tree,
 //! # source: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
 //! use tree_sitter_squatter::{Tree, Query, QueryCursor};
-//! let packed = Tree::pack(tree)?;
+//! let grammar = tree_sitter_squatter::Grammar::new(&tree.language().to_owned())?;
+//! let packed = Tree::pack(&grammar, tree)?;
 //! let query = Query::new(language, "(_) @node")?;
 //! let mut cursor = QueryCursor::new();
 //! let mut execution = cursor.execute(&query, packed.root_node(), source);
@@ -97,34 +99,36 @@ impl Default for PackOptions {
     }
 }
 
-/// Owns a slab and retains its language; independent of the original tree.
+/// Owns a slab and retains its prepared grammar; independent of the original tree.
 pub struct Tree(NonNull<c_void>);
 
-/// Reuses grammar metadata and scratch across conversions of one language.
-/// Output trees do not borrow the context. Calls require exclusive access;
-/// separate contexts can be used concurrently.
-pub struct PackContext(NonNull<c_void>);
-// Moving the exclusively owned scratch is safe; shared concurrent use is not.
-unsafe impl Send for PackContext {}
-impl PackContext {
+/// Prepared immutable grammar tables. Clones share metadata; contexts and trees
+/// retain it independently. Native grammar libraries must outlive every handle.
+pub struct Grammar(NonNull<c_void>);
+// Metadata is immutable after construction; native ownership uses atomic references.
+unsafe impl Send for Grammar {}
+unsafe impl Sync for Grammar {}
+impl Grammar {
     pub fn new(language: &Language) -> Result<Self, Error> {
         let raw_language = language.clone().into_raw();
         let mut status = 0;
-        let raw = unsafe { ffi::sq_pack_context_new(raw_language.cast(), &mut status) };
+        let raw = unsafe { ffi::sq_grammar_new(raw_language.cast(), &mut status) };
         drop(unsafe { Language::from_raw(raw_language) });
         NonNull::new(raw).map(Self).ok_or_else(|| error(status))
     }
 
-    /// Reconstruct costly grammar-derived tables from bytes produced by
-    /// [`Self::grammar_cache`]. Other lookup tables are still read from the language.
-    pub fn from_grammar_cache(language: &Language, grammar_cache: &[u8]) -> Result<Self, Error> {
+    /// Restore a dictionary produced by [`Self::cache`] for the exact same
+    /// grammar/runtime, copying directly from the supplied bytes.
+    /// Other lookup tables are derived from the language. Invalid bytes fail;
+    /// callers may fall back to [`Self::new`].
+    pub fn from_cache(language: &Language, bytes: &[u8]) -> Result<Self, Error> {
         let raw_language = language.clone().into_raw();
         let mut status = 0;
         let raw = unsafe {
-            ffi::sq_pack_context_new_with_grammar_cache(
+            ffi::sq_grammar_new_with_cache(
                 raw_language.cast(),
-                grammar_cache.as_ptr().cast(),
-                grammar_cache.len(),
+                bytes.as_ptr().cast(),
+                bytes.len(),
                 &mut status,
             )
         };
@@ -132,24 +136,64 @@ impl PackContext {
         NonNull::new(raw).map(Self).ok_or_else(|| error(status))
     }
 
-    /// Serialize only the parse-table-derived dictionary. Most grammars return
-    /// an empty vector because their direct supertype masks need no dictionary.
-    pub fn grammar_cache(&self) -> Result<Vec<u8>, Error> {
-        let size = unsafe { ffi::sq_pack_context_grammar_cache_size(self.0.as_ptr()) as usize };
+    pub fn language(&self) -> Language {
+        unsafe {
+            let language = std::mem::ManuallyDrop::new(Language::from_raw(
+                ffi::sq_grammar_language(self.0.as_ptr()).cast(),
+            ));
+            Language::clone(&language)
+        }
+    }
+
+    /// Serialize the costly dictionary. Grammars with at most eight supertypes
+    /// return an empty vector.
+    pub fn cache(&self) -> Result<Vec<u8>, Error> {
+        let size = unsafe { ffi::sq_grammar_cache_size(self.0.as_ptr()) as usize };
         if size == 0 {
             return Ok(Vec::new());
         }
-        let mut result = vec![0; size];
+        let mut bytes = vec![0; size];
         let mut status = 0;
         let ok = unsafe {
-            ffi::sq_pack_context_copy_grammar_cache(
+            ffi::sq_grammar_copy_cache(
                 self.0.as_ptr(),
-                result.as_mut_ptr().cast(),
+                bytes.as_mut_ptr().cast(),
                 size,
                 &mut status,
             )
         };
-        ok.then_some(result).ok_or_else(|| error(status))
+        ok.then_some(bytes).ok_or_else(|| error(status))
+    }
+}
+impl Clone for Grammar {
+    fn clone(&self) -> Self {
+        unsafe {
+            ffi::sq_grammar_copy(self.0.as_ptr());
+        }
+        Self(self.0)
+    }
+}
+impl Drop for Grammar {
+    fn drop(&mut self) {
+        unsafe { ffi::sq_grammar_delete(self.0.as_ptr()) }
+    }
+}
+
+/// Reusable worker-local packing scratch retaining a prepared grammar.
+/// Output trees do not borrow the context. Separate contexts can share a grammar.
+pub struct PackContext(NonNull<c_void>);
+// Moving exclusively owned scratch is safe; shared concurrent use is not.
+unsafe impl Send for PackContext {}
+impl PackContext {
+    pub fn new(grammar: &Grammar) -> Result<Self, Error> {
+        let mut status = 0;
+        let raw = unsafe { ffi::sq_pack_context_new(grammar.0.as_ptr(), &mut status) };
+        NonNull::new(raw).map(Self).ok_or_else(|| error(status))
+    }
+
+    /// Switch grammars without discarding scratch allocations.
+    pub fn set_grammar(&mut self, grammar: &Grammar) {
+        unsafe { ffi::sq_pack_context_set_grammar(self.0.as_ptr(), grammar.0.as_ptr()) }
     }
 
     pub fn pack(&mut self, tree: &tree_sitter::Tree) -> Result<Tree, Error> {
@@ -190,9 +234,9 @@ impl Drop for PackContext {
 ///
 /// ```compile_fail
 /// use tree_sitter_squatter::{BorrowedTree, Tree};
-/// fn dangling(language: &tree_sitter::Language) -> BorrowedTree<'static> {
+/// fn dangling(grammar: &tree_sitter_squatter::Grammar) -> BorrowedTree<'static> {
 ///     let bytes = vec![0u8; 128];
-///     Tree::from_bytes_borrowed(language, &bytes).unwrap()
+///     Tree::from_bytes_borrowed(grammar, &bytes).unwrap()
 /// }
 /// ```
 pub struct BorrowedTree<'a> {
@@ -223,8 +267,8 @@ pub unsafe trait StableSlab: Send + Sync + 'static {
 ///
 /// ```compile_fail
 /// use tree_sitter_squatter::{Node, StableSlab, Tree};
-/// fn dangling(language: &tree_sitter::Language, owner: impl StableSlab) -> Node<'static> {
-///     Tree::from_owned_slab(language, owner).unwrap().root_node()
+/// fn dangling(grammar: &tree_sitter_squatter::Grammar, owner: impl StableSlab) -> Node<'static> {
+///     Tree::from_owned_slab(grammar, owner).unwrap().root_node()
 /// }
 /// ```
 pub struct BackedTree {
@@ -237,11 +281,10 @@ impl BackedTree {
     pub fn detach(&self) -> Result<Tree, Error> {
         let bytes = self.as_bytes();
         let mut status = 0;
-        // This descriptor keeps its language and storage alive throughout the
-        // call; the new native descriptor independently retains the language.
+        // The new descriptor independently retains this tree's prepared grammar.
         let raw = unsafe {
             ffi::sq_tree_from_bytes_safety_checked(
-                ffi::sq_tree_language(self.tree.0.as_ptr()),
+                ffi::sq_tree_grammar(self.tree.0.as_ptr()),
                 bytes.as_ptr().cast(),
                 bytes.len(),
                 &mut status,
@@ -264,66 +307,35 @@ impl Tree {
     /// Safety-validates an aligned slab and retains its owner without copying.
     /// Misaligned input returns `Error::InvalidArgument`. On failure the owner
     /// is dropped. No lifetime extension or exposed raw descriptor is involved.
-    pub fn from_owned_slab(
-        language: &Language,
-        owner: impl StableSlab,
-    ) -> Result<BackedTree, Error> {
-        Self::from_owned_slab_impl(language, owner, None)
-    }
-
-    /// As [`Self::from_owned_slab`], reconstructing the wide-supertype
-    /// dictionary from its separately persisted cache.
-    pub fn from_owned_slab_with_grammar_cache(
-        language: &Language,
-        owner: impl StableSlab,
-        grammar_cache: &[u8],
-    ) -> Result<BackedTree, Error> {
-        Self::from_owned_slab_impl(language, owner, Some(grammar_cache))
-    }
-
-    fn from_owned_slab_impl(
-        language: &Language,
-        owner: impl StableSlab,
-        grammar_cache: Option<&[u8]>,
-    ) -> Result<BackedTree, Error> {
-        let raw_language = language.clone().into_raw();
+    pub fn from_owned_slab(grammar: &Grammar, owner: impl StableSlab) -> Result<BackedTree, Error> {
         let bytes = owner.bytes();
         let mut status = 0;
         let raw = unsafe {
-            match grammar_cache {
-                Some(cache) => ffi::sq_tree_from_bytes_borrowed_safety_checked_with_grammar_cache(
-                    raw_language.cast(),
-                    bytes.as_ptr().cast(),
-                    bytes.len(),
-                    cache.as_ptr().cast(),
-                    cache.len(),
-                    &mut status,
-                ),
-                None => ffi::sq_tree_from_bytes_borrowed_safety_checked(
-                    raw_language.cast(),
-                    bytes.as_ptr().cast(),
-                    bytes.len(),
-                    &mut status,
-                ),
-            }
+            ffi::sq_tree_from_bytes_borrowed_safety_checked(
+                grammar.0.as_ptr(),
+                bytes.as_ptr().cast(),
+                bytes.len(),
+                &mut status,
+            )
         };
-        drop(unsafe { Language::from_raw(raw_language) });
         let tree = NonNull::new(raw).map(Self).ok_or_else(|| error(status))?;
         Ok(BackedTree {
             tree,
             _owner: Box::new(owner),
         })
     }
-    pub fn pack(tree: &tree_sitter::Tree) -> Result<Self, Error> {
-        Self::pack_with_options(tree, PackOptions::default())
+    pub fn pack(grammar: &Grammar, tree: &tree_sitter::Tree) -> Result<Self, Error> {
+        Self::pack_with_options(grammar, tree, PackOptions::default())
     }
     pub fn pack_with_options(
+        grammar: &Grammar,
         tree: &tree_sitter::Tree,
         options: PackOptions,
     ) -> Result<Self, Error> {
         let mut status = 0;
         let raw = unsafe {
             ffi::sq_tree_pack(
+                grammar.0.as_ptr(),
                 tree.root_node().into_raw().tree.cast(),
                 options,
                 &mut status,
@@ -333,13 +345,15 @@ impl Tree {
     }
     /// Fresh parse followed by conversion; the parser's existing language/options apply.
     pub fn parse(
+        grammar: &Grammar,
         parser: &mut tree_sitter::Parser,
         source: impl AsRef<[u8]>,
     ) -> Result<Self, Error> {
-        Self::parse_with_options(parser, source, PackOptions::default())
+        Self::parse_with_options(grammar, parser, source, PackOptions::default())
     }
     /// Fresh parse followed by conversion with the requested slab configuration.
     pub fn parse_with_options(
+        grammar: &Grammar,
         parser: &mut tree_sitter::Parser,
         source: impl AsRef<[u8]>,
         options: PackOptions,
@@ -349,14 +363,14 @@ impl Tree {
             return Err(Error::Overflow);
         }
         let tree = parser.parse(source, None).ok_or(Error::InvalidArgument)?;
-        Self::pack_with_options(&tree, options)
+        Self::pack_with_options(grammar, &tree, options)
     }
     /// Loads a little-endian slab using the exact matching grammar.
     ///
     /// Structural validation rejects malformed data. Grammar identity is the
     /// caller's responsibility; the slab does not contain a grammar fingerprint.
-    pub fn from_bytes(language: &Language, bytes: &[u8]) -> Result<Self, Error> {
-        Self::load_bytes(language, bytes, false)
+    pub fn from_bytes(grammar: &Grammar, bytes: &[u8]) -> Result<Self, Error> {
+        Self::load_bytes(grammar, bytes, false)
     }
     /// Loads a copied slab with structural safety validation, not an integrity check.
     ///
@@ -369,34 +383,11 @@ impl Tree {
     /// Neither loader verifies agreement with source text. This entry point is
     /// intended for caches whose policy deliberately omits semantic integrity
     /// validation; it is not an unchecked or zero-copy loader.
-    pub fn from_bytes_safety_checked(language: &Language, bytes: &[u8]) -> Result<Self, Error> {
-        Self::load_bytes(language, bytes, true)
+    pub fn from_bytes_safety_checked(grammar: &Grammar, bytes: &[u8]) -> Result<Self, Error> {
+        Self::load_bytes(grammar, bytes, true)
     }
 
-    /// As [`Self::from_bytes_safety_checked`], reconstructing the
-    /// wide-supertype dictionary from its separately persisted cache.
-    pub fn from_bytes_safety_checked_with_grammar_cache(
-        language: &Language,
-        bytes: &[u8],
-        grammar_cache: &[u8],
-    ) -> Result<Self, Error> {
-        let raw_language = language.clone().into_raw();
-        let mut status = 0;
-        let raw = unsafe {
-            ffi::sq_tree_from_bytes_safety_checked_with_grammar_cache(
-                raw_language.cast(),
-                bytes.as_ptr().cast(),
-                bytes.len(),
-                grammar_cache.as_ptr().cast(),
-                grammar_cache.len(),
-                &mut status,
-            )
-        };
-        drop(unsafe { Language::from_raw(raw_language) });
-        NonNull::new(raw).map(Self).ok_or_else(|| error(status))
-    }
-    fn load_bytes(language: &Language, bytes: &[u8], safety_only: bool) -> Result<Self, Error> {
-        let raw_language = language.clone().into_raw();
+    fn load_bytes(grammar: &Grammar, bytes: &[u8], safety_only: bool) -> Result<Self, Error> {
         let mut status = 0;
         let load = if safety_only {
             ffi::sq_tree_from_bytes_safety_checked
@@ -405,13 +396,12 @@ impl Tree {
         };
         let raw = unsafe {
             load(
-                raw_language.cast(),
+                grammar.0.as_ptr(),
                 bytes.as_ptr().cast(),
                 bytes.len(),
                 &mut status,
             )
         };
-        drop(unsafe { Language::from_raw(raw_language) });
         NonNull::new(raw).map(Self).ok_or_else(|| error(status))
     }
     /// Validates without copying bytes, using the exact matching grammar.
@@ -420,20 +410,18 @@ impl Tree {
     /// Misaligned input returns `Error::InvalidArgument`; `from_bytes` accepts
     /// arbitrary alignment by copying. Only the runtime descriptor is owned.
     pub fn from_bytes_borrowed<'a>(
-        language: &Language,
+        grammar: &Grammar,
         bytes: &'a [u8],
     ) -> Result<BorrowedTree<'a>, Error> {
-        let raw_language = language.clone().into_raw();
         let mut status = 0;
         let raw = unsafe {
             ffi::sq_tree_from_bytes_borrowed(
-                raw_language.cast(),
+                grammar.0.as_ptr(),
                 bytes.as_ptr().cast(),
                 bytes.len(),
                 &mut status,
             )
         };
-        drop(unsafe { Language::from_raw(raw_language) });
         let tree = NonNull::new(raw).map(Self).ok_or_else(|| error(status))?;
         Ok(BorrowedTree {
             tree,
@@ -978,24 +966,31 @@ mod ffi {
     unsafe extern "C" {
         pub fn sq_error_string(error: i32) -> *const c_char;
         pub fn sq_tree_pack(
+            grammar: *mut c_void,
             tree: *const c_void,
             options: PackOptions,
             error: *mut i32,
         ) -> *mut c_void;
-        pub fn sq_pack_context_new(language: *const c_void, error: *mut i32) -> *mut c_void;
-        pub fn sq_pack_context_new_with_grammar_cache(
+        pub fn sq_pack_context_new(grammar: *mut c_void, error: *mut i32) -> *mut c_void;
+        pub fn sq_pack_context_set_grammar(context: *mut c_void, grammar: *mut c_void);
+        pub fn sq_grammar_new(language: *const c_void, error: *mut i32) -> *mut c_void;
+        pub fn sq_grammar_new_with_cache(
             language: *const c_void,
-            grammar_cache: *const c_void,
-            grammar_cache_length: usize,
+            bytes: *const c_void,
+            length: usize,
             error: *mut i32,
         ) -> *mut c_void;
-        pub fn sq_pack_context_grammar_cache_size(context: *const c_void) -> u32;
-        pub fn sq_pack_context_copy_grammar_cache(
-            context: *const c_void,
-            destination: *mut c_void,
+        pub fn sq_grammar_copy(grammar: *mut c_void) -> *mut c_void;
+        pub fn sq_grammar_delete(grammar: *mut c_void);
+        pub fn sq_grammar_language(grammar: *const c_void) -> *const c_void;
+        pub fn sq_grammar_cache_size(grammar: *const c_void) -> u32;
+        pub fn sq_grammar_copy_cache(
+            grammar: *const c_void,
+            bytes: *mut c_void,
             length: usize,
             error: *mut i32,
         ) -> bool;
+        pub fn sq_tree_grammar(tree: *const c_void) -> *mut c_void;
         pub fn sq_pack_context_pack(
             context: *mut c_void,
             tree: *const c_void,
@@ -1005,43 +1000,27 @@ mod ffi {
         pub fn sq_pack_context_trim(context: *mut c_void);
         pub fn sq_pack_context_delete(context: *mut c_void);
         pub fn sq_tree_from_bytes(
-            language: *const c_void,
+            grammar: *mut c_void,
             bytes: *const c_void,
             length: usize,
             error: *mut i32,
         ) -> *mut c_void;
         pub fn sq_tree_from_bytes_borrowed(
-            language: *const c_void,
+            grammar: *mut c_void,
             bytes: *const c_void,
             length: usize,
             error: *mut i32,
         ) -> *mut c_void;
         pub fn sq_tree_from_bytes_safety_checked(
-            language: *const c_void,
+            grammar: *mut c_void,
             bytes: *const c_void,
             length: usize,
-            error: *mut i32,
-        ) -> *mut c_void;
-        pub fn sq_tree_from_bytes_safety_checked_with_grammar_cache(
-            language: *const c_void,
-            bytes: *const c_void,
-            length: usize,
-            grammar_cache: *const c_void,
-            grammar_cache_length: usize,
             error: *mut i32,
         ) -> *mut c_void;
         pub fn sq_tree_from_bytes_borrowed_safety_checked(
-            language: *const c_void,
+            grammar: *mut c_void,
             bytes: *const c_void,
             length: usize,
-            error: *mut i32,
-        ) -> *mut c_void;
-        pub fn sq_tree_from_bytes_borrowed_safety_checked_with_grammar_cache(
-            language: *const c_void,
-            bytes: *const c_void,
-            length: usize,
-            grammar_cache: *const c_void,
-            grammar_cache_length: usize,
             error: *mut i32,
         ) -> *mut c_void;
         pub fn sq_tree_repack(tree: *const c_void, error: *mut i32) -> *mut c_void;
@@ -1060,7 +1039,6 @@ mod ffi {
             length: usize,
             error: *mut i32,
         ) -> bool;
-        pub fn sq_tree_language(tree: *const c_void) -> *const c_void;
         pub fn sq_tree_delete(tree: *mut c_void);
         pub fn sq_tree_root_node(tree: *const c_void) -> RawNode;
         pub fn sq_tree_node_at_slot(tree: *const c_void, slot: u32) -> RawNode;

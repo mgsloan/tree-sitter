@@ -13,36 +13,42 @@ see [query provenance and scope](QUERY_PROVENANCE.md).
 SQError error;
 SQPackOptions options = sq_pack_options_default();
 options.repack = true;
-SQTree *packed = sq_tree_pack(parsed_tree, options, &error);
+SQGrammar *grammar = sq_grammar_new(ts_tree_language(parsed_tree), &error);
+if (!grammar) return;
+SQTree *packed = sq_tree_pack(grammar, parsed_tree, options, &error);
 if (packed) {
   SQNode root = sq_tree_root_node(packed);
-  // packed retains its language and does not retain parsed_tree
+  // packed retains its grammar and does not retain parsed_tree
   uint32_t node_count = sq_node_descendant_count(root);
   (void)node_count;
   sq_tree_delete(packed);
 }
+sq_grammar_delete(grammar);
 ```
 
 `make -C lib/squat` builds the static library and C comparison executable.
 Link the library before mainline Tree-sitter. Public declarations are in
 [`include/tree_sitter/squat.h`](include/tree_sitter/squat.h).
 
-For batches using one grammar, create an `SQPackContext` with
-`sq_pack_context_new(language, &error)` and call
-`sq_pack_context_pack(context, parsed_tree, options, &error)`. It retains the
-language, grammar lookup tables, and scratch allocations across files. Direct
-fields are cached per production, avoiding repeated field-map scans and scratch
-clearing in frames and hidden-wrapper descent. One-shot packing keeps its local
-field scratch to avoid preparing a whole grammar for a tiny tree. Each call
-resets traversal state, including after an error; a tree from another language
-is rejected with `SQ_ERROR_LANGUAGE`. Output trees own their storage and remain
-valid after context reuse, trimming, or deletion. `sq_pack_context_trim(context)`
-releases high-water scratch while keeping grammar tables; finish with
-`sq_pack_context_delete(context)`. Use separate contexts for concurrent calls,
-and keep native grammar libraries loaded while any context or tree uses them.
-The original `sq_tree_pack` remains available for independent conversions.
-Historical measurements record the retained cache and the rejected
-position-calculation alternatives.
+Prepare an `SQGrammar` once and retain it between batches. It owns immutable
+symbol, supertype, and direct-field lookup tables. `sq_grammar_copy` shares the
+handle using atomic reference counting; `sq_grammar_delete` releases it. There is
+no global grammar registry or lookup on packing/loading. Native grammar libraries
+must remain loaded while any prepared grammar, context, or tree uses them.
+
+Create worker-local scratch with `sq_pack_context_new(grammar, &error)` and pack
+with `sq_pack_context_pack(context, parsed_tree, options, &error)`. Separate
+contexts can read the same grammar concurrently. `sq_pack_context_set_grammar`
+switches grammars without discarding scratch; `sq_pack_context_trim` releases
+scratch while retaining the grammar. Output trees retain the shared metadata and
+remain valid after context reuse or deletion. One-shot `sq_tree_pack` also takes
+a prepared grammar. Slab loaders take that same handle.
+
+Only the costly supertype dictionary is serialized by `sq_grammar_copy_cache`.
+`sq_grammar_new_with_cache` restores it, copying directly from the supplied bytes;
+other tables are derived from the language. Invalid dictionaries return an error.
+The caller may fall back to `sq_grammar_new`. Rust exposes these operations through
+`Grammar::new`, `Grammar::from_cache`, `Grammar::cache`, and `Clone`.
 
 `context-check` checks output equality, reuse, trimming, and ownership; setting
 `CONTEXT_FAILURES=1` also injects failure at every pack allocation and checks
@@ -165,20 +171,21 @@ the experimental alignment build); auxiliary sections remain eight-byte aligned.
 Slabs and grammar caches are little-endian on all hosts, including 32-bit hosts.
 Existing little-endian slabs are unchanged; old native big-endian slabs are rejected.
 
-Each newly packed tree has one private allocation: runtime descriptor, supertype metadata,
-alignment padding, then the persisted slab. `sq_tree_data` / Rust `as_bytes`
+Each newly packed tree has one private allocation: runtime descriptor, alignment
+padding, then the persisted slab. Grammar tables are shared through its retained
+prepared handle. `sq_tree_data` / Rust `as_bytes`
 returns only the persisted suffix. Builder growth can relocate this allocation;
 public trees and handles are immutable. `sq_tree_repack` returns an independent
 colocated compact copy with the same physical slot IDs.
 
 Up to eight supertypes use direct byte masks without a dictionary lookup. Larger
 supertype sets use a deterministic dictionary derived from the compiled grammar,
-shared by trees and contexts for that language. IDs are sorted by mask, independent
+shared by trees and contexts using the same prepared grammar. IDs are sorted by mask, independent
 of conversion order. The dictionary selects 8- or 16-bit indexes upfront and is
-not stored in each slab. Loading derives it from the matching grammar and checks
-the header count/width. Grammar analysis returns `SQ_ERROR_DICTIONARY_FULL` if its
-conservative mask set exceeds 65,536 entries. Retaining a packing context keeps
-the cache warm even when no trees remain; trimming keeps this immutable metadata.
+not stored in each slab. Loading uses the prepared dictionary and checks the
+header count/width. Grammar analysis returns `SQ_ERROR_DICTIONARY_FULL` if its
+conservative mask set exceeds 65,536 entries. Retaining the grammar handle keeps
+its tables available even when no trees or contexts remain.
 Analysis distinguishes nonterminal extras from ordinary recursive gotos and only
 explores hidden definitions reachable from supertypes or hidden extras. Unary
 productions avoid building the full predecessor graph. Version 9 rejects older

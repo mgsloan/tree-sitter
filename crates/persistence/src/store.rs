@@ -40,11 +40,15 @@ mod tests {
         let language = unsafe {
             tree_sitter::Language::from_raw(tree_sitter_json::LANGUAGE.into_raw()().cast())
         };
-        let grammar = Grammar::new(language.clone(), GrammarFingerprint([42; 32]));
+        let grammar = Grammar::new(
+            tree_sitter_squatter::Grammar::new(&language).unwrap(),
+            GrammarFingerprint([42; 32]),
+        );
         let mut parser = tree_sitter::Parser::new();
         parser.set_language(&language).unwrap();
         let native = parser.parse(b"[1]", None).unwrap();
         let tree = tree_sitter_squatter::Tree::pack_with_options(
+            &grammar.prepared,
             &native,
             tree_sitter_squatter::PackOptions {
                 initial_group_capacity: 128,
@@ -83,7 +87,7 @@ mod tests {
         assert!(
             store
                 .grammars
-                .get(&before, &crate::identity::grammar_key(&grammar))
+                .get(&before, &crate::identity::grammar_key(grammar.fingerprint))
                 .unwrap()
                 .is_none()
         );
@@ -133,7 +137,7 @@ mod tests {
         assert_eq!(
             store
                 .grammars
-                .get(&after, &crate::identity::grammar_key(&grammar))
+                .get(&after, &crate::identity::grammar_key(grammar.fingerprint))
                 .unwrap(),
             Some([].as_slice())
         );
@@ -200,11 +204,14 @@ mod tests {
         let language = unsafe {
             tree_sitter::Language::from_raw(tree_sitter_c_sharp::LANGUAGE.into_raw()().cast())
         };
-        let grammar = Grammar::new(language.clone(), GrammarFingerprint([7; 32]));
+        let grammar = Grammar::new(
+            tree_sitter_squatter::Grammar::new(&language).unwrap(),
+            GrammarFingerprint([7; 32]),
+        );
         let mut parser = tree_sitter::Parser::new();
         parser.set_language(&language).unwrap();
         let native = parser.parse(b"class C {}", None).unwrap();
-        let tree = tree_sitter_squatter::Tree::pack(&native).unwrap();
+        let tree = tree_sitter_squatter::Tree::pack(&grammar.prepared, &native).unwrap();
         let request = Request::new(b"test.cs".to_vec(), b"class C {}", &grammar, true, true);
         store
             .publish(&request, b"class C {}", &tree, &grammar, || false)
@@ -213,12 +220,31 @@ mod tests {
         assert!(!expected.is_empty());
         drop(tree);
 
-        let persisted = store.grammar_cache(&grammar).unwrap();
-        assert_eq!(persisted, expected);
-        let context =
-            tree_sitter_squatter::PackContext::from_grammar_cache(&language, &persisted).unwrap();
-        assert_eq!(context.grammar_cache().unwrap(), expected);
+        let restored = store
+            .prepare_grammar(&language, grammar.fingerprint)
+            .unwrap();
+        assert_eq!(restored.cache().unwrap(), expected);
         assert!(store.get(&request, b"class C {}", &grammar).is_some());
+        let mut tx = store.env.write_txn().unwrap();
+        store
+            .grammars
+            .put(
+                &mut tx,
+                &crate::identity::grammar_key(grammar.fingerprint),
+                b"invalid",
+            )
+            .unwrap();
+        tx.commit().unwrap();
+        assert!(
+            store
+                .prepare_grammar(&language, grammar.fingerprint)
+                .is_none()
+        );
+        let persistence = crate::Persistence::open(root.path(), crate::Options::default()).unwrap();
+        let rebuilt = persistence
+            .prepare_grammar(&language, grammar.fingerprint)
+            .unwrap();
+        assert_eq!(rebuilt.prepared.cache().unwrap(), expected);
     }
 }
 
@@ -471,19 +497,11 @@ impl Store {
         {
             return None;
         }
-        let grammar_cache = self
-            .grammars
-            .get(&tx, &crate::identity::grammar_key(grammar))
-            .ok()??;
         let value = self.trees.get(&tx, &request.tree_key).ok()??;
         let slab = request.decode(value)?;
         // Safety validation does not reconstruct auxiliary index membership.
-        let tree = tree_sitter_squatter::Tree::from_bytes_safety_checked_with_grammar_cache(
-            &grammar.language,
-            slab,
-            grammar_cache,
-        )
-        .ok()?;
+        let tree =
+            tree_sitter_squatter::Tree::from_bytes_safety_checked(&grammar.prepared, slab).ok()?;
         if tree.has_points() != request.points
             || tree
                 .root_node()
@@ -495,14 +513,17 @@ impl Store {
         Some(tree)
     }
 
-    pub fn grammar_cache(&self, grammar: &Grammar) -> Option<Vec<u8>> {
+    pub fn prepare_grammar(
+        &self,
+        language: &tree_sitter::Language,
+        fingerprint: crate::GrammarFingerprint,
+    ) -> Option<tree_sitter_squatter::Grammar> {
         let tx = self.env.read_txn().ok()?;
-        Some(
-            self.grammars
-                .get(&tx, &crate::identity::grammar_key(grammar))
-                .ok()??
-                .to_vec(),
-        )
+        let bytes = self
+            .grammars
+            .get(&tx, &crate::identity::grammar_key(fingerprint))
+            .ok()??;
+        tree_sitter_squatter::Grammar::from_cache(language, bytes).ok()
     }
 
     pub fn publish(
@@ -555,7 +576,7 @@ impl Store {
             })?;
         self.grammars.put(
             &mut tx,
-            &crate::identity::grammar_key(grammar),
+            &crate::identity::grammar_key(grammar.fingerprint),
             &grammar_cache,
         )?;
         self.current

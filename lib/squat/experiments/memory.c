@@ -179,6 +179,10 @@ int main(int argc, char **argv) {
       (const TSLanguage *(*)(void))dlsym(library, argv[2]);
   require(language_function != NULL, "grammar symbol missing");
   const TSLanguage *language = language_function();
+  // Shared grammar tables are excluded from per-tree allocation measurements.
+  SQError grammar_error;
+  SQGrammar *grammar = sq_grammar_new(language, &grammar_error);
+  if (!grammar) return 1;
   FILE *file = fopen(argv[3], "rb");
   require(file && !fseek(file, 0, SEEK_END), "cannot open source");
   long length = ftell(file);
@@ -217,7 +221,7 @@ int main(int argc, char **argv) {
     options.repack = compact;
     options.initial_group_capacity = initial_capacity;
     SQError error;
-    SQTree *tree = sq_tree_pack(parsed, options, &error);
+    SQTree *tree = sq_tree_pack(grammar, parsed, options, &error);
     require(tree != NULL, sq_error_string(error));
     Usage retained = difference(live, mainline);
     packed_usage[compact] = retained;
@@ -226,7 +230,7 @@ int main(int argc, char **argv) {
             "packed node count differs");
 
     // Cross-check the retained allocation tracker against the actual owners.
-    size_t expected = sq_runtime_size(language) + tree->size;
+    size_t expected = sq_runtime_size() + tree->size;
     expected = (expected + SQ_COLUMN_ALIGNMENT - 1) & ~(size_t)(SQ_COLUMN_ALIGNMENT - 1);
     require(tree->storage == SQ_STORAGE_COLOCATED && retained.requested == expected &&
                 retained.allocations == 1,
@@ -256,7 +260,7 @@ int main(int argc, char **argv) {
     options.repack = compact;
     options.initial_group_capacity = initial_capacity;
     SQError error;
-    SQTree *tree = sq_tree_parse(parser, source, (uint32_t)length, options, &error);
+    SQTree *tree = sq_tree_parse(grammar, parser, source, (uint32_t)length, options, &error);
     require(tree != NULL, sq_error_string(error));
     ts_parser_delete(parser);
     require(live.requested == packed_usage[compact].requested &&
@@ -271,6 +275,7 @@ int main(int argc, char **argv) {
   tracking = false;
   puts(",\"cleanup_zero\":true}");
   __real_free(source);
+  sq_grammar_delete(grammar);
   dlclose(library);
   return 0;
 }

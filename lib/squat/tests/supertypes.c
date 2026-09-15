@@ -27,7 +27,9 @@ static void exercise(uint32_t count, bool repack) {
   supertype_fixture(&fixture, 9, true);
   TSLanguage language = fixture.language;
   SQError error;
-  Builder builder = {.tree = sq_allocate(&language, 1, true, &error), .words = 1,
+  SQGrammar *grammar = sq_grammar_new(&language, &error);
+  assert(grammar);
+  Builder builder = {.tree = sq_allocate(grammar, 1, true, &error), .words = 1,
                      .language = &language, .symbol_count = 11, .symbol_space = 13,
                      .error = &error};
   assert(builder.tree);
@@ -58,21 +60,21 @@ static void exercise(uint32_t count, bool repack) {
   check_tree(builder.tree, slots, count);
   uint32_t length;
   const void *bytes = sq_tree_data(builder.tree, &length);
-  SQTree *copy = sq_tree_from_bytes(&language, bytes, length, &error);
+  SQTree *copy = sq_tree_from_bytes(grammar, bytes, length, &error);
   assert(copy && error == SQ_OK);
   check_tree(copy, slots, count);
-  SQTree *borrowed = sq_tree_from_bytes_borrowed(&language, bytes, length, &error);
+  SQTree *borrowed = sq_tree_from_bytes_borrowed(grammar, bytes, length, &error);
   assert(borrowed && error == SQ_OK);
   check_tree(borrowed, slots, count);
   sq_tree_delete(borrowed);
   assert(copy->supertype_grammar == builder.tree->supertype_grammar);
   // Reject widths inconsistent with the dictionary count, and oversized counts.
   sq_header_set(builder.tree, format_flags, sq_header_get(builder.tree, format_flags) ^ SQ_WIDE_SUPERTYPES);
-  assert(!sq_tree_from_bytes(&language, bytes, length, &error));
+  assert(!sq_tree_from_bytes(grammar, bytes, length, &error));
   assert(error == SQ_ERROR_INVALID_SLAB);
   sq_header_set(builder.tree, format_flags, sq_header_get(builder.tree, format_flags) ^ SQ_WIDE_SUPERTYPES);
   sq_header_set(builder.tree, supertype_dictionary_count, 65537);
-  assert(!sq_tree_from_bytes(&language, bytes, length, &error));
+  assert(!sq_tree_from_bytes(grammar, bytes, length, &error));
   assert(error == SQ_ERROR_INVALID_SLAB);
   sq_tree_delete(builder.tree);
   check_tree(copy, slots, count);
@@ -85,16 +87,18 @@ static void exercise(uint32_t count, bool repack) {
   assert(grammar_cache &&
          sq_tree_copy_grammar_cache(copy, grammar_cache, grammar_cache_size, &error));
   sq_tree_delete(copy);
-  // No live context/tree remains. Loading must reconstruct exactly the same IDs.
-  copy = sq_tree_from_bytes_safety_checked_with_grammar_cache(
-      &language, saved, length, grammar_cache, grammar_cache_size, &error);
+  sq_grammar_delete(grammar);
+  grammar = sq_grammar_new_with_cache(&language, grammar_cache, grammar_cache_size, &error);
+  assert(grammar);
+  copy = sq_tree_from_bytes_safety_checked(grammar, saved, length, &error);
   assert(copy);
   check_tree(copy, slots, count);
   sq_tree_delete(copy);
-  copy = sq_tree_from_bytes(&language, saved, length, &error);
+  copy = sq_tree_from_bytes(grammar, saved, length, &error);
   assert(copy);
   check_tree(copy, slots, count);
   sq_tree_delete(copy);
+  sq_grammar_delete(grammar);
   free(grammar_cache);
   free(saved);
 }
@@ -106,7 +110,9 @@ static void direct_mask_tests(void) {
     supertype_fixture(&fixture, bits, true);
     const TSLanguage *language = &fixture.language;
     SQError error;
-    Builder builder = {.tree = sq_allocate(language, 1, true, &error), .words = 1,
+    SQGrammar *grammar = sq_grammar_new(language, &error);
+    assert(grammar);
+    Builder builder = {.tree = sq_allocate(grammar, 1, true, &error), .words = 1,
                        .language = language, .small_supertypes = true,
                        .symbol_count = language->symbol_count,
                        .symbol_space = language->symbol_count + 2, .error = &error};
@@ -129,8 +135,8 @@ static void direct_mask_tests(void) {
       assert(sq_resize(&builder.tree, groups + (pass == 1 ? 17 : 0), &error));
       uint32_t length;
       const void *bytes = sq_tree_data(builder.tree, &length);
-      SQTree *copy = sq_tree_from_bytes(language, bytes, length, &error);
-      SQTree *borrowed = sq_tree_from_bytes_borrowed(language, bytes, length, &error);
+      SQTree *copy = sq_tree_from_bytes(grammar, bytes, length, &error);
+      SQTree *borrowed = sq_tree_from_bytes_borrowed(grammar, bytes, length, &error);
       assert(copy && borrowed);
       SQTree *trees[] = {builder.tree, copy, borrowed};
       for (unsigned t = 0; t < 3; t++) {
@@ -148,6 +154,7 @@ static void direct_mask_tests(void) {
       sq_tree_delete(borrowed);
     }
     sq_tree_delete(builder.tree);
+    sq_grammar_delete(grammar);
   }
 }
 
@@ -155,47 +162,46 @@ static void dictionary_tests(void) {
   SQError error = SQ_OK;
   SupertypeFixture fixture;
   supertype_fixture(&fixture, 9, true);
-  SQPackContext *context = sq_pack_context_new(&fixture.language, &error);
+  SQGrammar *grammar = sq_grammar_new(&fixture.language, &error);
+  assert(grammar);
+  SQPackContext *context = sq_pack_context_new(grammar, &error);
   assert(context);
-  SQSupertypeGrammar *first = sq_supertype_grammar_acquire(&fixture.language, 9, &error);
-  assert(first && first == context->supertype_grammar && first->count == 512);
+  SQSupertypeGrammar *first = grammar->supertype_grammar;
+  assert(first && first == context->grammar->supertype_grammar && first->count == 512);
   sq_pack_context_trim(context);
   for (uint64_t mask = 0; mask < 512; mask++) assert(sq_supertype_mask_id(first, &mask) == mask);
   uint64_t expected[512];
   memcpy(expected, first->masks, sizeof(expected));
-  uint32_t cache_size = sq_pack_context_grammar_cache_size(context);
+  uint32_t cache_size = sq_grammar_cache_size(grammar);
   uint8_t *cache_bytes = malloc(cache_size);
   assert(cache_size == 16 + sizeof(expected) && cache_bytes);
-  assert(sq_pack_context_copy_grammar_cache(context, cache_bytes, cache_size, &error));
+  assert(sq_grammar_copy_cache(grammar, cache_bytes, cache_size, &error));
   sq_pack_context_delete(context);
-  sq_supertype_grammar_release(first);
-  context = sq_pack_context_new_with_grammar_cache(
-      &fixture.language, cache_bytes, cache_size, &error);
-  assert(context && !memcmp(expected, context->supertype_grammar->masks, sizeof(expected)));
-  sq_pack_context_delete(context);
+  sq_grammar_delete(grammar);
+  grammar = sq_grammar_new_with_cache(&fixture.language, cache_bytes, cache_size, &error);
+  assert(grammar && !memcmp(expected, grammar->supertype_grammar->masks, sizeof(expected)));
+  sq_grammar_delete(grammar);
   cache_bytes[0] ^= 1;
-  assert(!sq_pack_context_new_with_grammar_cache(
-      &fixture.language, cache_bytes, cache_size, &error));
+  assert(!sq_grammar_new_with_cache(&fixture.language, cache_bytes, cache_size, &error));
   assert(error == SQ_ERROR_INVALID_SLAB);
   free(cache_bytes);
-  // Recompute after the last owner dies: IDs do not depend on cache history.
-  SQSupertypeGrammar *second = sq_supertype_grammar_acquire(&fixture.language, 9, &error);
+  SQSupertypeGrammar *second = sq_supertype_grammar_new(&fixture.language, 9, &error);
   assert(second && !memcmp(expected, second->masks, sizeof(expected)));
-  sq_supertype_grammar_release(second);
+  sq_supertype_grammar_delete(second);
 
   supertype_fixture(&fixture, 65, false);
-  second = sq_supertype_grammar_acquire(&fixture.language, 65, &error);
+  second = sq_supertype_grammar_new(&fixture.language, 65, &error);
   assert(second && second->count == 66 && second->words == 2);
   uint64_t mask[2] = {0, 1};
   assert(sq_supertype_mask_id(second, mask) == 65);
-  sq_supertype_grammar_release(second);
+  sq_supertype_grammar_delete(second);
 
   supertype_fixture(&fixture, 16, true);
-  second = sq_supertype_grammar_acquire(&fixture.language, 16, &error);
+  second = sq_supertype_grammar_new(&fixture.language, 16, &error);
   assert(second && second->count == 65536);
   mask[0] = 65535;
   assert(sq_supertype_mask_id(second, mask) == 65535);
-  sq_supertype_grammar_release(second);
+  sq_supertype_grammar_delete(second);
 
   // Aliases end inherited paths even when the raw child is hidden.
   supertype_fixture(&fixture, 9, true);
@@ -204,11 +210,11 @@ static void dictionary_tests(void) {
   fixture.language.max_alias_sequence_length = 1;
   fixture.language.production_id_count = 2;
   for (unsigned i = 0; i < 9; i++) fixture.actions[i + 2].action.reduce.production_id = 1;
-  second = sq_supertype_grammar_acquire(&fixture.language, 9, &error);
+  second = sq_supertype_grammar_new(&fixture.language, 9, &error);
   assert(second && second->count == 10);
   mask[0] = 3;
   assert(sq_supertype_mask_id(second, mask) == SQ_NONE);
-  sq_supertype_grammar_release(second);
+  sq_supertype_grammar_delete(second);
 
   // A visible supertype alias contributes its own bit to the raw node's children.
   supertype_fixture(&fixture, 9, false);
@@ -219,20 +225,20 @@ static void dictionary_tests(void) {
   fixture.actions[2].action.reduce.symbol = 2;
   fixture.actions[2].action.reduce.child_count = 1;
   fixture.public_symbols[2] = 3;
-  second = sq_supertype_grammar_acquire(&fixture.language, 9, &error);
+  second = sq_supertype_grammar_new(&fixture.language, 9, &error);
   assert(second && second->count == 12);
   mask[0] = 6;
   assert(sq_supertype_mask_id(second, mask) != SQ_NONE);
-  sq_supertype_grammar_release(second);
+  sq_supertype_grammar_delete(second);
   mask[0] = 3;
 
   // Ordinary recursive gotos must not make their symbols universal extras.
   supertype_fixture(&fixture, 9, false);
   fixture.table[fixture.language.symbol_count + 2] = 1;
-  second = sq_supertype_grammar_acquire(&fixture.language, 9, &error);
+  second = sq_supertype_grammar_new(&fixture.language, 9, &error);
   assert(second && second->count == 10);
   assert(sq_supertype_mask_id(second, mask) == SQ_NONE);
-  sq_supertype_grammar_release(second);
+  sq_supertype_grammar_delete(second);
   // Nonterminal extras end with a null lookahead and an EOF reduction.
   fixture.lex_modes[2].lex_state = UINT16_MAX;
   fixture.table[2 * fixture.language.symbol_count] = 1;
@@ -240,10 +246,10 @@ static void dictionary_tests(void) {
   fixture.actions[2].action.reduce.type = TSParseActionTypeReduce;
   fixture.actions[2].action.reduce.symbol = 2;
   fixture.actions[2].action.reduce.child_count = 1;
-  second = sq_supertype_grammar_acquire(&fixture.language, 9, &error);
+  second = sq_supertype_grammar_new(&fixture.language, 9, &error);
   assert(second && second->count == 18);
   assert(sq_supertype_mask_id(second, mask) != SQ_NONE);
-  sq_supertype_grammar_release(second);
+  sq_supertype_grammar_delete(second);
 
   // A hidden first child followed by a visible token uses the full backward
   // walk. Aliasing that first child must still terminate mask inheritance.
@@ -258,28 +264,28 @@ static void dictionary_tests(void) {
   fixture.actions[2].action.reduce.type = TSParseActionTypeReduce;
   fixture.actions[2].action.reduce.symbol = 2;
   fixture.actions[2].action.reduce.child_count = 2;
-  second = sq_supertype_grammar_acquire(&fixture.language, 9, &error);
+  second = sq_supertype_grammar_new(&fixture.language, 9, &error);
   assert(second && second->count == 11);
   mask[0] = 3;
   assert(sq_supertype_mask_id(second, mask) != SQ_NONE);
-  sq_supertype_grammar_release(second);
+  sq_supertype_grammar_delete(second);
   TSSymbol two_child_aliases[] = {0, 0, 1, 0};
   fixture.language.alias_sequences = two_child_aliases;
   fixture.language.max_alias_sequence_length = 2;
   fixture.language.production_id_count = 2;
   fixture.actions[2].action.reduce.production_id = 1;
-  second = sq_supertype_grammar_acquire(&fixture.language, 9, &error);
+  second = sq_supertype_grammar_new(&fixture.language, 9, &error);
   assert(second && second->count == 10);
   assert(sq_supertype_mask_id(second, mask) == SQ_NONE);
-  sq_supertype_grammar_release(second);
+  sq_supertype_grammar_delete(second);
 
   supertype_fixture(&fixture, 17, true);
-  assert(!sq_supertype_grammar_acquire(&fixture.language, 17, &error));
+  assert(!sq_supertype_grammar_new(&fixture.language, 17, &error));
   assert(error == SQ_ERROR_DICTIONARY_FULL);
 }
 
 typedef struct {
-  const TSLanguage *language;
+  SQGrammar *prepared;
   SQSupertypeGrammar *grammar;
 } ThreadArgument;
 static atomic_uint ready;
@@ -287,15 +293,15 @@ static atomic_bool release_threads;
 static void *cache_thread(void *argument) {
   ThreadArgument *arg = argument;
   SQError error;
-  SQPackContext *context = sq_pack_context_new(arg->language, &error);
+  SQPackContext *context = sq_pack_context_new(arg->prepared, &error);
   assert(context);
-  arg->grammar = context->supertype_grammar;
+  arg->grammar = context->grammar->supertype_grammar;
   atomic_fetch_add(&ready, 1);
   while (!atomic_load(&release_threads)) {}
   sq_pack_context_delete(context);
   for (unsigned i = 0; i < 8; i++) {
-    context = sq_pack_context_new(arg->language, &error);
-    assert(context && context->supertype_grammar->count == 512);
+    context = sq_pack_context_new(arg->prepared, &error);
+    assert(context && context->grammar->supertype_grammar->count == 512);
     sq_pack_context_delete(context);
   }
   return NULL;
@@ -303,16 +309,20 @@ static void *cache_thread(void *argument) {
 static void concurrent_cache(void) {
   SupertypeFixture fixture;
   supertype_fixture(&fixture, 9, true);
+  SQError error;
+  SQGrammar *prepared = sq_grammar_new(&fixture.language, &error);
+  assert(prepared);
   pthread_t threads[4];
   ThreadArgument arguments[4];
   for (unsigned i = 0; i < 4; i++) {
-    arguments[i] = (ThreadArgument){.language = &fixture.language};
+    arguments[i] = (ThreadArgument){.prepared = prepared};
     assert(!pthread_create(&threads[i], NULL, cache_thread, &arguments[i]));
   }
   while (atomic_load(&ready) != 4) {}
   for (unsigned i = 1; i < 4; i++) assert(arguments[i].grammar == arguments[0].grammar);
   atomic_store(&release_threads, true);
   for (unsigned i = 0; i < 4; i++) assert(!pthread_join(threads[i], NULL));
+  sq_grammar_delete(prepared);
 }
 
 int main(void) {

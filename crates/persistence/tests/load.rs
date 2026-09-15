@@ -17,7 +17,10 @@ fn grammar() -> Grammar {
     // grammar fingerprint. Every test pairs it with the same packaged JSON parser.
     let language =
         unsafe { tree_sitter::Language::from_raw(tree_sitter_json::LANGUAGE.into_raw()().cast()) };
-    Grammar::new(language, GrammarFingerprint([42; 32]))
+    Grammar::new(
+        tree_sitter_squatter::Grammar::new(&language).unwrap(),
+        GrammarFingerprint([42; 32]),
+    )
 }
 fn load(cache: &Persistence) -> tree_squatter_persistence::LoadedFile {
     cache
@@ -480,4 +483,68 @@ fn writer_death_releases_admission_without_stale_files() {
     assert_eq!(outcome, WriteOutcome::Busy);
     assert_eq!(write.publish().unwrap(), WriteOutcome::Published);
     assert!(load(&cache).cache_hit());
+}
+
+#[test]
+fn worker_context_switches_grammars_and_loads_restored_dictionary() {
+    use tree_squatter_persistence::{LoadContext, LoadStep};
+    let root = tempfile::tempdir().unwrap();
+    fs::write(root.path().join("input.json"), "[1, 2]").unwrap();
+    fs::write(root.path().join("input.cs"), "class C { int x; }").unwrap();
+    let cache = Persistence::open(root.path(), Options::default()).unwrap();
+    let json_language =
+        unsafe { tree_sitter::Language::from_raw(tree_sitter_json::LANGUAGE.into_raw()().cast()) };
+    let c_sharp_language = unsafe {
+        tree_sitter::Language::from_raw(tree_sitter_c_sharp::LANGUAGE.into_raw()().cast())
+    };
+    let json = cache
+        .prepare_grammar(&json_language, GrammarFingerprint([42; 32]))
+        .unwrap();
+    let c_sharp = cache
+        .prepare_grammar(&c_sharp_language, GrammarFingerprint([43; 32]))
+        .unwrap();
+    let mut context = LoadContext::default();
+    for _ in 0..3 {
+        for (grammar, path, kind) in [
+            (&json, "input.json", "document"),
+            (&c_sharp, "input.cs", "compilation_unit"),
+        ] {
+            let result = cache
+                .load_with_context(
+                    Path::new(path),
+                    grammar,
+                    &mut context,
+                    LoadOptions {
+                        write: WritePolicy::Disabled,
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+            assert!(!result.file.cache_hit());
+            assert_eq!(result.file.tree().root_node().kind(), kind);
+            assert!(!result.file.tree().root_node().has_error());
+        }
+    }
+    context.trim();
+    let result = cache
+        .load_step_with_context(
+            Path::new("input.cs"),
+            &c_sharp,
+            &mut context,
+            LoadOptions::default(),
+        )
+        .unwrap();
+    assert!(matches!(result, LoadStep::Ready(_)));
+    let restored = cache
+        .prepare_grammar(&c_sharp_language, GrammarFingerprint([43; 32]))
+        .unwrap();
+    let hit = cache
+        .load_with_context(
+            Path::new("input.cs"),
+            &restored,
+            &mut context,
+            LoadOptions::default(),
+        )
+        .unwrap();
+    assert!(hit.file.cache_hit());
 }

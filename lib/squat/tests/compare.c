@@ -414,14 +414,14 @@ static void compare_tree(const TSTree *tree, const SQTree *packed, bool exhausti
 
 static void reject_index_mutation(const SQTree *tree, uint8_t *bytes) {
   SQError error;
-  CHECK(!sq_tree_from_bytes(tree->language, bytes, tree->size, &error) &&
+  CHECK(!sq_tree_from_bytes(tree->grammar, bytes, tree->size, &error) &&
         error == SQ_ERROR_INVALID_SLAB);
-  CHECK(!sq_tree_from_bytes_borrowed(tree->language, bytes, tree->size, &error) &&
+  CHECK(!sq_tree_from_bytes_borrowed(tree->grammar, bytes, tree->size, &error) &&
         error == SQ_ERROR_INVALID_SLAB);
-  SQTree *safety = sq_tree_from_bytes_safety_checked(tree->language, bytes, tree->size, &error);
+  SQTree *safety = sq_tree_from_bytes_safety_checked(tree->grammar, bytes, tree->size, &error);
   CHECK(safety && error == SQ_OK);
   SQTree *borrowed =
-      sq_tree_from_bytes_borrowed_safety_checked(tree->language, bytes, tree->size, &error);
+      sq_tree_from_bytes_borrowed_safety_checked(tree->grammar, bytes, tree->size, &error);
   CHECK(borrowed && error == SQ_OK && borrowed->data == bytes);
   sq_tree_delete(borrowed);
   // Mutated auxiliary values are data, not addresses. Exercise both modes with
@@ -577,23 +577,25 @@ static void exercise(const TSLanguage *language, const char *source, uint32_t le
   TSTree *tree = ts_parser_parse_string(parser, NULL, source, length);
   CHECK(tree);
   SQError error;
+  SQGrammar *grammar = sq_grammar_new(language, &error);
+  CHECK(grammar);
   SQPackOptions options = sq_pack_options_default();
   options.initial_group_capacity = 1;
-  SQTree *packed = sq_tree_pack(tree, options, &error);
+  SQTree *packed = sq_tree_pack(grammar, tree, options, &error);
   if (!packed) {
     fprintf(stderr, "pack: %s\n", sq_error_string(error));
   }
 
   CHECK(packed && error == SQ_OK);
   CHECK(packed->storage == SQ_STORAGE_COLOCATED);
-  CHECK(packed->data == (uint8_t *)packed + sq_runtime_size(language));
-  CHECK(packed->supertypes == (TSSymbol *)(packed + 1));
+  CHECK(packed->data == (uint8_t *)packed + sq_runtime_size());
+  CHECK(packed->supertypes == grammar->supertypes);
   check_pack_bases(packed);
   compare_tree(tree, packed, exhaustive);
   SQTree *compact = sq_tree_repack(packed, &error);
   CHECK(compact && error == SQ_OK);
   CHECK(compact->storage == SQ_STORAGE_COLOCATED);
-  CHECK(compact->data == (uint8_t *)compact + sq_runtime_size(language));
+  CHECK(compact->data == (uint8_t *)compact + sq_runtime_size());
   if (length <= 4096) {
     check_presence_validation(compact);
     check_grammar_validation(compact);
@@ -617,9 +619,9 @@ static void exercise(const TSLanguage *language, const char *source, uint32_t le
   CHECK(sq_tree_compact_size(packed) == size);
   CHECK(sq_tree_copy_compact(packed, unaligned + 1, size, &error));
   CHECK(!memcmp(unaligned + 1, bytes, size));
-  SQTree *loaded = sq_tree_from_bytes(language, unaligned + 1, size, &error);
+  SQTree *loaded = sq_tree_from_bytes(grammar, unaligned + 1, size, &error);
   CHECK(loaded && loaded->storage == SQ_STORAGE_COLOCATED);
-  CHECK(loaded->data == (uint8_t *)loaded + sq_runtime_size(language));
+  CHECK(loaded->data == (uint8_t *)loaded + sq_runtime_size());
   CHECK(loaded->data != unaligned + 1);
   compare_tree(tree, loaded, false);
 
@@ -632,7 +634,7 @@ static void exercise(const TSLanguage *language, const char *source, uint32_t le
   CHECK(mapping != MAP_FAILED);
   memcpy(mapping, bytes, size);
   CHECK(!mprotect(mapping, mapped_size, PROT_READ));
-  SQTree *borrowed = sq_tree_from_bytes_borrowed(language, mapping, size, &error);
+  SQTree *borrowed = sq_tree_from_bytes_borrowed(grammar, mapping, size, &error);
   CHECK(borrowed && borrowed->storage == SQ_STORAGE_BORROWED && borrowed->data == mapping);
   CHECK(sq_tree_copy_compact(borrowed, unaligned + 1, size, &error));
   CHECK(!memcmp(unaligned + 1, bytes, size));
@@ -644,17 +646,17 @@ static void exercise(const TSLanguage *language, const char *source, uint32_t le
   CHECK(!munmap(mapping, mapped_size));
   compare_tree(tree, owned, false);
   sq_tree_delete(owned);
-  CHECK(!sq_tree_from_bytes_borrowed(language, unaligned + 1, size, &error) &&
+  CHECK(!sq_tree_from_bytes_borrowed(grammar, unaligned + 1, size, &error) &&
         error == SQ_ERROR_ARGUMENT);
-  CHECK(!sq_tree_from_bytes(language, bytes, size - 1, &error) && error == SQ_ERROR_INVALID_SLAB);
+  CHECK(!sq_tree_from_bytes(grammar, bytes, size - 1, &error) && error == SQ_ERROR_INVALID_SLAB);
 
   // Reject all earlier format versions even
   // when the rest of this buffer describes a valid current tree.
   for (unsigned version = 1; version <= 5; version++) {
     unaligned[1] = (uint8_t)((((const uint8_t *)bytes)[0] & 0x0f) | (version << 4));
-    CHECK(!sq_tree_from_bytes(language, unaligned + 1, size, &error) &&
+    CHECK(!sq_tree_from_bytes(grammar, unaligned + 1, size, &error) &&
           error == SQ_ERROR_INVALID_SLAB);
-    CHECK(!sq_tree_from_bytes_safety_checked(language, unaligned + 1, size, &error) &&
+    CHECK(!sq_tree_from_bytes_safety_checked(grammar, unaligned + 1, size, &error) &&
           error == SQ_ERROR_INVALID_SLAB);
   }
 
@@ -662,11 +664,11 @@ static void exercise(const TSLanguage *language, const char *source, uint32_t le
   // before interpreting any of its data, in both directions.
   memcpy(unaligned + 1, bytes, size);
   unaligned[2] ^= 1;
-  CHECK(!sq_tree_from_bytes(language, unaligned + 1, size, &error) &&
+  CHECK(!sq_tree_from_bytes(grammar, unaligned + 1, size, &error) &&
         error == SQ_ERROR_INVALID_SLAB);
   memcpy(unaligned + 1, bytes, size);
   unaligned[1] = ((const uint8_t *)bytes)[0] ^ 0x80;
-  CHECK(!sq_tree_from_bytes(language, unaligned + 1, size, &error) &&
+  CHECK(!sq_tree_from_bytes(grammar, unaligned + 1, size, &error) &&
         error == SQ_ERROR_INVALID_SLAB);
 
   // Derived section locations still require exact counts and feature flags.
@@ -690,7 +692,7 @@ static void exercise(const TSLanguage *language, const char *source, uint32_t le
 
     memcpy(unaligned + 1, bytes, size);
     sq_write_header(unaligned + 1, changed);
-    CHECK(!sq_tree_from_bytes(language, unaligned + 1, size, &error) &&
+    CHECK(!sq_tree_from_bytes(grammar, unaligned + 1, size, &error) &&
           error == SQ_ERROR_INVALID_SLAB);
   }
 
@@ -698,15 +700,15 @@ static void exercise(const TSLanguage *language, const char *source, uint32_t le
     // Large enough for an index, but explicitly omit it. Optional grammar
     // overrides must then immediately follow the ordinary columns.
     options.symbol_presence = false;
-    SQTree *without_index = sq_tree_pack(tree, options, &error);
+    SQTree *without_index = sq_tree_pack(grammar, tree, options, &error);
     CHECK(without_index && !(sq_header_get(without_index, format_flags) & SQ_PRESENCE));
     SQTree *decoded =
-        sq_tree_from_bytes(language, without_index->data, without_index->size, &error);
+        sq_tree_from_bytes(grammar, without_index->data, without_index->size, &error);
     CHECK(decoded);
     compare_tree(tree, decoded, false);
     sq_tree_delete(decoded);
     decoded =
-        sq_tree_from_bytes_borrowed(language, without_index->data, without_index->size, &error);
+        sq_tree_from_bytes_borrowed(grammar, without_index->data, without_index->size, &error);
     CHECK(decoded && decoded->data == without_index->data);
     compare_tree(tree, decoded, false);
     sq_tree_delete(decoded);
@@ -721,10 +723,10 @@ static void exercise(const TSLanguage *language, const char *source, uint32_t le
       memcpy(unaligned + 1, bytes, size);
       state = state * 1664525 + 1013904223;
       unaligned[1 + state % size] ^= (uint8_t)(1u << (trial % 8));
-      SQTree *changed = sq_tree_from_bytes(language, unaligned + 1, size, &error);
+      SQTree *changed = sq_tree_from_bytes(grammar, unaligned + 1, size, &error);
       CHECK(changed ? error == SQ_OK : error == SQ_ERROR_INVALID_SLAB);
       sq_tree_delete(changed);
-      changed = sq_tree_from_bytes_safety_checked(language, unaligned + 1, size, &error);
+      changed = sq_tree_from_bytes_safety_checked(grammar, unaligned + 1, size, &error);
       CHECK(changed ? error == SQ_OK : error == SQ_ERROR_INVALID_SLAB);
       if (changed) {
         uint32_t visited = 0;
@@ -742,11 +744,11 @@ static void exercise(const TSLanguage *language, const char *source, uint32_t le
 
     options.symbol_presence = false;
     options.repack = true;
-    SQTree *without_index = sq_tree_pack(tree, options, &error);
+    SQTree *without_index = sq_tree_pack(grammar, tree, options, &error);
     CHECK(without_index && error == SQ_OK);
     compare_tree(tree, without_index, true);
     SQTree *decoded =
-        sq_tree_from_bytes(language, without_index->data, without_index->size, &error);
+        sq_tree_from_bytes(grammar, without_index->data, without_index->size, &error);
     CHECK(decoded);
     sq_tree_delete(decoded);
     sq_tree_delete(without_index);
@@ -758,6 +760,7 @@ static void exercise(const TSLanguage *language, const char *source, uint32_t le
   sq_tree_delete(packed);
   ts_tree_delete(tree);
   ts_parser_delete(parser);
+  sq_grammar_delete(grammar);
 }
 
 // Edits can change columns by a different amount than bytes. A single-line
@@ -773,9 +776,11 @@ static void edited_positions(const TSLanguage *language) {
       .start_point = {0, 4}, .old_end_point = {0, 4}, .new_end_point = {0, 11}};
   ts_tree_edit(tree, &edit);
   SQError error;
-  SQTree *packed = sq_tree_pack(tree, sq_pack_options_default(), &error);
+  SQGrammar *grammar = sq_grammar_new(language, &error);
+  CHECK(grammar);
+  SQTree *packed = sq_tree_pack(grammar, tree, sq_pack_options_default(), &error);
   CHECK(packed && error == SQ_OK);
-  SQPackContext *context = sq_pack_context_new(language, &error);
+  SQPackContext *context = sq_pack_context_new(grammar, &error);
   CHECK(context);
   SQTree *cached = sq_pack_context_pack(context, tree, sq_pack_options_default(), &error);
   CHECK(cached && cached->size == packed->size);
@@ -804,6 +809,7 @@ static void edited_positions(const TSLanguage *language) {
   sq_pack_context_delete(context);
   ts_tree_delete(tree);
   ts_parser_delete(parser);
+  sq_grammar_delete(grammar);
 }
 
 static void omitted_points(const TSLanguage *language) {
@@ -815,7 +821,9 @@ static void omitted_points(const TSLanguage *language) {
   SQPackOptions options = sq_pack_options_default();
   options.points = false;
   SQError error;
-  SQTree *packed = sq_tree_pack(tree, options, &error);
+  SQGrammar *grammar = sq_grammar_new(language, &error);
+  CHECK(grammar);
+  SQTree *packed = sq_tree_pack(grammar, tree, options, &error);
   CHECK(packed && error == SQ_OK && !sq_tree_has_points(packed));
   CHECK(packed->layout.start_point_base == packed->layout.end);
   CHECK(packed->layout.start_point == packed->layout.end);
@@ -854,7 +862,7 @@ static void omitted_points(const TSLanguage *language) {
   CHECK(compact && !sq_tree_has_points(compact));
   uint32_t size;
   const void *bytes = sq_tree_data(compact, &size);
-  SQTree *loaded = sq_tree_from_bytes(language, bytes, size, &error);
+  SQTree *loaded = sq_tree_from_bytes(grammar, bytes, size, &error);
   CHECK(loaded && !sq_tree_has_points(loaded));
   CHECK(sq_node_start_point(sq_tree_root_node(loaded)).row == 0);
   CHECK(sq_node_end_point(sq_tree_root_node(loaded)).column == strlen(source));
@@ -864,6 +872,7 @@ static void omitted_points(const TSLanguage *language) {
   sq_tree_delete(packed);
   ts_tree_delete(tree);
   ts_parser_delete(parser);
+  sq_grammar_delete(grammar);
 }
 
 static void packing_tests(void) {

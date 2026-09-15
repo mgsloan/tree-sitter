@@ -144,17 +144,18 @@ fn check_cursor_reuse(
     tree: &tree_sitter::Tree,
 ) -> Result<(), Box<dyn Error>> {
     use tree_sitter_squatter::{Query, QueryCursor, QueryExecutionError};
+    let grammar = tree_sitter_squatter::Grammar::new(language)?;
     let mut cursor = QueryCursor::new();
     cursor.set_timeout(Some(std::time::Duration::from_secs(1)));
     for _ in 0..3 {
-        let packed = Tree::pack(tree)?;
+        let packed = Tree::pack(&grammar, tree)?;
         let query = Query::new(language, "(_) @node")?;
         let mut execution = cursor.execute(&query, packed.root_node(), b"");
         assert!(execution.next_capture().is_some());
     }
     // This checkout's mainline disable_pattern leaves the wildcard-root count
     // stale and asserts. Verify the intended behavior directly for this case.
-    let packed = Tree::pack(tree)?;
+    let packed = Tree::pack(&grammar, tree)?;
     let mut query = Query::new(language, "(_) @a (_) @b")?;
     query.disable_pattern(0);
     {
@@ -242,11 +243,13 @@ fn main() -> Result<(), Box<dyn Error>> {
         unsafe extern "C" fn() -> *const tree_sitter::ffi::TSLanguage,
     > = unsafe { library.get(arguments[1].as_bytes())? };
     let language = unsafe { tree_sitter::Language::from_raw(get_language()) };
+    let grammar = tree_sitter_squatter::Grammar::new(&language)?;
     let mut parser = tree_sitter::Parser::new();
     parser.set_language(&language)?;
     let source = b"{\"a\": [1, true, null], \"b\": 2}";
     let mainline = parser.parse(source, None).ok_or("parse failed")?;
     let packed = Tree::pack_with_options(
+        &grammar,
         &mainline,
         PackOptions {
             initial_group_capacity: 1,
@@ -271,8 +274,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     check_queries(&language, source, &mainline, &packed)?;
     check_cursor_reuse(&language, &mainline)?;
     let compact = packed.repack()?;
-    let decoded = Tree::from_bytes(&language, compact.as_bytes())?;
-    let borrowed = Tree::from_bytes_borrowed(&language, compact.as_bytes())?;
+    let decoded = Tree::from_bytes(&grammar, compact.as_bytes())?;
+    let borrowed = Tree::from_bytes_borrowed(&grammar, compact.as_bytes())?;
     assert_eq!(borrowed.as_bytes().as_ptr(), compact.as_bytes().as_ptr());
     assert_eq!(
         borrowed.root_node().preorder().count(),
@@ -287,7 +290,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     assert_eq!(compact.group_count(), compact.group_capacity());
     let mut corrupted = compact.as_bytes().to_vec();
     corrupted[0] ^= 0x80;
-    assert!(Tree::from_bytes(&language, &corrupted).is_err());
+    assert!(Tree::from_bytes(&grammar, &corrupted).is_err());
     println!(
         "ok: Rust FFI, ownership, traits, iterators, persistence and streaming queries ({} nodes)",
         packed.root_node().descendant_count()

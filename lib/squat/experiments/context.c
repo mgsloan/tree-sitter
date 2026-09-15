@@ -22,17 +22,17 @@ static double measure(const TSLanguage *language, const void *cache, size_t cach
   for (unsigned repeat = 0; repeat < repeats; repeat++) {
     SQError error;
     double start = now();
-    SQPackContext *context = cache
-                                 ? sq_pack_context_new_with_grammar_cache(
+    SQGrammar *context = cache
+                                 ? sq_grammar_new_with_cache(
                                        language, cache, cache_size, &error)
-                                 : sq_pack_context_new(language, &error);
+                                 : sq_grammar_new(language, &error);
     samples[repeat] = (now() - start) * 1e6;
     if (!context) {
       fprintf(stderr, "%s\n", sq_error_string(error));
       free(samples);
       return -1;
     }
-    sq_pack_context_delete(context);
+    sq_grammar_delete(context);
   }
   qsort(samples, repeats, sizeof(double), compare_double);
   double result = samples[repeats / 2];
@@ -69,13 +69,13 @@ int main(int argc, char **argv) {
   symbols_only.production_id_count = 0;
 
   SQError error;
-  SQPackContext *derived = sq_pack_context_new(language, &error);
+  SQGrammar *derived = sq_grammar_new(language, &error);
   if (!derived) return 1;
-  uint32_t cache_size = sq_pack_context_grammar_cache_size(derived);
+  uint32_t cache_size = sq_grammar_cache_size(derived);
   void *cache = cache_size ? malloc(cache_size) : NULL;
   if (cache_size &&
-      (!cache || !sq_pack_context_copy_grammar_cache(derived, cache, cache_size, &error))) return 1;
-  sq_pack_context_delete(derived);
+      (!cache || !sq_grammar_copy_cache(derived, cache, cache_size, &error))) return 1;
+  sq_grammar_delete(derived);
 
   double symbols_us = measure(&symbols_only, NULL, 0, repeats);
   double fields_us = measure(&fields, NULL, 0, repeats);

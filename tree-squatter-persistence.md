@@ -570,6 +570,14 @@ See [Zed's load/save code](https://github.com/zed-industries/zed/blob/main/crate
 
 ## Implementation and tests
 
+Squatter now exposes a prepared, reference-counted grammar handle shared by trees
+and worker contexts. Persistence's `prepare_grammar` restores the expensive
+supertype dictionary directly from LMDB transaction bytes into owned tables;
+there is no intermediate byte buffer or retained grammar read transaction.
+Symbol and direct-field tables are computed once per prepared handle. Callers
+retain handles between batches; worker contexts keep parser and packing scratch
+across grammar switches, including resumable loads.
+
 Implementation has begun in crates/persistence. The first owned-read milestone
 implements atomic sources/trees/path records, deferred writes, parser reset and
 cancellation, actual compiled representation identity, and process/thread writer

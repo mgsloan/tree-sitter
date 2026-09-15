@@ -21,12 +21,16 @@ static void width_policy_tests(void) {
 static void empty_column_tests(void) {
   const char *names[] = {"end", "node"};
   const TSSymbolMetadata metadata[] = {{0}, {.visible = true, .named = true}};
+  const TSSymbol public_symbols[] = {0, 1};
   const TSLanguage language = {.abi_version = TREE_SITTER_LANGUAGE_VERSION,
                                .symbol_count = 2,
                                .symbol_names = names,
+                               .public_symbol_map = public_symbols,
                                .symbol_metadata = metadata};
   SQError error;
-  SQTree *tree = sq_allocate(&language, 1, true, &error);
+  SQGrammar *grammar = sq_grammar_new(&language, &error);
+  assert(grammar);
+  SQTree *tree = sq_allocate(grammar, 1, true, &error);
   assert(tree && !tree->layout.field_bits && !tree->layout.field_lanes);
   assert(sq_column_size(SQ_GROUP_SIZE, 0) == 0);
   assert(tree->layout.field == tree->layout.supertype);
@@ -53,6 +57,7 @@ static void empty_column_tests(void) {
     }
   }
   sq_tree_delete(tree);
+  sq_grammar_delete(grammar);
 }
 
 static void equality_tests(void) {
@@ -302,8 +307,10 @@ static void sparse_grammar_tests(bool dictionary) {
   language.symbol_count = 16;
   language.state_count = language.large_state_count = 1;
   SQError error;
+  SQGrammar *grammar = sq_grammar_new(&language, &error);
+  assert(grammar);
   const uint32_t groups = (130 + SQ_GROUP_SIZE - 1) / SQ_GROUP_SIZE;
-  SQTree *tree = sq_allocate(&language, groups + 3, true, &error);
+  SQTree *tree = sq_allocate(grammar, groups + 3, true, &error);
   assert(tree);
   sq_header_set(tree, group_count, groups);
   sq_set_packed(tree->data, tree->layout.waste, groups - 1, SQ_WASTE_BITS,
@@ -330,7 +337,7 @@ static void sparse_grammar_tests(bool dictionary) {
   sq_set_u32(tree->data, ranks, 1, 2);
   sq_set_u32(tree->data, ranks, 2, 4);
   sq_header_set(tree, format_flags, sq_header_get(tree, format_flags) | SQ_GRAMMAR_OVERRIDES);
-  SQTree *loaded = sq_tree_from_bytes(&language, tree->data, tree->size, &error);
+  SQTree *loaded = sq_tree_from_bytes(grammar, tree->data, tree->size, &error);
   assert(loaded && error == SQ_OK);
   sq_tree_delete(loaded);
   const uint32_t capacities[] = {groups + 7, groups, groups + 1};
@@ -359,6 +366,7 @@ static void sparse_grammar_tests(bool dictionary) {
     sq_tree_delete(loaded);
   }
   sq_tree_delete(tree);
+  sq_grammar_delete(grammar);
 }
 
 int main(void) {
@@ -375,12 +383,18 @@ int main(void) {
     TSSymbolMetadata *metadata = calloc(symbols, sizeof(TSSymbolMetadata));
     assert(metadata);
     metadata[1].supertype = true;
-    TSLanguage language = {.abi_version = TREE_SITTER_LANGUAGE_VERSION,
+    TSSymbol *public_symbols = calloc(symbols, sizeof(TSSymbol));
+    assert(public_symbols);
+    for (uint32_t symbol = 0; symbol < symbols; symbol++) public_symbols[symbol] = symbol;
+    TSLanguage language = {.public_symbol_map = public_symbols,
+                           .abi_version = TREE_SITTER_LANGUAGE_VERSION,
                            .symbol_count = symbols,
                            .field_count = symbols - 1,
                            .symbol_metadata = metadata};
     SQError error;
-    SQTree *tree = sq_allocate(&language, 3, true, &error);
+    SQGrammar *grammar = sq_grammar_new(&language, &error);
+    assert(grammar);
+    SQTree *tree = sq_allocate(grammar, 3, true, &error);
     assert(tree && error == SQ_OK);
     sq_header_set(tree, group_count, 2);
     exercise_columns(tree, true);
@@ -388,8 +402,8 @@ int main(void) {
     for (unsigned k = 0; k < sizeof(capacities) / sizeof(capacities[0]); k++) {
       assert(sq_resize(&tree, capacities[k], &error));
       assert(tree->storage == SQ_STORAGE_COLOCATED);
-      assert(tree->data == (uint8_t *)tree + sq_runtime_size(&language));
-      assert(tree->supertypes == (TSSymbol *)(tree + 1));
+      assert(tree->data == (uint8_t *)tree + sq_runtime_size());
+      assert(tree->supertypes == grammar->supertypes);
       exercise_columns(tree, false);
       SQTree *same = tree;
       assert(sq_resize(&tree, capacities[k], &error) && tree == same);
@@ -397,6 +411,8 @@ int main(void) {
 
     assert(!sq_resize(&tree, UINT32_MAX, &error) && error == SQ_ERROR_OVERFLOW);
     sq_tree_delete(tree);
+    sq_grammar_delete(grammar);
+    free(public_symbols);
     free(metadata);
   }
 

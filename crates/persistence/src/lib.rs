@@ -200,32 +200,26 @@ pub struct LoadResult {
     pub pending_write: Option<PendingWrite>,
 }
 
-type PackCache = Option<(tree_sitter::Language, tree_sitter_squatter::PackContext)>;
-
-fn pack_context(
-    grammar: &Grammar,
-    store: Option<&Store>,
-) -> Result<tree_sitter_squatter::PackContext, tree_sitter_squatter::Error> {
-    if let Some(grammar_cache) = store.and_then(|store| store.grammar_cache(grammar))
-        && let Ok(context) =
-            tree_sitter_squatter::PackContext::from_grammar_cache(&grammar.language, &grammar_cache)
-    {
-        return Ok(context);
-    }
-    tree_sitter_squatter::PackContext::new(&grammar.language)
-}
-
 /// Per-worker parser and lazy packing scratch. Reuses grammar-derived tables
-/// across misses; cache hits do not allocate a packing context.
+/// and scratch across grammar changes; cache hits do not allocate a packing context.
 pub struct LoadContext {
     parser: tree_sitter::Parser,
-    packing: PackCache,
+    packing: Option<tree_sitter_squatter::PackContext>,
 }
 impl Default for LoadContext {
     fn default() -> Self {
         Self {
             parser: tree_sitter::Parser::new(),
             packing: None,
+        }
+    }
+}
+
+impl LoadContext {
+    /// Release packing scratch while keeping the parser and prepared grammar.
+    pub fn trim(&mut self) {
+        if let Some(packing) = &mut self.packing {
+            packing.trim();
         }
     }
 }
@@ -272,6 +266,24 @@ pub struct Persistence {
     options: Options,
 }
 impl Persistence {
+    /// Prepare shared tables, restoring the expensive dictionary directly from
+    /// an LMDB read transaction when available. No transaction is retained.
+    pub fn prepare_grammar(
+        &self,
+        language: &tree_sitter::Language,
+        fingerprint: GrammarFingerprint,
+    ) -> Result<Grammar, tree_sitter_squatter::Error> {
+        let prepared = match self
+            .store
+            .as_ref()
+            .and_then(|store| store.prepare_grammar(language, fingerprint))
+        {
+            Some(prepared) => prepared,
+            None => tree_sitter_squatter::Grammar::new(language)?,
+        };
+        Ok(Grammar::new(prepared, fingerprint))
+    }
+
     pub fn sweep_missing(&self) -> Option<MissingSweep> {
         self.store
             .as_ref()
@@ -368,7 +380,7 @@ impl Persistence {
         grammar: &Grammar,
         parser: &mut tree_sitter::Parser,
         options: LoadOptions<'_>,
-        mut packing: Option<&mut PackCache>,
+        mut packing: Option<&mut Option<tree_sitter_squatter::PackContext>>,
     ) -> Result<LoadResult, LoadError> {
         let mut pending = self.capture(path, grammar, &options)?;
         let started = std::time::Instant::now();
@@ -404,6 +416,18 @@ impl Persistence {
     ) -> Result<LoadStep, LoadError> {
         self.capture(path, grammar, &options)?
             .resume(parser, options.cancellation)
+    }
+
+    /// Nonblocking load using reusable worker scratch.
+    pub fn load_step_with_context(
+        &self,
+        path: &Path,
+        grammar: &Grammar,
+        context: &mut LoadContext,
+        options: LoadOptions<'_>,
+    ) -> Result<LoadStep, LoadError> {
+        self.capture(path, grammar, &options)?
+            .resume_with_context(context, options.cancellation)
     }
 
     fn capture(
@@ -500,12 +524,41 @@ impl PendingLoad {
         }
     }
 
+    pub fn resume_with_context(
+        self,
+        context: &mut LoadContext,
+        cancellation: Option<&AtomicBool>,
+    ) -> Result<LoadStep, LoadError> {
+        self.attempt(
+            &mut context.parser,
+            cancellation,
+            true,
+            Some(&mut context.packing),
+        )
+    }
+
+    pub fn parse_now_with_context(
+        self,
+        context: &mut LoadContext,
+        cancellation: Option<&AtomicBool>,
+    ) -> Result<LoadResult, LoadError> {
+        match self.attempt(
+            &mut context.parser,
+            cancellation,
+            false,
+            Some(&mut context.packing),
+        )? {
+            LoadStep::Ready(result) => Ok(result),
+            LoadStep::Deferred(_) => unreachable!("cooperation disabled"),
+        }
+    }
+
     fn attempt(
         self,
         parser: &mut tree_sitter::Parser,
         cancellation: Option<&AtomicBool>,
         cooperate: bool,
-        packing: Option<&mut PackCache>,
+        packing: Option<&mut Option<tree_sitter_squatter::PackContext>>,
     ) -> Result<LoadStep, LoadError> {
         let options = LoadOptions {
             write: self.write,
@@ -561,7 +614,7 @@ impl PendingLoad {
         }
         parser.reset();
         parser
-            .set_language(&self.grammar.language)
+            .set_language(&self.grammar.prepared.language())
             .map_err(LoadError::Language)?;
         parser
             .set_included_ranges(&[])
@@ -595,24 +648,24 @@ impl PendingLoad {
             initial_group_capacity: 0,
         };
         let packed = if let Some(packing) = packing {
-            if packing
-                .as_ref()
-                .is_none_or(|(language, _)| *language != self.grammar.language)
-            {
-                *packing = Some((
-                    self.grammar.language.clone(),
-                    pack_context(&self.grammar, store.as_deref()).map_err(LoadError::Pack)?,
-                ));
+            if let Some(context) = packing {
+                context.set_grammar(&self.grammar.prepared);
+            } else {
+                *packing = Some(
+                    tree_sitter_squatter::PackContext::new(&self.grammar.prepared)
+                        .map_err(LoadError::Pack)?,
+                );
             }
             packing
                 .as_mut()
                 .unwrap()
-                .1
                 .pack_with_options(&tree, pack_options)
         } else {
-            pack_context(&self.grammar, store.as_deref())
-                .map_err(LoadError::Pack)?
-                .pack_with_options(&tree, pack_options)
+            tree_sitter_squatter::Tree::pack_with_options(
+                &self.grammar.prepared,
+                &tree,
+                pack_options,
+            )
         }
         .map_err(LoadError::Pack)?;
         let file = LoadedFile {

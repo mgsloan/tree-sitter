@@ -337,7 +337,10 @@ mod tests {
         let language = unsafe {
             tree_sitter::Language::from_raw(tree_sitter_json::LANGUAGE.into_raw()().cast())
         };
-        let grammar = Grammar::new(language, GrammarFingerprint([42; 32]));
+        let grammar = Grammar::new(
+            tree_sitter_squatter::Grammar::new(&language).unwrap(),
+            GrammarFingerprint([42; 32]),
+        );
         let mut parser = tree_sitter::Parser::new();
         std::fs::write(&path, "1").unwrap();
         cache

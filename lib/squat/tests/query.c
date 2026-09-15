@@ -404,9 +404,11 @@ static void exercise(const TSLanguage *language, const char *source, uint32_t le
   CHECK(ts_parser_set_language(parser, language));
   TSTree *tree = ts_parser_parse_string(parser, NULL, source, length);
   SQError error;
+  SQGrammar *grammar = sq_grammar_new(language, &error);
+  assert(grammar);
   SQPackOptions options = sq_pack_options_default();
   options.initial_group_capacity = 1;
-  SQTree *packed = sq_tree_pack(tree, options, &error);
+  SQTree *packed = sq_tree_pack(grammar, tree, options, &error);
   CHECK(packed);
   Identities ids = identities(tree, packed);
   const char *queries[] = {
@@ -485,6 +487,7 @@ static void exercise(const TSLanguage *language, const char *source, uint32_t le
   sq_tree_delete(packed);
   ts_tree_delete(tree);
   ts_parser_delete(parser);
+  sq_grammar_delete(grammar);
 }
 
 int main(int argc, char **argv) {
