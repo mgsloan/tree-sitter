@@ -190,6 +190,20 @@ fn test_node_child() {
 }
 
 #[test]
+fn test_node_child_with_descendant_same_range() {
+    let mut parser = Parser::new();
+    parser.set_language(&get_language("javascript")).unwrap();
+    let tree = parser.parse("(a)", None).unwrap();
+    let a = tree.root_node();
+    let b = a.child(0).unwrap();
+    let c = b.child(0).unwrap();
+    assert_eq!(a.byte_range(), b.byte_range());
+    assert_eq!(b.byte_range(), c.byte_range());
+    assert_eq!(a.child_with_descendant(a), None);
+    assert_eq!(b.child_with_descendant(a), None);
+}
+
+#[test]
 fn test_node_children() {
     let tree = parse_json_example();
     let mut cursor = tree.walk();
