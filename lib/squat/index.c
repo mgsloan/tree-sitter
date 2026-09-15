@@ -390,7 +390,7 @@ static bool validate_grammar(const SQTree *tree) {
 }
 
 static SQTree *load_bytes(const TSLanguage *language, const void *bytes, size_t length,
-                          bool borrowed, SQError *error) {
+                          bool borrowed, bool check_auxiliary_contents, SQError *error) {
   sq_fail(error, SQ_OK);
   SQHeader header;
   if (!bytes || length < sizeof(header) || length > UINT32_MAX) {
@@ -469,7 +469,11 @@ static SQTree *load_bytes(const TSLanguage *language, const void *bytes, size_t 
     return NULL;
   }
 
-  if ((header.format_flags & SQ_PRESENCE) && !validate_presence(tree, error)) {
+  // Presence readers only inspect a size-checked bitmap or bounded sparse list.
+  // Sparse values are compared with group numbers, never dereferenced as slots.
+  // Reconstructing membership and checking padding is a semantic integrity check.
+  if (check_auxiliary_contents && (header.format_flags & SQ_PRESENCE) &&
+      !validate_presence(tree, error)) {
     sq_tree_delete(tree);
     return NULL;
   }
@@ -482,12 +486,22 @@ invalid:
 
 SQTree *sq_tree_from_bytes(const TSLanguage *language, const void *bytes, size_t length,
                            SQError *error) {
-  return load_bytes(language, bytes, length, false, error);
+  return load_bytes(language, bytes, length, false, true, error);
+}
+
+SQTree *sq_tree_from_bytes_safety_checked(const TSLanguage *language, const void *bytes,
+                                         size_t length, SQError *error) {
+  return load_bytes(language, bytes, length, false, false, error);
 }
 
 SQTree *sq_tree_from_bytes_borrowed(const TSLanguage *language, const void *bytes, size_t length,
                                     SQError *error) {
-  return load_bytes(language, bytes, length, true, error);
+  return load_bytes(language, bytes, length, true, true, error);
+}
+
+SQTree *sq_tree_from_bytes_borrowed_safety_checked(const TSLanguage *language, const void *bytes,
+                                                  size_t length, SQError *error) {
+  return load_bytes(language, bytes, length, true, false, error);
 }
 
 SQTree *sq_tree_repack(const SQTree *tree, SQError *error) {

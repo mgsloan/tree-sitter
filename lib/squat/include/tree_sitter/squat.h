@@ -59,6 +59,8 @@ typedef struct {
 } SQPackOptions;
 
 const char *sq_error_string(SQError);
+// Actual compiled slab format/configuration, for persistence identity.
+uint64_t sq_representation_id(void);
 SQPackOptions sq_pack_options_default(void);
 SQTree *sq_tree_pack(const TSTree *, SQPackOptions, SQError *);
 
@@ -86,14 +88,28 @@ const void *sq_tree_data(const SQTree *, uint32_t *length);
 // Copies and validates input, including topology and auxiliary indexes.
 SQTree *sq_tree_from_bytes(const TSLanguage *, const void *, size_t, SQError *);
 
+// Copies and validates layout, topology, indexes, and coordinate arithmetic,
+// without checking auxiliary index membership or canonical padding contents.
+// Incorrect but bounded auxiliary contents may produce incorrect query results.
+// This does not verify grammar identity or the tree's agreement with source text.
+SQTree *sq_tree_from_bytes_safety_checked(const TSLanguage *, const void *, size_t, SQError *);
+
 // Validates without copying the slab. Bytes must remain alive and immutable
 // until this tree and its nodes/cursors are no longer used. They must be aligned
 // to 8 bytes (64 with the experimental column-alignment build). Deletion frees
 // only the runtime descriptor; the caller retains ownership of the bytes.
 SQTree *sq_tree_from_bytes_borrowed(const TSLanguage *, const void *, size_t, SQError *);
+// Same lifetime/alignment contract, with the safety-checked validation policy.
+SQTree *sq_tree_from_bytes_borrowed_safety_checked(const TSLanguage *, const void *, size_t, SQError *);
 
 // Returns an independent compact copy; nodes in the original remain valid.
 SQTree *sq_tree_repack(const SQTree *, SQError *);
+// Compact serialization without an intermediate slab allocation. Returns zero
+// for a null tree. copy requires exactly compact_size bytes, disjoint from the
+// source. Destination need not be initialized or aligned; success initializes
+// every byte. The source and all its nodes remain unchanged.
+uint32_t sq_tree_compact_size(const SQTree *);
+bool sq_tree_copy_compact(const SQTree *, void *destination, size_t length, SQError *);
 uint32_t sq_tree_group_count(const SQTree *);
 uint32_t sq_tree_group_capacity(const SQTree *);
 uint32_t sq_tree_slot_count(const SQTree *);

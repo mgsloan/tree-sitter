@@ -39,6 +39,14 @@ use tree_sitter::Point;
 /// Whether this library includes row/column storage and point APIs.
 pub const HAS_POINT_POSITIONS: bool = cfg!(feature = "points");
 
+/// Slab version and actual C build configuration (not a grammar/runtime identity).
+pub fn representation_id() -> u64 {
+    unsafe extern "C" {
+        fn sq_representation_id() -> u64;
+    }
+    unsafe { sq_representation_id() }
+}
+
 pub mod query;
 pub use query::{
     Query, QueryCapture, QueryCursor, QueryError, QueryExecution, QueryExecutionError, QueryMatch,
@@ -161,10 +169,86 @@ impl Deref for BorrowedTree<'_> {
     }
 }
 
+/// Ownership of immutable storage whose address survives moves of its owner.
+///
+/// # Safety
+/// Every call must return the same slice (address and length). Its allocation
+/// must remain alive and immutable until the owner is dropped, even when the
+/// owner is moved or accessed from another thread. No external party may resize,
+/// unmap, or mutate it. Inline arrays and mutable mappings do not meet this
+/// contract. Alignment is checked by the loader, not required by this trait.
+pub unsafe trait StableSlab: Send + Sync + 'static {
+    fn bytes(&self) -> &[u8];
+}
+
+/// A validated descriptor retaining the owner of its immutable slab storage.
+/// Nodes borrow this wrapper; the native descriptor is destroyed before storage.
+///
+/// ```compile_fail
+/// use tree_sitter_squatter::{Node, StableSlab, Tree};
+/// fn dangling(language: &tree_sitter::Language, owner: impl StableSlab) -> Node<'static> {
+///     Tree::from_owned_slab(language, owner).unwrap().root_node()
+/// }
+/// ```
+pub struct BackedTree {
+    // Declaration order is important: fields drop in this order.
+    tree: Tree,
+    _owner: Box<dyn StableSlab>,
+}
+impl BackedTree {
+    /// Copy into owned aligned storage without checking auxiliary semantics.
+    pub fn detach(&self) -> Result<Tree, Error> {
+        let bytes = self.as_bytes();
+        let mut status = 0;
+        // This descriptor keeps its language and storage alive throughout the
+        // call; the new native descriptor independently retains the language.
+        let raw = unsafe {
+            ffi::sq_tree_from_bytes_safety_checked(
+                ffi::sq_tree_language(self.tree.0.as_ptr()),
+                bytes.as_ptr().cast(),
+                bytes.len(),
+                &mut status,
+            )
+        };
+        NonNull::new(raw).map(Tree).ok_or_else(|| error(status))
+    }
+}
+impl Deref for BackedTree {
+    type Target = Tree;
+    fn deref(&self) -> &Tree {
+        &self.tree
+    }
+}
+
 // The C slab is immutable and retains a thread-safe Tree-sitter language.
 unsafe impl Send for Tree {}
 unsafe impl Sync for Tree {}
 impl Tree {
+    /// Safety-validates an aligned slab and retains its owner without copying.
+    /// Misaligned input returns `Error::InvalidArgument`. On failure the owner
+    /// is dropped. No lifetime extension or exposed raw descriptor is involved.
+    pub fn from_owned_slab(
+        language: &Language,
+        owner: impl StableSlab,
+    ) -> Result<BackedTree, Error> {
+        let raw_language = language.clone().into_raw();
+        let bytes = owner.bytes();
+        let mut status = 0;
+        let raw = unsafe {
+            ffi::sq_tree_from_bytes_borrowed_safety_checked(
+                raw_language.cast(),
+                bytes.as_ptr().cast(),
+                bytes.len(),
+                &mut status,
+            )
+        };
+        drop(unsafe { Language::from_raw(raw_language) });
+        let tree = NonNull::new(raw).map(Self).ok_or_else(|| error(status))?;
+        Ok(BackedTree {
+            tree,
+            _owner: Box::new(owner),
+        })
+    }
     pub fn pack(tree: &tree_sitter::Tree) -> Result<Self, Error> {
         Self::pack_with_options(tree, PackOptions::default())
     }
@@ -199,10 +283,32 @@ impl Tree {
     /// Structural validation rejects malformed data. Grammar identity is the
     /// caller's responsibility; the slab does not contain a grammar fingerprint.
     pub fn from_bytes(language: &Language, bytes: &[u8]) -> Result<Self, Error> {
+        Self::load_bytes(language, bytes, false)
+    }
+    /// Loads a copied slab with structural safety validation, not an integrity check.
+    ///
+    /// Retains layout, topology, symbol/dictionary index, and coordinate checks.
+    /// Does not reconstruct auxiliary symbol-presence membership or require its
+    /// padding (or unused dictionary bits) to be canonical. Corrupt but bounded
+    /// auxiliary data may therefore yield incorrect query results.
+    ///
+    /// The exact matching grammar is required, as with [`Self::from_bytes`].
+    /// Neither loader verifies agreement with source text. This entry point is
+    /// intended for caches whose policy deliberately omits semantic integrity
+    /// validation; it is not an unchecked or zero-copy loader.
+    pub fn from_bytes_safety_checked(language: &Language, bytes: &[u8]) -> Result<Self, Error> {
+        Self::load_bytes(language, bytes, true)
+    }
+    fn load_bytes(language: &Language, bytes: &[u8], safety_only: bool) -> Result<Self, Error> {
         let raw_language = language.clone().into_raw();
         let mut status = 0;
+        let load = if safety_only {
+            ffi::sq_tree_from_bytes_safety_checked
+        } else {
+            ffi::sq_tree_from_bytes
+        };
         let raw = unsafe {
-            ffi::sq_tree_from_bytes(
+            load(
                 raw_language.cast(),
                 bytes.as_ptr().cast(),
                 bytes.len(),
@@ -243,6 +349,37 @@ impl Tree {
         let raw = unsafe { ffi::sq_tree_repack(self.0.as_ptr(), &mut status) };
         NonNull::new(raw).map(Self).ok_or_else(|| error(status))
     }
+    /// Size of the compact serialized slab, excluding transient spare capacity.
+    pub fn compact_size(&self) -> usize {
+        unsafe { ffi::sq_tree_compact_size(self.0.as_ptr()) as usize }
+    }
+
+    /// Copy used columns directly into a compact destination without allocating
+    /// an intermediate tree. Requires exactly `compact_size()` bytes; arbitrary
+    /// destination alignment is supported. Success initializes every byte.
+    pub fn copy_compact_into<'a>(
+        &self,
+        destination: &'a mut [std::mem::MaybeUninit<u8>],
+    ) -> Result<&'a mut [u8], Error> {
+        let mut status = 0;
+        let ok = unsafe {
+            ffi::sq_tree_copy_compact(
+                self.0.as_ptr(),
+                destination.as_mut_ptr().cast(),
+                destination.len(),
+                &mut status,
+            )
+        };
+        if !ok {
+            return Err(error(status));
+        }
+        // The native writer initializes header, columns, padding, and tail on
+        // success. It accepts unaligned storage and never reads destination.
+        Ok(unsafe {
+            std::slice::from_raw_parts_mut(destination.as_mut_ptr().cast(), destination.len())
+        })
+    }
+
     pub fn as_bytes(&self) -> &[u8] {
         let mut length = 0;
         let data = unsafe { ffi::sq_tree_data(self.0.as_ptr(), &mut length) };
@@ -758,8 +895,28 @@ mod ffi {
             length: usize,
             error: *mut i32,
         ) -> *mut c_void;
+        pub fn sq_tree_from_bytes_safety_checked(
+            language: *const c_void,
+            bytes: *const c_void,
+            length: usize,
+            error: *mut i32,
+        ) -> *mut c_void;
+        pub fn sq_tree_from_bytes_borrowed_safety_checked(
+            language: *const c_void,
+            bytes: *const c_void,
+            length: usize,
+            error: *mut i32,
+        ) -> *mut c_void;
         pub fn sq_tree_repack(tree: *const c_void, error: *mut i32) -> *mut c_void;
+        pub fn sq_tree_compact_size(tree: *const c_void) -> u32;
+        pub fn sq_tree_copy_compact(
+            tree: *const c_void,
+            destination: *mut c_void,
+            length: usize,
+            error: *mut i32,
+        ) -> bool;
         pub fn sq_tree_data(tree: *const c_void, length: *mut u32) -> *const c_void;
+        pub fn sq_tree_language(tree: *const c_void) -> *const c_void;
         pub fn sq_tree_delete(tree: *mut c_void);
         pub fn sq_tree_root_node(tree: *const c_void) -> RawNode;
         pub fn sq_tree_node_at_slot(tree: *const c_void, slot: u32) -> RawNode;

@@ -1,0 +1,164 @@
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+};
+use tree_sitter_squatter::{PackOptions, Query, QueryCursor, Tree};
+
+struct TrackedSlab {
+    storage: Box<[u64]>,
+    offset: usize,
+    length: usize,
+    drops: Arc<AtomicUsize>,
+}
+impl Drop for TrackedSlab {
+    fn drop(&mut self) {
+        self.drops.fetch_add(1, Ordering::Relaxed);
+    }
+}
+// Heap allocation is stable across owner moves and never mutated after creation.
+unsafe impl tree_sitter_squatter::StableSlab for TrackedSlab {
+    fn bytes(&self) -> &[u8] {
+        unsafe {
+            std::slice::from_raw_parts(
+                self.storage.as_ptr().cast::<u8>().add(self.offset),
+                self.length,
+            )
+        }
+    }
+}
+fn tracked(bytes: &[u8], misaligned: bool, drops: Arc<AtomicUsize>) -> TrackedSlab {
+    let alignment = ((tree_sitter_squatter::representation_id() >> 40) & 0xff) as usize;
+    let mut storage = vec![0u64; (bytes.len() + alignment + 8).div_ceil(8)].into_boxed_slice();
+    let offset = storage.as_ptr().cast::<u8>().align_offset(alignment) + usize::from(misaligned);
+    unsafe {
+        std::ptr::copy_nonoverlapping(
+            bytes.as_ptr(),
+            storage.as_mut_ptr().cast::<u8>().add(offset),
+            bytes.len(),
+        );
+    }
+    TrackedSlab {
+        storage,
+        offset,
+        length: bytes.len(),
+        drops,
+    }
+}
+
+#[test]
+fn owned_slab_retains_storage_and_releases_it_on_all_outcomes() {
+    let language = language();
+    let tree = pack(&language, "[42]", false);
+    let drops = Arc::new(AtomicUsize::new(0));
+    let owner = tracked(tree.as_bytes(), false, drops.clone());
+    let address = tree_sitter_squatter::StableSlab::bytes(&owner).as_ptr();
+    let backed = Tree::from_owned_slab(&language, owner).unwrap();
+    assert_eq!(backed.as_bytes().as_ptr(), address);
+    assert_eq!(drops.load(Ordering::Relaxed), 0);
+    let detached = backed.detach().unwrap();
+    assert_ne!(detached.as_bytes().as_ptr(), address);
+    drop(backed);
+    assert_eq!(drops.load(Ordering::Relaxed), 1);
+    assert_eq!(detached.root_node().kind(), "document");
+    assert!(
+        Tree::from_owned_slab(&language, tracked(tree.as_bytes(), true, drops.clone())).is_err()
+    );
+    assert_eq!(drops.load(Ordering::Relaxed), 2);
+    assert!(Tree::from_owned_slab(&language, tracked(b"invalid", false, drops.clone())).is_err());
+    assert_eq!(drops.load(Ordering::Relaxed), 3);
+}
+
+fn language() -> tree_sitter::Language {
+    unsafe { tree_sitter::Language::from_raw(tree_sitter_json::LANGUAGE.into_raw()().cast()) }
+}
+
+fn pack(language: &tree_sitter::Language, source: &str, presence: bool) -> Tree {
+    let mut parser = tree_sitter::Parser::new();
+    parser.set_language(language).unwrap();
+    Tree::pack_with_options(
+        &parser.parse(source, None).unwrap(),
+        PackOptions {
+            repack: true,
+            symbol_presence: presence,
+            ..PackOptions::default()
+        },
+    )
+    .unwrap()
+}
+
+#[test]
+fn safety_loader_does_not_verify_presence_membership() {
+    let language = language();
+    let source = format!("[{}0]", "1,".repeat(4096));
+    let original = pack(&language, &source, true);
+    let without = pack(&language, &source, false);
+    assert!(original.group_count() > 32);
+    assert_eq!(original.group_count(), without.group_count());
+    // JSON has no supertype dictionary: the presence section is the whole tail.
+    assert_eq!(&original.as_bytes()[12..16], &[0; 4]);
+    assert_eq!(&without.as_bytes()[12..16], &[0; 4]);
+    assert!(original.as_bytes().len() > without.as_bytes().len());
+    for byte in [0, 0xff, 0x55] {
+        let mut bytes = original.as_bytes().to_vec();
+        bytes[without.as_bytes().len()..].fill(byte);
+        assert!(Tree::from_bytes(&language, &bytes).is_err());
+        let loaded = Tree::from_bytes_safety_checked(&language, &bytes).unwrap();
+        assert_eq!(
+            loaded.root_node().preorder().count(),
+            original.root_node().preorder().count()
+        );
+        for group in 0..loaded.group_count() {
+            for symbol in 0..language.node_kind_count() as u16 {
+                let _ = loaded.group_has_symbol(group, symbol);
+            }
+        }
+        let query = Query::new(&language, "(number) @n").unwrap();
+        let mut cursor = QueryCursor::new();
+        let mut execution = cursor.execute(&query, loaded.root_node(), source.as_bytes());
+        // Membership may be wrong, but execution must stay safe and terminate.
+        while execution.next_match().is_some() {}
+    }
+}
+
+#[test]
+fn safety_loader_rejects_truncated_sections_and_invalid_headers() {
+    let language = language();
+    let original = pack(&language, "{\"key\": [true, 42]}", true);
+    for length in 0..original.as_bytes().len() {
+        assert!(
+            Tree::from_bytes_safety_checked(&language, &original.as_bytes()[..length]).is_err()
+        );
+    }
+    for (offset, value) in [(0, 0), (4, 0), (8, u32::MAX), (12, 257)] {
+        let mut bytes = original.as_bytes().to_vec();
+        bytes[offset..offset + 4].copy_from_slice(&value.to_ne_bytes());
+        assert!(Tree::from_bytes_safety_checked(&language, &bytes).is_err());
+    }
+}
+
+#[test]
+fn mutated_slabs_are_rejected_or_support_bounded_traversal() {
+    let language = language();
+    let original = pack(&language, "{\"key\": [true, 42]}", false);
+    let mut state = 42u32;
+    for trial in 0..512 {
+        let mut bytes = original.as_bytes().to_vec();
+        state = state.wrapping_mul(1664525).wrapping_add(1013904223);
+        let index = state as usize % bytes.len();
+        bytes[index] ^= 1 << (trial % 8);
+        let Ok(tree) = Tree::from_bytes_safety_checked(&language, &bytes) else {
+            continue;
+        };
+        for (count, node) in tree.root_node().preorder().enumerate() {
+            assert!(count < tree.slot_count() as usize);
+            let _ = (node.kind(), node.grammar_name(), node.field_name());
+            let _ = (node.parent(), node.next_sibling(), node.prev_sibling());
+            let _ = (
+                node.child_count(),
+                node.named_child_count(),
+                node.descendant_count(),
+            );
+            assert!(node.start_byte() <= node.end_byte());
+        }
+    }
+}
