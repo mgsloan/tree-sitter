@@ -36,6 +36,78 @@ pub struct Record<'tree> {
     pub attributes: Attributes<'tree>,
 }
 
+#[derive(Debug, Eq, PartialEq)]
+pub struct Digest {
+    pub nodes: usize,
+    pub value: u64,
+}
+
+fn digest_attributes(mut value: u64, attributes: &Attributes<'_>) -> u64 {
+    std::hint::black_box(attributes.kind);
+    std::hint::black_box(attributes.grammar_name);
+    let mut mix = |part| {
+        value = value.rotate_left(7) ^ part;
+        value = value.wrapping_mul(0x9e37_79b1_85eb_ca87);
+    };
+    for part in [
+        u64::from(attributes.kind_id),
+        u64::from(attributes.grammar_id),
+        attributes.start_byte as u64,
+        attributes.end_byte as u64,
+        u64::from(attributes.is_named),
+        u64::from(attributes.is_extra),
+        u64::from(attributes.is_missing),
+        u64::from(attributes.is_error),
+        u64::from(attributes.has_error),
+        u64::from(attributes.has_changes),
+    ] {
+        mix(part);
+    }
+    #[cfg(feature = "points")]
+    for part in [
+        attributes.start_position.row as u64,
+        attributes.start_position.column as u64,
+        attributes.end_position.row as u64,
+        attributes.end_position.column as u64,
+    ] {
+        mix(part);
+    }
+    value
+}
+
+/// Allocation-free attribute traversal for resident-set and cache experiments.
+pub fn digest<'tree, N: NodeLike<'tree>>(root: N) -> Result<Digest> {
+    let mut cursor = root.cursor()?;
+    let mut nodes = 0;
+    let mut value = 42;
+    loop {
+        value = digest_attributes(value, &cursor.attributes());
+        nodes += 1;
+        if cursor.goto_first_child() {
+            continue;
+        }
+        loop {
+            if cursor.goto_next_sibling() {
+                break;
+            }
+            if !cursor.goto_parent() {
+                return Ok(Digest { nodes, value });
+            }
+        }
+    }
+}
+
+pub fn digest_iterator(root: tree_sitter_squatter::Node<'_>, cached: bool) -> Result<Digest> {
+    let mut iterator = root.node_iterator(cached)?;
+    let mut nodes = 0;
+    let mut value = 42;
+    while iterator.next().is_some() {
+        value = digest_attributes(value, &iterator.attributes().unwrap());
+        nodes += 1;
+    }
+    Ok(Digest { nodes, value })
+}
+
 pub fn walk<'tree, N: NodeLike<'tree>>(root: N, ids: &Identities) -> Result<Vec<Record<'tree>>> {
     let mut cursor = root.cursor()?;
     let mut records = Vec::with_capacity(ids.len());

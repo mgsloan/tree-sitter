@@ -83,10 +83,13 @@ The shared workload set is:
 - `query-matches` and `query-captures`
 - `walk-forward` and `cursor-forward`
 - cached and uncached iterator navigation/attribute walks
+- allocation-free cursor and cached-iterator attribute digests
 - `seek-byte` and, in point-enabled builds, `seek-point`
 - `cold-parse`, comparing parse against parse plus one-shot packing
 
-Without an explicit `cold-parse` selector, prerequisite parsing uses a reusable
+The digest workloads avoid result vectors and identity maps so cache experiments
+measure tree traversal rather than benchmark bookkeeping. Without an explicit
+`cold-parse` selector, prerequisite parsing uses a reusable
 per-grammar `PackContext` and is reported as `setup-parse`. Workload and backend
 order rotate across batches and repeats. Comparisons use visible preorder
 ordinals, and query results remain strict.

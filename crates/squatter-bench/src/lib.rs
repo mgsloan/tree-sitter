@@ -30,6 +30,8 @@ const BENCHMARKS: &[&str] = &[
     "iterator-forward-cached",
     "walk-iterator",
     "walk-iterator-cached",
+    "digest-forward",
+    "digest-iterator-cached",
     "seek-byte",
     #[cfg(feature = "points")]
     "seek-point",
@@ -201,8 +203,8 @@ struct Pair<'source> {
     source: &'source Source,
     mainline: tree_sitter::Tree,
     squat: Tree,
-    mainline_ids: compare::Identities,
-    squat_ids: compare::Identities,
+    mainline_ids: Option<compare::Identities>,
+    squat_ids: Option<compare::Identities>,
     seek_bytes: Vec<usize>,
     seek_points: Vec<Point>,
 }
@@ -413,6 +415,7 @@ fn accumulate(
 
 #[derive(Debug, Eq, PartialEq)]
 enum Observation<'tree> {
+    Digest(compare::Digest),
     Walk(Vec<compare::Record<'tree>>),
     Seek(Vec<Option<usize>>),
     Navigation(Vec<usize>),
@@ -420,21 +423,32 @@ enum Observation<'tree> {
 }
 fn observe<'tree, N: tree_sitter_squatter::traits::NodeLike<'tree>>(
     root: N,
-    ids: &compare::Identities,
+    ids: Option<&compare::Identities>,
     benchmark: &str,
     bytes: &[usize],
     _points: &[Point],
 ) -> Result<Observation<'tree>> {
     match benchmark {
+        "digest-forward" | "digest-iterator-cached" => {
+            Ok(Observation::Digest(compare::digest(root)?))
+        }
         "cursor-forward" | "iterator-forward" | "iterator-forward-cached" => Ok(
-            Observation::Navigation(compare::navigate(root.cursor()?, ids)),
+            Observation::Navigation(compare::navigate(root.cursor()?, ids.unwrap())),
         ),
         "walk-forward" | "walk-iterator" | "walk-iterator-cached" => {
-            Ok(Observation::Walk(compare::walk(root, ids)?))
+            Ok(Observation::Walk(compare::walk(root, ids.unwrap())?))
         }
-        "seek-byte" => Ok(Observation::Seek(compare::seek_bytes(root, ids, bytes))),
+        "seek-byte" => Ok(Observation::Seek(compare::seek_bytes(
+            root,
+            ids.unwrap(),
+            bytes,
+        ))),
         #[cfg(feature = "points")]
-        "seek-point" => Ok(Observation::Seek(compare::seek_points(root, ids, _points))),
+        "seek-point" => Ok(Observation::Seek(compare::seek_points(
+            root,
+            ids.unwrap(),
+            _points,
+        ))),
         _ => unreachable!(),
     }
 }
@@ -443,6 +457,9 @@ fn difference(expected: &Observation<'_>, actual: &Observation<'_>) -> Option<St
         return None;
     }
     match (expected, actual) {
+        (Observation::Digest(a), Observation::Digest(b)) => {
+            Some(format!("digest differs: expected {a:?}, actual {b:?}"))
+        }
         (Observation::Walk(a), Observation::Walk(b)) => {
             let index = a
                 .iter()
@@ -655,7 +672,7 @@ pub fn run(check_only: bool) -> Result<()> {
         "build": {"debug_assertions": cfg!(debug_assertions), "package_version": env!("CARGO_PKG_VERSION")},
         "pressure": pressure_report(&pressure, &batches),
         "field_contract": "field API differences expected only when squat agrees with mainline visible-child fields; ERROR parents have no fields",
-        "iterator_contract": "native preorder; walks read O(1) bulk attributes; cached attribute walks use the unpack cache; navigation-only caches are idle; mainline uses its forward cursor",
+        "iterator_contract": "native preorder; walks read O(1) bulk attributes; digest workloads avoid result allocations and identity maps; cached attribute walks use the unpack cache; navigation-only caches are idle; mainline uses its forward cursor",
         "cursor_contract": "walk-forward reads O(1) bulk attributes, excluding counts, fields, and depth from the Rust snapshot; cursor-forward measures native navigation",
         "workload_order": "rotate by batch and every two repeats, retaining both backend orders for each rotation",
         "query_engine": "slab NFA and structural plans adapted from ../main", "seek_contract": if arguments.strict_seeks { "strict" } else { "only hidden-seek.css differences are counted and ignored" },
@@ -669,6 +686,9 @@ pub fn run(check_only: bool) -> Result<()> {
     let mut pack_contexts = BTreeMap::new();
     let mut queries = BTreeMap::new();
     let wants_queries = benchmarks.iter().any(|name| name.starts_with("query-"));
+    let wants_identities = benchmarks
+        .iter()
+        .any(|name| name == "cold-parse" || !name.starts_with("digest-"));
     let mut failures = Failures::default();
     let mut results = BTreeMap::new();
     let mut completed = BTreeSet::new();
@@ -768,13 +788,16 @@ pub fn run(check_only: bool) -> Result<()> {
                 };
                 match (mainline, squat) {
                     (Ok(mainline), Ok(squat)) => {
-                        let ids = (
-                            compare::identities(mainline.root_node()),
-                            compare::identities(squat.root_node()),
-                        );
+                        let ids = wants_identities.then(|| {
+                            (
+                                compare::identities(mainline.root_node()),
+                                compare::identities(squat.root_node()),
+                            )
+                        });
                         let (mainline_ids, squat_ids) = match ids {
-                            (Ok(a), Ok(b)) => (a, b),
-                            (a, b) => {
+                            None => (None, None),
+                            Some((Ok(a), Ok(b))) => (Some(a), Some(b)),
+                            Some((a, b)) => {
                                 failures.record(
                                     &source.input.path,
                                     "identity",
@@ -794,11 +817,11 @@ pub fn run(check_only: bool) -> Result<()> {
                             let check = (|| -> Result<()> {
                                 let expected = Observation::Walk(compare::walk(
                                     mainline.root_node(),
-                                    &mainline_ids,
+                                    mainline_ids.as_ref().unwrap(),
                                 )?);
                                 let actual = Observation::Walk(compare::walk(
                                     squat.root_node(),
-                                    &squat_ids,
+                                    squat_ids.as_ref().unwrap(),
                                 )?);
                                 if let Some(message) = difference(&expected, &actual) {
                                     bail!("{message}");
@@ -806,8 +829,8 @@ pub fn run(check_only: bool) -> Result<()> {
                                 compare::relationships(
                                     mainline.root_node(),
                                     squat.root_node(),
-                                    &mainline_ids,
-                                    &squat_ids,
+                                    mainline_ids.as_ref().unwrap(),
+                                    squat_ids.as_ref().unwrap(),
                                     language,
                                     &mut expected_fields,
                                 )
@@ -892,7 +915,7 @@ pub fn run(check_only: bool) -> Result<()> {
                                         return queries[&pair.source.input.grammar]
                                             .mainline(
                                                 pair.mainline.root_node(),
-                                                &pair.mainline_ids,
+                                                pair.mainline_ids.as_ref().unwrap(),
                                                 &pair.source.bytes,
                                                 benchmark == "query-captures",
                                             )
@@ -900,7 +923,7 @@ pub fn run(check_only: bool) -> Result<()> {
                                     }
                                     observe(
                                         pair.mainline.root_node(),
-                                        &pair.mainline_ids,
+                                        pair.mainline_ids.as_ref(),
                                         benchmark,
                                         &pair.seek_bytes,
                                         &pair.seek_points,
@@ -917,7 +940,7 @@ pub fn run(check_only: bool) -> Result<()> {
                                         return queries[&pair.source.input.grammar]
                                             .squat(
                                                 pair.squat.root_node(),
-                                                &pair.squat_ids,
+                                                pair.squat_ids.as_ref().unwrap(),
                                                 &pair.source.bytes,
                                                 benchmark == "query-captures",
                                                 !arguments.unoptimized_query,
@@ -927,7 +950,7 @@ pub fn run(check_only: bool) -> Result<()> {
                                     if benchmark.starts_with("walk-iterator") {
                                         return compare::walk_iterator(
                                             pair.squat.root_node(),
-                                            &pair.squat_ids,
+                                            pair.squat_ids.as_ref().unwrap(),
                                             benchmark.ends_with("-cached"),
                                         )
                                         .map(Observation::Walk);
@@ -935,14 +958,21 @@ pub fn run(check_only: bool) -> Result<()> {
                                     if benchmark.starts_with("iterator-forward") {
                                         return compare::navigate_iterator(
                                             pair.squat.root_node(),
-                                            &pair.squat_ids,
+                                            pair.squat_ids.as_ref().unwrap(),
                                             benchmark.ends_with("-cached"),
                                         )
                                         .map(Observation::Navigation);
                                     }
+                                    if benchmark == "digest-iterator-cached" {
+                                        return compare::digest_iterator(
+                                            pair.squat.root_node(),
+                                            true,
+                                        )
+                                        .map(Observation::Digest);
+                                    }
                                     observe(
                                         pair.squat.root_node(),
-                                        &pair.squat_ids,
+                                        pair.squat_ids.as_ref(),
                                         benchmark,
                                         &pair.seek_bytes,
                                         &pair.seek_points,
