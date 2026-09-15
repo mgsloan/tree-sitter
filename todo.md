@@ -2,15 +2,9 @@
 
 # Queue
 
-- [ ] Look into "Field lookup crosses a visible alias despite empty node-type fields"
-
 - [ ] Revisit choices of bit packing thresholds
 
 - [ ] Consider having a symbol-dependent encoding of grammar_symbol
-
-- [ ] rename `field` to `field_id`
-
-- [ ] revisit reverse preorder choice
 
 - [ ] turn inclusion of points data into a runtime configuration
 
