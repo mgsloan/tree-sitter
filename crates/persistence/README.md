@@ -44,6 +44,12 @@ Implemented:
   checked before returning the pair. See [the validator audit](validation.md).
 - Parser reset, whole-file ranges, cancellation checks and no partial publication.
 - Inline, deferred, and disabled writes. Deferred work retains no transaction.
+- `open_existing` avoids foreground cache creation; `WritePolicy::Transfer`
+  returns captured publication work even before a cache exists. Bounded,
+  same-build transfer decoding validates identity and structural safety before
+  publication. Transfer frames are an IPC format, not a durable schema.
+- Optional per-worker `LoadContext` reuses parser and packing scratch, including
+  grammar-derived lookup tables; packing contexts are allocated only on misses.
 - Nonblocking writer admission for cooperating processes/threads; map-full,
   unavailable cache, and malformed entries fall back to a freshly parsed pair.
 - Linux parse-work ownership with crash-released locks, bounded cancellable waits,

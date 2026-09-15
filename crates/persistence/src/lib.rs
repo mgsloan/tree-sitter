@@ -9,6 +9,7 @@ mod identity;
 mod maintenance;
 mod snapshot;
 mod store;
+mod transfer;
 mod work;
 pub use identity::{Grammar, GrammarFingerprint};
 pub use maintenance::{Maintenance, MaintenanceProgress, MaintenanceState, MissingSweep};
@@ -76,6 +77,9 @@ pub enum WritePolicy {
     #[default]
     Inline,
     Deferred,
+    /// Return transferable publication work even when no cache is open. The
+    /// caller hands it to another process; this policy never publishes inline.
+    Transfer,
     Disabled,
 }
 
@@ -176,6 +180,7 @@ pub struct PendingLoad {
     symbol_presence: bool,
     write: WritePolicy,
     read: ReadPolicy,
+    persistable: bool,
 }
 
 pub struct LoadResult {
@@ -183,14 +188,35 @@ pub struct LoadResult {
     pub pending_write: Option<PendingWrite>,
 }
 
+type PackCache = Option<(tree_sitter::Language, tree_sitter_squatter::PackContext)>;
+
+/// Per-worker parser and lazy packing scratch. Reuses grammar-derived tables
+/// across misses; cache hits do not allocate a packing context.
+pub struct LoadContext {
+    parser: tree_sitter::Parser,
+    packing: PackCache,
+}
+impl Default for LoadContext {
+    fn default() -> Self {
+        Self {
+            parser: tree_sitter::Parser::new(),
+            packing: None,
+        }
+    }
+}
+
 /// Complete, immutable work. No LMDB transaction is retained until execution.
 pub struct PendingWrite {
-    store: Arc<Store>,
+    store: Option<Arc<Store>>,
     request: Arc<Request>,
     grammar: Grammar,
     file: LoadedFile,
 }
 impl PendingWrite {
+    /// Optional generation cleanup to execute after successful publication.
+    pub fn maintenance(&self) -> Option<Maintenance> {
+        self.file.maintenance()
+    }
     /// Busy work can be retried later using this same item.
     pub fn publish(&self) -> Result<WriteOutcome, CacheError> {
         self.publish_with_cancellation(&AtomicBool::new(false))
@@ -199,7 +225,13 @@ impl PendingWrite {
         &self,
         cancellation: &AtomicBool,
     ) -> Result<WriteOutcome, CacheError> {
-        self.store.publish(
+        let store = self.store.as_ref().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                "publication requires an open cache",
+            )
+        })?;
+        store.publish(
             &self.request,
             self.file.source(),
             self.file.tree(),
@@ -241,11 +273,26 @@ impl Persistence {
     /// Cache opening failures are nonfatal. Root resolution must succeed.
     /// The cache directory must be trusted and accessed by cooperating writers.
     pub fn open(root: impl AsRef<Path>, options: Options) -> io::Result<Self> {
-        let root = root.as_ref().canonicalize()?;
+        Self::open_impl(root.as_ref(), options, true)
+    }
+
+    /// Open an existing cache without creating directories, files, or schema.
+    /// A missing cache still supports parsing and `WritePolicy::Transfer`.
+    pub fn open_existing(root: impl AsRef<Path>, options: Options) -> io::Result<Self> {
+        Self::open_impl(root.as_ref(), options, false)
+    }
+
+    fn open_impl(root: &Path, options: Options, create: bool) -> io::Result<Self> {
+        let root = root.canonicalize()?;
         if !root.is_dir() {
             return Err(io::Error::new(io::ErrorKind::NotADirectory, "project root"));
         }
-        let store = Store::open(&root, options.map_size).ok();
+        let store = if create {
+            Store::open(&root, options.map_size)
+        } else {
+            Store::open_existing(&root, options.map_size)
+        }
+        .ok();
         Ok(Self {
             root,
             store,
@@ -271,11 +318,43 @@ impl Persistence {
         parser: &mut tree_sitter::Parser,
         options: LoadOptions<'_>,
     ) -> Result<LoadResult, LoadError> {
+        self.load_impl(path, grammar, parser, options, None)
+    }
+
+    pub fn load_with_context(
+        &self,
+        path: &Path,
+        grammar: &Grammar,
+        context: &mut LoadContext,
+        options: LoadOptions<'_>,
+    ) -> Result<LoadResult, LoadError> {
+        self.load_impl(
+            path,
+            grammar,
+            &mut context.parser,
+            options,
+            Some(&mut context.packing),
+        )
+    }
+
+    fn load_impl(
+        &self,
+        path: &Path,
+        grammar: &Grammar,
+        parser: &mut tree_sitter::Parser,
+        options: LoadOptions<'_>,
+        mut packing: Option<&mut PackCache>,
+    ) -> Result<LoadResult, LoadError> {
         let mut pending = self.capture(path, grammar, &options)?;
         let started = std::time::Instant::now();
         loop {
             let cooperate = started.elapsed() < self.options.cooperation_wait;
-            match pending.attempt(parser, options.cancellation, cooperate)? {
+            match pending.attempt(
+                parser,
+                options.cancellation,
+                cooperate,
+                packing.as_deref_mut(),
+            )? {
                 LoadStep::Ready(result) => return Ok(result),
                 LoadStep::Deferred(next) => {
                     pending = next;
@@ -356,11 +435,10 @@ impl Persistence {
             self.options.symbol_presence,
         ));
         // Symlinked files outside the project can be read but are not persisted.
-        let store = self.store.as_ref().filter(|_| {
-            source_path
-                .canonicalize()
-                .is_ok_and(|p| p.starts_with(&self.root))
-        });
+        let persistable = source_path
+            .canonicalize()
+            .is_ok_and(|p| p.starts_with(&self.root));
+        let store = self.store.as_ref().filter(|_| persistable);
         Ok(PendingLoad {
             request,
             source,
@@ -369,6 +447,7 @@ impl Persistence {
             symbol_presence: self.options.symbol_presence,
             write: options.write,
             read: self.options.read,
+            persistable,
         })
     }
 }
@@ -379,7 +458,7 @@ impl PendingLoad {
         parser: &mut tree_sitter::Parser,
         cancellation: Option<&AtomicBool>,
     ) -> Result<LoadStep, LoadError> {
-        self.attempt(parser, cancellation, true)
+        self.attempt(parser, cancellation, true, None)
     }
 
     /// Explicit escape hatch for callers whose wait budget has expired.
@@ -388,7 +467,7 @@ impl PendingLoad {
         parser: &mut tree_sitter::Parser,
         cancellation: Option<&AtomicBool>,
     ) -> Result<LoadResult, LoadError> {
-        match self.attempt(parser, cancellation, false)? {
+        match self.attempt(parser, cancellation, false, None)? {
             LoadStep::Ready(result) => Ok(result),
             LoadStep::Deferred(_) => unreachable!("cooperation disabled"),
         }
@@ -399,6 +478,7 @@ impl PendingLoad {
         parser: &mut tree_sitter::Parser,
         cancellation: Option<&AtomicBool>,
         cooperate: bool,
+        packing: Option<&mut PackCache>,
     ) -> Result<LoadStep, LoadError> {
         let options = LoadOptions {
             write: self.write,
@@ -477,16 +557,32 @@ impl PendingLoad {
             return Err(LoadError::ParseFailed);
         };
         options.check()?;
-        let packed = tree_sitter_squatter::Tree::pack_with_options(
-            &tree,
-            tree_sitter_squatter::PackOptions {
-                // Retain transient capacity for the caller. Publication compacts
-                // directly into reserved LMDB storage, off the parse path.
-                repack: false,
-                symbol_presence: self.symbol_presence,
-                initial_group_capacity: 0,
-            },
-        )
+        let pack_options = tree_sitter_squatter::PackOptions {
+            // Retain transient capacity for the caller. Publication compacts
+            // directly into reserved LMDB storage, off the parse path.
+            repack: false,
+            symbol_presence: self.symbol_presence,
+            initial_group_capacity: 0,
+        };
+        let packed = if let Some(packing) = packing {
+            if packing
+                .as_ref()
+                .is_none_or(|(language, _)| *language != self.grammar.language)
+            {
+                *packing = Some((
+                    self.grammar.language.clone(),
+                    tree_sitter_squatter::PackContext::new(&self.grammar.language)
+                        .map_err(LoadError::Pack)?,
+                ));
+            }
+            packing
+                .as_mut()
+                .unwrap()
+                .1
+                .pack_with_options(&tree, pack_options)
+        } else {
+            tree_sitter_squatter::Tree::pack_with_options(&tree, pack_options)
+        }
         .map_err(LoadError::Pack)?;
         let file = LoadedFile {
             source: self.source.clone(),
@@ -497,13 +593,15 @@ impl PendingLoad {
                 .map(|store| (store.clone(), self.request.clone())),
         };
         let pending_write = match (options.write, store.as_ref()) {
-            (WritePolicy::Disabled, _) | (_, None) => None,
-            (_, Some(store)) => Some(PendingWrite {
+            (WritePolicy::Disabled, _) => None,
+            (_, _) if !self.persistable => None,
+            (WritePolicy::Transfer, _) | (_, Some(_)) => Some(PendingWrite {
                 store: store.clone(),
                 request: self.request,
                 grammar: self.grammar.clone(),
                 file: file.clone(),
             }),
+            (_, None) => None,
         };
         if options.write == WritePolicy::Inline {
             if let Some(write) = &pending_write {

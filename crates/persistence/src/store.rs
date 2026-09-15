@@ -265,13 +265,28 @@ fn no_link(path: &Path, directory: bool) -> io::Result<()> {
 
 impl Store {
     pub fn open(root: &Path, map_size: usize) -> Result<Arc<Self>, CacheError> {
+        Self::open_impl(root, map_size, true)
+    }
+
+    pub fn open_existing(root: &Path, map_size: usize) -> Result<Arc<Self>, CacheError> {
+        Self::open_impl(root, map_size, false)
+    }
+
+    fn open_impl(root: &Path, map_size: usize, create: bool) -> Result<Arc<Self>, CacheError> {
         let cache = root.join(".tree-squatter");
-        match fs::create_dir(&cache) {
-            Ok(()) => {
-                File::open(root)?.sync_all()?;
+        if !create {
+            for name in ["data.mdb", "lock.mdb", "cooperation.lock"] {
+                fs::metadata(cache.join(name))?;
             }
-            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => (),
-            Err(error) => return Err(error.into()),
+        }
+        if create {
+            match fs::create_dir(&cache) {
+                Ok(()) => {
+                    File::open(root)?.sync_all()?;
+                }
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => (),
+                Err(error) => return Err(error.into()),
+            }
         }
         no_link(&cache, true)?;
         let mut directory_options = OpenOptions::new();
@@ -310,7 +325,11 @@ impl Store {
             no_link(&anchor.join(name), false)?;
         }
         let mut options = OpenOptions::new();
-        options.read(true).write(true).create(true).truncate(false);
+        options
+            .read(true)
+            .write(true)
+            .create(create)
+            .truncate(false);
         #[cfg(unix)]
         {
             use std::os::unix::fs::OpenOptionsExt;
@@ -319,10 +338,14 @@ impl Store {
         let lock_file = options.open(anchor.join("cooperation.lock"))?;
         let work = crate::work::WorkLocks::new(lock_file.try_clone()?);
         let writer = Mutex::new(lock_file);
-        let Some(guard) = gate(&writer)? else {
-            return Err(
-                io::Error::new(io::ErrorKind::WouldBlock, "cache initialization busy").into(),
-            );
+        // Existing caches need no writer admission to open. In particular, a
+        // background maintenance batch must not disable a foreground reader.
+        let guard = if anchor.join("data.mdb").exists() {
+            None
+        } else {
+            Some(gate(&writer)?.ok_or_else(|| {
+                io::Error::new(io::ErrorKind::WouldBlock, "cache initialization busy")
+            })?)
         };
         let existed = anchor.join("data.mdb").exists();
         // Cooperating writers, trusted local directory, native locking/sync,
@@ -335,25 +358,41 @@ impl Store {
                 .map_size(map_size)
                 .open(&anchor)?
         };
-        // Open all handles and initialize schema in one admitted transaction.
-        // Committing also publishes DBI metadata for subsequent transactions.
-        let mut tx = env.write_txn()?;
-        let meta: Database = match env.open_database(&tx, Some("meta"))? {
-            Some(db) => db,
-            None if !existed => env.create_database(&mut tx, Some("meta"))?,
-            None => return Err(CacheError::IncompatibleSchema),
+        let (paths, sources, trees, current) = if existed {
+            let tx = env.read_txn()?;
+            let open = |name| -> Result<Database, CacheError> {
+                env.open_database(&tx, Some(name))?
+                    .ok_or(CacheError::IncompatibleSchema)
+            };
+            let meta = open("meta")?;
+            if meta.get(&tx, b"schema")? != Some(SCHEMA) {
+                return Err(CacheError::IncompatibleSchema);
+            }
+            let databases = (
+                open("paths")?,
+                open("sources")?,
+                open("trees")?,
+                open("current")?,
+            );
+            // A read transaction must commit to publish newly opened DBI
+            // handles into this process's environment as well.
+            tx.commit()?;
+            databases
+        } else {
+            // Only initial creation needs a write transaction and directory sync.
+            let mut tx = env.write_txn()?;
+            let meta: Database = env.create_database(&mut tx, Some("meta"))?;
+            meta.put(&mut tx, b"schema", SCHEMA)?;
+            let databases = (
+                env.create_database(&mut tx, Some("paths"))?,
+                env.create_database(&mut tx, Some("sources"))?,
+                env.create_database(&mut tx, Some("trees"))?,
+                env.create_database(&mut tx, Some("current"))?,
+            );
+            tx.commit()?;
+            directory.sync_all()?;
+            databases
         };
-        match meta.get(&tx, b"schema")? {
-            Some(value) if value == SCHEMA => (),
-            Some(_) => return Err(CacheError::IncompatibleSchema),
-            None => meta.put(&mut tx, b"schema", SCHEMA)?,
-        }
-        let paths = env.create_database(&mut tx, Some("paths"))?;
-        let sources = env.create_database(&mut tx, Some("sources"))?;
-        let trees = env.create_database(&mut tx, Some("trees"))?;
-        let current = env.create_database(&mut tx, Some("current"))?;
-        tx.commit()?;
-        directory.sync_all()?;
         drop(guard);
         let store = Arc::new(Self {
             env,

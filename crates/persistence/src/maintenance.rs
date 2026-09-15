@@ -141,7 +141,7 @@ impl MissingSweep {
     }
 }
 
-fn decode_path(bytes: &[u8]) -> Option<PathBuf> {
+pub(crate) fn decode_path(bytes: &[u8]) -> Option<PathBuf> {
     let (&tag, encoded) = bytes.split_first()?;
     if tag != u8::from(cfg!(windows)) {
         return None;

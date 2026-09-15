@@ -340,6 +340,32 @@ fn independent_processes_reopen_persisted_contents() {
     }
 }
 
+#[test]
+fn independent_reader_opens_while_writer_admission_is_held() {
+    let root = tempfile::tempdir().unwrap();
+    fs::write(root.path().join("input.json"), "[true]").unwrap();
+    let cache = Persistence::open(root.path(), Options::default()).unwrap();
+    assert!(!load(&cache).cache_hit());
+    let lock = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(root.path().join(".tree-squatter/cooperation.lock"))
+        .unwrap();
+    lock.lock().unwrap();
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "child_load", "--nocapture"])
+        .env("TSQ_TEST_PROJECT", root.path())
+        .env("TSQ_TEST_EXPECT_HIT", "yes")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
 /// Supply the pre-migration load test executable, built from the same native
 /// runtime/grammar sources. Its child_load entry point is the compatibility probe.
 #[test]
