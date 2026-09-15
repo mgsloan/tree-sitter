@@ -22,6 +22,17 @@ uint8_t *sq_allocate_data(size_t size) {
 #endif
 }
 
+// Owned loading overwrites every payload byte. Initialize only its runtime
+// prefix instead of faulting and zeroing the serialized region before memcpy.
+static uint8_t *allocate_uninitialized(size_t size) {
+#if SQ_COLUMN_ALIGNMENT == 64
+  if (size > SIZE_MAX - 63) return NULL;
+  return aligned_alloc(64, (size + 63) & ~(size_t)63);
+#else
+  return malloc(size);
+#endif
+}
+
 uint8_t *sq_reallocate_data(uint8_t *data, size_t old_size, size_t new_size) {
 #if SQ_COLUMN_ALIGNMENT == 64
   // realloc need not retain an over-aligned address. The experimental layout
@@ -194,6 +205,7 @@ static SQTree *allocate_tree(const TSLanguage *language, uint32_t capacity, uint
     return NULL;
   }
 
+  bool copied_load = payload_size && storage == SQ_STORAGE_COLOCATED;
   if (!payload_size) payload_size = layout.end;
   size_t prefix = sq_runtime_size(language);
   if (storage == SQ_STORAGE_COLOCATED && payload_size > SIZE_MAX - prefix) {
@@ -203,12 +215,14 @@ static SQTree *allocate_tree(const TSLanguage *language, uint32_t capacity, uint
   }
 
   size_t allocation = prefix + (storage == SQ_STORAGE_COLOCATED ? payload_size : 0);
-  SQTree *tree = (SQTree *)sq_allocate_data(allocation);
+  SQTree *tree =
+      (SQTree *)(copied_load ? allocate_uninitialized(allocation) : sq_allocate_data(allocation));
   if (!tree) {
     sq_supertype_grammar_release(grammar);
     sq_fail(error, SQ_ERROR_ALLOCATION);
     return NULL;
   }
+  if (copied_load) memset(tree, 0, prefix);
 
   tree->supertype_grammar = grammar;
   tree->storage = storage;
@@ -238,13 +252,6 @@ static SQTree *allocate_tree(const TSLanguage *language, uint32_t capacity, uint
 
   if (storage == SQ_STORAGE_COLOCATED) {
     tree->data = (uint8_t *)tree + prefix;
-  } else if (storage == SQ_STORAGE_COPIED) {
-    tree->data = sq_allocate_data(payload_size);
-    if (!tree->data) {
-      sq_tree_delete(tree);
-      sq_fail(error, SQ_ERROR_ALLOCATION);
-      return NULL;
-    }
   }
 
   return tree;
@@ -271,7 +278,8 @@ SQTree *sq_allocate_cached(const TSLanguage *language, uint32_t capacity,
 SQTree *sq_allocate_loaded(const TSLanguage *language, uint32_t capacity, const void *bytes,
                            uint32_t length, bool borrowed, SQError *error) {
   SQTree *tree = allocate_tree(language, capacity, length,
-                               borrowed ? SQ_STORAGE_BORROWED : SQ_STORAGE_COPIED, NULL, 0, error);
+                               borrowed ? SQ_STORAGE_BORROWED : SQ_STORAGE_COLOCATED, NULL, 0,
+                               error);
   if (tree) {
     if (borrowed) {
       // This storage is only read. Mutable helpers reject borrowed descriptors.
@@ -286,7 +294,6 @@ SQTree *sq_allocate_loaded(const TSLanguage *language, uint32_t capacity, const 
 
 // Release storage without changing the language reference during relocation.
 static void free_storage(SQTree *tree) {
-  if (tree->storage == SQ_STORAGE_COPIED) free(tree->data);
   free(tree);
 }
 
@@ -297,32 +304,22 @@ bool sq_grow_data(SQTree **tree_pointer, uint32_t size, SQError *error) {
     return false;
   }
 
-  if (tree->storage == SQ_STORAGE_COLOCATED) {
-    size_t prefix = sq_runtime_size(tree->language);
-    if (size > SIZE_MAX - prefix) {
-      sq_fail(error, SQ_ERROR_OVERFLOW);
-      return false;
-    }
-
-    SQTree *next =
-        (SQTree *)sq_reallocate_data((uint8_t *)tree, prefix + tree->size, prefix + size);
-    if (!next) {
-      sq_fail(error, SQ_ERROR_ALLOCATION);
-      return false;
-    }
-
-    next->data = (uint8_t *)next + prefix;
-    next->supertypes = (TSSymbol *)(next + 1);
-    *tree_pointer = tree = next;
-  } else {
-    uint8_t *data = sq_reallocate_data(tree->data, tree->size, size);
-    if (!data) {
-      sq_fail(error, SQ_ERROR_ALLOCATION);
-      return false;
-    }
-
-    tree->data = data;
+  size_t prefix = sq_runtime_size(tree->language);
+  if (size > SIZE_MAX - prefix) {
+    sq_fail(error, SQ_ERROR_OVERFLOW);
+    return false;
   }
+
+  SQTree *next =
+      (SQTree *)sq_reallocate_data((uint8_t *)tree, prefix + tree->size, prefix + size);
+  if (!next) {
+    sq_fail(error, SQ_ERROR_ALLOCATION);
+    return false;
+  }
+
+  next->data = (uint8_t *)next + prefix;
+  next->supertypes = (TSSymbol *)(next + 1);
+  *tree_pointer = tree = next;
 
   tree->size = size;
   return true;

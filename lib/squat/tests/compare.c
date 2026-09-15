@@ -633,7 +633,8 @@ static void exercise(const TSLanguage *language, const char *source, uint32_t le
   CHECK(sq_tree_copy_compact(packed, unaligned + 1, size, &error));
   CHECK(!memcmp(unaligned + 1, bytes, size));
   SQTree *loaded = sq_tree_from_bytes(language, unaligned + 1, size, &error);
-  CHECK(loaded && loaded->storage == SQ_STORAGE_COPIED);
+  CHECK(loaded && loaded->storage == SQ_STORAGE_COLOCATED);
+  CHECK(loaded->data == (uint8_t *)loaded + sq_runtime_size(language));
   CHECK(loaded->data != unaligned + 1);
   compare_tree(tree, loaded, false);
 

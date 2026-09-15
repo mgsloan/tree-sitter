@@ -137,6 +137,21 @@ fn safety_loader_rejects_truncated_sections_and_invalid_headers() {
 }
 
 #[test]
+fn copied_loaders_handle_trees_deeper_than_inline_validation_storage() {
+    let language = language();
+    let source = format!("{}0{}", "[".repeat(128), "]".repeat(128));
+    let original = pack(&language, &source, false);
+    let nodes = original.root_node().preorder().count();
+    for loaded in [
+        Tree::from_bytes(&language, original.as_bytes()).unwrap(),
+        Tree::from_bytes_safety_checked(&language, original.as_bytes()).unwrap(),
+    ] {
+        assert_eq!(loaded.root_node().preorder().count(), nodes);
+        assert_eq!(loaded.as_bytes(), original.as_bytes());
+    }
+}
+
+#[test]
 fn mutated_slabs_are_rejected_or_support_bounded_traversal() {
     let language = language();
     let original = pack(&language, "{\"key\": [true, 42]}", false);

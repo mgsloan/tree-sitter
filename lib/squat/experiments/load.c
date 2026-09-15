@@ -4,8 +4,8 @@
 #include <stdio.h>
 #include <time.h>
 
-// Time sq_tree_from_bytes over a batch of already-serialized slabs. This is the
-// persistence read path: no parsing, so grammar-sized per-tree setup dominates.
+// Time owned loading over already-serialized slabs. SQ_SAFETY_ONLY=1 selects
+// the cache-oriented policy used by persistence; the default checks integrity.
 static double now(void) {
   struct timespec t;
   clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &t);
@@ -16,6 +16,7 @@ int main(int argc, char **argv) {
   void *lib = dlopen(argv[1], RTLD_NOW);
   const TSLanguage *(*fn)(void) = (const TSLanguage *(*)(void))dlsym(lib, argv[2]);
   const TSLanguage *language = fn();
+  bool safety_only = getenv("SQ_SAFETY_ONLY") != NULL;
   int repeats = atoi(argv[3]), count = argc - 4, n = 0;
   uint8_t **slabs = malloc((size_t)count * sizeof(uint8_t *));
   uint32_t *sizes = malloc((size_t)count * sizeof(uint32_t));
@@ -55,7 +56,9 @@ int main(int argc, char **argv) {
     double start = now();
     for (int i = 0; i < n; i++) {
       SQError e;
-      SQTree *loaded = sq_tree_from_bytes(language, slabs[i], sizes[i], &e);
+      SQTree *loaded = safety_only
+                           ? sq_tree_from_bytes_safety_checked(language, slabs[i], sizes[i], &e)
+                           : sq_tree_from_bytes(language, slabs[i], sizes[i], &e);
       if (!loaded) {
         fprintf(stderr, "%s\n", sq_error_string(e));
         return 1;
@@ -68,7 +71,9 @@ int main(int argc, char **argv) {
     if (elapsed < best) best = elapsed;
   }
 
-  printf("{\"files\":%d,\"slab_bytes\":%llu,\"load_ms\":%.4f,\"us_per_file\":%.3f}\n", n,
-         (unsigned long long)bytes, best, best * 1e3 / n);
+  printf("{\"validation\":\"%s\",\"files\":%d,\"slab_bytes\":%llu,\"load_ms\":%.4f,"
+         "\"us_per_file\":%.3f}\n",
+         safety_only ? "safety" : "integrity", n, (unsigned long long)bytes, best,
+         best * 1e3 / n);
   return 0;
 }

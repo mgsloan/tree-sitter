@@ -85,7 +85,7 @@ void sq_tree_delete(SQTree *);
 const TSLanguage *sq_tree_language(const SQTree *);
 const void *sq_tree_data(const SQTree *, uint32_t *length);
 
-// Copies and validates input, including topology and auxiliary indexes.
+// Copies into one owned allocation and validates topology and auxiliary indexes.
 SQTree *sq_tree_from_bytes(const TSLanguage *, const void *, size_t, SQError *);
 
 // Copies and validates layout, topology, indexes, and coordinate arithmetic,

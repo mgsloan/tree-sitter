@@ -172,13 +172,14 @@ used packed words without changing lane phase. Iterator caches decode physical
 windows normally and consume them in descending order. Query plans translate
 slots to ascending preorder positions only where ordered scan intervals need it.
 
-`sq_tree_from_bytes` copies arbitrary-alignment input into a separate owned
-payload and validates topology, coordinates, symbols, fields, dictionaries, and
-presence entries. `sq_tree_from_bytes_borrowed` validates an externally owned,
-immutable, aligned buffer without copying it; deletion frees only the runtime
-prefix. The caller keeps that buffer alive until all uses of the borrowed tree
-finish. Rust's `Tree::from_bytes_borrowed` returns `BorrowedTree<'a>`, tying that
-lifetime to the input slice and exposing read-only tree APIs through `Deref`.
+`sq_tree_from_bytes` copies arbitrary-alignment input into a single colocated
+tree allocation and validates topology, coordinates, symbols, fields,
+dictionary, and presence entries. `sq_tree_from_bytes_borrowed` validates an
+externally owned, immutable, aligned buffer without copying it; deletion frees
+only the runtime prefix. The caller keeps that buffer alive until all uses of
+the borrowed tree finish. Rust's `Tree::from_bytes_borrowed` returns
+`BorrowedTree<'a>`, tying that lifetime to the input slice and exposing read-only
+tree APIs through `Deref`.
 There is no grammar fingerprint; callers must supply the exact matching grammar.
 Index validation reads the external columns in place, using per-symbol counters
 and bitmap popcounts instead of constructing a temporary copy of the slab.

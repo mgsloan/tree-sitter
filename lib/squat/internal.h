@@ -92,7 +92,7 @@ SQSupertypeGrammar *sq_supertype_grammar_acquire(const TSLanguage *, uint32_t, S
 void sq_supertype_grammar_release(SQSupertypeGrammar *);
 uint32_t sq_supertype_mask_id(const SQSupertypeGrammar *, const uint64_t *);
 
-typedef enum { SQ_STORAGE_COLOCATED, SQ_STORAGE_COPIED, SQ_STORAGE_BORROWED } SQStorage;
+typedef enum { SQ_STORAGE_COLOCATED, SQ_STORAGE_BORROWED } SQStorage;
 struct SQTree {
   const TSLanguage *language;
   uint8_t *data;
