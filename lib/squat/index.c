@@ -417,7 +417,9 @@ static bool validate_grammar(const SQTree *tree) {
 }
 
 static SQTree *load_bytes(const TSLanguage *language, const void *bytes, size_t length,
-                          bool borrowed, bool check_auxiliary_contents, SQError *error) {
+                          bool borrowed, bool check_auxiliary_contents,
+                          const void *grammar_cache, size_t grammar_cache_length,
+                          SQError *error) {
   sq_fail(error, SQ_OK);
   SQHeader header;
   if (!bytes || length < sizeof(header) || length > UINT32_MAX) {
@@ -466,7 +468,8 @@ static SQTree *load_bytes(const TSLanguage *language, const void *bytes, size_t 
   // which is already bounded, and every later rejection releases the tree.
   SQTree *tree =
       sq_allocate_loaded(language, header.group_capacity, bytes, (uint32_t)length, borrowed,
-                         !(header.format_flags & SQ_NO_POINTS), error);
+                         !(header.format_flags & SQ_NO_POINTS), grammar_cache,
+                         grammar_cache_length, error);
   if (!tree) return NULL;
   uint32_t dictionary_count = tree->supertype_grammar ? tree->supertype_grammar->count : 0;
   if (header.supertype_dictionary_count != dictionary_count ||
@@ -515,22 +518,44 @@ invalid:
 
 SQTree *sq_tree_from_bytes(const TSLanguage *language, const void *bytes, size_t length,
                            SQError *error) {
-  return load_bytes(language, bytes, length, false, true, error);
+  return load_bytes(language, bytes, length, false, true, NULL, 0, error);
 }
 
 SQTree *sq_tree_from_bytes_safety_checked(const TSLanguage *language, const void *bytes,
                                          size_t length, SQError *error) {
-  return load_bytes(language, bytes, length, false, false, error);
+  return load_bytes(language, bytes, length, false, false, NULL, 0, error);
+}
+
+SQTree *sq_tree_from_bytes_safety_checked_with_grammar_cache(
+    const TSLanguage *language, const void *bytes, size_t length, const void *grammar_cache,
+    size_t grammar_cache_length, SQError *error) {
+  if (!grammar_cache) {
+    sq_fail(error, SQ_ERROR_INVALID_SLAB);
+    return NULL;
+  }
+  return load_bytes(language, bytes, length, false, false, grammar_cache, grammar_cache_length,
+                    error);
 }
 
 SQTree *sq_tree_from_bytes_borrowed(const TSLanguage *language, const void *bytes, size_t length,
                                     SQError *error) {
-  return load_bytes(language, bytes, length, true, true, error);
+  return load_bytes(language, bytes, length, true, true, NULL, 0, error);
 }
 
 SQTree *sq_tree_from_bytes_borrowed_safety_checked(const TSLanguage *language, const void *bytes,
                                                   size_t length, SQError *error) {
-  return load_bytes(language, bytes, length, true, false, error);
+  return load_bytes(language, bytes, length, true, false, NULL, 0, error);
+}
+
+SQTree *sq_tree_from_bytes_borrowed_safety_checked_with_grammar_cache(
+    const TSLanguage *language, const void *bytes, size_t length, const void *grammar_cache,
+    size_t grammar_cache_length, SQError *error) {
+  if (!grammar_cache) {
+    sq_fail(error, SQ_ERROR_INVALID_SLAB);
+    return NULL;
+  }
+  return load_bytes(language, bytes, length, true, false, grammar_cache, grammar_cache_length,
+                    error);
 }
 
 SQTree *sq_tree_repack(const SQTree *tree, SQError *error) {

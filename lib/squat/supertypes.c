@@ -5,6 +5,12 @@
 // and dictionary. No permanent language pointers, and no lock on node reads.
 static atomic_flag cache_lock = ATOMIC_FLAG_INIT;
 static SQSupertypeGrammar *cache;
+
+typedef struct {
+  uint32_t magic, supertype_count, count, words;
+} GrammarCacheHeader;
+
+#define GRAMMAR_CACHE_MAGIC UINT32_C(0x53514701)
 static void lock_cache(void) {
   while (atomic_flag_test_and_set_explicit(&cache_lock, memory_order_acquire)) {}
 }
@@ -58,6 +64,26 @@ static bool rehash(SQSupertypeGrammar *g, uint32_t capacity) {
   free(g->table);
   g->table = table;
   g->table_capacity = capacity;
+  return true;
+}
+
+size_t sq_supertype_grammar_cache_size(const SQSupertypeGrammar *g) {
+  if (!g || g->count > (SIZE_MAX - sizeof(GrammarCacheHeader)) / ((size_t)g->words * 8)) return 0;
+  return sizeof(GrammarCacheHeader) + (size_t)g->count * g->words * 8;
+}
+
+bool sq_supertype_grammar_copy_cache(const SQSupertypeGrammar *g, void *destination,
+                                     size_t length, SQError *error) {
+  sq_fail(error, SQ_OK);
+  size_t expected = sq_supertype_grammar_cache_size(g);
+  if (!g || !destination || !expected || length != expected) {
+    sq_fail(error, SQ_ERROR_ARGUMENT);
+    return false;
+  }
+  GrammarCacheHeader header = {GRAMMAR_CACHE_MAGIC, g->supertype_count, g->count, g->words};
+  memcpy(destination, &header, sizeof(header));
+  memcpy((uint8_t *)destination + sizeof(header), g->masks,
+         (size_t)g->count * g->words * 8);
   return true;
 }
 
@@ -433,11 +459,106 @@ static void destroy_grammar(SQSupertypeGrammar *g) {
   free(g);
 }
 
+static SQSupertypeGrammar *find_grammar(const TSLanguage *language) {
+  for (SQSupertypeGrammar *g = cache; g; g = g->next) {
+    if (g->language == language) return g;
+  }
+  return NULL;
+}
+
+static SQSupertypeGrammar *publish_grammar(SQSupertypeGrammar *g) {
+  lock_cache();
+  // Another thread may have initialized this language while we analyzed it.
+  SQSupertypeGrammar *other = find_grammar(g->language);
+  if (other) {
+    other->references++;
+    unlock_cache();
+    destroy_grammar(g);
+    return other;
+  }
+  g->references = 1;
+  g->next = cache;
+  cache = g;
+  unlock_cache();
+  return g;
+}
+
+static int compare_mask_values(const uint64_t *left, const uint64_t *right, uint32_t words) {
+  for (uint32_t word = words; word-- > 0;) {
+    if (left[word] != right[word]) return left[word] < right[word] ? -1 : 1;
+  }
+  return 0;
+}
+
+SQSupertypeGrammar *sq_supertype_grammar_acquire_cached(const TSLanguage *language,
+                                                        uint32_t supertype_count,
+                                                        const void *data, size_t length,
+                                                        SQError *error) {
+  lock_cache();
+  SQSupertypeGrammar *existing = find_grammar(language);
+  if (existing) {
+    existing->references++;
+    unlock_cache();
+    return existing;
+  }
+  unlock_cache();
+
+  GrammarCacheHeader header;
+  if (!data || length < sizeof(header)) goto invalid;
+  memcpy(&header, data, sizeof(header));
+  uint32_t words = (supertype_count + 63) / 64;
+  if (header.magic != GRAMMAR_CACHE_MAGIC || header.supertype_count != supertype_count ||
+      header.words != words || !header.count || header.count > 65536 ||
+      header.count > (SIZE_MAX - sizeof(header)) / ((size_t)words * 8) ||
+      length != sizeof(header) + (size_t)header.count * words * 8) goto invalid;
+
+  SQSupertypeGrammar *g = calloc(1, sizeof(*g));
+  if (!g) goto allocation;
+  g->language = ts_language_copy(language);
+  g->supertype_count = supertype_count;
+  g->words = words;
+  g->count = header.count;
+  g->masks = malloc((size_t)g->count * words * 8);
+  if (!g->masks) {
+    destroy_grammar(g);
+    goto allocation;
+  }
+  memcpy(g->masks, (const uint8_t *)data + sizeof(header), (size_t)g->count * words * 8);
+  uint64_t high_mask = supertype_count % 64
+                           ? (UINT64_C(1) << (supertype_count % 64)) - 1
+                           : UINT64_MAX;
+  for (uint32_t id = 0; id < g->count; id++) {
+    const uint64_t *mask = g->masks + (size_t)id * words;
+    if ((mask[words - 1] & ~high_mask) ||
+        (id && compare_mask_values(mask - words, mask, words) >= 0)) {
+      destroy_grammar(g);
+      goto invalid;
+    }
+  }
+  uint32_t capacity = 32;
+  while (capacity < g->count * 2 && capacity < (1u << 31)) capacity *= 2;
+  if (!rehash(g, capacity)) {
+    destroy_grammar(g);
+    goto allocation;
+  }
+  return publish_grammar(g);
+
+invalid:
+  sq_fail(error, SQ_ERROR_INVALID_SLAB);
+  return NULL;
+allocation:
+  sq_fail(error, SQ_ERROR_ALLOCATION);
+  return NULL;
+}
+
 SQSupertypeGrammar *sq_supertype_grammar_acquire(const TSLanguage *language,
                                                 uint32_t supertype_count, SQError *error) {
   lock_cache();
-  for (SQSupertypeGrammar *g = cache; g; g = g->next) {
-    if (g->language == language) { g->references++; unlock_cache(); return g; }
+  SQSupertypeGrammar *existing = find_grammar(language);
+  if (existing) {
+    existing->references++;
+    unlock_cache();
+    return existing;
   }
   unlock_cache();
   SQSupertypeGrammar *g = calloc(1, sizeof(*g));
@@ -446,21 +567,7 @@ SQSupertypeGrammar *sq_supertype_grammar_acquire(const TSLanguage *language,
   g->supertype_count = supertype_count;
   g->words = (supertype_count + 63) / 64;
   if (!build_dictionary(g, error)) { destroy_grammar(g); return NULL; }
-  lock_cache();
-  // Another thread may have initialized this language while we analyzed it.
-  for (SQSupertypeGrammar *other = cache; other; other = other->next) {
-    if (other->language == language) {
-      other->references++;
-      unlock_cache();
-      destroy_grammar(g);
-      return other;
-    }
-  }
-  g->references = 1;
-  g->next = cache;
-  cache = g;
-  unlock_cache();
-  return g;
+  return publish_grammar(g);
 }
 
 void sq_supertype_grammar_release(SQSupertypeGrammar *g) {

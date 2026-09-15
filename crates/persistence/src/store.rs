@@ -11,13 +11,14 @@ use heed::{Env, EnvOpenOptions, WithoutTls, types::Bytes};
 
 pub(crate) type Database = heed::Database<Bytes, Bytes>;
 
-const SCHEMA: &[u8] = b"tree-squatter-persistence owned prototype 2";
+const SCHEMA: &[u8] = b"tree-squatter-persistence owned prototype 3";
 
 pub(crate) struct Store {
     pub(crate) env: Env<WithoutTls>,
     pub(crate) paths: Database,
     pub(crate) sources: Database,
     pub(crate) trees: Database,
+    pub(crate) grammars: Database,
     pub(crate) current: Database,
     pub(crate) writer: Mutex<File>,
     pub(crate) backed_readers: AtomicUsize,
@@ -81,6 +82,13 @@ mod tests {
         );
         assert!(
             store
+                .grammars
+                .get(&before, &crate::identity::grammar_key(&grammar))
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            store
                 .paths
                 .get(&before, &request.source_key[..32])
                 .unwrap()
@@ -121,6 +129,13 @@ mod tests {
                 .get(&after, &request.tree_key)
                 .unwrap()
                 .is_some()
+        );
+        assert_eq!(
+            store
+                .grammars
+                .get(&after, &crate::identity::grammar_key(&grammar))
+                .unwrap(),
+            Some([].as_slice())
         );
         drop(after);
         drop(before);
@@ -176,6 +191,34 @@ mod tests {
                 &Store::open(&alias, 1024 * 1024).unwrap()
             ));
         }
+    }
+
+    #[test]
+    fn wide_supertype_dictionary_round_trips_through_lmdb() {
+        let root = tempfile::tempdir().unwrap();
+        let store = Store::open(root.path(), 1024 * 1024).unwrap();
+        let language = unsafe {
+            tree_sitter::Language::from_raw(tree_sitter_c_sharp::LANGUAGE.into_raw()().cast())
+        };
+        let grammar = Grammar::new(language.clone(), GrammarFingerprint([7; 32]));
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&language).unwrap();
+        let native = parser.parse(b"class C {}", None).unwrap();
+        let tree = tree_sitter_squatter::Tree::pack(&native).unwrap();
+        let request = Request::new(b"test.cs".to_vec(), b"class C {}", &grammar, true, true);
+        store
+            .publish(&request, b"class C {}", &tree, &grammar, || false)
+            .unwrap();
+        let expected = tree.grammar_cache().unwrap();
+        assert!(!expected.is_empty());
+        drop(tree);
+
+        let persisted = store.grammar_cache(&grammar).unwrap();
+        assert_eq!(persisted, expected);
+        let context =
+            tree_sitter_squatter::PackContext::from_grammar_cache(&language, &persisted).unwrap();
+        assert_eq!(context.grammar_cache().unwrap(), expected);
+        assert!(store.get(&request, b"class C {}", &grammar).is_some());
     }
 }
 
@@ -353,12 +396,12 @@ impl Store {
         let env = unsafe {
             EnvOpenOptions::new()
                 .read_txn_without_tls()
-                .max_dbs(5)
+                .max_dbs(6)
                 .max_readers(256)
                 .map_size(map_size)
                 .open(&anchor)?
         };
-        let (paths, sources, trees, current) = if existed {
+        let (paths, sources, trees, grammars, current) = if existed {
             let tx = env.read_txn()?;
             let open = |name| -> Result<Database, CacheError> {
                 env.open_database(&tx, Some(name))?
@@ -372,6 +415,7 @@ impl Store {
                 open("paths")?,
                 open("sources")?,
                 open("trees")?,
+                open("grammars")?,
                 open("current")?,
             );
             // A read transaction must commit to publish newly opened DBI
@@ -387,6 +431,7 @@ impl Store {
                 env.create_database(&mut tx, Some("paths"))?,
                 env.create_database(&mut tx, Some("sources"))?,
                 env.create_database(&mut tx, Some("trees"))?,
+                env.create_database(&mut tx, Some("grammars"))?,
                 env.create_database(&mut tx, Some("current"))?,
             );
             tx.commit()?;
@@ -399,6 +444,7 @@ impl Store {
             paths,
             sources,
             trees,
+            grammars,
             current,
             writer,
             backed_readers: AtomicUsize::new(0),
@@ -425,11 +471,19 @@ impl Store {
         {
             return None;
         }
+        let grammar_cache = self
+            .grammars
+            .get(&tx, &crate::identity::grammar_key(grammar))
+            .ok()??;
         let value = self.trees.get(&tx, &request.tree_key).ok()??;
         let slab = request.decode(value)?;
         // Safety validation does not reconstruct auxiliary index membership.
-        let tree =
-            tree_sitter_squatter::Tree::from_bytes_safety_checked(&grammar.language, slab).ok()?;
+        let tree = tree_sitter_squatter::Tree::from_bytes_safety_checked_with_grammar_cache(
+            &grammar.language,
+            slab,
+            grammar_cache,
+        )
+        .ok()?;
         if tree.has_points() != request.points
             || tree
                 .root_node()
@@ -441,6 +495,16 @@ impl Store {
         Some(tree)
     }
 
+    pub fn grammar_cache(&self, grammar: &Grammar) -> Option<Vec<u8>> {
+        let tx = self.env.read_txn().ok()?;
+        Some(
+            self.grammars
+                .get(&tx, &crate::identity::grammar_key(grammar))
+                .ok()??
+                .to_vec(),
+        )
+    }
+
     pub fn publish(
         &self,
         request: &Request,
@@ -449,6 +513,7 @@ impl Store {
         grammar: &Grammar,
         cancelled: impl Fn() -> bool,
     ) -> Result<WriteOutcome, CacheError> {
+        let grammar_cache = tree.grammar_cache().map_err(io::Error::other)?;
         let slab_size = tree.compact_size();
         let prefix_size = request.header.len() + 8;
         let value_size = prefix_size
@@ -488,6 +553,11 @@ impl Store {
                 }
                 Ok(())
             })?;
+        self.grammars.put(
+            &mut tx,
+            &crate::identity::grammar_key(grammar),
+            &grammar_cache,
+        )?;
         self.current
             .put(&mut tx, &request.source_key[..32], &request.source_key)?;
         if cancelled() {

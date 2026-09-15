@@ -777,7 +777,8 @@ void sq_pack_context_delete(SQPackContext *context) {
   free(context);
 }
 
-SQPackContext *sq_pack_context_new(const TSLanguage *language, SQError *error) {
+static SQPackContext *pack_context_new(const TSLanguage *language, const void *grammar_cache,
+                                       size_t grammar_cache_length, SQError *error) {
   sq_fail(error, SQ_OK);
   if (!sq_language_compatible(language)) {
     sq_fail(error, SQ_ERROR_LANGUAGE);
@@ -805,11 +806,18 @@ SQPackContext *sq_pack_context_new(const TSLanguage *language, SQError *error) {
         : public == ts_builtin_sym_error_repeat ? symbols + 1 : public;
   }
   if (context->supertype_count > 8) {
-    context->supertype_grammar = sq_supertype_grammar_acquire(language, context->supertype_count, error);
+    context->supertype_grammar = grammar_cache
+        ? sq_supertype_grammar_acquire_cached(language, context->supertype_count, grammar_cache,
+                                              grammar_cache_length, error)
+        : sq_supertype_grammar_acquire(language, context->supertype_count, error);
     if (!context->supertype_grammar) {
       sq_pack_context_delete(context);
       return NULL;
     }
+  } else if (grammar_cache_length) {
+    sq_pack_context_delete(context);
+    sq_fail(error, SQ_ERROR_INVALID_SLAB);
+    return NULL;
   }
   context->public_index[symbols] = (uint16_t)symbols;
   context->public_index[symbols + 1] = (uint16_t)(symbols + 1);
@@ -852,6 +860,35 @@ context_allocation:
 allocation:
   sq_fail(error, SQ_ERROR_ALLOCATION);
   return NULL;
+}
+
+SQPackContext *sq_pack_context_new(const TSLanguage *language, SQError *error) {
+  return pack_context_new(language, NULL, 0, error);
+}
+
+SQPackContext *sq_pack_context_new_with_grammar_cache(const TSLanguage *language,
+                                                      const void *grammar_cache,
+                                                      size_t grammar_cache_length,
+                                                      SQError *error) {
+  if (!grammar_cache) {
+    sq_fail(error, SQ_ERROR_INVALID_SLAB);
+    return NULL;
+  }
+  return pack_context_new(language, grammar_cache, grammar_cache_length, error);
+}
+
+uint32_t sq_pack_context_grammar_cache_size(const SQPackContext *context) {
+  size_t size = context ? sq_supertype_grammar_cache_size(context->supertype_grammar) : 0;
+  return size <= UINT32_MAX ? (uint32_t)size : 0;
+}
+
+bool sq_pack_context_copy_grammar_cache(const SQPackContext *context, void *destination,
+                                        size_t length, SQError *error) {
+  if (!context) {
+    sq_fail(error, SQ_ERROR_ARGUMENT);
+    return false;
+  }
+  return sq_supertype_grammar_copy_cache(context->supertype_grammar, destination, length, error);
 }
 
 static SQTree *pack_tree(SQPackContext *context, const TSTree *tree,

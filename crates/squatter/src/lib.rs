@@ -115,6 +115,43 @@ impl PackContext {
         NonNull::new(raw).map(Self).ok_or_else(|| error(status))
     }
 
+    /// Reconstruct costly grammar-derived tables from bytes produced by
+    /// [`Self::grammar_cache`]. Other lookup tables are still read from the language.
+    pub fn from_grammar_cache(language: &Language, grammar_cache: &[u8]) -> Result<Self, Error> {
+        let raw_language = language.clone().into_raw();
+        let mut status = 0;
+        let raw = unsafe {
+            ffi::sq_pack_context_new_with_grammar_cache(
+                raw_language.cast(),
+                grammar_cache.as_ptr().cast(),
+                grammar_cache.len(),
+                &mut status,
+            )
+        };
+        drop(unsafe { Language::from_raw(raw_language) });
+        NonNull::new(raw).map(Self).ok_or_else(|| error(status))
+    }
+
+    /// Serialize only the parse-table-derived dictionary. Most grammars return
+    /// an empty vector because their direct supertype masks need no dictionary.
+    pub fn grammar_cache(&self) -> Result<Vec<u8>, Error> {
+        let size = unsafe { ffi::sq_pack_context_grammar_cache_size(self.0.as_ptr()) as usize };
+        if size == 0 {
+            return Ok(Vec::new());
+        }
+        let mut result = vec![0; size];
+        let mut status = 0;
+        let ok = unsafe {
+            ffi::sq_pack_context_copy_grammar_cache(
+                self.0.as_ptr(),
+                result.as_mut_ptr().cast(),
+                size,
+                &mut status,
+            )
+        };
+        ok.then_some(result).ok_or_else(|| error(status))
+    }
+
     pub fn pack(&mut self, tree: &tree_sitter::Tree) -> Result<Tree, Error> {
         self.pack_with_options(tree, PackOptions::default())
     }
@@ -231,16 +268,44 @@ impl Tree {
         language: &Language,
         owner: impl StableSlab,
     ) -> Result<BackedTree, Error> {
+        Self::from_owned_slab_impl(language, owner, None)
+    }
+
+    /// As [`Self::from_owned_slab`], reconstructing the wide-supertype
+    /// dictionary from its separately persisted cache.
+    pub fn from_owned_slab_with_grammar_cache(
+        language: &Language,
+        owner: impl StableSlab,
+        grammar_cache: &[u8],
+    ) -> Result<BackedTree, Error> {
+        Self::from_owned_slab_impl(language, owner, Some(grammar_cache))
+    }
+
+    fn from_owned_slab_impl(
+        language: &Language,
+        owner: impl StableSlab,
+        grammar_cache: Option<&[u8]>,
+    ) -> Result<BackedTree, Error> {
         let raw_language = language.clone().into_raw();
         let bytes = owner.bytes();
         let mut status = 0;
         let raw = unsafe {
-            ffi::sq_tree_from_bytes_borrowed_safety_checked(
-                raw_language.cast(),
-                bytes.as_ptr().cast(),
-                bytes.len(),
-                &mut status,
-            )
+            match grammar_cache {
+                Some(cache) => ffi::sq_tree_from_bytes_borrowed_safety_checked_with_grammar_cache(
+                    raw_language.cast(),
+                    bytes.as_ptr().cast(),
+                    bytes.len(),
+                    cache.as_ptr().cast(),
+                    cache.len(),
+                    &mut status,
+                ),
+                None => ffi::sq_tree_from_bytes_borrowed_safety_checked(
+                    raw_language.cast(),
+                    bytes.as_ptr().cast(),
+                    bytes.len(),
+                    &mut status,
+                ),
+            }
         };
         drop(unsafe { Language::from_raw(raw_language) });
         let tree = NonNull::new(raw).map(Self).ok_or_else(|| error(status))?;
@@ -307,6 +372,29 @@ impl Tree {
     pub fn from_bytes_safety_checked(language: &Language, bytes: &[u8]) -> Result<Self, Error> {
         Self::load_bytes(language, bytes, true)
     }
+
+    /// As [`Self::from_bytes_safety_checked`], reconstructing the
+    /// wide-supertype dictionary from its separately persisted cache.
+    pub fn from_bytes_safety_checked_with_grammar_cache(
+        language: &Language,
+        bytes: &[u8],
+        grammar_cache: &[u8],
+    ) -> Result<Self, Error> {
+        let raw_language = language.clone().into_raw();
+        let mut status = 0;
+        let raw = unsafe {
+            ffi::sq_tree_from_bytes_safety_checked_with_grammar_cache(
+                raw_language.cast(),
+                bytes.as_ptr().cast(),
+                bytes.len(),
+                grammar_cache.as_ptr().cast(),
+                grammar_cache.len(),
+                &mut status,
+            )
+        };
+        drop(unsafe { Language::from_raw(raw_language) });
+        NonNull::new(raw).map(Self).ok_or_else(|| error(status))
+    }
     fn load_bytes(language: &Language, bytes: &[u8], safety_only: bool) -> Result<Self, Error> {
         let raw_language = language.clone().into_raw();
         let mut status = 0;
@@ -360,6 +448,25 @@ impl Tree {
     /// Size of the compact serialized slab, excluding transient spare capacity.
     pub fn compact_size(&self) -> usize {
         unsafe { ffi::sq_tree_compact_size(self.0.as_ptr()) as usize }
+    }
+
+    /// Serialize the costly grammar-derived dictionary retained by this tree.
+    pub fn grammar_cache(&self) -> Result<Vec<u8>, Error> {
+        let size = unsafe { ffi::sq_tree_grammar_cache_size(self.0.as_ptr()) as usize };
+        if size == 0 {
+            return Ok(Vec::new());
+        }
+        let mut result = vec![0; size];
+        let mut status = 0;
+        let ok = unsafe {
+            ffi::sq_tree_copy_grammar_cache(
+                self.0.as_ptr(),
+                result.as_mut_ptr().cast(),
+                size,
+                &mut status,
+            )
+        };
+        ok.then_some(result).ok_or_else(|| error(status))
     }
 
     /// Copy used columns directly into a compact destination without allocating
@@ -876,6 +983,19 @@ mod ffi {
             error: *mut i32,
         ) -> *mut c_void;
         pub fn sq_pack_context_new(language: *const c_void, error: *mut i32) -> *mut c_void;
+        pub fn sq_pack_context_new_with_grammar_cache(
+            language: *const c_void,
+            grammar_cache: *const c_void,
+            grammar_cache_length: usize,
+            error: *mut i32,
+        ) -> *mut c_void;
+        pub fn sq_pack_context_grammar_cache_size(context: *const c_void) -> u32;
+        pub fn sq_pack_context_copy_grammar_cache(
+            context: *const c_void,
+            destination: *mut c_void,
+            length: usize,
+            error: *mut i32,
+        ) -> bool;
         pub fn sq_pack_context_pack(
             context: *mut c_void,
             tree: *const c_void,
@@ -902,10 +1022,26 @@ mod ffi {
             length: usize,
             error: *mut i32,
         ) -> *mut c_void;
+        pub fn sq_tree_from_bytes_safety_checked_with_grammar_cache(
+            language: *const c_void,
+            bytes: *const c_void,
+            length: usize,
+            grammar_cache: *const c_void,
+            grammar_cache_length: usize,
+            error: *mut i32,
+        ) -> *mut c_void;
         pub fn sq_tree_from_bytes_borrowed_safety_checked(
             language: *const c_void,
             bytes: *const c_void,
             length: usize,
+            error: *mut i32,
+        ) -> *mut c_void;
+        pub fn sq_tree_from_bytes_borrowed_safety_checked_with_grammar_cache(
+            language: *const c_void,
+            bytes: *const c_void,
+            length: usize,
+            grammar_cache: *const c_void,
+            grammar_cache_length: usize,
             error: *mut i32,
         ) -> *mut c_void;
         pub fn sq_tree_repack(tree: *const c_void, error: *mut i32) -> *mut c_void;
@@ -917,6 +1053,13 @@ mod ffi {
             error: *mut i32,
         ) -> bool;
         pub fn sq_tree_data(tree: *const c_void, length: *mut u32) -> *const c_void;
+        pub fn sq_tree_grammar_cache_size(tree: *const c_void) -> u32;
+        pub fn sq_tree_copy_grammar_cache(
+            tree: *const c_void,
+            destination: *mut c_void,
+            length: usize,
+            error: *mut i32,
+        ) -> bool;
         pub fn sq_tree_language(tree: *const c_void) -> *const c_void;
         pub fn sq_tree_delete(tree: *mut c_void);
         pub fn sq_tree_root_node(tree: *const c_void) -> RawNode;

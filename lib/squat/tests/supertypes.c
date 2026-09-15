@@ -80,12 +80,22 @@ static void exercise(uint32_t count, bool repack) {
   assert(saved);
   memcpy(saved, copy->data, copy->size);
   length = copy->size;
+  uint32_t grammar_cache_size = sq_tree_grammar_cache_size(copy);
+  uint8_t *grammar_cache = malloc(grammar_cache_size);
+  assert(grammar_cache &&
+         sq_tree_copy_grammar_cache(copy, grammar_cache, grammar_cache_size, &error));
   sq_tree_delete(copy);
   // No live context/tree remains. Loading must reconstruct exactly the same IDs.
+  copy = sq_tree_from_bytes_safety_checked_with_grammar_cache(
+      &language, saved, length, grammar_cache, grammar_cache_size, &error);
+  assert(copy);
+  check_tree(copy, slots, count);
+  sq_tree_delete(copy);
   copy = sq_tree_from_bytes(&language, saved, length, &error);
   assert(copy);
   check_tree(copy, slots, count);
   sq_tree_delete(copy);
+  free(grammar_cache);
   free(saved);
 }
 
@@ -153,8 +163,21 @@ static void dictionary_tests(void) {
   for (uint64_t mask = 0; mask < 512; mask++) assert(sq_supertype_mask_id(first, &mask) == mask);
   uint64_t expected[512];
   memcpy(expected, first->masks, sizeof(expected));
+  uint32_t cache_size = sq_pack_context_grammar_cache_size(context);
+  uint8_t *cache_bytes = malloc(cache_size);
+  assert(cache_size == 16 + sizeof(expected) && cache_bytes);
+  assert(sq_pack_context_copy_grammar_cache(context, cache_bytes, cache_size, &error));
   sq_pack_context_delete(context);
   sq_supertype_grammar_release(first);
+  context = sq_pack_context_new_with_grammar_cache(
+      &fixture.language, cache_bytes, cache_size, &error);
+  assert(context && !memcmp(expected, context->supertype_grammar->masks, sizeof(expected)));
+  sq_pack_context_delete(context);
+  cache_bytes[0] ^= 1;
+  assert(!sq_pack_context_new_with_grammar_cache(
+      &fixture.language, cache_bytes, cache_size, &error));
+  assert(error == SQ_ERROR_INVALID_SLAB);
+  free(cache_bytes);
   // Recompute after the last owner dies: IDs do not depend on cache history.
   SQSupertypeGrammar *second = sq_supertype_grammar_acquire(&fixture.language, 9, &error);
   assert(second && !memcmp(expected, second->masks, sizeof(expected)));

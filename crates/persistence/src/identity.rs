@@ -55,6 +55,13 @@ pub(crate) fn runtime() -> [u8; 32] {
     std::array::from_fn(|i| nibble(hex[2 * i]) * 16 + nibble(hex[2 * i + 1]))
 }
 
+pub(crate) fn grammar_key(grammar: &Grammar) -> [u8; 64] {
+    let mut key = [0; 64];
+    key[..32].copy_from_slice(&grammar.fingerprint.0);
+    key[32..].copy_from_slice(&runtime());
+    key
+}
+
 #[derive(Clone)]
 pub(crate) struct Request {
     pub path: Vec<u8>,

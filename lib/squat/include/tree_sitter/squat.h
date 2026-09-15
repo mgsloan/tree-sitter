@@ -66,6 +66,15 @@ SQTree *sq_tree_pack(const TSTree *, SQPackOptions, SQError *);
 // run concurrently. Packed trees own their storage and outlive the context.
 typedef struct SQPackContext SQPackContext;
 SQPackContext *sq_pack_context_new(const TSLanguage *, SQError *);
+// Uses a cache produced by sq_pack_context_copy_grammar_cache. Invalid or
+// mismatched bytes fail with SQ_ERROR_INVALID_SLAB; the language is still the
+// authority for all other metadata.
+SQPackContext *sq_pack_context_new_with_grammar_cache(const TSLanguage *, const void *, size_t,
+                                                      SQError *);
+// Zero means this grammar has no costly derived dictionary. copy requires the
+// exact nonzero size returned here and may write to unaligned storage.
+uint32_t sq_pack_context_grammar_cache_size(const SQPackContext *);
+bool sq_pack_context_copy_grammar_cache(const SQPackContext *, void *, size_t, SQError *);
 SQTree *sq_pack_context_pack(SQPackContext *, const TSTree *, SQPackOptions, SQError *);
 // Release high-water scratch while retaining grammar metadata. NULL is allowed.
 void sq_pack_context_trim(SQPackContext *);
@@ -85,6 +94,9 @@ SQTree *sq_tree_from_bytes(const TSLanguage *, const void *, size_t, SQError *);
 // Incorrect but bounded auxiliary contents may produce incorrect query results.
 // This does not verify grammar identity or the tree's agreement with source text.
 SQTree *sq_tree_from_bytes_safety_checked(const TSLanguage *, const void *, size_t, SQError *);
+SQTree *sq_tree_from_bytes_safety_checked_with_grammar_cache(const TSLanguage *, const void *,
+                                                             size_t, const void *, size_t,
+                                                             SQError *);
 
 // Validates without copying the slab. Bytes must remain alive and immutable
 // until this tree and its nodes/cursors are no longer used. They must be aligned
@@ -93,6 +105,11 @@ SQTree *sq_tree_from_bytes_safety_checked(const TSLanguage *, const void *, size
 SQTree *sq_tree_from_bytes_borrowed(const TSLanguage *, const void *, size_t, SQError *);
 // Same lifetime/alignment contract, with the safety-checked validation policy.
 SQTree *sq_tree_from_bytes_borrowed_safety_checked(const TSLanguage *, const void *, size_t, SQError *);
+SQTree *sq_tree_from_bytes_borrowed_safety_checked_with_grammar_cache(
+    const TSLanguage *, const void *, size_t, const void *, size_t, SQError *);
+
+uint32_t sq_tree_grammar_cache_size(const SQTree *);
+bool sq_tree_copy_grammar_cache(const SQTree *, void *, size_t, SQError *);
 
 // Returns an independent compact copy; nodes in the original remain valid.
 SQTree *sq_tree_repack(const SQTree *, SQError *);

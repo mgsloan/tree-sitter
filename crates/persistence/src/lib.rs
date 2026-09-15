@@ -195,6 +195,19 @@ pub struct LoadResult {
 
 type PackCache = Option<(tree_sitter::Language, tree_sitter_squatter::PackContext)>;
 
+fn pack_context(
+    grammar: &Grammar,
+    store: Option<&Store>,
+) -> Result<tree_sitter_squatter::PackContext, tree_sitter_squatter::Error> {
+    if let Some(grammar_cache) = store.and_then(|store| store.grammar_cache(grammar))
+        && let Ok(context) =
+            tree_sitter_squatter::PackContext::from_grammar_cache(&grammar.language, &grammar_cache)
+    {
+        return Ok(context);
+    }
+    tree_sitter_squatter::PackContext::new(&grammar.language)
+}
+
 /// Per-worker parser and lazy packing scratch. Reuses grammar-derived tables
 /// across misses; cache hits do not allocate a packing context.
 pub struct LoadContext {
@@ -579,8 +592,7 @@ impl PendingLoad {
             {
                 *packing = Some((
                     self.grammar.language.clone(),
-                    tree_sitter_squatter::PackContext::new(&self.grammar.language)
-                        .map_err(LoadError::Pack)?,
+                    pack_context(&self.grammar, store.as_deref()).map_err(LoadError::Pack)?,
                 ));
             }
             packing
@@ -589,7 +601,9 @@ impl PendingLoad {
                 .1
                 .pack_with_options(&tree, pack_options)
         } else {
-            tree_sitter_squatter::Tree::pack_with_options(&tree, pack_options)
+            pack_context(&self.grammar, store.as_deref())
+                .map_err(LoadError::Pack)?
+                .pack_with_options(&tree, pack_options)
         }
         .map_err(LoadError::Pack)?;
         let file = LoadedFile {

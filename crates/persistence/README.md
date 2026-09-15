@@ -50,6 +50,10 @@ Implemented:
   publication. Transfer frames are an IPC format, not a durable schema.
 - Optional per-worker `LoadContext` reuses parser and packing scratch, including
   grammar-derived lookup tables; packing contexts are allocated only on misses.
+- Parse-table-derived supertype dictionaries are stored once per grammar/runtime
+  in LMDB and reconstructed on later cache loads or packing misses. Tree and
+  dictionary publication is atomic. Linear symbol and direct-field tables remain
+  process-local.
 - Nonblocking writer admission for cooperating processes/threads; map-full,
   unavailable cache, and malformed entries fall back to a freshly parsed pair.
 - Linux parse-work ownership with crash-released locks, bounded cancellable waits,
@@ -90,13 +94,6 @@ Saving CRLF files does not necessarily make them eligible.
 Run `cargo test -p tree-squatter-persistence` for lifecycle, codec, cooperation,
 and maintenance tests.
 
-The backend migration preserves schema version 2 and its byte encodings. A Linux
-cross-backend probe verified old-backend writes read by heed, then heed writes
-read by the old backend, using separate processes with matching runtime identity.
-This is not a cross-platform or mixed-engine simultaneous-locking guarantee.
-To repeat it, retain the old `load` test executable and run:
-
-```sh
-TSQ_LEGACY_LOAD_TEST_BIN=/absolute/path/to/old-load-test \
-  cargo test -p tree-squatter-persistence --test load legacy_backend_round_trip -- --ignored
-```
+Schema version 3 adds the grammar dictionary database. Version 2 caches are
+intentionally rejected rather than upgraded in place. The earlier backend
+migration probe therefore applies only to retained version 2 builds.

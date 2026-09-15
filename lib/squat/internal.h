@@ -87,8 +87,12 @@ typedef struct SQSupertypeGrammar {
 } SQSupertypeGrammar;
 
 SQSupertypeGrammar *sq_supertype_grammar_acquire(const TSLanguage *, uint32_t, SQError *);
+SQSupertypeGrammar *sq_supertype_grammar_acquire_cached(const TSLanguage *, uint32_t,
+                                                        const void *, size_t, SQError *);
 void sq_supertype_grammar_release(SQSupertypeGrammar *);
 uint32_t sq_supertype_mask_id(const SQSupertypeGrammar *, const uint64_t *);
+size_t sq_supertype_grammar_cache_size(const SQSupertypeGrammar *);
+bool sq_supertype_grammar_copy_cache(const SQSupertypeGrammar *, void *, size_t, SQError *);
 
 typedef enum { SQ_STORAGE_COLOCATED, SQ_STORAGE_BORROWED } SQStorage;
 struct SQTree {
@@ -397,7 +401,7 @@ SQTree *sq_allocate_cached(const TSLanguage *, uint32_t, const TSSymbol *, uint3
 // pointer before reading it again; finalized public trees never move.
 size_t sq_runtime_size(const TSLanguage *);
 SQTree *sq_allocate_loaded(const TSLanguage *, uint32_t, const void *, uint32_t, bool borrowed,
-                           bool points, SQError *);
+                           bool points, const void *, size_t, SQError *);
 bool sq_resize(SQTree **, uint32_t, SQError *);
 bool sq_prepare_final(SQTree **, uint32_t capacity, uint32_t trailing_size, SQError *);
 bool sq_grow_data(SQTree **, uint32_t, SQError *);
