@@ -1,19 +1,14 @@
-- [ ] Review b3339c87b (AI design polish)
+- [ ] Review and polish design.md
 
-- [ ] Dictionary overflow
+# Queue
+
+- [ ] Make benchmarking more realistic in terms of other CPU loads / cache pressure
+
+- [ ] Revisit choices of bit packing thresholds
+
+# Backburner
 
 - [ ] Consider what APIs could make it faster
-
-- [ ] Port to Rust to see if there are sufficient LTO payoffs
-
-- [ ] specialization for 8-bit symbol or field case? Round 6 or 7 up to 8?
-
-- [ ] Benchmark vs no compaction
-
-- [ ] Better to put groups right after their node data! This way page fault etc
-  has better locality
-
-- [ ] Swap order of TSPoint for faster lexicographic compare?
 
 - [ ] Tuning:
 
@@ -23,12 +18,14 @@
 
   * scan window
 
-- [ ] Persistence should do age based deletion
-
-- [ ] API that allows reuse of scratch buffers.  Also share lookup tables derived from grammar
-
-- [ ] Accumulate occupancy estimate during parsing?
-
 - [ ] Rust impl for better LTO - or just have Rust-side implementations for small ops
 
 - [ ] Support conversion to and from little-endian representation on big-endian? (for inter-architecture communication)
+
+- [ ] Big-endian specific path for the persistent cache (LMDB repr is not portable)
+
+- [ ] Update persistence cache properly for renames
+
+- [ ] Put grammar-derived tables in LMDB?
+
+- [ ] Consider allowing persistent cache waiters
