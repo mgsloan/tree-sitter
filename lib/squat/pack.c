@@ -307,14 +307,12 @@ static bool close_group(Builder *builder) {
   SQTree *tree = builder->tree;
   SQHeader *header = sq_header(tree);
 
-  // Track actual extrema until the group closes so zero-base selection cannot
-  // change group boundaries. These bases need not retain actual minima: revisit
-  // this choice if minimum subtree spans or column positions become useful.
+  // Track actual extrema until the group closes so base selection cannot change
+  // group boundaries. Zero spans avoid addition when the absolute values fit in
+  // u8; start columns retain their minima for use as bounds. Revisit either
+  // choice if zeroing or retaining the bound becomes useful to another operation.
   // End columns keep their actual maxima for the base-minus-delta encoding.
   if (builder->max.span <= UINT8_MAX) builder->base.span = 0;
-  if (builder->points && builder->max.start_column <= UINT8_MAX) {
-    builder->base.start_column = 0;
-  }
 
   uint32_t group = header->group_count++;
   uint32_t first = group * SQ_GROUP_SIZE;

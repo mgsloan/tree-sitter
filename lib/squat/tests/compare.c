@@ -566,7 +566,7 @@ static void check_pack_bases(const SQTree *tree) {
     CHECK(sq_group_span_base(tree, group) == (span_max <= UINT8_MAX ? 0 : span_min));
     TSPoint start_base = sq_point_from_key(sq_group_start_point_base(tree, group));
     TSPoint end_base = sq_point_from_key(sq_group_end_point_base(tree, group));
-    CHECK(start_base.column == (column_max <= UINT8_MAX ? 0 : column_min));
+    CHECK(start_base.column == column_min);
     CHECK(end_base.column == end_column_max);
   }
 }

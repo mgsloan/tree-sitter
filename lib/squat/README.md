@@ -122,13 +122,13 @@ immediately precedes its corresponding node-value column, with alignment padding
 where needed. The optional symbol-presence index and sparse grammar-symbol
 overrides follow the columns.
 
-Subtree-span and start-column bases are zero when every live value in the group
-fits in u8; otherwise they use the actual minimum. The packer chooses these bases
-after closing the group, preserving group boundaries. End columns keep their
-actual maxima and the existing base-minus-delta encoding. Bases are encoding
-parameters rather than a general minimum/maximum index: revisit these choices
-if actual minimum or maximum column positions, or minimum subtree sizes, become
-useful for future operations.
+Subtree-span bases are zero when every live value in the group fits in u8;
+otherwise they use the actual minimum. Start-column bases retain their actual
+minima, and end columns keep their actual maxima and the existing
+base-minus-delta encoding. The packer chooses bases after closing the group, so
+the choices do not affect group boundaries. Revisit span or coordinate base
+selection if zeroing or retaining tighter bounds becomes useful to another
+operation.
 
 Point rows and columns share one u16 key per node, with the row delta in the
 high byte and column delta in the low byte. Their componentwise group bases are
