@@ -2,7 +2,7 @@
 
 uint64_t sq_representation_id(void) {
   return (uint64_t)SQ_VERSION | ((uint64_t)SQ_GROUP_SIZE << 32) |
-         ((uint64_t)SQ_COLUMN_ALIGNMENT << 40) | ((uint64_t)sizeof(size_t) << 48);
+         ((uint64_t)SQ_COLUMN_ALIGNMENT << 40);
 }
 
 uint8_t *sq_allocate_data(size_t size) {
@@ -154,10 +154,10 @@ void sq_set_packed(uint8_t *data, uint32_t offset, uint32_t index, uint8_t bits,
 
   uint32_t lanes = 64 / bits, shift = index % lanes * bits;
   uint8_t *address = data + offset + (uint64_t)(index / lanes) * 8;
-  uint64_t word, mask = ((UINT64_C(1) << bits) - 1) << shift;
-  memcpy(&word, address, 8);
+  uint64_t mask = ((UINT64_C(1) << bits) - 1) << shift;
+  uint64_t word = sq_get_u64(address, 0, 0);
   word = (word & ~mask) | ((uint64_t)value << shift);
-  memcpy(address, &word, 8);
+  sq_set_u64(address, 0, 0, word);
 }
 
 size_t sq_runtime_size(const TSLanguage *language) {
@@ -273,11 +273,12 @@ SQTree *sq_allocate_cached(const TSLanguage *language, uint32_t capacity,
   SQTree *tree = allocate_tree(language, capacity, 0, SQ_STORAGE_COLOCATED, supertypes, count,
                                points, NULL, 0, error);
   if (tree) {
-    *sq_header(tree) =
-        (SQHeader){.format_flags = SQ_VERSION | (!points ? SQ_NO_POINTS : 0) |
-                         (tree->layout.supertype_bits == 16 ? SQ_WIDE_SUPERTYPES : 0),
-                   .group_capacity = capacity,
-                   .supertype_dictionary_count = tree->supertype_grammar ? tree->supertype_grammar->count : 0};
+    sq_write_header(tree->data, (SQHeader){
+        .format_flags = SQ_VERSION | (!points ? SQ_NO_POINTS : 0) |
+                        (tree->layout.supertype_bits == 16 ? SQ_WIDE_SUPERTYPES : 0),
+        .group_capacity = capacity,
+        .supertype_dictionary_count = tree->supertype_grammar ? tree->supertype_grammar->count : 0,
+    });
   }
 
   return tree;
@@ -347,7 +348,7 @@ static void copy_columns(const SQTree *tree, uint8_t *data, const SQLayout *next
   } while (0)
   // Prefix-filled reverse-preorder columns retain both physical indexes and
   // packed lane phase across growth. Copy their used words, including padding.
-  uint32_t groups = sq_header(tree)->group_count, slots = groups * SQ_GROUP_SIZE;
+  uint32_t groups = sq_header_get(tree, group_count), slots = groups * SQ_GROUP_SIZE;
   COPY(waste, sq_column_size(groups, SQ_WASTE_BITS));
   COPY(start_byte_base, sq_array_size(groups, 4));
   COPY(start_byte_delta, sq_array_size(slots, 1));
@@ -382,7 +383,7 @@ static bool resize_tree(SQTree **tree_pointer, uint32_t capacity, uint32_t trail
     return false;
   }
 
-  SQHeader old = *sq_header(tree);
+  SQHeader old = sq_read_header(tree->data);
   if (capacity < old.group_count) {
     sq_fail(error, SQ_ERROR_ARGUMENT);
     return false;
@@ -420,8 +421,8 @@ static bool resize_tree(SQTree **tree_pointer, uint32_t capacity, uint32_t trail
   replacement->size = (uint32_t)total;
   replacement->layout = next;
   uint8_t *data = replacement->data;
-  memcpy(data, &old, sizeof(old));
-  ((SQHeader *)data)->group_capacity = capacity;
+  old.group_capacity = capacity;
+  sq_write_header(data, old);
 
   copy_columns(tree, data, &next, false);
   if (preserve_trailing) {
@@ -434,7 +435,7 @@ static bool resize_tree(SQTree **tree_pointer, uint32_t capacity, uint32_t trail
 
 uint32_t sq_tree_compact_size(const SQTree *tree) {
   SQLayout layout;
-  if (!tree || !sq_layout(tree->language, sq_header(tree)->group_count,
+  if (!tree || !sq_layout(tree->language, sq_header_get(tree, group_count),
                           tree->layout.supertype_bits == 16, sq_tree_has_points(tree), &layout))
     return 0;
   return layout.end + (tree->size - tree->layout.end);
@@ -448,7 +449,7 @@ bool sq_tree_copy_compact(const SQTree *tree, void *destination, size_t length, 
     return false;
   }
   SQLayout next;
-  if (!sq_layout(tree->language, sq_header(tree)->group_count,
+  if (!sq_layout(tree->language, sq_header_get(tree, group_count),
                  tree->layout.supertype_bits == 16, sq_tree_has_points(tree), &next)) {
     sq_fail(error, SQ_ERROR_OVERFLOW);
     return false;
@@ -456,9 +457,9 @@ bool sq_tree_copy_compact(const SQTree *tree, void *destination, size_t length, 
   // Destination may be uninitialized and unaligned (e.g. an LMDB reservation).
   // Initialize padding too; no typed loads or stores into destination are used.
   uint8_t *data = destination;
-  SQHeader header = *sq_header(tree);
+  SQHeader header = sq_read_header(tree->data);
   header.group_capacity = header.group_count;
-  memcpy(data, &header, sizeof(header));
+  sq_write_header(data, header);
   copy_columns(tree, data, &next, true);
   memcpy(data + next.end, tree->data + tree->layout.end, tree->size - tree->layout.end);
   return true;
@@ -467,11 +468,11 @@ bool sq_tree_copy_compact(const SQTree *tree, void *destination, size_t length, 
 bool sq_resize(SQTree **tree_pointer, uint32_t capacity, SQError *error) {
   SQTree *tree = *tree_pointer;
   if (tree->storage == SQ_STORAGE_BORROWED || tree->size < tree->layout.end ||
-      capacity < sq_header(tree)->group_count) {
+      capacity < sq_header_get(tree, group_count)) {
     sq_fail(error, SQ_ERROR_ARGUMENT);
     return false;
   }
-  if (capacity == sq_header(tree)->group_capacity && tree->storage == SQ_STORAGE_COLOCATED) {
+  if (capacity == sq_header_get(tree, group_capacity) && tree->storage == SQ_STORAGE_COLOCATED) {
     return true;
   }
   return resize_tree(tree_pointer, capacity, tree->size - tree->layout.end, true, error);
@@ -481,12 +482,12 @@ bool sq_prepare_final(SQTree **tree_pointer, uint32_t capacity, uint32_t trailin
                       SQError *error) {
   SQTree *tree = *tree_pointer;
   if (tree->storage == SQ_STORAGE_BORROWED || tree->size != tree->layout.end ||
-      capacity < sq_header(tree)->group_count) {
+      capacity < sq_header_get(tree, group_count)) {
     sq_fail(error, SQ_ERROR_ARGUMENT);
     return false;
   }
 
-  if (capacity != sq_header(tree)->group_capacity) {
+  if (capacity != sq_header_get(tree, group_capacity)) {
     return resize_tree(tree_pointer, capacity, trailing_size, false, error);
   }
 
@@ -538,11 +539,11 @@ bool sq_tree_copy_grammar_cache(const SQTree *tree, void *destination, size_t le
 }
 
 uint32_t sq_tree_group_count(const SQTree *tree) {
-  return tree ? sq_header(tree)->group_count : 0;
+  return tree ? sq_header_get(tree, group_count) : 0;
 }
 
 uint32_t sq_tree_group_capacity(const SQTree *tree) {
-  return tree ? sq_header(tree)->group_capacity : 0;
+  return tree ? sq_header_get(tree, group_capacity) : 0;
 }
 
 uint32_t sq_tree_slot_count(const SQTree *tree) {
@@ -550,7 +551,7 @@ uint32_t sq_tree_slot_count(const SQTree *tree) {
 }
 
 bool sq_tree_has_points(const SQTree *tree) {
-  return tree && !(sq_header(tree)->format_flags & SQ_NO_POINTS);
+  return tree && !(sq_header_get(tree, format_flags) & SQ_NO_POINTS);
 }
 
 const char *sq_error_string(SQError error) {

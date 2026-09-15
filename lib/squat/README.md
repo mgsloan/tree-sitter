@@ -62,6 +62,26 @@ containers. `--grammar NAME` is repeatable. Each fresh output directory contains
 logs and grammar/tool/image provenance. No source checkout is modified. Missing
 grammars and failed comparisons cause a nonzero exit.
 
+The opt-in endian test requires a little-endian host, a native C compiler, Zig
+(for cross-compilation), and `qemu-ppc64`. It statically links the same local
+grammar into native and emulated big-endian executables; no guest OS or binfmt
+registration is needed. It is not part of `make check` or the container tests.
+Use `--bits 32` with `qemu-ppc` to also check cross-pointer-width compatibility.
+
+```sh
+python3 lib/squat/tests/endian.py \
+  --grammar /path/to/tree-sitter-json --symbol tree_sitter_json \
+  --source /path/to/sample.json --output /tmp/squat-endian
+```
+
+The output directory must be new. Each executable writes slabs, checks its own
+slabs, then reads the other executable's slabs. The probe requires identical
+bytes and compares every live node's attributes and topology through copied and
+borrowed loaders. Sixteen packing variants cover capacity hints, compaction,
+points, and presence-index options. Use a source exceeding 32 groups to exercise
+the presence index, and additional grammars/sources for variable-width IDs and
+grammar overrides. Both cross-endian directions run even if one fails.
+
 Conversion walks raw subtrees iteratively in reverse preorder. Each frame stages
 child positions because multiline point offsets cannot be subtracted. Only the
 current group's absolute node attributes are buffered; no full-tree node array
@@ -109,7 +129,7 @@ cursor.goto_first_child();
 
 The runtime layout has named slab offsets, with no column enum or offset table.
 Flags, u8/u16 deltas, and u32/u64 bases have explicit typed reads and writes;
-byte positions within native packed words are adjusted on big-endian hosts.
+multi-byte values are byte-swapped on big-endian hosts.
 Only variable-width IDs and group waste use the non-straddling bit decoder.
 Symbol and field decoders cache their lanes-per-word and masks in the runtime
 layout, avoiding repeated grammar-wide arithmetic. These constants add eight
@@ -142,7 +162,8 @@ auxiliary-section offsets are derived from the exact grammar, capacity, and
 feature flags. The symbol-presence index has an explicit presence flag. All
 previous versions are rejected. Columns start on eight-byte boundaries (64 in
 the experimental alignment build); auxiliary sections remain eight-byte aligned.
-Slabs are native-endian.
+Slabs and grammar caches are little-endian on all hosts, including 32-bit hosts.
+Existing little-endian slabs are unchanged; old native big-endian slabs are rejected.
 
 Each newly packed tree has one private allocation: runtime descriptor, supertype metadata,
 alignment padding, then the persisted slab. `sq_tree_data` / Rust `as_bytes`

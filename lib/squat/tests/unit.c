@@ -32,7 +32,7 @@ static void empty_column_tests(void) {
   assert(tree->layout.field == tree->layout.supertype);
   assert(!tree->layout.supertype_bits);
   assert(tree->layout.supertype == tree->layout.last);
-  sq_header(tree)->group_count = 1;
+  sq_header_set(tree, group_count, 1);
   // Missing columns must not read bytes belonging to the next column.
   tree->data[tree->layout.field] = 0xff;
   for (unsigned waste = 0; waste < SQ_GROUP_SIZE; waste++) {
@@ -81,10 +81,13 @@ static void equality_tests(void) {
 
 static void read_tests(void) {
   uint64_t words[17];
+  uint8_t serialized[sizeof(words)];
   uint64_t state = 42;
   for (unsigned index = 0; index < 17; index++) {
     state = state * UINT64_C(6364136223846793005) + 1;
     words[index] = state;
+    for (unsigned byte = 0; byte < 8; byte++)
+      serialized[index * 8 + byte] = (uint8_t)(state >> (byte * 8));
   }
 
   for (uint8_t bits = 1; bits <= 32; bits++) {
@@ -92,8 +95,8 @@ static void read_tests(void) {
     uint64_t mask = (UINT64_C(1) << bits) - 1;
     for (uint32_t index = 0; index < 16 * lanes; index++) {
       uint32_t expected = (uint32_t)((words[1 + index / lanes] >> (index % lanes * bits)) & mask);
-      assert(sq_get_packed((const uint8_t *)words, 8, index, bits) == expected);
-      assert(sq_get_packed_cached((const uint8_t *)words, 8, index, bits,
+      assert(sq_get_packed(serialized, 8, index, bits) == expected);
+      assert(sq_get_packed_cached(serialized, 8, index, bits,
                                   (uint8_t)lanes, (uint32_t)mask) == expected);
     }
   }
@@ -196,7 +199,7 @@ static void exercise_column(SQTree *tree, uint32_t offset, uint8_t bits, uint32_
   }
 
   if (!fill) {
-    for (uint32_t index = 2 * scale; index < sq_header(tree)->group_capacity * scale; index++) {
+    for (uint32_t index = 2 * scale; index < sq_header_get(tree, group_capacity) * scale; index++) {
       assert(sq_get_packed(tree->data, offset, index, bits) == 0);
     }
   }
@@ -210,7 +213,7 @@ static void exercise_u64_column(SQTree *tree, uint32_t offset, unsigned tag, boo
   }
 
   if (!fill) {
-    for (uint32_t index = 2; index < sq_header(tree)->group_capacity; index++) {
+    for (uint32_t index = 2; index < sq_header_get(tree, group_capacity); index++) {
       assert(sq_get_u64(tree->data, offset, index) == 0);
     }
   }
@@ -263,8 +266,9 @@ static void fixed_width_write_tests(void) {
     for (uint32_t index = 0; index < 3 * lanes; index++) {
       uint32_t value = (uint32_t)((index * UINT64_C(31337)) & mask);
       uint32_t shift = index % lanes * bits;
-      uint64_t expected = (words[index / lanes] & ~(mask << shift)) | ((uint64_t)value << shift);
       uint8_t *bytes = (uint8_t *)words;
+      uint64_t expected = (sq_get_u64(bytes, 0, index / lanes) & ~(mask << shift)) |
+                          ((uint64_t)value << shift);
       switch (bits) {
       case 1:
         sq_set_bit(bytes, 0, index, value);
@@ -284,7 +288,8 @@ static void fixed_width_write_tests(void) {
         break;
       }
 
-      assert(words[index / lanes] == expected);
+      for (unsigned byte = 0; byte < 8; byte++)
+        assert(bytes[index / lanes * 8 + byte] == (uint8_t)(expected >> (byte * 8)));
     }
   }
 }
@@ -300,7 +305,7 @@ static void sparse_grammar_tests(bool dictionary) {
   const uint32_t groups = (130 + SQ_GROUP_SIZE - 1) / SQ_GROUP_SIZE;
   SQTree *tree = sq_allocate(&language, groups + 3, true, &error);
   assert(tree);
-  sq_header(tree)->group_count = groups;
+  sq_header_set(tree, group_count, groups);
   sq_set_packed(tree->data, tree->layout.waste, groups - 1, SQ_WASTE_BITS,
                 groups * SQ_GROUP_SIZE - 130);
   // 129 leaf siblings followed physically by their root.
@@ -324,7 +329,7 @@ static void sparse_grammar_tests(bool dictionary) {
   sq_set_u32(tree->data, ranks, 0, 0);
   sq_set_u32(tree->data, ranks, 1, 2);
   sq_set_u32(tree->data, ranks, 2, 4);
-  sq_header(tree)->format_flags |= SQ_GRAMMAR_OVERRIDES;
+  sq_header_set(tree, format_flags, sq_header_get(tree, format_flags) | SQ_GRAMMAR_OVERRIDES);
   SQTree *loaded = sq_tree_from_bytes(&language, tree->data, tree->size, &error);
   assert(loaded && error == SQ_OK);
   sq_tree_delete(loaded);
@@ -377,7 +382,7 @@ int main(void) {
     SQError error;
     SQTree *tree = sq_allocate(&language, 3, true, &error);
     assert(tree && error == SQ_OK);
-    sq_header(tree)->group_count = 2;
+    sq_header_set(tree, group_count, 2);
     exercise_columns(tree, true);
     const uint32_t capacities[] = {7, 19, 2, 31, 2};
     for (unsigned k = 0; k < sizeof(capacities) / sizeof(capacities[0]); k++) {

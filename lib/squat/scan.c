@@ -42,8 +42,7 @@ static uint64_t group_equal(const SQTree *tree, uint32_t group, uint32_t offset,
   uint64_t matches = 0;
   for (uint32_t word_index = first_slot / lanes; word_index <= (last_slot - 1) / lanes;
        word_index++) {
-    uint64_t word;
-    memcpy(&word, tree->data + offset + (size_t)word_index * 8, 8);
+    uint64_t word = sq_get_u64(tree->data, offset, word_index);
     uint64_t equal = sq_equal_lanes(word, value, bits);
     while (equal) {
       unsigned bit = (unsigned)__builtin_ctzll(equal);
@@ -96,7 +95,7 @@ uint64_t sq_tree_group_symbol_equal(const SQTree *tree, uint32_t group, uint32_t
 uint64_t sq_tree_group_grammar_symbol_equal(const SQTree *tree, uint32_t group, uint32_t value) {
   uint64_t matches = sq_tree_group_symbol_equal(tree, group, value);
   if (!tree || group >= sq_tree_group_count(tree) ||
-      !(sq_header(tree)->format_flags & SQ_GRAMMAR_OVERRIDES)) return matches;
+      !(sq_header_get(tree, format_flags) & SQ_GRAMMAR_OVERRIDES)) return matches;
   uint32_t first = group * SQ_GROUP_SIZE;
   uint64_t overrides = sq_get_u64(tree->data, sq_grammar_offset(tree) + 8, first / 64)
                        >> (first % 64);

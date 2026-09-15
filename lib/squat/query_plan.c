@@ -543,8 +543,7 @@ static uint32_t query_execution_find_symbols(SQQueryCursor *cursor, const SQTree
     uint32_t low = slots - group_end, high = slots - start;
     uint32_t word_index = (high - 1) / lanes;
     for (;;) {
-      uint64_t word, hits = 0;
-      memcpy(&word, tree->data + tree->layout.symbol + (size_t)word_index * 8, 8);
+      uint64_t word = sq_get_u64(tree->data, tree->layout.symbol, word_index), hits = 0;
       for (uint32_t index = 0; index < filter->count; index++) {
         uint64_t difference = (word ^ filter->values[index]) & filter->masks[index];
         hits |= ~(((difference & filter->low_bits) + filter->low_bits) | difference) &

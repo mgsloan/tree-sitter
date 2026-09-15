@@ -59,8 +59,7 @@ static inline void unpack_words(const uint8_t *column, uint32_t first, uint32_t 
   uint32_t skip = first % lanes;
   uint64_t mask = (UINT64_C(1) << bits) - 1;
   while (count) {
-    uint64_t word;
-    memcpy(&word, column + (size_t)word_index++ * 8, sizeof(word));
+    uint64_t word = sq_get_u64(column, 0, word_index++);
     word >>= skip * bits;
     uint32_t take = lanes - skip;
     if (take > count) {

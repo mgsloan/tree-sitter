@@ -42,10 +42,7 @@ pub(crate) fn digest(domain: &str, bytes: &[u8]) -> [u8; 32] {
 }
 
 pub(crate) fn representation() -> [u8; 32] {
-    let mut bytes = tree_sitter_squatter::representation_id()
-        .to_le_bytes()
-        .to_vec();
-    bytes.push(u8::from(cfg!(target_endian = "big")));
+    let bytes = tree_sitter_squatter::representation_id().to_le_bytes();
     digest("tree-squatter representation v1", &bytes)
 }
 

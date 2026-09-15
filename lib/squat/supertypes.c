@@ -81,9 +81,14 @@ bool sq_supertype_grammar_copy_cache(const SQSupertypeGrammar *g, void *destinat
     return false;
   }
   GrammarCacheHeader header = {GRAMMAR_CACHE_MAGIC, g->supertype_count, g->count, g->words};
-  memcpy(destination, &header, sizeof(header));
-  memcpy((uint8_t *)destination + sizeof(header), g->masks,
-         (size_t)g->count * g->words * 8);
+  sq_set_u32(destination, 0, 0, header.magic);
+  sq_set_u32(destination, 0, 1, header.supertype_count);
+  sq_set_u32(destination, 0, 2, header.count);
+  sq_set_u32(destination, 0, 3, header.words);
+  uint8_t *masks = (uint8_t *)destination + sizeof(header);
+  for (size_t index = 0; index < (size_t)g->count * g->words; index++) {
+    sq_set_u64(masks + index * 8, 0, 0, g->masks[index]);
+  }
   return true;
 }
 
@@ -505,7 +510,8 @@ SQSupertypeGrammar *sq_supertype_grammar_acquire_cached(const TSLanguage *langua
 
   GrammarCacheHeader header;
   if (!data || length < sizeof(header)) goto invalid;
-  memcpy(&header, data, sizeof(header));
+  header = (GrammarCacheHeader){sq_get_u32(data, 0, 0), sq_get_u32(data, 0, 1),
+                                sq_get_u32(data, 0, 2), sq_get_u32(data, 0, 3)};
   uint32_t words = (supertype_count + 63) / 64;
   if (header.magic != GRAMMAR_CACHE_MAGIC || header.supertype_count != supertype_count ||
       header.words != words || !header.count || header.count > 65536 ||
@@ -523,7 +529,10 @@ SQSupertypeGrammar *sq_supertype_grammar_acquire_cached(const TSLanguage *langua
     destroy_grammar(g);
     goto allocation;
   }
-  memcpy(g->masks, (const uint8_t *)data + sizeof(header), (size_t)g->count * words * 8);
+  const uint8_t *masks = (const uint8_t *)data + sizeof(header);
+  for (size_t index = 0; index < (size_t)g->count * words; index++) {
+    g->masks[index] = sq_get_u64(masks + index * 8, 0, 0);
+  }
   uint64_t high_mask = supertype_count % 64
                            ? (UINT64_C(1) << (supertype_count % 64)) - 1
                            : UINT64_MAX;

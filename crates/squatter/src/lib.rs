@@ -351,7 +351,7 @@ impl Tree {
         let tree = parser.parse(source, None).ok_or(Error::InvalidArgument)?;
         Self::pack_with_options(&tree, options)
     }
-    /// Loads a native-endian slab using the exact matching grammar.
+    /// Loads a little-endian slab using the exact matching grammar.
     ///
     /// Structural validation rejects malformed data. Grammar identity is the
     /// caller's responsibility; the slab does not contain a grammar fingerprint.

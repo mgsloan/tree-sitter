@@ -3,6 +3,7 @@
 #include "include/tree_sitter/squat.h"
 #include "../src/language.h"
 #include <limits.h>
+#include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -108,10 +109,6 @@ struct SQTree {
   SQSupertypeGrammar *supertype_grammar;
 };
 
-static inline SQHeader *sq_header(const SQTree *tree) {
-  return (SQHeader *)tree->data;
-}
-
 static inline uint32_t sq_symbols(const SQTree *tree) {
   return tree->language->symbol_count + tree->language->alias_count + 2;
 }
@@ -143,56 +140,68 @@ static inline uint64_t sq_array_size(uint32_t count, unsigned bytes) {
 bool sq_layout(const TSLanguage *, uint32_t capacity, bool wide_supertypes, bool points,
                SQLayout *);
 
-// Packed words store their first lane in the low bits. On big-endian hosts,
-// reverse byte/halfword positions within each word before a native load.
-// This constant endian test folds away; fixed-width access needs no division.
+// Serialized integers are little-endian; packed words start at their low bits.
+// The endian test and native-host conversions fold away.
 static inline bool sq_little_endian(void) {
   const uint16_t one = 1;
   return *(const uint8_t *)&one != 0;
 }
 
 static inline uint8_t sq_get_u8(const uint8_t *data, uint32_t offset, uint32_t index) {
-  if (!sq_little_endian()) index ^= 7;
   return data[offset + (uint64_t)index];
 }
 
 static inline void sq_set_u8(uint8_t *data, uint32_t offset, uint32_t index, uint8_t value) {
-  if (!sq_little_endian()) index ^= 7;
   data[offset + (uint64_t)index] = value;
 }
 
 static inline uint16_t sq_get_u16(const uint8_t *data, uint32_t offset, uint32_t index) {
-  if (!sq_little_endian()) index ^= 3;
   uint16_t value;
   memcpy(&value, data + offset + (uint64_t)index * 2, sizeof(value));
-  return value;
+  return sq_little_endian() ? value : __builtin_bswap16(value);
 }
 
 static inline void sq_set_u16(uint8_t *data, uint32_t offset, uint32_t index, uint16_t value) {
-  if (!sq_little_endian()) index ^= 3;
+  if (!sq_little_endian()) value = __builtin_bswap16(value);
   memcpy(data + offset + (uint64_t)index * 2, &value, sizeof(value));
 }
 
 static inline uint32_t sq_get_u32(const uint8_t *data, uint32_t offset, uint32_t index) {
-  if (!sq_little_endian()) index ^= 1;
   uint32_t value;
   memcpy(&value, data + offset + (uint64_t)index * 4, sizeof(value));
-  return value;
+  return sq_little_endian() ? value : __builtin_bswap32(value);
 }
 
 static inline void sq_set_u32(uint8_t *data, uint32_t offset, uint32_t index, uint32_t value) {
-  if (!sq_little_endian()) index ^= 1;
+  if (!sq_little_endian()) value = __builtin_bswap32(value);
   memcpy(data + offset + (uint64_t)index * 4, &value, sizeof(value));
 }
 
 static inline uint64_t sq_get_u64(const uint8_t *data, uint32_t offset, uint32_t index) {
   uint64_t value;
   memcpy(&value, data + offset + (uint64_t)index * 8, sizeof(value));
-  return value;
+  return sq_little_endian() ? value : __builtin_bswap64(value);
 }
 
 static inline void sq_set_u64(uint8_t *data, uint32_t offset, uint32_t index, uint64_t value) {
+  if (!sq_little_endian()) value = __builtin_bswap64(value);
   memcpy(data + offset + (uint64_t)index * 8, &value, sizeof(value));
+}
+
+#define sq_header_get(tree, field) sq_get_u32((tree)->data, offsetof(SQHeader, field), 0)
+#define sq_header_set(tree, field, value) \
+  sq_set_u32((tree)->data, offsetof(SQHeader, field), 0, value)
+
+static inline SQHeader sq_read_header(const void *data) {
+  return (SQHeader){sq_get_u32(data, 0, 0), sq_get_u32(data, 0, 1),
+                    sq_get_u32(data, 0, 2), sq_get_u32(data, 0, 3)};
+}
+
+static inline void sq_write_header(uint8_t *data, SQHeader header) {
+  sq_set_u32(data, 0, 0, header.format_flags);
+  sq_set_u32(data, 0, 1, header.group_count);
+  sq_set_u32(data, 0, 2, header.group_capacity);
+  sq_set_u32(data, 0, 3, header.supertype_dictionary_count);
 }
 
 static inline bool sq_get_bit(const uint8_t *data, uint32_t offset, uint32_t index) {
@@ -223,8 +232,7 @@ static inline uint32_t sq_get_packed(const uint8_t *data, uint32_t offset, uint3
   }
 
   uint32_t lanes = 64 / bits;
-  uint64_t word;
-  memcpy(&word, data + offset + (uint64_t)(index / lanes) * 8, sizeof(word));
+  uint64_t word = sq_get_u64(data, offset, index / lanes);
   return (uint32_t)((word >> (index % lanes * bits)) & ((UINT64_C(1) << bits) - 1));
 }
 
@@ -248,8 +256,7 @@ static inline uint32_t sq_get_packed_cached(const uint8_t *data, uint32_t offset
     return sq_get_u32(data, offset, index);
   }
 
-  uint64_t word;
-  memcpy(&word, data + offset + (uint64_t)(index / lanes) * 8, sizeof(word));
+  uint64_t word = sq_get_u64(data, offset, index / lanes);
   return (uint32_t)(word >> (index % lanes * bits)) & mask;
 }
 
@@ -349,7 +356,7 @@ static inline uint32_t sq_node_field_value(SQNode node) {
                               node.tree->layout.field_mask);
 }
 
-// Unpack native-endian, non-straddling fields of 1..16 bits. The caller
+// Unpack little-endian, non-straddling fields of 1..16 bits. The caller
 // provides count u16 outputs and enough complete packed words for the range.
 // Kernels: 0 automatic, 1 scalar, 2 portable SWAR, 3 BMI2, 4 AVX2.
 typedef void (*SQUnpack)(const uint8_t *, uint32_t first, uint32_t count, uint8_t bits,
@@ -409,7 +416,7 @@ bool sq_build_presence(SQTree *, SQError *);
 bool sq_build_presence_cached(SQTree *, const uint16_t *, uint8_t **, size_t *, SQError *);
 uint64_t sq_presence_size(const SQTree *);
 static inline uint32_t sq_presence_offset(const SQTree *tree) {
-  return sq_header(tree)->format_flags & SQ_PRESENCE ? tree->layout.end : 0;
+  return sq_header_get(tree, format_flags) & SQ_PRESENCE ? tree->layout.end : 0;
 }
 
 // Optional suffix after presence data. Header: count, reserved; then a live-slot

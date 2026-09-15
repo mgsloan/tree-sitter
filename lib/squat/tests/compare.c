@@ -436,7 +436,7 @@ static void reject_index_mutation(const SQTree *tree, uint8_t *bytes) {
 }
 
 static void check_grammar_validation(const SQTree *tree) {
-  if (!(sq_header(tree)->format_flags & SQ_GRAMMAR_OVERRIDES)) return;
+  if (!(sq_header_get(tree, format_flags) & SQ_GRAMMAR_OVERRIDES)) return;
   uint8_t *bytes = sq_allocate_data(tree->size);
   CHECK(bytes);
   memcpy(bytes, tree->data, tree->size);
@@ -518,8 +518,7 @@ static void check_presence_validation(const SQTree *tree) {
       // Occurrences and unused sentinels must each match exactly, including
       // the preorder position within this symbol's occurrence list.
       for (uint32_t index = 0; index < entry_bytes / 4; index++) {
-        uint32_t slot;
-        memcpy(&slot, entry + (size_t)index * 4, 4);
+        uint32_t slot = sq_get_u32(entry, 0, index);
         bool *checked = slot == SQ_NONE ? &checked_sentinel : &checked_occurrence;
         if (!*checked) {
           entry[(size_t)index * 4] ^= 1;
@@ -671,8 +670,7 @@ static void exercise(const TSLanguage *language, const char *source, uint32_t le
         error == SQ_ERROR_INVALID_SLAB);
 
   // Derived section locations still require exact counts and feature flags.
-  SQHeader valid_header;
-  memcpy(&valid_header, bytes, sizeof(valid_header));
+  SQHeader valid_header = sq_read_header(bytes);
   for (unsigned invalid_case = 0; invalid_case < 4; invalid_case++) {
     SQHeader changed = valid_header;
     switch (invalid_case) {
@@ -691,7 +689,7 @@ static void exercise(const TSLanguage *language, const char *source, uint32_t le
     }
 
     memcpy(unaligned + 1, bytes, size);
-    memcpy(unaligned + 1, &changed, sizeof(changed));
+    sq_write_header(unaligned + 1, changed);
     CHECK(!sq_tree_from_bytes(language, unaligned + 1, size, &error) &&
           error == SQ_ERROR_INVALID_SLAB);
   }
@@ -701,7 +699,7 @@ static void exercise(const TSLanguage *language, const char *source, uint32_t le
     // overrides must then immediately follow the ordinary columns.
     options.symbol_presence = false;
     SQTree *without_index = sq_tree_pack(tree, options, &error);
-    CHECK(without_index && !(sq_header(without_index)->format_flags & SQ_PRESENCE));
+    CHECK(without_index && !(sq_header_get(without_index, format_flags) & SQ_PRESENCE));
     SQTree *decoded =
         sq_tree_from_bytes(language, without_index->data, without_index->size, &error);
     CHECK(decoded);

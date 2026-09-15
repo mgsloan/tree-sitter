@@ -73,7 +73,7 @@ bool sq_build_presence_cached(SQTree *tree, const uint16_t *cached_index,
 
   uint8_t *next = tree->data;
   memset(next + offset, 0, (size_t)length);
-  sq_header(tree)->format_flags |= SQ_PRESENCE;
+  sq_header_set(tree, format_flags, sq_header_get(tree, format_flags) | SQ_PRESENCE);
 
   uint8_t *entries = next + offset + sq_column_size(symbols, 1);
   memset(entries, 0xff, (size_t)symbols * entry_bytes);
@@ -97,8 +97,7 @@ bool sq_build_presence_cached(SQTree *tree, const uint16_t *cached_index,
 
     uint32_t slot = end - 1;
     uint32_t word_index = slot / lanes, lane = slot % lanes;
-    uint64_t word;
-    memcpy(&word, symbol_column + (uint64_t)word_index * 8, sizeof(word));
+    uint64_t word = sq_get_u64(symbol_column, 0, word_index);
     for (;;) {
       uint32_t symbol_index = indexes[(word >> (lane * bits)) & value_mask];
       uint8_t *entry = entries + (size_t)symbol_index * entry_bytes;
@@ -106,13 +105,12 @@ bool sq_build_presence_cached(SQTree *tree, const uint16_t *cached_index,
       if (count > entry_slots) {
         set_group(entry, group);
       } else if (count < entry_slots) {
-        memcpy(entry + (size_t)count * sizeof(slot), &slot, sizeof(slot));
+        sq_set_u32(entry, 0, count, slot);
         counts[symbol_index] = count + 1;
       } else {
         memset(bitmap, 0, entry_bytes);
         for (uint32_t i = 0; i < entry_slots; i++) {
-          uint32_t previous;
-          memcpy(&previous, entry + (size_t)i * sizeof(previous), sizeof(previous));
+          uint32_t previous = sq_get_u32(entry, 0, i);
           set_group(bitmap, previous / SQ_GROUP_SIZE);
         }
         set_group(bitmap, group);
@@ -126,7 +124,7 @@ bool sq_build_presence_cached(SQTree *tree, const uint16_t *cached_index,
       if (lane-- == 0) {
         lane = lanes - 1;
         word_index--;
-        memcpy(&word, symbol_column + (uint64_t)word_index * 8, sizeof(word));
+        word = sq_get_u64(symbol_column, 0, word_index);
       }
     }
   }
@@ -164,8 +162,7 @@ bool sq_tree_group_has_symbol(const SQTree *tree, uint32_t group, TSSymbol symbo
   }
 
   for (uint32_t i = 0; i < entry_bytes / 4; i++) {
-    uint32_t slot;
-    memcpy(&slot, entry + (size_t)i * 4, 4);
+    uint32_t slot = sq_get_u32(entry, 0, i);
     if (slot == SQ_NONE || slot / SQ_GROUP_SIZE < group) {
       break;
     }
@@ -188,7 +185,7 @@ static bool validate_nodes(SQTree *tree, SQError *error) {
 
   uint32_t groups = sq_tree_group_count(tree), symbols = sq_symbols(tree);
   uint32_t root_slot = groups * SQ_GROUP_SIZE - sq_group_waste(tree, groups - 1) - 1;
-  uint32_t dictionary_count = sq_header(tree)->supertype_dictionary_count;
+  uint32_t dictionary_count = sq_header_get(tree, supertype_dictionary_count);
   bool points = sq_tree_has_points(tree);
   for (uint32_t group = groups; group-- > 0;) {
     uint32_t first = group * SQ_GROUP_SIZE;
@@ -332,8 +329,7 @@ static bool validate_presence(const SQTree *tree, SQError *error) {
         }
       } else {
         if (count->occurrences >= entry_slots) goto invalid;
-        uint32_t stored_slot;
-        memcpy(&stored_slot, entry + (size_t)count->occurrences * 4, 4);
+        uint32_t stored_slot = sq_get_u32(entry, 0, count->occurrences);
         if (stored_slot != slot) goto invalid;
       }
 
@@ -359,16 +355,14 @@ static bool validate_presence(const SQTree *tree, SQError *error) {
       if (set_bits != count->groups) goto invalid;
     } else {
       for (uint32_t index = count->occurrences; index < entry_slots; index++) {
-        uint32_t slot;
-        memcpy(&slot, entry + (size_t)index * 4, 4);
+        uint32_t slot = sq_get_u32(entry, 0, index);
         if (slot != SQ_NONE) goto invalid;
       }
     }
   }
 
   if (symbols % 64) {
-    uint64_t last_word;
-    memcpy(&last_word, modes + mode_bytes - 8, 8);
+    uint64_t last_word = sq_get_u64(modes + mode_bytes - 8, 0, 0);
     if (last_word >> (symbols % 64)) goto invalid;
   }
 
@@ -432,7 +426,7 @@ static SQTree *load_bytes(const TSLanguage *language, const void *bytes, size_t 
     return NULL;
   }
 
-  memcpy(&header, bytes, sizeof(header));
+  header = sq_read_header(bytes);
   if (!header.group_count || header.group_count > header.group_capacity ||
       (header.format_flags &
        ~(SQ_NO_POINTS | SQ_PRESENCE | SQ_WIDE_SUPERTYPES | SQ_GRAMMAR_OVERRIDES)) != SQ_VERSION) {
@@ -448,7 +442,7 @@ static SQTree *load_bytes(const TSLanguage *language, const void *bytes, size_t 
 
   // Validate section sizes before allocating or accessing their contents.
   // A temporary descriptor is sufficient to derive the optional index length.
-  SQTree shape = {.language = language, .data = (uint8_t *)&header};
+  SQTree shape = {.language = language, .data = (uint8_t *)bytes};
   uint64_t expected = layout.end;
   if (header.format_flags & SQ_PRESENCE) {
     if (header.group_count <= 32) goto invalid;

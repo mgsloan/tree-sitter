@@ -2,7 +2,11 @@
 // Only public APIs are used so the same probe can link against either layout.
 #include <tree_sitter/squat.h>
 #include <assert.h>
+#ifndef SQ_TEST_LANGUAGE
 #include <dlfcn.h>
+#else
+extern const TSLanguage *SQ_TEST_LANGUAGE(void);
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -20,23 +24,63 @@ static uint8_t *read_file(const char *path, uint32_t *size) {
   return bytes;
 }
 
+static void compare_trees(const SQTree *expected, const SQTree *actual) {
+  assert(sq_tree_slot_count(expected) == sq_tree_slot_count(actual));
+  assert(sq_tree_has_points(expected) == sq_tree_has_points(actual));
+  for (uint32_t slot = 0; slot < sq_tree_slot_count(expected); slot++) {
+    SQNode left = sq_tree_node_at_slot(expected, slot);
+    SQNode right = sq_tree_node_at_slot(actual, slot);
+    assert(sq_node_is_null(left) == sq_node_is_null(right));
+    if (sq_node_is_null(left)) continue;
+    SQCursorAttributes first, second;
+    sq_node_attributes(left, &first);
+    sq_node_attributes(right, &second);
+#define CHECK(member) assert(first.member == second.member)
+    CHECK(start_byte); CHECK(end_byte);
+    CHECK(start_point.row); CHECK(start_point.column);
+    CHECK(end_point.row); CHECK(end_point.column);
+    CHECK(symbol); CHECK(grammar_symbol); CHECK(field_id);
+    CHECK(is_named); CHECK(is_extra); CHECK(is_missing); CHECK(is_error); CHECK(has_error);
+#undef CHECK
+    assert(!strcmp(first.type, second.type));
+    assert(!strcmp(first.grammar_type, second.grammar_type));
+    assert(sq_node_child_count(left) == sq_node_child_count(right));
+    assert(sq_node_named_child_count(left) == sq_node_named_child_count(right));
+    assert(sq_node_descendant_count(left) == sq_node_descendant_count(right));
+    assert(sq_node_end_slot(left) == sq_node_end_slot(right));
+    SQNode left_parent = sq_node_parent(left), right_parent = sq_node_parent(right);
+    assert(sq_node_is_null(left_parent) == sq_node_is_null(right_parent));
+    if (!sq_node_is_null(left_parent)) assert(left_parent.slot == right_parent.slot);
+  }
+}
+
 int main(int argc, char **argv) {
   assert(argc == 5 || argc == 6);
+#ifdef SQ_EXPECT_BIG_ENDIAN
+  const uint16_t endian = 1;
+  assert((*(const uint8_t *)&endian == 0) == SQ_EXPECT_BIG_ENDIAN);
+#endif
+#ifdef SQ_TEST_LANGUAGE
+  const TSLanguage *language = SQ_TEST_LANGUAGE();
+#else
   void *library = dlopen(argv[1], RTLD_NOW | RTLD_LOCAL);
   assert(library);
   const TSLanguage *(*language_fn)(void) = (const TSLanguage *(*)(void))dlsym(library, argv[2]);
   assert(language_fn);
   const TSLanguage *language = language_fn();
+#endif
   uint32_t source_size;
   uint8_t *source = read_file(argv[3], &source_size);
   TSParser *parser = ts_parser_new();
   assert(ts_parser_set_language(parser, language));
   TSTree *parsed = ts_parser_parse_string(parser, NULL, (const char *)source, source_size);
   assert(parsed);
-  for (unsigned variant = 0; variant < 4; variant++) {
+  for (unsigned variant = 0; variant < 16; variant++) {
     SQPackOptions options = sq_pack_options_default();
     options.initial_group_capacity = variant & 1;
     options.repack = (variant & 2) != 0;
+    options.points = (variant & 4) == 0;
+    options.symbol_presence = (variant & 8) == 0;
     SQError error;
     SQTree *tree = sq_tree_pack(parsed, options, &error);
     assert(tree && error == SQ_OK);
@@ -58,9 +102,8 @@ int main(int argc, char **argv) {
       assert(copy && error == SQ_OK);
       SQTree *borrowed = sq_tree_from_bytes_borrowed(language, reference, size, &error);
       assert(borrowed && error == SQ_OK && sq_tree_data(borrowed, NULL) == reference);
-      uint32_t count = sq_node_descendant_count(sq_tree_root_node(tree));
-      assert(count == sq_node_descendant_count(sq_tree_root_node(copy)));
-      assert(count == sq_node_descendant_count(sq_tree_root_node(borrowed)));
+      compare_trees(tree, copy);
+      compare_trees(tree, borrowed);
       sq_tree_delete(copy);
       sq_tree_delete(borrowed);
       free(reference);
@@ -72,6 +115,8 @@ int main(int argc, char **argv) {
   ts_tree_delete(parsed);
   ts_parser_delete(parser);
   free(source);
+#ifndef SQ_TEST_LANGUAGE
   dlclose(library);
+#endif
   return 0;
 }

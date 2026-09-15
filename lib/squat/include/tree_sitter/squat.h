@@ -8,7 +8,7 @@ extern "C" {
 #endif
 
 // Immutable packed trees. Link this library alongside this checkout's runtime.
-// Slabs use native endianness and require the exact matching grammar.
+// Slabs use little-endian encoding and require the exact matching grammar.
 typedef struct SQTree SQTree;
 typedef struct {
   const SQTree *tree;

@@ -60,7 +60,7 @@ TSSymbol sq_node_symbol(SQNode node) {
 
 uint32_t sq_node_grammar_id_with_symbol(SQNode node, uint32_t symbol) {
   const SQTree *tree = node.tree;
-  if (!(sq_header(tree)->format_flags & SQ_GRAMMAR_OVERRIDES)) return symbol;
+  if (!(sq_header_get(tree, format_flags) & SQ_GRAMMAR_OVERRIDES)) return symbol;
   uint32_t bitmap = sq_grammar_offset(tree) + 8;
   uint64_t word = sq_get_u64(tree->data, bitmap, node.slot / 64);
   uint64_t bit = UINT64_C(1) << (node.slot % 64);

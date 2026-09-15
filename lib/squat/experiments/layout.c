@@ -88,10 +88,10 @@ int main(int argc, char **argv) {
       aliases += sq_node_symbol_id(node) != sq_node_grammar_id(node);
     }
 
-    SQHeader *header = sq_header(tree);
+    SQHeader header = sq_read_header(tree->data);
     uint32_t slots = sq_tree_slot_count(tree);
     uint32_t presence_bytes = sq_presence_offset(tree) ? (uint32_t)sq_presence_size(tree) : 0;
-    uint32_t dictionary_bytes = header->supertype_dictionary_count *
+    uint32_t dictionary_bytes = header.supertype_dictionary_count *
                                   ((tree->supertype_count + 63) / 64) * 8;
     uint64_t grammar_bytes = sq_column_size(slots, tree->layout.symbol_bits);
 
@@ -99,8 +99,8 @@ int main(int argc, char **argv) {
     uint64_t sparse_bytes = aliases ? sq_grammar_size(tree, aliases) : 0;
     uint8_t super_bits = 0;
     if (tree->supertype_count > 8) {
-      if (header->supertype_dictionary_count > 1) {
-        super_bits = sq_width(header->supertype_dictionary_count - 1);
+      if (header.supertype_dictionary_count > 1) {
+        super_bits = sq_width(header.supertype_dictionary_count - 1);
       }
     } else if (tree->supertype_count) {
       super_bits = tree->supertype_count < 2 ? 2 : (uint8_t)tree->supertype_count;
@@ -113,7 +113,7 @@ int main(int argc, char **argv) {
                         sq_column_size(slots, tree->layout.field_bits);
     printf("%d,%u,%u,%ld,%u,%u,%u,%u,%u,%u,%u,%llu,%llu,%llu,%llu,%llu,%llu,%.6f\n", file_index - 3,
            SQ_GROUP_SIZE, SQ_COLUMN_ALIGNMENT, length,
-           sq_node_descendant_count(sq_tree_root_node(tree)), header->group_count, slots,
+           sq_node_descendant_count(sq_tree_root_node(tree)), header.group_count, slots,
            tree->size, presence_bytes, dictionary_bytes, aliases, (unsigned long long)sparse_bytes,
            (unsigned long long)grammar_bytes, (unsigned long long)super_bytes,
            (unsigned long long)sq_column_size(slots, 8), (unsigned long long)interleaved,

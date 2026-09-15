@@ -103,7 +103,7 @@ static UnpackCache *prepare_cache(SQNodeIterator *iterator) {
 }
 
 static uint32_t cache_slot_count(const SQTree *tree, const UnpackCache *cache) {
-  uint32_t groups = sq_header(tree)->group_count - cache->group;
+  uint32_t groups = sq_header_get(tree, group_count) - cache->group;
   const unsigned groups_per_window = SQ_ITERATOR_UNPACK_SLOTS / SQ_GROUP_SIZE;
   if (groups > groups_per_window) groups = groups_per_window;
   return groups * SQ_GROUP_SIZE;

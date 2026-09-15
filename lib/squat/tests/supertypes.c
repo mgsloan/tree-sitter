@@ -9,7 +9,7 @@
 
 static void check_tree(SQTree *tree, const uint32_t *slots, uint32_t count) {
   assert(tree->layout.supertype_bits == 16);
-  assert(sq_header(tree)->supertype_dictionary_count == 512);
+  assert(sq_header_get(tree, supertype_dictionary_count) == 512);
   for (uint32_t i = 0; i < count; i++) {
     SQNode node = {tree, slots[i]};
     assert(sq_node_supertype(node) == i);
@@ -49,12 +49,12 @@ static void exercise(uint32_t count, bool repack) {
   EmitNode root = {.subtree = &leaf, .boundary = 0};
   assert(emit(&builder, &root));
   assert(close_group(&builder));
-  uint32_t capacity = sq_header(builder.tree)->group_count + (repack ? 0 : 7);
+  uint32_t capacity = sq_header_get(builder.tree, group_count) + (repack ? 0 : 7);
   assert(sq_prepare_final(&builder.tree, capacity, 0, &error));
   check_tree(builder.tree, slots, count);
   assert(sq_resize(&builder.tree, capacity + 17, &error));
   check_tree(builder.tree, slots, count);
-  assert(sq_resize(&builder.tree, sq_header(builder.tree)->group_count, &error));
+  assert(sq_resize(&builder.tree, sq_header_get(builder.tree, group_count), &error));
   check_tree(builder.tree, slots, count);
   uint32_t length;
   const void *bytes = sq_tree_data(builder.tree, &length);
@@ -67,11 +67,11 @@ static void exercise(uint32_t count, bool repack) {
   sq_tree_delete(borrowed);
   assert(copy->supertype_grammar == builder.tree->supertype_grammar);
   // Reject widths inconsistent with the dictionary count, and oversized counts.
-  sq_header(builder.tree)->format_flags ^= SQ_WIDE_SUPERTYPES;
+  sq_header_set(builder.tree, format_flags, sq_header_get(builder.tree, format_flags) ^ SQ_WIDE_SUPERTYPES);
   assert(!sq_tree_from_bytes(&language, bytes, length, &error));
   assert(error == SQ_ERROR_INVALID_SLAB);
-  sq_header(builder.tree)->format_flags ^= SQ_WIDE_SUPERTYPES;
-  sq_header(builder.tree)->supertype_dictionary_count = 65537;
+  sq_header_set(builder.tree, format_flags, sq_header_get(builder.tree, format_flags) ^ SQ_WIDE_SUPERTYPES);
+  sq_header_set(builder.tree, supertype_dictionary_count, 65537);
   assert(!sq_tree_from_bytes(&language, bytes, length, &error));
   assert(error == SQ_ERROR_INVALID_SLAB);
   sq_tree_delete(builder.tree);

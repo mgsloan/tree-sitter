@@ -265,10 +265,9 @@ static void start_lanes(LaneCursor *cursor, uint8_t *column, uint8_t bits, uint3
 // boundary words keep the lanes of the previous group. The next lane starts a
 // new word once its shift would pass the last non-straddling position.
 static inline void put_lane(LaneCursor *cursor, uint32_t value) {
-  uint64_t word;
-  memcpy(&word, cursor->address, sizeof(word));
+  uint64_t word = sq_get_u64(cursor->address, 0, 0);
   word |= (uint64_t)value << cursor->shift;
-  memcpy(cursor->address, &word, sizeof(word));
+  sq_set_u64(cursor->address, 0, 0, word);
   cursor->shift += cursor->bits;
   if (cursor->shift > cursor->limit) {
     cursor->shift = 0;
@@ -281,9 +280,9 @@ static inline void put_lane(LaneCursor *cursor, uint32_t value) {
 // group closes: it is the same group index either way, so the capacity sequence
 // and the final bytes are unchanged.
 static bool open_group(Builder *builder) {
-  SQHeader *header = sq_header(builder->tree);
-  if (header->group_count == header->group_capacity) {
-    uint32_t capacity = header->group_capacity;
+  SQHeader header = sq_read_header(builder->tree->data);
+  if (header.group_count == header.group_capacity) {
+    uint32_t capacity = header.group_capacity;
     if (capacity > UINT32_MAX / 2 || !sq_resize(&builder->tree, capacity * 2, builder->error)) {
       return false;
     }
@@ -305,7 +304,6 @@ static bool close_group(Builder *builder) {
   }
 
   SQTree *tree = builder->tree;
-  SQHeader *header = sq_header(tree);
 
   // Track actual extrema until the group closes so base selection cannot change
   // group boundaries. Zero spans avoid addition when the absolute values fit in
@@ -314,7 +312,8 @@ static bool close_group(Builder *builder) {
   // End columns keep their actual maxima for the base-minus-delta encoding.
   if (builder->max.span <= UINT8_MAX) builder->base.span = 0;
 
-  uint32_t group = header->group_count++;
+  uint32_t group = sq_header_get(tree, group_count);
+  sq_header_set(tree, group_count, group + 1);
   uint32_t first = group * SQ_GROUP_SIZE;
   sq_set_packed(tree->data, tree->layout.waste, group, SQ_WASTE_BITS,
                 SQ_GROUP_SIZE - builder->count);
@@ -352,14 +351,14 @@ static bool close_group(Builder *builder) {
     span_delta[i] = (uint8_t)(values->span - base->span);
     start_byte_delta[i] = (uint8_t)(values->start_byte - base->start_byte);
     uint16_t end_byte = (uint16_t)(max->end_byte - values->end_byte);
-    memcpy(end_byte_delta + (size_t)i * 2, &end_byte, sizeof(end_byte));
+    sq_set_u16(end_byte_delta, 0, i, end_byte);
     if (points) {
       uint16_t start = (uint16_t)((values->start_row - base->start_row) << 8) |
                        (uint16_t)(values->start_column - base->start_column);
       uint16_t end = (uint16_t)((max->end_row - values->end_row) << 8) |
                      (uint16_t)(max->end_column - values->end_column);
-      memcpy(start_point + (size_t)i * 2, &start, sizeof(start));
-      memcpy(end_point + (size_t)i * 2, &end, sizeof(end));
+      sq_set_u16(start_point, 0, i, start);
+      sq_set_u16(end_point, 0, i, end);
     }
 
     if (supertype_bits == 16) {
@@ -1088,7 +1087,7 @@ static SQTree *pack_tree(SQPackContext *context, const TSTree *tree,
   }
 
   uint64_t presence_bytes = options.symbol_presence ? sq_presence_size(builder.tree) : 0;
-  if (sq_header(builder.tree)->group_count <= 32) presence_bytes = 0;
+  if (sq_header_get(builder.tree, group_count) <= 32) presence_bytes = 0;
   uint64_t grammar_bytes = builder.override_count
       ? sq_grammar_size(builder.tree, builder.override_count) : 0;
   uint64_t trailing_bytes = presence_bytes + grammar_bytes;
@@ -1097,8 +1096,8 @@ static SQTree *pack_tree(SQPackContext *context, const TSTree *tree,
     goto failure;
   }
 
-  uint32_t final_capacity = options.repack ? sq_header(builder.tree)->group_count
-                                           : sq_header(builder.tree)->group_capacity;
+  uint32_t final_capacity = options.repack ? sq_header_get(builder.tree, group_count)
+                                           : sq_header_get(builder.tree, group_capacity);
   if (!sq_prepare_final(&builder.tree, final_capacity, (uint32_t)trailing_bytes, error)) {
     goto failure;
   }
@@ -1128,7 +1127,7 @@ static SQTree *pack_tree(SQPackContext *context, const TSTree *tree,
       sq_set_u32(packed->data, ranks, i, rank);
       rank += (uint32_t)__builtin_popcountll(sq_get_u64(packed->data, bitmap, i));
     }
-    sq_header(packed)->format_flags |= SQ_GRAMMAR_OVERRIDES;
+    sq_header_set(packed, format_flags, sq_header_get(packed, format_flags) | SQ_GRAMMAR_OVERRIDES);
   }
 
   goto cleanup;
