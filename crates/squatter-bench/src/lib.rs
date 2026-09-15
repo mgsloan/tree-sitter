@@ -724,9 +724,10 @@ pub fn run(check_only: bool) -> Result<()> {
                 if !cold_parse && !pack_contexts.contains_key(&input.grammar) {
                     pack_contexts.insert(
                         input.grammar.clone(),
-                        PackContext::new(&tree_sitter_squatter::Grammar::new(
-                            &grammars[&input.grammar].language,
-                        )?)?,
+                        (
+                            tree_sitter_squatter::Grammar::new(&grammars[&input.grammar].language)?,
+                            PackContext::new()?,
+                        ),
                     );
                 }
                 if wants_queries && !queries.contains_key(&input.grammar) {
@@ -788,10 +789,9 @@ pub fn run(check_only: bool) -> Result<()> {
                             options,
                         )?
                     } else {
-                        pack_contexts
-                            .get_mut(&source.input.grammar)
-                            .unwrap()
-                            .pack_with_options(&parsed, options)?
+                        let (grammar, context) =
+                            pack_contexts.get_mut(&source.input.grammar).unwrap();
+                        context.pack_with_options(grammar, &parsed, options)?
                     })
                 };
                 let ((mainline, mainline_time), (squat, squat_time)) = if (batch_index + repeat) % 2

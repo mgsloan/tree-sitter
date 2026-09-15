@@ -71,15 +71,13 @@ bool sq_grammar_copy_cache(const SQGrammar *, void *, size_t, SQError *);
 
 SQTree *sq_tree_pack(SQGrammar *, const TSTree *, SQPackOptions, SQError *);
 
-// A context retains its grammar and reuses mutable scratch. Calls reset transient
+// A context reuses mutable scratch across grammars. Calls reset transient
 // state even after failure. Separate contexts can share a grammar concurrently;
 // one context requires exclusive access. Output trees outlive the context.
 typedef struct SQPackContext SQPackContext;
-SQPackContext *sq_pack_context_new(SQGrammar *, SQError *);
-// Retains the new grammar without discarding scratch. Both arguments must be nonnull.
-void sq_pack_context_set_grammar(SQPackContext *, SQGrammar *);
-SQTree *sq_pack_context_pack(SQPackContext *, const TSTree *, SQPackOptions, SQError *);
-// Release high-water scratch while retaining the grammar. NULL is allowed.
+SQPackContext *sq_pack_context_new(SQError *);
+SQTree *sq_pack_context_pack(SQPackContext *, SQGrammar *, const TSTree *, SQPackOptions, SQError *);
+// Release high-water scratch. NULL is allowed.
 void sq_pack_context_trim(SQPackContext *);
 void sq_pack_context_delete(SQPackContext *);
 

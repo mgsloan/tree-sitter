@@ -648,18 +648,13 @@ impl PendingLoad {
             initial_group_capacity: 0,
         };
         let packed = if let Some(packing) = packing {
-            if let Some(context) = packing {
-                context.set_grammar(&self.grammar.prepared);
-            } else {
-                *packing = Some(
-                    tree_sitter_squatter::PackContext::new(&self.grammar.prepared)
-                        .map_err(LoadError::Pack)?,
-                );
+            if packing.is_none() {
+                *packing = Some(tree_sitter_squatter::PackContext::new().map_err(LoadError::Pack)?);
             }
             packing
                 .as_mut()
                 .unwrap()
-                .pack_with_options(&tree, pack_options)
+                .pack_with_options(&self.grammar.prepared, &tree, pack_options)
         } else {
             tree_sitter_squatter::Tree::pack_with_options(
                 &self.grammar.prepared,

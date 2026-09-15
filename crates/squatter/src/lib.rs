@@ -179,29 +179,25 @@ impl Drop for Grammar {
     }
 }
 
-/// Reusable worker-local packing scratch retaining a prepared grammar.
+/// Reusable worker-local packing scratch shared across grammars.
 /// Output trees do not borrow the context. Separate contexts can share a grammar.
 pub struct PackContext(NonNull<c_void>);
 // Moving exclusively owned scratch is safe; shared concurrent use is not.
 unsafe impl Send for PackContext {}
 impl PackContext {
-    pub fn new(grammar: &Grammar) -> Result<Self, Error> {
+    pub fn new() -> Result<Self, Error> {
         let mut status = 0;
-        let raw = unsafe { ffi::sq_pack_context_new(grammar.0.as_ptr(), &mut status) };
+        let raw = unsafe { ffi::sq_pack_context_new(&mut status) };
         NonNull::new(raw).map(Self).ok_or_else(|| error(status))
     }
 
-    /// Switch grammars without discarding scratch allocations.
-    pub fn set_grammar(&mut self, grammar: &Grammar) {
-        unsafe { ffi::sq_pack_context_set_grammar(self.0.as_ptr(), grammar.0.as_ptr()) }
-    }
-
-    pub fn pack(&mut self, tree: &tree_sitter::Tree) -> Result<Tree, Error> {
-        self.pack_with_options(tree, PackOptions::default())
+    pub fn pack(&mut self, grammar: &Grammar, tree: &tree_sitter::Tree) -> Result<Tree, Error> {
+        self.pack_with_options(grammar, tree, PackOptions::default())
     }
 
     pub fn pack_with_options(
         &mut self,
+        grammar: &Grammar,
         tree: &tree_sitter::Tree,
         options: PackOptions,
     ) -> Result<Tree, Error> {
@@ -209,6 +205,7 @@ impl PackContext {
         let raw = unsafe {
             ffi::sq_pack_context_pack(
                 self.0.as_ptr(),
+                grammar.0.as_ptr(),
                 tree.root_node().into_raw().tree.cast(),
                 options,
                 &mut status,
@@ -217,7 +214,7 @@ impl PackContext {
         NonNull::new(raw).map(Tree).ok_or_else(|| error(status))
     }
 
-    /// Release high-water scratch while retaining grammar lookup tables.
+    /// Release high-water scratch.
     pub fn trim(&mut self) {
         unsafe { ffi::sq_pack_context_trim(self.0.as_ptr()) }
     }
@@ -971,8 +968,7 @@ mod ffi {
             options: PackOptions,
             error: *mut i32,
         ) -> *mut c_void;
-        pub fn sq_pack_context_new(grammar: *mut c_void, error: *mut i32) -> *mut c_void;
-        pub fn sq_pack_context_set_grammar(context: *mut c_void, grammar: *mut c_void);
+        pub fn sq_pack_context_new(error: *mut i32) -> *mut c_void;
         pub fn sq_grammar_new(language: *const c_void, error: *mut i32) -> *mut c_void;
         pub fn sq_grammar_new_with_cache(
             language: *const c_void,
@@ -993,6 +989,7 @@ mod ffi {
         pub fn sq_tree_grammar(tree: *const c_void) -> *mut c_void;
         pub fn sq_pack_context_pack(
             context: *mut c_void,
+            grammar: *mut c_void,
             tree: *const c_void,
             options: PackOptions,
             error: *mut i32,

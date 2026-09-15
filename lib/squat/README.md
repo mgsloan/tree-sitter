@@ -34,13 +34,12 @@ Prepare an `SQGrammar` once and retain it between batches. It owns immutable
 symbol, supertype, and direct-field lookup tables. `sq_grammar_copy` shares the
 handle using atomic reference counting; `sq_grammar_delete` releases it. There is
 no global grammar registry or lookup on packing/loading. Native grammar libraries
-must remain loaded while any prepared grammar, context, or tree uses them.
+must remain loaded while any prepared grammar or tree uses them.
 
-Create worker-local scratch with `sq_pack_context_new(grammar, &error)` and pack
-with `sq_pack_context_pack(context, parsed_tree, options, &error)`. Separate
-contexts can read the same grammar concurrently. `sq_pack_context_set_grammar`
-switches grammars without discarding scratch; `sq_pack_context_trim` releases
-scratch while retaining the grammar. Output trees retain the shared metadata and
+Create worker-local scratch with `sq_pack_context_new(&error)` and pack
+with `sq_pack_context_pack(context, grammar, parsed_tree, options, &error)`. Separate
+contexts can read the same grammar concurrently. A context reuses scratch across
+grammars; `sq_pack_context_trim` releases scratch. Output trees retain the shared metadata and
 remain valid after context reuse or deletion. One-shot `sq_tree_pack` also takes
 a prepared grammar. Slab loaders take that same handle.
 

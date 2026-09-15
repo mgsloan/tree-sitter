@@ -780,9 +780,9 @@ static void edited_positions(const TSLanguage *language) {
   CHECK(grammar);
   SQTree *packed = sq_tree_pack(grammar, tree, sq_pack_options_default(), &error);
   CHECK(packed && error == SQ_OK);
-  SQPackContext *context = sq_pack_context_new(grammar, &error);
+  SQPackContext *context = sq_pack_context_new(&error);
   CHECK(context);
-  SQTree *cached = sq_pack_context_pack(context, tree, sq_pack_options_default(), &error);
+  SQTree *cached = sq_pack_context_pack(context, grammar, tree, sq_pack_options_default(), &error);
   CHECK(cached && cached->size == packed->size);
   CHECK(memcmp(cached->data, packed->data, packed->size) == 0);
   TSTreeCursor cursor = ts_tree_cursor_new(ts_tree_root_node(tree));

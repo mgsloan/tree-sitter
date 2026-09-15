@@ -55,7 +55,6 @@ int main(int argc, char **argv) {
     grammar_allocation_failures(true);
   }
   SQError error;
-  assert(!sq_pack_context_new(NULL, &error) && error == SQ_ERROR_ARGUMENT);
   sq_pack_context_delete(NULL);
   sq_pack_context_trim(NULL);
   void *library = dlopen(argv[1], RTLD_NOW | RTLD_LOCAL);
@@ -78,7 +77,7 @@ int main(int argc, char **argv) {
   }
   SQGrammar *grammar = sq_grammar_new(language, &error);
   assert(grammar);
-  SQPackContext *context = sq_pack_context_new(grammar, &error);
+  SQPackContext *context = sq_pack_context_new(&error);
   assert(context && error == SQ_OK);
   TSParser *parser = ts_parser_new();
   assert(ts_parser_set_language(parser, language));
@@ -97,12 +96,12 @@ int main(int argc, char **argv) {
     TSLanguage other_language = test_clone_language(language);
     SQGrammar *other_grammar = sq_grammar_new(&other_language, &error);
     assert(other_grammar);
-    SQPackContext *other = sq_pack_context_new(other_grammar, &error);
-    sq_grammar_delete(other_grammar);
+    SQPackContext *other = sq_pack_context_new(&error);
     assert(other);
-    assert(!sq_pack_context_pack(other, parsed, sq_pack_options_default(), &error));
+    assert(!sq_pack_context_pack(other, other_grammar, parsed, sq_pack_options_default(), &error));
     assert(error == SQ_ERROR_LANGUAGE);
     sq_pack_context_delete(other);
+    sq_grammar_delete(other_grammar);
     SQTree *retained = NULL, *reference = NULL;
     for (unsigned variant = 0; variant < 8; variant++) {
       SQPackOptions options = {.initial_group_capacity = variant & 1,
@@ -110,7 +109,7 @@ int main(int argc, char **argv) {
                               .symbol_presence = (variant & 4) != 0,
                               .points = true};
       SQTree *ordinary = sq_tree_pack(grammar, parsed, options, &error);
-      SQTree *cached = sq_pack_context_pack(context, parsed, options, &error);
+      SQTree *cached = sq_pack_context_pack(context, grammar, parsed, options, &error);
       assert(error == SQ_OK);
       equal(ordinary, cached);
       if (variant == 0) { retained = cached; reference = ordinary; }
@@ -118,12 +117,14 @@ int main(int argc, char **argv) {
     }
     sq_pack_context_trim(context);
     equal(retained, reference);
-    assert(!sq_pack_context_pack(context, NULL, sq_pack_options_default(), &error));
+    assert(!sq_pack_context_pack(context, NULL, parsed, sq_pack_options_default(), &error));
     assert(error == SQ_ERROR_ARGUMENT);
-    assert(!sq_pack_context_pack(NULL, parsed, sq_pack_options_default(), &error));
+    assert(!sq_pack_context_pack(context, grammar, NULL, sq_pack_options_default(), &error));
+    assert(error == SQ_ERROR_ARGUMENT);
+    assert(!sq_pack_context_pack(NULL, grammar, parsed, sq_pack_options_default(), &error));
     assert(error == SQ_ERROR_ARGUMENT);
     SQPackOptions invalid = {.initial_group_capacity = UINT32_MAX};
-    assert(!sq_pack_context_pack(context, parsed, invalid, &error));
+    assert(!sq_pack_context_pack(context, grammar, parsed, invalid, &error));
     assert(error == SQ_ERROR_OVERFLOW);
 
     SQPackOptions options = sq_pack_options_default();
@@ -137,12 +138,12 @@ int main(int argc, char **argv) {
         sq_pack_context_trim(context);
         allocations = 0;
         fail_at = nth;
-        SQTree *attempt = sq_pack_context_pack(context, parsed, options, &error);
+        SQTree *attempt = sq_pack_context_pack(context, grammar, parsed, options, &error);
         fail_at = 0;
         bool finished = attempt != NULL;
         if (attempt) { equal(attempt, expected); sq_tree_delete(attempt); }
         else assert(error == SQ_ERROR_ALLOCATION);
-        SQTree *recovered = sq_pack_context_pack(context, parsed, options, &error);
+        SQTree *recovered = sq_pack_context_pack(context, grammar, parsed, options, &error);
         equal(recovered, expected);
         sq_tree_delete(recovered);
         if (finished) break;
@@ -159,13 +160,13 @@ int main(int argc, char **argv) {
         if (finished) break;
       }
     }
-    SQTree *again = sq_pack_context_pack(context, parsed, options, &error);
+    SQTree *again = sq_pack_context_pack(context, grammar, parsed, options, &error);
     equal(again, expected);
     sq_tree_delete(again);
     TSTree *empty = ts_parser_parse_string(parser, NULL, "", 0);
     assert(empty);
     SQTree *small_reference = sq_tree_pack(grammar, empty, options, &error);
-    SQTree *small_cached = sq_pack_context_pack(context, empty, options, &error);
+    SQTree *small_cached = sq_pack_context_pack(context, grammar, empty, options, &error);
     equal(small_cached, small_reference);
     sq_tree_delete(small_cached);
     sq_tree_delete(small_reference);
@@ -175,7 +176,7 @@ int main(int argc, char **argv) {
     equal(retained, reference);
     sq_tree_delete(retained);
     sq_tree_delete(reference);
-    context = sq_pack_context_new(grammar, &error);
+    context = sq_pack_context_new(&error);
     assert(context);
     ts_tree_delete(parsed);
   }

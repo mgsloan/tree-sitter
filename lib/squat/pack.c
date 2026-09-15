@@ -99,7 +99,6 @@ typedef struct {
 } Frame;
 
 struct SQPackContext {
-  SQGrammar *grammar;
   // Retain only storage, never pending nodes or pointers into a completed slab.
   struct {
     PackPosition *positions;
@@ -701,7 +700,6 @@ void sq_pack_context_trim(SQPackContext *context) {
 void sq_pack_context_delete(SQPackContext *context) {
   if (!context) return;
   sq_pack_context_trim(context);
-  sq_grammar_delete(context->grammar);
   free(context);
 }
 
@@ -837,36 +835,21 @@ bool sq_grammar_copy_cache(const SQGrammar *grammar, void *destination,
   return sq_supertype_grammar_copy_cache(grammar->supertype_grammar, destination, length, error);
 }
 
-SQPackContext *sq_pack_context_new(SQGrammar *grammar, SQError *error) {
+SQPackContext *sq_pack_context_new(SQError *error) {
   sq_fail(error, SQ_OK);
-  if (!grammar) {
-    sq_fail(error, SQ_ERROR_ARGUMENT);
-    return NULL;
-  }
   SQPackContext *context = calloc(1, sizeof(SQPackContext));
-  if (!context) {
-    sq_fail(error, SQ_ERROR_ALLOCATION);
-    return NULL;
-  }
-  context->grammar = sq_grammar_copy(grammar);
+  if (!context) sq_fail(error, SQ_ERROR_ALLOCATION);
   return context;
 }
 
-void sq_pack_context_set_grammar(SQPackContext *context, SQGrammar *grammar) {
-  if (!context || !grammar || context->grammar == grammar) return;
-  sq_grammar_copy(grammar);
-  sq_grammar_delete(context->grammar);
-  context->grammar = grammar;
-}
-
-static SQTree *pack_tree(SQPackContext *context, const TSTree *tree,
+static SQTree *pack_tree(SQPackContext *context, SQGrammar *grammar, const TSTree *tree,
                          SQPackOptions options, SQError *error) {
   sq_fail(error, SQ_OK);
-  if (!tree) {
+  if (!grammar || !tree) {
     sq_fail(error, SQ_ERROR_ARGUMENT);
     return NULL;
   }
-  if (context->grammar->language != ts_tree_language(tree)) {
+  if (grammar->language != ts_tree_language(tree)) {
     sq_fail(error, SQ_ERROR_LANGUAGE);
     return NULL;
   }
@@ -879,7 +862,7 @@ static SQTree *pack_tree(SQPackContext *context, const TSTree *tree,
     capacity = ts_node_descendant_count(root) / expected_nodes_per_group + 1;
   }
 
-  SQTree *result = sq_allocate(context->grammar, capacity, options.points, error);
+  SQTree *result = sq_allocate(grammar, capacity, options.points, error);
   if (!result) {
     return NULL;
   }
@@ -896,13 +879,13 @@ static SQTree *pack_tree(SQPackContext *context, const TSTree *tree,
   Frame *stack = NULL;
   builder.positions = context->scratch.positions;
   builder.position_capacity = context->scratch.position_capacity;
-  builder.fields = context->grammar->direct_fields;
-  builder.production_fields = context->grammar->production_fields;
+  builder.fields = grammar->direct_fields;
+  builder.production_fields = grammar->production_fields;
   builder.masks = context->scratch.masks;
   builder.mask_capacity = context->scratch.mask_capacity;
   builder.overrides = context->scratch.overrides;
   builder.override_capacity = context->scratch.override_capacity;
-  builder.supertype_indexes = context->grammar->supertype_indexes;
+  builder.supertype_indexes = grammar->supertype_indexes;
   stack = context->stack;
   if (stack) stack_capacity = context->stack_capacity;
   if (!stack) stack = malloc(stack_capacity * sizeof(Frame));
@@ -1059,7 +1042,7 @@ static SQTree *pack_tree(SQPackContext *context, const TSTree *tree,
   }
 
   if (options.symbol_presence) {
-    bool ok = sq_build_presence_cached(builder.tree, context->grammar->public_index,
+    bool ok = sq_build_presence_cached(builder.tree, grammar->public_index,
                                         &context->presence, &context->presence_capacity, error);
     if (!ok) goto failure;
   }
@@ -1106,19 +1089,19 @@ SQTree *sq_tree_pack(SQGrammar *grammar, const TSTree *tree, SQPackOptions optio
     sq_fail(error, SQ_ERROR_ARGUMENT);
     return NULL;
   }
-  SQPackContext context = {.grammar = grammar};
-  SQTree *result = pack_tree(&context, tree, options, error);
+  SQPackContext context = {0};
+  SQTree *result = pack_tree(&context, grammar, tree, options, error);
   sq_pack_context_trim(&context);
   return result;
 }
 
-SQTree *sq_pack_context_pack(SQPackContext *context, const TSTree *tree,
+SQTree *sq_pack_context_pack(SQPackContext *context, SQGrammar *grammar, const TSTree *tree,
                              SQPackOptions options, SQError *error) {
   if (!context) {
     sq_fail(error, SQ_ERROR_ARGUMENT);
     return NULL;
   }
-  return pack_tree(context, tree, options, error);
+  return pack_tree(context, grammar, tree, options, error);
 }
 
 SQTree *sq_tree_parse(SQGrammar *grammar, TSParser *parser, const char *source, uint32_t length, SQPackOptions options,

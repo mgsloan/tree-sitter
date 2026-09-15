@@ -164,10 +164,10 @@ static void dictionary_tests(void) {
   supertype_fixture(&fixture, 9, true);
   SQGrammar *grammar = sq_grammar_new(&fixture.language, &error);
   assert(grammar);
-  SQPackContext *context = sq_pack_context_new(grammar, &error);
+  SQPackContext *context = sq_pack_context_new(&error);
   assert(context);
   SQSupertypeGrammar *first = grammar->supertype_grammar;
-  assert(first && first == context->grammar->supertype_grammar && first->count == 512);
+  assert(first && first->count == 512);
   sq_pack_context_trim(context);
   for (uint64_t mask = 0; mask < 512; mask++) assert(sq_supertype_mask_id(first, &mask) == mask);
   uint64_t expected[512];
@@ -292,17 +292,15 @@ static atomic_uint ready;
 static atomic_bool release_threads;
 static void *cache_thread(void *argument) {
   ThreadArgument *arg = argument;
-  SQError error;
-  SQPackContext *context = sq_pack_context_new(arg->prepared, &error);
-  assert(context);
-  arg->grammar = context->grammar->supertype_grammar;
+  SQGrammar *prepared = sq_grammar_copy(arg->prepared);
+  arg->grammar = prepared->supertype_grammar;
   atomic_fetch_add(&ready, 1);
   while (!atomic_load(&release_threads)) {}
-  sq_pack_context_delete(context);
+  sq_grammar_delete(prepared);
   for (unsigned i = 0; i < 8; i++) {
-    context = sq_pack_context_new(arg->prepared, &error);
-    assert(context && context->grammar->supertype_grammar->count == 512);
-    sq_pack_context_delete(context);
+    prepared = sq_grammar_copy(arg->prepared);
+    assert(prepared && prepared->supertype_grammar->count == 512);
+    sq_grammar_delete(prepared);
   }
   return NULL;
 }

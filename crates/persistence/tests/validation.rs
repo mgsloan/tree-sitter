@@ -196,7 +196,7 @@ fn shared_grammars_support_concurrent_packing_and_outlive_handles() {
             let c_sharp = c_sharp.clone();
             std::thread::spawn(move || {
                 let mut parser = tree_sitter::Parser::new();
-                let mut context = tree_sitter_squatter::PackContext::new(&json).unwrap();
+                let mut context = tree_sitter_squatter::PackContext::new().unwrap();
                 let mut retained = Vec::new();
                 for _ in 0..4 {
                     for (grammar, source) in
@@ -204,8 +204,7 @@ fn shared_grammars_support_concurrent_packing_and_outlive_handles() {
                     {
                         parser.set_language(&grammar.language()).unwrap();
                         let native = parser.parse(source, None).unwrap();
-                        context.set_grammar(grammar);
-                        let tree = context.pack(&native).unwrap();
+                        let tree = context.pack(grammar, &native).unwrap();
                         let reference = Tree::pack(grammar, &native).unwrap();
                         assert_eq!(tree.as_bytes(), reference.as_bytes());
                         retained.push(tree);
