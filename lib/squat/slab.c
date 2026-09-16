@@ -455,7 +455,8 @@ bool sq_prepare_final(SQTree **tree_pointer, uint32_t capacity, uint32_t trailin
   if (flags & SQ_ERRORS)
     memmove(tree->data + next.error, tree->data + tree->layout.error, next.end - next.error);
   tree->layout = next;
-  if (total != tree->size) {
+  // Avoid allocator work for small tails; the serialized extent still shrinks.
+  if (total > tree->size || tree->size - total >= 256) {
     SQTree *replacement = (SQTree *)sq_reallocate_data((uint8_t *)tree,
                                                        prefix + tree->size, prefix + total);
     if (!replacement) {

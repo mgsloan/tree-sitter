@@ -232,7 +232,8 @@ int main(int argc, char **argv) {
     // Cross-check the retained allocation tracker against the actual owners.
     size_t expected = sq_runtime_size() + tree->size;
     expected = (expected + SQ_COLUMN_ALIGNMENT - 1) & ~(size_t)(SQ_COLUMN_ALIGNMENT - 1);
-    require(tree->storage == SQ_STORAGE_COLOCATED && retained.requested == expected &&
+    require(tree->storage == SQ_STORAGE_COLOCATED && retained.requested >= expected &&
+                retained.requested - expected < 256 &&
                 retained.allocations == 1,
             "unexpected Squatter retained allocation");
     printf(",\"%s\":{", compact ? "compact" : "default");

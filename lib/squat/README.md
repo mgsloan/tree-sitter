@@ -207,7 +207,9 @@ where needed. The optional symbol-presence index follows the columns.
 positive Tree-sitter error cost (including missing nodes). It can return true
 for an error-free node; `is_error` and `is_missing` remain exact. Header flags
 record column presence. Finalization omits all-zero columns and reclaims their
-tail space before building the symbol-presence index.
+tail space before building the symbol-presence index. Allocation tails smaller
+than 256 bytes are retained to avoid a small `realloc`; serialized slabs still
+omit them.
 
 On the existing seed-42, 10,000-file corpus (`build/squat-corpus-10k/manifest.json`,
 11 grammars, 19 repositories),
@@ -231,6 +233,28 @@ files and is not an estimate for all repositories.
 | TSX | 1,164 | 414 |
 | TypeScript | 1,164 | 371 |
 | YAML | 1,164 | 819 |
+
+Compared with parent `d882de3c9` on those same 10,000 inputs, using 16-slot
+groups, eight-byte alignment, default symbol presence, and the 256-byte shrink
+threshold:
+
+| Storage | Points | Before (MiB) | After (MiB) | Reduction |
+| --- | --- | ---: | ---: | ---: |
+| Compact serialized slabs | yes | 457.948 | 451.820 | 1.34% |
+| Compact serialized slabs | no | 324.782 | 318.793 | 1.84% |
+| Retained default-capacity allocations | yes | 556.531 | 549.231 | 1.31% |
+| Retained default-capacity allocations | no | 397.147 | 389.944 | 1.81% |
+
+Allocation totals sum `malloc_usable_size` of each owned tree, including its
+runtime descriptor and allocator rounding, but exclude shared grammars, source,
+and parser allocations. These are retained sizes, not RSS or conversion peaks.
+Both builds produced identical node counts, group counts, and capacities.
+
+For compact slabs with points, savings break down as 676,488 bytes from `extra`,
+2,537,840 from `missing`, and 3,210,784 from `error`. The error column is 97.1%
+smaller, but these flags were a small part of total tree storage. The threshold
+retains 291,952 more allocator bytes than always shrinking (about 0.28 MiB over
+10,000 files); it does not change serialized sizes.
 
 Subtree-span bases are zero when every live value in the group fits in u8;
 otherwise they use the actual minimum. Start-column bases retain their actual

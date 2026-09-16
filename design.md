@@ -116,7 +116,9 @@ when all its values are zero, as recorded by `SQ_EXTRAS`, `SQ_MISSING`, and
 `SQ_ERRORS` in the header. Missing nodes imply the error column is present.
 The builder reserves all three columns, then removes unused columns at
 finalization. With unchanged group capacity, only retained flag columns move;
-the allocation is resized to reclaim the tail or reserve the presence index.
+the allocation is shrunk when the unused tail is at least 256 bytes, or grown
+to reserve the presence index. Smaller tails are excluded from serialization
+but retained in the allocation.
 
 `has_error` is conservative: every node in a group shares the OR of the original
 visible nodes' `missing || error_cost > 0` predicates. This preserves error
