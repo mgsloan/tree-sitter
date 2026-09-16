@@ -114,8 +114,41 @@ Conversion walks raw subtrees iteratively in reverse preorder. Each frame stages
 child positions because multiline point offsets cannot be subtracted. Only the
 current group's absolute node attributes are buffered; no full-tree node array
 is needed. Parent navigation scans backward, using group span bounds to skip groups; cursors retain an ancestor stack.
-The cursor supports first/last child, next sibling, and parent movement. It
-retains only an ancestor stack, with no sibling history or decoded-column cache.
+The cursor supports first/last child, next/previous sibling, parent movement,
+and first-child seeking by byte or point. Seeking returns the child index and
+leaves the cursor unchanged on failure. Previous-sibling movement and seeking
+can scan siblings. `sq_cursor_reset` changes the root while retaining allocated
+ancestor storage; it can switch trees. The cursor retains no sibling history or
+decoded-column cache.
+
+## Rust traversal APIs
+
+`NodeLike` exposes backend-native `preorder()`, `node_iterator(unpack_cache)`,
+`descendants_matching_kinds(&KindSet)`, and child iterators. These use static
+dispatch; generic callers do not need to select a representation per node.
+
+`KindSet` is a reusable set of public kind IDs for one language. Filtered scans
+include the root, stay inside its subtree, preserve preorder, and deduplicate
+requested IDs. Small sets merge per-kind scans: rare-symbol occurrence lists are
+searched directly, and common-symbol bitmaps skip groups. Broad sets use a single
+preorder scan with constant-time membership checks. Trees without indexes scan
+node symbols. The C primitive is `sq_node_find_symbol(root, symbol, slot)`, where
+`slot` is an inclusive physical upper bound; decrement a returned slot to advance.
+
+Individual node getters avoid constructing a full attribute snapshot.
+`NodeIteratorLike` exposes the last yielded node's kind, byte range, and full
+attributes. Kind and field IDs are read directly from fixed-width storage.
+The packed iterator lazily decodes requested coordinates and retains them across
+a cache window. Read through the iterator to use that cache; returned
+nodes are independent handles. Reads return `None` before iteration and after
+exhaustion. The cache hint has no effect on mainline traversal.
+
+`children()`, `named_children()`, and `children_by_field_id()` do not require an
+exact count. Field zero yields no children. `has_children()` avoids counting;
+`has_named_children()` stops at the first named child. Packed counts, indexed
+child access, and parent access can scan, so prefer child iteration and cursors
+when visiting many nodes. `CursorLike` also exposes reset and range seeking.
+
 
 Byte-range descendant lookup binary-searches the group start-byte minima, finds
 the selected group's qualifying start, then scans end coordinates to find the

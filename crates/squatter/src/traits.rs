@@ -1,5 +1,19 @@
 //! Shared, statically dispatched navigation for mainline and packed trees.
-use crate::{Cursor, Error, Node, Tree};
+//!
+//! Request a whole scan so each backend can choose its traversal:
+//! ```
+//! use tree_sitter_squatter::{KindSet, traits::NodeLike};
+//!
+//! fn matching_bytes<'tree, N: NodeLike<'tree>>(root: N, kinds: &KindSet) -> usize {
+//!     root.descendants_matching_kinds(kinds)
+//!         .map(|node| node.byte_range().len())
+//!         .sum()
+//! }
+//! ```
+//! For repeated attribute reads, use `node_iterator` and read through
+//! `NodeIteratorLike`. Getters on the returned nodes do not use its unpack cache.
+use crate::{Cursor, Error, KindSet, Node, NodeIterator, Tree};
+use std::ops::Range;
 use tree_sitter::Point;
 
 /// Constant-time attributes supported by both representations on freshly parsed trees.
@@ -35,6 +49,40 @@ pub trait NodeLike<'tree>: Copy + Eq {
     fn identity(self) -> usize;
     /// Read constant-time attributes; counts are separate operations below.
     fn attributes(self) -> Attributes<'tree>;
+    fn kind_id(self) -> u16;
+    fn grammar_id(self) -> u16;
+    fn kind(self) -> &'tree str;
+    fn grammar_name(self) -> &'tree str;
+    fn byte_range(self) -> Range<usize>;
+    fn start_byte(self) -> usize;
+    fn end_byte(self) -> usize;
+    fn start_position(self) -> Point;
+    fn end_position(self) -> Point;
+    fn is_named(self) -> bool;
+    fn is_extra(self) -> bool;
+    fn is_missing(self) -> bool;
+    fn is_error(self) -> bool;
+    fn has_error(self) -> bool;
+    fn has_changes(self) -> bool;
+    /// Preorder including this node, using the backend's native traversal.
+    fn preorder(self) -> impl Iterator<Item = Self>;
+    /// Stateful preorder reads. The cache hint applies only to packed trees.
+    fn node_iterator(
+        self,
+        unpack_cache: bool,
+    ) -> Result<impl NodeIteratorLike<'tree, Node = Self>, Error>;
+    /// Public kind IDs, in preorder including this node. Never leaves its subtree.
+    fn descendants_matching_kinds(self, kinds: &KindSet) -> impl Iterator<Item = Self>;
+    /// Structural children, including empty nodes, without requiring a count.
+    fn children(self) -> impl Iterator<Item = Self>;
+    fn named_children(self) -> impl Iterator<Item = Self> {
+        self.children().filter(|node| node.is_named())
+    }
+    /// All children with this field, including inherited fields. Zero yields none.
+    fn children_by_field_id(self, field: u16) -> impl Iterator<Item = Self>;
+    fn has_children(self) -> bool;
+    /// May scan unnamed children; stops at the first named child.
+    fn has_named_children(self) -> bool;
     /// Count visible children; this can scan children in packed trees.
     fn child_count(self) -> usize;
     /// Count named children; this can scan children in packed trees.
@@ -42,7 +90,9 @@ pub trait NodeLike<'tree>: Copy + Eq {
     /// Count visible descendants including this node; this can scan packed groups.
     fn descendant_count(self) -> usize;
     fn cursor(self) -> Result<Self::Cursor, Error>;
+    /// Can scan packed nodes; a cursor retains ancestry during traversal.
     fn parent(self) -> Option<Self>;
+    /// Can scan preceding children. Prefer iteration when visiting all children.
     fn child(self, index: usize) -> Option<Self>;
     fn named_child(self, index: usize) -> Option<Self>;
     fn next_sibling(self) -> Option<Self>;
@@ -61,12 +111,31 @@ pub trait CursorLike<'tree> {
     fn attributes(&mut self) -> Attributes<'tree> {
         self.node().attributes()
     }
+    /// Change the traversal root, retaining allocated cursor storage.
+    fn reset(&mut self, node: Self::Node);
+    /// Can scan siblings. Failure leaves the cursor unchanged.
+    fn goto_previous_sibling(&mut self) -> bool;
+    /// Move to the first child ending after the byte and return its index. Can scan children.
+    /// Failure (including a coordinate exceeding u32) leaves the cursor unchanged.
+    fn goto_first_child_for_byte(&mut self, byte: usize) -> Option<usize>;
+    /// Point counterpart of goto_first_child_for_byte, with the same failure behavior.
+    fn goto_first_child_for_point(&mut self, point: Point) -> Option<usize>;
     fn field_id(&self) -> Option<u16>;
     fn depth(&self) -> u32;
     fn goto_first_child(&mut self) -> bool;
     fn goto_last_child(&mut self) -> bool;
     fn goto_next_sibling(&mut self) -> bool;
     fn goto_parent(&mut self) -> bool;
+}
+
+/// Reads refer to the last yielded node, and return None before iteration and
+/// after exhaustion. Read through the iterator to retain backend decoding caches.
+pub trait NodeIteratorLike<'tree>: Iterator<Item = Self::Node> {
+    type Node: NodeLike<'tree>;
+    fn node(&self) -> Option<Self::Node>;
+    fn attributes(&mut self) -> Option<Attributes<'tree>>;
+    fn kind_id(&mut self) -> Option<u16>;
+    fn byte_range(&mut self) -> Option<Range<usize>>;
 }
 
 impl TreeLike for Tree {
@@ -140,6 +209,74 @@ macro_rules! attributes {
 }
 impl<'tree> NodeLike<'tree> for tree_sitter::Node<'tree> {
     type Cursor = tree_sitter::TreeCursor<'tree>;
+    fn kind_id(self) -> u16 {
+        <tree_sitter::Node<'tree>>::kind_id(&self)
+    }
+    fn grammar_id(self) -> u16 {
+        <tree_sitter::Node<'tree>>::grammar_id(&self)
+    }
+    fn kind(self) -> &'tree str {
+        <tree_sitter::Node<'tree>>::kind(&self)
+    }
+    fn grammar_name(self) -> &'tree str {
+        <tree_sitter::Node<'tree>>::grammar_name(&self)
+    }
+    fn byte_range(self) -> Range<usize> {
+        <tree_sitter::Node<'tree>>::byte_range(&self)
+    }
+    fn start_byte(self) -> usize {
+        <tree_sitter::Node<'tree>>::start_byte(&self)
+    }
+    fn end_byte(self) -> usize {
+        <tree_sitter::Node<'tree>>::end_byte(&self)
+    }
+    fn start_position(self) -> Point {
+        <tree_sitter::Node<'tree>>::start_position(&self)
+    }
+    fn end_position(self) -> Point {
+        <tree_sitter::Node<'tree>>::end_position(&self)
+    }
+    fn is_named(self) -> bool {
+        <tree_sitter::Node<'tree>>::is_named(&self)
+    }
+    fn is_extra(self) -> bool {
+        <tree_sitter::Node<'tree>>::is_extra(&self)
+    }
+    fn is_missing(self) -> bool {
+        <tree_sitter::Node<'tree>>::is_missing(&self)
+    }
+    fn is_error(self) -> bool {
+        <tree_sitter::Node<'tree>>::is_error(&self)
+    }
+    fn has_error(self) -> bool {
+        <tree_sitter::Node<'tree>>::has_error(&self)
+    }
+    fn has_changes(self) -> bool {
+        <tree_sitter::Node<'tree>>::has_changes(&self)
+    }
+    fn preorder(self) -> impl Iterator<Item = Self> {
+        NativePreorder::new(self)
+    }
+    fn node_iterator(self, _: bool) -> Result<impl NodeIteratorLike<'tree, Node = Self>, Error> {
+        Ok(NativePreorder::new(self))
+    }
+    fn descendants_matching_kinds(self, kinds: &KindSet) -> impl Iterator<Item = Self> {
+        NativePreorder::new(self)
+            .take_while(move |_| !kinds.is_empty())
+            .filter(move |node| kinds.contains(node.kind_id()))
+    }
+    fn children(self) -> impl Iterator<Item = Self> {
+        NativeChildren::new(self, None)
+    }
+    fn children_by_field_id(self, field: u16) -> impl Iterator<Item = Self> {
+        NativeChildren::new(self, Some(field))
+    }
+    fn has_children(self) -> bool {
+        tree_sitter::Node::child_count(&self) != 0
+    }
+    fn has_named_children(self) -> bool {
+        tree_sitter::Node::named_child_count(&self) != 0
+    }
     fn child_count(self) -> usize {
         tree_sitter::Node::child_count(&self) as usize
     }
@@ -162,6 +299,75 @@ impl<'tree> NodeLike<'tree> for tree_sitter::Node<'tree> {
 }
 impl<'tree> NodeLike<'tree> for Node<'tree> {
     type Cursor = Cursor<'tree>;
+    fn kind_id(self) -> u16 {
+        <Node<'tree>>::kind_id(self)
+    }
+    fn grammar_id(self) -> u16 {
+        <Node<'tree>>::grammar_id(self)
+    }
+    fn kind(self) -> &'tree str {
+        <Node<'tree>>::kind(self)
+    }
+    fn grammar_name(self) -> &'tree str {
+        <Node<'tree>>::grammar_name(self)
+    }
+    fn byte_range(self) -> Range<usize> {
+        <Node<'tree>>::byte_range(self)
+    }
+    fn start_byte(self) -> usize {
+        <Node<'tree>>::start_byte(self)
+    }
+    fn end_byte(self) -> usize {
+        <Node<'tree>>::end_byte(self)
+    }
+    fn start_position(self) -> Point {
+        <Node<'tree>>::start_position(self)
+    }
+    fn end_position(self) -> Point {
+        <Node<'tree>>::end_position(self)
+    }
+    fn is_named(self) -> bool {
+        <Node<'tree>>::is_named(self)
+    }
+    fn is_extra(self) -> bool {
+        <Node<'tree>>::is_extra(self)
+    }
+    fn is_missing(self) -> bool {
+        <Node<'tree>>::is_missing(self)
+    }
+    fn is_error(self) -> bool {
+        <Node<'tree>>::is_error(self)
+    }
+    fn has_error(self) -> bool {
+        <Node<'tree>>::has_error(self)
+    }
+    fn has_changes(self) -> bool {
+        <Node<'tree>>::has_changes(self)
+    }
+    fn preorder(self) -> impl Iterator<Item = Self> {
+        Node::preorder(self)
+    }
+    fn node_iterator(
+        self,
+        unpack_cache: bool,
+    ) -> Result<impl NodeIteratorLike<'tree, Node = Self>, Error> {
+        Node::node_iterator(self, unpack_cache)
+    }
+    fn descendants_matching_kinds(self, kinds: &KindSet) -> impl Iterator<Item = Self> {
+        Node::descendants_matching_kinds(self, kinds)
+    }
+    fn children(self) -> impl Iterator<Item = Self> {
+        Node::children(self)
+    }
+    fn children_by_field_id(self, field: u16) -> impl Iterator<Item = Self> {
+        Node::children_by_field_id(self, field)
+    }
+    fn has_children(self) -> bool {
+        Node::has_children(self)
+    }
+    fn has_named_children(self) -> bool {
+        Node::has_named_children(self)
+    }
     fn child_count(self) -> usize {
         Node::child_count(self)
     }
@@ -216,6 +422,21 @@ macro_rules! cursor_navigation {
         fn node(&self) -> Self::Node {
             <$cursor>::node(self)
         }
+        fn reset(&mut self, node: Self::Node) {
+            <$cursor>::reset(self, node)
+        }
+        fn goto_previous_sibling(&mut self) -> bool {
+            <$cursor>::goto_previous_sibling(self)
+        }
+        fn goto_first_child_for_byte(&mut self, byte: usize) -> Option<usize> {
+            let byte = u32::try_from(byte).ok()? as usize;
+            <$cursor>::goto_first_child_for_byte(self, byte).map(|index| index as usize)
+        }
+        fn goto_first_child_for_point(&mut self, point: Point) -> Option<usize> {
+            u32::try_from(point.row).ok()?;
+            u32::try_from(point.column).ok()?;
+            <$cursor>::goto_first_child_for_point(self, point).map(|index| index as usize)
+        }
         fn depth(&self) -> u32 {
             <$cursor>::depth(self)
         }
@@ -251,3 +472,104 @@ impl<'tree> CursorLike<'tree> for Cursor<'tree> {
     }
     cursor_navigation!(Cursor<'tree>);
 }
+
+struct NativePreorder<'tree> {
+    cursor: tree_sitter::TreeCursor<'tree>,
+    current: Option<tree_sitter::Node<'tree>>,
+    finished: bool,
+}
+impl<'tree> NativePreorder<'tree> {
+    fn new(node: tree_sitter::Node<'tree>) -> Self {
+        Self {
+            cursor: node.walk(),
+            current: None,
+            finished: false,
+        }
+    }
+}
+impl<'tree> Iterator for NativePreorder<'tree> {
+    type Item = tree_sitter::Node<'tree>;
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.finished {
+            return None;
+        }
+        if self.current.is_some() && !self.cursor.goto_first_child() {
+            while !self.cursor.goto_next_sibling() {
+                if !self.cursor.goto_parent() {
+                    self.finished = true;
+                    self.current = None;
+                    return None;
+                }
+            }
+        }
+        self.current = Some(self.cursor.node());
+        self.current
+    }
+}
+impl std::iter::FusedIterator for NativePreorder<'_> {}
+impl<'tree> NodeIteratorLike<'tree> for NativePreorder<'tree> {
+    type Node = tree_sitter::Node<'tree>;
+    fn node(&self) -> Option<Self::Node> {
+        self.current
+    }
+    fn attributes(&mut self) -> Option<Attributes<'tree>> {
+        self.current.map(NodeLike::attributes)
+    }
+    fn kind_id(&mut self) -> Option<u16> {
+        self.current.map(|node| node.kind_id())
+    }
+    fn byte_range(&mut self) -> Option<Range<usize>> {
+        self.current.map(|node| node.byte_range())
+    }
+}
+impl<'tree> NodeIteratorLike<'tree> for NodeIterator<'tree> {
+    type Node = Node<'tree>;
+    fn node(&self) -> Option<Self::Node> {
+        NodeIterator::node(self)
+    }
+    fn attributes(&mut self) -> Option<Attributes<'tree>> {
+        NodeIterator::attributes(self)
+    }
+    fn kind_id(&mut self) -> Option<u16> {
+        NodeIterator::kind_id(self)
+    }
+    fn byte_range(&mut self) -> Option<Range<usize>> {
+        NodeIterator::byte_range(self)
+    }
+}
+
+struct NativeChildren<'tree> {
+    cursor: tree_sitter::TreeCursor<'tree>,
+    ready: bool,
+    field: Option<u16>,
+}
+impl<'tree> NativeChildren<'tree> {
+    fn new(node: tree_sitter::Node<'tree>, field: Option<u16>) -> Self {
+        let mut cursor = node.walk();
+        let ready = field != Some(0) && cursor.goto_first_child();
+        Self {
+            cursor,
+            ready,
+            field,
+        }
+    }
+}
+impl<'tree> Iterator for NativeChildren<'tree> {
+    type Item = tree_sitter::Node<'tree>;
+    fn next(&mut self) -> Option<Self::Item> {
+        while self.ready {
+            let node = self.cursor.node();
+            let matches = self.field.is_none_or(|field| {
+                self.cursor
+                    .field_id()
+                    .is_some_and(|actual| actual.get() == field)
+            });
+            self.ready = self.cursor.goto_next_sibling();
+            if matches {
+                return Some(node);
+            }
+        }
+        None
+    }
+}
+impl std::iter::FusedIterator for NativeChildren<'_> {}

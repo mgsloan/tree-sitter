@@ -649,6 +649,22 @@ impl<'tree> Node<'tree> {
         Self::from_raw(unsafe { ffi::sq_node_find_symbol(self.raw, kind, slot) })
     }
 
+    /// Test for a child without counting siblings.
+    pub fn has_children(self) -> bool {
+        self.child(0).is_some()
+    }
+
+    /// Stops at the first named child; may scan unnamed children.
+    pub fn has_named_children(self) -> bool {
+        self.named_child(0).is_some()
+    }
+
+    pub fn children_by_field_id(self, field: u16) -> impl Iterator<Item = Self> {
+        self.children()
+            .take_while(move |_| field != 0)
+            .filter(move |node| node.field_id() == field)
+    }
+
     pub fn children(self) -> Children<'tree> {
         Children {
             next: self.child(0),

@@ -2,9 +2,171 @@
 use std::error::Error;
 use tree_sitter::StreamingIterator;
 use tree_sitter_squatter::{
-    PackOptions, Tree,
-    traits::{NodeLike, TreeLike},
+    KindSet, PackOptions, Tree,
+    traits::{CursorLike, NodeIteratorLike, NodeLike, TreeLike},
 };
+
+fn check_shared_navigation<'tree, N: NodeLike<'tree>>(
+    root: N,
+    fields: u16,
+) -> Result<(), Box<dyn Error>> {
+    let mut cursor = root.cursor()?;
+    let mut expected = Vec::new();
+    loop {
+        expected.push(cursor.node());
+        if cursor.goto_first_child() {
+            continue;
+        }
+        loop {
+            if cursor.goto_next_sibling() {
+                break;
+            }
+            if !cursor.goto_parent() {
+                break;
+            }
+        }
+        if cursor.depth() == 0 {
+            break;
+        }
+    }
+    assert!(root.preorder().collect::<Vec<_>>() == expected);
+    let all_kinds = KindSet::new(expected.iter().map(|node| node.kind_id()));
+    assert!(
+        root.descendants_matching_kinds(&all_kinds)
+            .collect::<Vec<_>>()
+            == expected
+    );
+    assert!(
+        root.descendants_matching_kinds(&KindSet::default())
+            .next()
+            .is_none()
+    );
+    for node in expected.iter().step_by((expected.len() / 20).max(1)) {
+        let kinds = KindSet::new([node.kind_id(), root.kind_id(), node.kind_id(), u16::MAX]);
+        let filtered: Vec<_> = expected
+            .iter()
+            .copied()
+            .filter(|node| kinds.contains(node.kind_id()))
+            .collect();
+        assert!(root.descendants_matching_kinds(&kinds).collect::<Vec<_>>() == filtered);
+    }
+    for cached in [false, true] {
+        let mut iterator = root.node_iterator(cached)?;
+        assert!(iterator.node().is_none());
+        assert!(iterator.kind_id().is_none());
+        assert!(iterator.byte_range().is_none());
+        assert!(iterator.attributes().is_none());
+        for &node in &expected {
+            assert!(iterator.next() == Some(node));
+            assert!(iterator.node() == Some(node));
+            assert_eq!(iterator.kind_id(), Some(node.kind_id()));
+            assert_eq!(iterator.byte_range(), Some(node.byte_range()));
+            assert_eq!(iterator.attributes(), Some(node.attributes()));
+            assert_eq!(iterator.kind_id(), Some(node.kind_id()));
+        }
+        for _ in 0..2 {
+            assert!(iterator.next().is_none());
+            assert!(iterator.node().is_none());
+            assert!(iterator.kind_id().is_none());
+            assert!(iterator.byte_range().is_none());
+            assert!(iterator.attributes().is_none());
+        }
+    }
+    for &node in &expected {
+        let attributes = node.attributes();
+        assert_eq!(node.kind_id(), attributes.kind_id);
+        assert_eq!(node.grammar_id(), attributes.grammar_id);
+        assert_eq!(node.kind(), attributes.kind);
+        assert_eq!(node.grammar_name(), attributes.grammar_name);
+        assert_eq!(node.start_byte(), attributes.start_byte);
+        assert_eq!(node.end_byte(), attributes.end_byte);
+        assert_eq!(
+            node.byte_range(),
+            attributes.start_byte..attributes.end_byte
+        );
+        assert_eq!(node.start_position(), attributes.start_position);
+        assert_eq!(node.end_position(), attributes.end_position);
+        assert_eq!(node.is_named(), attributes.is_named);
+        assert_eq!(node.is_extra(), attributes.is_extra);
+        assert_eq!(node.is_missing(), attributes.is_missing);
+        assert_eq!(node.is_error(), attributes.is_error);
+        assert_eq!(node.has_error(), attributes.has_error);
+        assert_eq!(node.has_changes(), attributes.has_changes);
+        assert_eq!(node.has_children(), node.child_count() != 0);
+        assert_eq!(node.has_named_children(), node.named_child_count() != 0);
+    }
+    for &node in expected.iter().take(16) {
+        cursor.reset(node);
+        assert_eq!(cursor.depth(), 0);
+        assert!(!cursor.goto_parent());
+        assert!(!cursor.goto_previous_sibling());
+        assert!(!cursor.goto_next_sibling());
+        let mut children = Vec::new();
+        let mut child_fields = Vec::new();
+        if cursor.goto_first_child() {
+            loop {
+                children.push(cursor.node());
+                child_fields.push(cursor.field_id());
+                if !cursor.goto_next_sibling() {
+                    break;
+                }
+            }
+            for &child in children.iter().rev() {
+                assert!(cursor.node() == child);
+                let moved = cursor.goto_previous_sibling();
+                assert_eq!(moved, child != children[0]);
+            }
+            assert!(cursor.goto_parent());
+        }
+        assert!(node.children().collect::<Vec<_>>() == children);
+        assert!(
+            node.named_children().collect::<Vec<_>>()
+                == children
+                    .iter()
+                    .copied()
+                    .filter(|node| node.is_named())
+                    .collect::<Vec<_>>()
+        );
+        for field in 0..=fields {
+            let filtered: Vec<_> = children
+                .iter()
+                .zip(&child_fields)
+                .filter_map(|(&child, &actual)| (actual == Some(field)).then_some(child))
+                .collect();
+            assert!(node.children_by_field_id(field).collect::<Vec<_>>() == filtered);
+        }
+        for child in std::iter::once(node).chain(children.iter().copied().take(16)) {
+            for byte in [child.start_byte(), child.end_byte(), usize::MAX] {
+                cursor.reset(node);
+                let expected_index = children.iter().position(|node| {
+                    node.end_byte() > byte && node.end_position() > tree_sitter::Point::default()
+                });
+                assert_eq!(cursor.goto_first_child_for_byte(byte), expected_index);
+                assert!(cursor.node() == expected_index.map_or(node, |index| children[index]));
+                assert_eq!(cursor.depth(), u32::from(expected_index.is_some()));
+            }
+            for point in [
+                child.start_position(),
+                child.end_position(),
+                tree_sitter::Point::new(u32::MAX as usize, 0),
+            ] {
+                cursor.reset(node);
+                let expected_index = children
+                    .iter()
+                    .position(|node| node.end_byte() > 0 && node.end_position() > point);
+                assert_eq!(cursor.goto_first_child_for_point(point), expected_index);
+                assert!(cursor.node() == expected_index.map_or(node, |index| children[index]));
+            }
+        }
+        let descendants: Vec<_> = node.preorder().collect();
+        assert!(
+            node.descendants_matching_kinds(&all_kinds)
+                .collect::<Vec<_>>()
+                == descendants
+        );
+    }
+    Ok(())
+}
 
 fn check_iterators(tree: &Tree) -> Result<(), Box<dyn Error>> {
     for root in tree.root_node().preorder().take(32) {
@@ -269,6 +431,27 @@ fn main() -> Result<(), Box<dyn Error>> {
         assert_eq!(node.children().count(), node.child_count());
         assert_eq!(node.named_children().count(), node.named_child_count());
         assert_eq!(node.preorder().count(), node.descendant_count());
+    }
+    check_shared_navigation(mainline.root_node(), language.field_count() as u16)?;
+    check_shared_navigation(packed.root_node(), language.field_count() as u16)?;
+    // Cross the presence-index threshold and several unpack windows, retaining
+    // a rare boolean beside common number and punctuation symbols.
+    let large_source = format!("[true,{}null]", "123,\n".repeat(600));
+    let large_native = parser.parse(&large_source, None).ok_or("parse failed")?;
+    check_shared_navigation(large_native.root_node(), language.field_count() as u16)?;
+    for points in [false, true] {
+        for symbol_presence in [false, true] {
+            let large_packed = Tree::pack_with_options(
+                &grammar,
+                &large_native,
+                PackOptions {
+                    points,
+                    symbol_presence,
+                    ..Default::default()
+                },
+            )?;
+            check_shared_navigation(large_packed.root_node(), language.field_count() as u16)?;
+        }
     }
     check_cursor(&packed)?;
     check_queries(&language, source, &mainline, &packed)?;
