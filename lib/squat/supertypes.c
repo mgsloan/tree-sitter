@@ -4,7 +4,8 @@ typedef struct {
   uint32_t magic, supertype_count, count, words;
 } GrammarCacheHeader;
 
-#define GRAMMAR_CACHE_MAGIC UINT32_C(0x53514701)
+// Prototype format version 0; no persisted data needs backward compatibility.
+#define GRAMMAR_CACHE_MAGIC UINT32_C(0x53514700)
 static bool reserve(void **data, uint32_t *capacity, uint32_t count, size_t size) {
   if (count <= *capacity) return true;
   uint32_t next = *capacity ? *capacity : 16;

@@ -177,7 +177,7 @@ impl Maintenance {
         path: Vec<u8>,
         absolute: PathBuf,
     ) -> Result<Option<Self>, CacheError> {
-        let path_id = crate::identity::digest("tree-squatter path v1", &path);
+        let path_id = crate::identity::digest("tree-squatter path v0", &path);
         let tx = store.env.read_txn()?;
         let expected_current = match store.current.get(&tx, &path_id)? {
             Some(value) if value.len() == 72 => value.to_vec(),
