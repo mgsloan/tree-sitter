@@ -373,6 +373,8 @@ static void compare_tree(const TSTree *tree, const SQTree *packed, bool exhausti
     if (ts_node_is_extra(node)) flags |= SQ_EXTRAS;
     if (ts_node_is_missing(node)) flags |= SQ_MISSING;
     if (ts_node_has_error(node)) flags |= SQ_ERRORS;
+    if (packed->grammar->symbols.separate && ts_node_symbol(node) != ts_node_grammar_symbol(node))
+      flags |= SQ_SEPARATE_GRAMMAR;
   }
   CHECK((sq_header_get(packed, format_flags) & SQ_OPTIONAL_FLAGS) == flags);
   ts_tree_cursor_delete(&cursor);
