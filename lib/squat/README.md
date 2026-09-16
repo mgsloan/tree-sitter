@@ -48,8 +48,7 @@ On x86-64, group equality uses SSE2 comparisons and a lane mask, with a portable
 scalar implementation elsewhere. These optimizations preserve the slab format.
 See [measurements](experiments/fixed-width.md).
 
-The representation ID remains compatible with the previous fixed-width build;
-old variable-width slabs are rejected. Grammar preparation returns
+Grammar preparation returns
 `SQ_ERROR_OVERFLOW` if symbol IDs (including the two error symbols) or field IDs
 need more than 16 bits. Supertype dictionaries retain their existing 65,536-entry
 limit and return `SQ_ERROR_DICTIONARY_FULL` if exceeded.
