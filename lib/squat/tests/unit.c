@@ -13,9 +13,30 @@ static void width_policy_tests(void) {
     {32767, 15, 16}, {65535, 16, 16},
   };
   for (unsigned i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
-    assert(sq_field_width(cases[i].max) == cases[i].field);
-    assert(sq_symbol_width(cases[i].max) == cases[i].symbol);
+    assert(sq_field_width(cases[i].max) == (SQ_FIXED_WIDTH ? 16 : cases[i].field));
+    assert(sq_symbol_width(cases[i].max) == (SQ_FIXED_WIDTH ? 16 : cases[i].symbol));
   }
+}
+
+static void fixed_layout_limit_tests(void) {
+#if SQ_FIXED_WIDTH
+  TSLanguage language = {.abi_version = TREE_SITTER_LANGUAGE_VERSION, .symbol_count = 65535};
+  SQError error;
+  assert(!sq_grammar_new(&language, &error) && error == SQ_ERROR_OVERFLOW);
+  language.symbol_count = 1;
+  language.alias_count = UINT32_MAX;
+  assert(!sq_grammar_new(&language, &error) && error == SQ_ERROR_OVERFLOW);
+  language.alias_count = 0;
+  language.field_count = 65536;
+  assert(!sq_grammar_new(&language, &error) && error == SQ_ERROR_OVERFLOW);
+  SQGrammar grammar = {.language = &language};
+  SQLayout layout;
+  assert(!sq_layout(&grammar, 1, false, true, &layout));
+  language.field_count = 65535;
+  language.symbol_count = 65534;
+  assert(sq_layout(&grammar, 1, false, true, &layout));
+  assert(layout.symbol_bits == 16 && layout.field_bits == 16 && layout.supertype_bits == 16);
+#endif
 }
 
 static void empty_column_tests(void) {
@@ -31,14 +52,19 @@ static void empty_column_tests(void) {
   SQGrammar *grammar = sq_grammar_new(&language, &error);
   assert(grammar);
   SQTree *tree = sq_allocate(grammar, 1, true, &error);
+#if SQ_FIXED_WIDTH
+  assert(tree && tree->layout.field_bits == 16 && tree->layout.supertype_bits == 16);
+  assert(SQ_WASTE_BITS == 16);
+#else
   assert(tree && !tree->layout.field_bits && !tree->layout.field_lanes);
   assert(sq_column_size(SQ_GROUP_SIZE, 0) == 0);
   assert(tree->layout.field == tree->layout.supertype);
   assert(!tree->layout.supertype_bits);
   assert(tree->layout.supertype == tree->layout.last);
-  sq_header_set(tree, group_count, 1);
   // Missing columns must not read bytes belonging to the next column.
   tree->data[tree->layout.field] = 0xff;
+#endif
+  sq_header_set(tree, group_count, 1);
   for (unsigned waste = 0; waste < SQ_GROUP_SIZE; waste++) {
     sq_set_packed(tree->data, tree->layout.waste, 0, SQ_WASTE_BITS, waste);
     uint64_t used = UINT64_MAX >> (64 - (SQ_GROUP_SIZE - waste));
@@ -56,6 +82,38 @@ static void empty_column_tests(void) {
       assert(!sq_node_has_supertype((SQNode){tree, slot}, 1));
     }
   }
+#if SQ_FIXED_WIDTH
+  const uint16_t targets[] = {0, 32768, UINT16_MAX};
+  const uint64_t patterns[] = {0, UINT64_MAX, UINT64_C(0xaaaaaaaaaaaaaaaa),
+                                UINT64_C(0x8001800180018001)};
+  for (unsigned target = 0; target < sizeof(targets) / sizeof(targets[0]); target++) {
+    for (unsigned pattern = 0; pattern < sizeof(patterns) / sizeof(patterns[0]); pattern++) {
+      for (unsigned lane = 0; lane < SQ_GROUP_SIZE; lane++) {
+        uint16_t value = targets[target] ^ ((patterns[pattern] >> lane & 1) ? 0 : 1);
+        sq_set_u16(tree->data, tree->layout.field, lane, value);
+      }
+      for (unsigned waste = 0; waste < SQ_GROUP_SIZE; waste++) {
+        sq_set_u16(tree->data, tree->layout.waste, 0, (uint16_t)waste);
+        uint64_t used = UINT64_MAX >> (64 - SQ_GROUP_SIZE + waste);
+        assert(sq_tree_group_field_equal(tree, 0, targets[target]) == (patterns[pattern] & used));
+        assert(!sq_tree_group_field_equal(tree, 0, 65536));
+        assert(!sq_tree_group_field_equal(tree, 1, targets[target]));
+      }
+    }
+  }
+  const uint32_t invalid_waste[] = {SQ_GROUP_SIZE, SQ_GROUP_SIZE + 1, UINT16_MAX};
+  for (unsigned i = 0; i < sizeof(invalid_waste) / sizeof(invalid_waste[0]); i++) {
+    sq_set_packed(tree->data, tree->layout.waste, 0, SQ_WASTE_BITS, invalid_waste[i]);
+    assert(!sq_tree_from_bytes(grammar, tree->data, tree->size, &error));
+    assert(error == SQ_ERROR_INVALID_SLAB);
+    assert(!sq_tree_from_bytes_borrowed(grammar, tree->data, tree->size, &error));
+    assert(error == SQ_ERROR_INVALID_SLAB);
+    assert(!sq_tree_from_bytes_safety_checked(grammar, tree->data, tree->size, &error));
+    assert(error == SQ_ERROR_INVALID_SLAB);
+    assert(!sq_tree_from_bytes_borrowed_safety_checked(grammar, tree->data, tree->size, &error));
+    assert(error == SQ_ERROR_INVALID_SLAB);
+  }
+#endif
   sq_tree_delete(tree);
   sq_grammar_delete(grammar);
 }
@@ -371,6 +429,7 @@ static void sparse_grammar_tests(bool dictionary) {
 
 int main(void) {
   width_policy_tests();
+  fixed_layout_limit_tests();
   empty_column_tests();
   sparse_grammar_tests(false);
   sparse_grammar_tests(true);

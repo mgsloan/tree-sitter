@@ -30,6 +30,29 @@ sq_grammar_delete(grammar);
 Link the library before mainline Tree-sitter. Public declarations are in
 [`include/tree_sitter/squat.h`](include/tree_sitter/squat.h).
 
+Build with `-DSQ_FIXED_WIDTH=1` to use 16-bit symbol IDs (including grammar
+symbol overrides), field IDs, supertype masks/dictionary IDs, and group waste.
+Field and supertype columns are retained even for grammars that do not use them.
+Coordinates and boolean columns keep their existing widths. For example:
+
+```sh
+make -C lib/squat check BUILD=../../build/squat-fixed CFLAGS='-O2 -g -DSQ_FIXED_WIDTH=1'
+cargo build -p tree-sitter-squatter --features fixed-width
+```
+
+Fixed-width packing uses direct halfword stores. Iterators read IDs from the
+slab instead of unpacking and caching copies; only coordinates need expansion.
+On x86-64, group equality uses SSE2 comparisons and a lane mask, with a portable
+scalar implementation elsewhere. These optimizations preserve the slab format.
+See [measurements](experiments/fixed-width.md).
+
+The default remains variable width. Use separate native build directories when
+switching flags. Fixed-width slabs have a distinct representation ID and cannot
+be loaded by a variable-width build, or vice versa. Grammar preparation returns
+`SQ_ERROR_OVERFLOW` if symbol IDs (including the two error symbols) or field IDs
+need more than 16 bits. Supertype dictionaries retain their existing 65,536-entry
+limit and return `SQ_ERROR_DICTIONARY_FULL` if exceeded.
+
 Prepare an `SQGrammar` once and retain it between batches. It owns immutable
 symbol, supertype, and direct-field lookup tables. `sq_grammar_copy` shares the
 handle using atomic reference counting; `sq_grammar_delete` releases it. There is

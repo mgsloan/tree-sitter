@@ -27,12 +27,17 @@ _Static_assert(SQ_ITERATOR_UNPACK_SLOTS >= SQ_GROUP_SIZE &&
 #endif
 _Static_assert(SQ_COLUMN_ALIGNMENT == 8 || SQ_COLUMN_ALIGNMENT == 64,
                "supported experimental column alignments");
+#ifndef SQ_FIXED_WIDTH
+#define SQ_FIXED_WIDTH 0
+#endif
+_Static_assert(SQ_FIXED_WIDTH == 0 || SQ_FIXED_WIDTH == 1, "fixed width must be 0 or 1");
+
 #define SQ_VERSION                                                                                 \
   (UINT32_C(0x535100c0) |                                                                          \
    (SQ_GROUP_SIZE == 32   ? 2u                                                                     \
     : SQ_GROUP_SIZE == 64 ? 4u                                                                     \
                           : 0u) |                                                                  \
-   (SQ_COLUMN_ALIGNMENT == 64 ? 8u : 0u))
+   (SQ_COLUMN_ALIGNMENT == 64 ? 8u : 0u) | (SQ_FIXED_WIDTH ? 1u : 0u))
 
 // Version 12: measured ID width rounding and compact direct supertype masks.
 #define SQ_NO_POINTS 0x100u
@@ -49,7 +54,7 @@ typedef struct {
 
 _Static_assert(sizeof(SQHeader) == 16, "slab header size");
 
-#define SQ_WASTE_BITS (SQ_GROUP_SIZE == 16 ? 4u : SQ_GROUP_SIZE == 32 ? 5u : 6u)
+#define SQ_WASTE_BITS (SQ_FIXED_WIDTH ? 16u : SQ_GROUP_SIZE == 16 ? 4u : SQ_GROUP_SIZE == 32 ? 5u : 6u)
 
 typedef struct {
   // Slab offsets in persisted order; group bases precede their node values.
@@ -348,15 +353,19 @@ static inline uint32_t sq_node_end_point_key(SQNode node) {
   return sq_get_u16(node.tree->data, node.tree->layout.end_point, node.slot);
 }
 
+static inline uint8_t sq_id_width(uint8_t bits) {
+  return SQ_FIXED_WIDTH ? 16 : bits;
+}
+
 static inline uint32_t sq_node_supertype(SQNode node) {
-  if (!node.tree->layout.supertype_bits) return 0;
+  if (!sq_id_width(node.tree->layout.supertype_bits)) return 0;
   return sq_get_packed(node.tree->data, node.tree->layout.supertype, node.slot,
-                       node.tree->layout.supertype_bits);
+                       sq_id_width(node.tree->layout.supertype_bits));
 }
 
 static inline uint32_t sq_node_symbol_id(SQNode node) {
   return sq_get_packed_cached(node.tree->data, node.tree->layout.symbol, node.slot,
-                              node.tree->layout.symbol_bits, node.tree->layout.symbol_lanes,
+                              sq_id_width(node.tree->layout.symbol_bits), node.tree->layout.symbol_lanes,
                               node.tree->layout.symbol_mask);
 }
 
@@ -364,9 +373,9 @@ uint32_t sq_node_grammar_id(SQNode);
 uint32_t sq_node_grammar_id_with_symbol(SQNode, uint32_t symbol);
 
 static inline uint32_t sq_node_field_value(SQNode node) {
-  if (!node.tree->layout.field_bits) return 0;
+  if (!sq_id_width(node.tree->layout.field_bits)) return 0;
   return sq_get_packed_cached(node.tree->data, node.tree->layout.field, node.slot,
-                              node.tree->layout.field_bits, node.tree->layout.field_lanes,
+                              sq_id_width(node.tree->layout.field_bits), node.tree->layout.field_lanes,
                               node.tree->layout.field_mask);
 }
 

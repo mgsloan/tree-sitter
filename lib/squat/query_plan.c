@@ -506,7 +506,7 @@ static void sq_query__prepare_symbol_filter(SQQuery *query) {
 static uint32_t query_execution_find_symbols(SQQueryCursor *cursor, const SQTree *tree,
                                              const QuerySymbolFilter *filter, uint32_t start,
                                              uint32_t end) {
-  uint32_t width = tree->layout.symbol_bits, lanes = 64 / width;
+  uint32_t width = sq_id_width(tree->layout.symbol_bits), lanes = 64 / width;
   uint32_t slots = sq_tree_slot_count(tree);
   while (start < end) {
     if (sq_query_cursor__scan_cancelled(cursor, sq_position_node(tree, start))) {

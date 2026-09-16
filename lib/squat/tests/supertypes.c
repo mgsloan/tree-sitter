@@ -68,6 +68,11 @@ static void exercise(uint32_t count, bool repack) {
   check_tree(borrowed, slots, count);
   sq_tree_delete(borrowed);
   assert(copy->supertype_grammar == builder.tree->supertype_grammar);
+  // Fixed and variable layouts must reject one another, even at identical widths.
+  sq_header_set(builder.tree, format_flags, sq_header_get(builder.tree, format_flags) ^ 1u);
+  assert(!sq_tree_from_bytes(grammar, bytes, length, &error));
+  assert(error == SQ_ERROR_INVALID_SLAB);
+  sq_header_set(builder.tree, format_flags, sq_header_get(builder.tree, format_flags) ^ 1u);
   // Reject widths inconsistent with the dictionary count, and oversized counts.
   sq_header_set(builder.tree, format_flags, sq_header_get(builder.tree, format_flags) ^ SQ_WIDE_SUPERTYPES);
   assert(!sq_tree_from_bytes(grammar, bytes, length, &error));
@@ -116,7 +121,7 @@ static void direct_mask_tests(void) {
                        .language = language, .small_supertypes = true,
                        .symbol_count = language->symbol_count,
                        .symbol_space = language->symbol_count + 2, .error = &error};
-    assert(builder.tree && builder.tree->layout.supertype_bits == widths[bits]);
+    assert(builder.tree && builder.tree->layout.supertype_bits == (SQ_FIXED_WIDTH ? 16 : widths[bits]));
     Subtree leaf = {.data = {.is_inline = true, .symbol = 1}};
     uint32_t slots[256];
     unsigned count = 1u << bits;

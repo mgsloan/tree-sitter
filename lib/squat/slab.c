@@ -66,11 +66,11 @@ static uint8_t small_width(uint8_t bits) {
 }
 
 uint8_t sq_field_width(uint32_t max) {
-  return small_width(sq_width(max));
+  return SQ_FIXED_WIDTH ? 16 : small_width(sq_width(max));
 }
 
 uint8_t sq_symbol_width(uint32_t max) {
-  uint8_t bits = small_width(sq_width(max));
+  uint8_t bits = sq_field_width(max);
   // Symbols justify the space cost earlier than field IDs. Preserve 9/10-bit
   // packing; 11/12 use five lanes per word and 13..16 already use four.
   return bits >= 11 && bits < 16 ? 16 : bits;
@@ -94,10 +94,17 @@ bool sq_layout(const SQGrammar *grammar, uint32_t capacity, bool wide_supertypes
     return false;
   }
   const TSLanguage *language = grammar->language;
+#if SQ_FIXED_WIDTH
+  (void)wide_supertypes;
+  if ((uint64_t)language->symbol_count + language->alias_count + 1 > UINT16_MAX ||
+      language->field_count > UINT16_MAX) return false;
+  layout->supertype_bits = 16;
+#else
   uint32_t supertype_count = grammar->supertype_count;
   // Larger grammars retain byte/halfword dictionary IDs.
   layout->supertype_bits = supertype_count <= 8 ? small_width((uint8_t)supertype_count)
                                                : (wide_supertypes ? 16 : 8);
+#endif
   layout->symbol_bits = sq_symbol_width(language->symbol_count + language->alias_count + 1);
   layout->field_bits = sq_field_width(language->field_count);
   layout->symbol_lanes = (uint8_t)(64 / layout->symbol_bits);
@@ -506,7 +513,7 @@ const char *sq_error_string(SQError error) {
   case SQ_ERROR_ALLOCATION:
     return "allocation failed";
   case SQ_ERROR_OVERFLOW:
-    return "slab exceeds 32-bit address space";
+    return "grammar IDs or slab size exceed representation limits";
   case SQ_ERROR_DICTIONARY_FULL:
     return "more than 65536 supertype masks";
   case SQ_ERROR_INVALID_SLAB:
