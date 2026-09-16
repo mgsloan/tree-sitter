@@ -412,13 +412,20 @@ static void compare_tree(const TSTree *tree, const SQTree *packed, bool exhausti
   free(nodes->packed);
 }
 
-static void reject_index_mutation(const SQTree *tree, uint8_t *bytes) {
+static void reject_index_mutation(const SQTree *tree, uint8_t *bytes, bool presence_only) {
   SQError error;
   CHECK(!sq_tree_from_bytes(tree->grammar, bytes, tree->size, &error) &&
         error == SQ_ERROR_INVALID_SLAB);
   CHECK(!sq_tree_from_bytes_borrowed(tree->grammar, bytes, tree->size, &error) &&
         error == SQ_ERROR_INVALID_SLAB);
   SQTree *safety = sq_tree_from_bytes_safety_checked(tree->grammar, bytes, tree->size, &error);
+  if (!presence_only) {
+    CHECK(!safety && error == SQ_ERROR_INVALID_SLAB);
+    CHECK(!sq_tree_from_bytes_borrowed_safety_checked(tree->grammar, bytes, tree->size, &error) &&
+          error == SQ_ERROR_INVALID_SLAB);
+    memcpy(bytes, tree->data, tree->size);
+    return;
+  }
   CHECK(safety && error == SQ_OK);
   SQTree *borrowed =
       sq_tree_from_bytes_borrowed_safety_checked(tree->grammar, bytes, tree->size, &error);
@@ -445,16 +452,16 @@ static void check_grammar_validation(const SQTree *tree) {
   uint32_t values = ranks + (uint32_t)sq_array_size(words, 4);
   uint32_t count = sq_get_u32(bytes, offset, 0);
   sq_set_u32(bytes, offset, 0, UINT32_MAX);
-  reject_index_mutation(tree, bytes);
+  reject_index_mutation(tree, bytes, false);
   sq_set_u32(bytes, offset, 1, 1);
-  reject_index_mutation(tree, bytes);
+  reject_index_mutation(tree, bytes, false);
   sq_set_u32(bytes, ranks, 0, 1);
-  reject_index_mutation(tree, bytes);
+  reject_index_mutation(tree, bytes, false);
   sq_set_u32(bytes, ranks, words - 1, count + 1);
-  reject_index_mutation(tree, bytes);
+  reject_index_mutation(tree, bytes, false);
   if (sq_symbols(tree) <= tree->layout.symbol_mask) {
     sq_set_packed(bytes, values, 0, tree->layout.symbol_bits, sq_symbols(tree));
-    reject_index_mutation(tree, bytes);
+    reject_index_mutation(tree, bytes, false);
   }
   for (uint32_t i = 0; i < words; i++) {
     uint64_t word = sq_get_u64(bytes, bitmap, i);
@@ -462,28 +469,28 @@ static void check_grammar_validation(const SQTree *tree) {
     uint32_t slot = i * 64 + (uint32_t)__builtin_ctzll(word);
     sq_set_packed(bytes, values, 0, tree->layout.symbol_bits,
                   sq_node_symbol_id((SQNode){tree, slot}));
-    reject_index_mutation(tree, bytes);
+    reject_index_mutation(tree, bytes, false);
     sq_set_bit(bytes, bitmap, slot, false);
-    reject_index_mutation(tree, bytes);
+    reject_index_mutation(tree, bytes, false);
     break;
   }
   // Includes wasted physical slots and bitmap tail bits.
   for (uint32_t slot = 0; slot < words * 64; slot++) {
     if (sq_tree_node_at_slot(tree, slot).tree) continue;
     sq_set_bit(bytes, bitmap, slot, true);
-    reject_index_mutation(tree, bytes);
+    reject_index_mutation(tree, bytes, false);
     break;
   }
   if (words % 2) {
     sq_set_u32(bytes, ranks, words, 1);
-    reject_index_mutation(tree, bytes);
+    reject_index_mutation(tree, bytes, false);
   }
   unsigned tail_bits = (count % tree->layout.symbol_lanes) * tree->layout.symbol_bits;
   if (tail_bits) {
     uint32_t last = count / tree->layout.symbol_lanes;
     sq_set_u64(bytes, values, last,
                 sq_get_u64(bytes, values, last) | (UINT64_C(1) << tail_bits));
-    reject_index_mutation(tree, bytes);
+    reject_index_mutation(tree, bytes, false);
   }
   free(bytes);
 }
@@ -507,7 +514,7 @@ static void check_presence_validation(const SQTree *tree) {
         for (uint32_t bit = 0; bit < entry_bytes * 8; bit++) {
           if (((entry[bit / 8] >> (bit % 8)) & 1) == value) {
             entry[bit / 8] ^= (uint8_t)(1u << (bit % 8));
-            reject_index_mutation(tree, bytes);
+            reject_index_mutation(tree, bytes, true);
             break;
           }
         }
@@ -522,7 +529,7 @@ static void check_presence_validation(const SQTree *tree) {
         bool *checked = slot == SQ_NONE ? &checked_sentinel : &checked_occurrence;
         if (!*checked) {
           entry[(size_t)index * 4] ^= 1;
-          reject_index_mutation(tree, bytes);
+          reject_index_mutation(tree, bytes, true);
           *checked = true;
         }
       }
@@ -530,16 +537,16 @@ static void check_presence_validation(const SQTree *tree) {
   }
 
   sq_set_packed(bytes, offset, 0, 1, !sq_get_packed(bytes, offset, 0, 1));
-  reject_index_mutation(tree, bytes);
+  reject_index_mutation(tree, bytes, true);
   if (symbols % 64) {
     sq_set_packed(bytes, offset, symbols, 1, 1);
-    reject_index_mutation(tree, bytes);
+    reject_index_mutation(tree, bytes, true);
   }
 
   uint64_t used = mode_bytes + (uint64_t)symbols * entry_bytes;
   if (used < sq_presence_size(tree)) {
     bytes[offset + used] = 1;
-    reject_index_mutation(tree, bytes);
+    reject_index_mutation(tree, bytes, true);
   }
 
   free(bytes);
