@@ -140,15 +140,14 @@ static void fill_point(const SQTree *tree, const UnpackCache *cache, uint32_t po
                        uint32_t base_offset, bool subtract, uint64_t *out) {
   uint32_t count = cache_slot_count(tree, cache);
   uint32_t first = cache->group * SQ_GROUP_SIZE;
-  uint16_t keys[SQ_ITERATOR_UNPACK_SLOTS];
-  cache->unpack(tree->data + point_offset, first, count, 16, keys);
 
   // Each group has one packed row/column base. Expand the two u8 components
   // from every key and cache the resulting absolute point as one u64 value.
   for (uint32_t offset = 0; offset < count; offset += SQ_GROUP_SIZE) {
     uint64_t base = sq_get_u64(tree->data, base_offset, cache->group + offset / SQ_GROUP_SIZE);
     for (uint32_t lane = 0; lane < SQ_GROUP_SIZE; lane++) {
-      uint64_t delta = sq_expand_point_key(keys[offset + lane]);
+      uint64_t delta = sq_expand_point_key(sq_get_u16(tree->data, point_offset,
+                                                    first + offset + lane));
       out[offset + lane] = subtract ? base - delta : base + delta;
     }
   }
