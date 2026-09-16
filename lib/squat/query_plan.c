@@ -82,24 +82,9 @@ static void sq_query__prepare_presence(SQQuery *query) {
       continue;
     }
 
-    QueryPresenceRequirement requirement = {.field = required->field};
-    if (required->symbol) {
-      uint32_t symbols = query->language->symbol_count + query->language->alias_count;
-      for (uint32_t raw = 0; raw < symbols; raw++) {
-        if (query->language->public_symbol_map[raw] != required->symbol) {
-          continue;
-        }
+    QueryPresenceRequirement requirement = {.symbol = required->symbol, .field = required->field};
 
-        if (requirement.symbol_count == 8) {
-          requirement.symbol_count = 0;
-          break;
-        }
-
-        requirement.symbols[requirement.symbol_count++] = raw;
-      }
-    }
-
-    if (!requirement.symbol_count && !requirement.field) {
+    if (!requirement.symbol && !requirement.field) {
       continue;
     }
 
@@ -187,12 +172,9 @@ static bool sq_query_cursor__presence_matches(SQQueryCursor *self, const Pattern
     uint32_t group_end = group_start + SQ_GROUP_SIZE;
     uint32_t end = group_end < scanned_end ? group_end : scanned_end;
     uint64_t hits = UINT64_MAX;
-    if (requirement->symbol_count) {
-      hits = 0;
-      for (uint32_t index = 0; index < requirement->symbol_count; index++) {
-        hits |= query_order_mask(sq_tree_group_symbol_equal(
-            root.tree, sq_position_group(root.tree, group), requirement->symbols[index]));
-      }
+    if (requirement->symbol) {
+      hits = query_order_mask(sq_tree_group_symbol_equal(
+          root.tree, sq_position_group(root.tree, group), requirement->symbol));
     }
 
     if (requirement->field) {
@@ -328,14 +310,14 @@ static void sq_query__prepare_execution(SQQuery *query) {
   uint32_t symbol_count = query->language->symbol_count + query->language->alias_count;
   array_grow_by(&plan->roots, symbol_count + 2);
   memset(plan->roots.contents, 0, plan->roots.size * sizeof(uint64_t));
-  for (uint32_t raw = 0; raw < symbol_count; raw++) {
-    TSSymbol symbol = query->language->public_symbol_map[raw];
-    bool named = ts_language_symbol_metadata(query->language, raw).named;
+  for (uint32_t symbol = 0; symbol < symbol_count; symbol++) {
+    if (query->language->public_symbol_map[symbol] != symbol) continue;
+    bool named = ts_language_symbol_metadata(query->language, symbol).named;
     for (uint32_t index = 0; index < query->pattern_map.size; index++) {
       const PatternEntry *entry = &query->pattern_map.contents[index];
       const QueryStep *step = &query->steps.contents[entry->step_index];
       if (step->symbol ? step->symbol == symbol : !step->is_named || named) {
-        plan->roots.contents[raw] |= (uint64_t)1 << entry->pattern_index;
+        plan->roots.contents[symbol] |= (uint64_t)1 << entry->pattern_index;
       }
     }
   }
@@ -519,13 +501,11 @@ static uint32_t query_execution_find_symbols(SQQueryCursor *cursor, const SQTree
       group_end = end;
     }
 
-    // The persisted index is profitable for a small selective root set. Its
-    // keys are public IDs, while lane filters compare raw display IDs.
+    // The persisted index is profitable for a small selective root set.
     if (sq_presence_offset(tree) && filter->symbol_count <= 4) {
       bool interested = false;
       for (uint32_t index = 0; index < filter->symbol_count; index++) {
         TSSymbol symbol = sq_decode_symbol(tree, filter->symbols[index]);
-        symbol = ts_language_public_symbol(tree->language, symbol);
         if (sq_tree_group_has_symbol(tree, sq_position_group(tree, group), symbol)) {
           interested = true;
           break;
@@ -669,9 +649,9 @@ static bool sq_query_cursor__execution_advance(SQQueryCursor *self, bool stop_on
 
     self->execution_position = sq_next_position(tree, node + 1);
     self->execution_last_node = node;
-    uint16_t raw = sq_node_symbol_id(sq_position_node(tree, node));
-    TSSymbol symbol = ts_language_public_symbol(query->language, sq_decode_symbol(tree, raw));
-    uint64_t roots = plan->roots.contents[raw];
+    uint16_t encoded = sq_node_symbol_id(sq_position_node(tree, node));
+    TSSymbol symbol = sq_decode_symbol(tree, encoded);
+    uint64_t roots = plan->roots.contents[encoded];
     while (roots) {
       uint32_t pattern = query_ctz(roots);
       roots &= roots - 1;

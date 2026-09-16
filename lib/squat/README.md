@@ -40,13 +40,16 @@ Symbol IDs (including grammar symbol overrides), field IDs, supertype
 masks/dictionary IDs, and group waste always use 16 bits. Field and supertype
 columns are retained even for grammars that do not use them. Coordinates and
 boolean columns keep their existing widths. No build flag or Cargo feature is
-needed.
+needed. The symbol column stores public display IDs. Sparse grammar overrides
+preserve original grammar IDs wherever they differ, including aliases and public
+symbol canonicalization.
 
 Fixed-width packing uses direct halfword stores. Iterators read IDs from the
 slab instead of unpacking and caching copies; only coordinates need expansion.
 On x86-64, group equality uses SSE2 comparisons and a lane mask, with a portable
 scalar implementation elsewhere. These optimizations preserve the slab format.
-See [measurements](experiments/fixed-width.md).
+See [fixed-width measurements](experiments/fixed-width.md) and
+[public display ID measurements](experiments/public-display.md).
 
 Grammar preparation returns
 `SQ_ERROR_OVERFLOW` if symbol IDs (including the two error symbols) or field IDs
@@ -420,7 +423,7 @@ Named equality functions replace the old `SQColumn` selector. For example,
 `sq_tree_group_field_equal(tree, group, value)` replaces
 `sq_tree_group_equal(tree, group, SQ_COLUMN_FIELD, value)`. Each previously
 exposed encoded column has its own function, including byte deltas and point keys,
-supertypes, raw display symbols, and grammar symbols. These are exact
+supertypes, public display symbols, and grammar symbols. These are exact
 physical-lane masks, with the same SWAR kernel and encoded-value semantics.
 
 Iterator caches likewise use named lane arrays. A field-only request fills only

@@ -50,12 +50,12 @@ uint32_t sq_node_end_slot(SQNode node) {
   return sq_tree_slot_count(node.tree) - sq_node_first_slot(node);
 }
 
-static TSSymbol raw_symbol(SQNode node) {
+static TSSymbol display_symbol(SQNode node) {
   return sq_decode_symbol(node.tree, sq_node_symbol_id(node));
 }
 
 TSSymbol sq_node_symbol(SQNode node) {
-  return node.tree ? ts_language_public_symbol(node.tree->language, raw_symbol(node)) : 0;
+  return node.tree ? display_symbol(node) : 0;
 }
 
 uint32_t sq_node_grammar_id_with_symbol(SQNode node, uint32_t symbol) {
@@ -80,7 +80,7 @@ TSSymbol sq_node_grammar_symbol(SQNode node) {
 }
 
 const char *sq_node_type(SQNode node) {
-  return node.tree ? ts_language_symbol_name(node.tree->language, raw_symbol(node)) : NULL;
+  return node.tree ? ts_language_symbol_name(node.tree->language, display_symbol(node)) : NULL;
 }
 
 const char *sq_node_grammar_type(SQNode node) {
@@ -119,7 +119,7 @@ TSPoint sq_node_end_point(SQNode node) {
 }
 
 bool sq_node_is_named(SQNode node) {
-  return node.tree && ts_language_symbol_metadata(node.tree->language, raw_symbol(node)).named;
+  return node.tree && ts_language_symbol_metadata(node.tree->language, display_symbol(node)).named;
 }
 
 bool sq_node_is_extra(SQNode node) {

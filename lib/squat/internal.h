@@ -381,7 +381,7 @@ bool sq_resize(SQTree **, uint32_t, SQError *);
 bool sq_prepare_final(SQTree **, uint32_t capacity, uint32_t trailing_size, SQError *);
 bool sq_grow_data(SQTree **, uint32_t, SQError *);
 bool sq_build_presence(SQTree *, SQError *);
-bool sq_build_presence_cached(SQTree *, const uint16_t *, uint8_t **, size_t *, SQError *);
+bool sq_build_presence_cached(SQTree *, uint8_t **, size_t *, SQError *);
 uint64_t sq_presence_size(const SQTree *);
 static inline uint32_t sq_presence_offset(const SQTree *tree) {
   return sq_header_get(tree, format_flags) & SQ_PRESENCE ? tree->layout.end : 0;

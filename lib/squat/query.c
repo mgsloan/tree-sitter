@@ -3793,16 +3793,16 @@ void sq_query__prepare_symbol_scan(SQQuery *query) {
   uint32_t count = query->language->symbol_count + query->language->alias_count;
   array_grow_by(&query->scan_symbols, (count + 2 + 63) / 64);
   memset(query->scan_symbols.contents, 0, query->scan_symbols.size * sizeof(uint64_t));
-  for (uint32_t raw = 0; raw < count + 2; raw++) {
-    TSSymbol symbol = query_decode_symbol(raw, count);
-    if (symbol < count) {
-      symbol = query->language->public_symbol_map[symbol];
+  for (uint32_t encoded = 0; encoded < count + 2; encoded++) {
+    TSSymbol symbol = query_decode_symbol(encoded, count);
+    if (symbol < count && query->language->public_symbol_map[symbol] != symbol) {
+      continue;
     }
 
     unsigned pattern;
     if (sq_query__pattern_map_search(query, symbol, &pattern)) {
-      query->scan_symbols.contents[raw / 64] |= (uint64_t)1 << (raw % 64);
-      array_push(&query->scan_targets, raw);
+      query->scan_symbols.contents[encoded / 64] |= (uint64_t)1 << (encoded % 64);
+      array_push(&query->scan_targets, encoded);
     }
   }
 
@@ -4620,9 +4620,8 @@ static void sq_query_cursor__current_status(const QueryTreeCursor *cursor, const
                                             TSSymbol *symbol, bool *is_named, TSFieldId *field,
                                             TSSymbol *supertypes, unsigned *supertype_count) {
   SQNode node = query_tree_cursor_node(cursor);
-  TSSymbol raw = sq_decode_symbol(node.tree, sq_node_symbol_id(node));
-  *symbol = ts_language_public_symbol(node.tree->language, raw);
-  *is_named = ts_language_symbol_metadata(node.tree->language, raw).named;
+  *symbol = sq_decode_symbol(node.tree, sq_node_symbol_id(node));
+  *is_named = ts_language_symbol_metadata(node.tree->language, *symbol).named;
   *field = query->needs_fields && sq_cursor_depth(cursor->cursor) ? sq_node_field_id(node) : 0;
   (void)supertypes;
 

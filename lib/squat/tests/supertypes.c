@@ -29,7 +29,7 @@ static void exercise(uint32_t count, bool repack) {
   SQError error;
   SQGrammar *grammar = sq_grammar_new(&language, &error);
   assert(grammar);
-  Builder builder = {.tree = sq_allocate(grammar, 1, true, &error), .words = 1,
+  Builder builder = {.public_index = grammar->public_index, .tree = sq_allocate(grammar, 1, true, &error), .words = 1,
                      .language = &language, .symbol_count = 11, .symbol_space = 13,
                      .error = &error};
   assert(builder.tree);
@@ -116,7 +116,7 @@ static void direct_mask_tests(void) {
     SQError error;
     SQGrammar *grammar = sq_grammar_new(language, &error);
     assert(grammar);
-    Builder builder = {.tree = sq_allocate(grammar, 1, true, &error), .words = 1,
+    Builder builder = {.public_index = grammar->public_index, .tree = sq_allocate(grammar, 1, true, &error), .words = 1,
                        .language = language, .small_supertypes = true,
                        .symbol_count = language->symbol_count,
                        .symbol_space = language->symbol_count + 2, .error = &error};

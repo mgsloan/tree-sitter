@@ -116,6 +116,7 @@ static void compare_node(Nodes *nodes, uint32_t i) {
   TSNode a = nodes->mainline[i];
   SQNode b = nodes->packed[i];
   CHECK(ts_node_symbol(a) == sq_node_symbol(b));
+  CHECK(sq_node_symbol_id(b) == sq_encode_symbol(b.tree, ts_node_symbol(a)));
   CHECK(ts_node_grammar_symbol(a) == sq_node_grammar_symbol(b));
   CHECK(strings_equal(ts_node_type(a), sq_node_type(b)));
   CHECK(strings_equal(ts_node_grammar_type(a), sq_node_grammar_type(b)));
@@ -487,10 +488,20 @@ static void reject_index_mutation(const SQTree *tree, uint8_t *bytes, bool prese
 }
 
 static void check_grammar_validation(const SQTree *tree) {
-  if (!(sq_header_get(tree, format_flags) & SQ_GRAMMAR_OVERRIDES)) return;
   uint8_t *bytes = sq_allocate_data(tree->size);
   CHECK(bytes);
   memcpy(bytes, tree->data, tree->size);
+  for (uint32_t symbol = 0; symbol < sq_symbols(tree) - 2; symbol++) {
+    if (tree->language->public_symbol_map[symbol] != symbol) {
+      sq_set_u16(bytes, tree->layout.symbol, sq_tree_root_node(tree).slot, symbol);
+      reject_index_mutation(tree, bytes, false);
+      break;
+    }
+  }
+  if (!(sq_header_get(tree, format_flags) & SQ_GRAMMAR_OVERRIDES)) {
+    free(bytes);
+    return;
+  }
   uint32_t offset = sq_grammar_offset(tree), words = sq_grammar_words(tree);
   uint32_t bitmap = offset + 8, ranks = bitmap + words * 8;
   uint32_t values = ranks + (uint32_t)sq_array_size(words, 4);

@@ -7,12 +7,12 @@
 static inline void sq_attributes_finish(SQNode node, uint32_t symbol, uint32_t grammar,
                                         TSFieldId field, SQCursorAttributes *out) {
   const TSLanguage *language = node.tree->language;
-  TSSymbol raw = sq_decode_symbol(node.tree, symbol);
-  out->symbol = ts_language_public_symbol(language, raw);
+  TSSymbol display = sq_decode_symbol(node.tree, symbol);
+  out->symbol = display;
   out->grammar_symbol = sq_decode_symbol(node.tree, grammar);
-  out->type = ts_language_symbol_name(language, raw);
+  out->type = ts_language_symbol_name(language, display);
   out->grammar_type = ts_language_symbol_name(language, out->grammar_symbol);
-  out->is_named = ts_language_symbol_metadata(language, raw).named;
+  out->is_named = ts_language_symbol_metadata(language, display).named;
   out->is_error = out->symbol == ts_builtin_sym_error;
   out->field_id = field;
 }

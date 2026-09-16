@@ -129,8 +129,9 @@ SQNode sq_tree_root_node(const SQTree *);
 SQNode sq_tree_node_at_slot(const SQTree *, uint32_t);
 
 // Exact equality on encoded values: coordinates are deltas, and symbol IDs
-// have builtin errors remapped after the grammar range. Public-symbol mapping
-// is not applied. One bit per physical lane; trailing waste never matches.
+// have builtin errors remapped after the grammar range. Display IDs are public;
+// grammar IDs retain their original values. One bit per physical lane; trailing
+// waste never matches.
 uint64_t sq_tree_group_span_delta_equal(const SQTree *, uint32_t group, uint32_t value);
 uint64_t sq_tree_group_start_byte_delta_equal(const SQTree *, uint32_t group, uint32_t value);
 uint64_t sq_tree_group_end_byte_delta_equal(const SQTree *, uint32_t group, uint32_t value);

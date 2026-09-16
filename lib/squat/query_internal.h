@@ -30,8 +30,7 @@ typedef struct {
 } QueryExecutionState;
 
 typedef struct {
-  uint16_t symbols[8];
-  uint16_t symbol_count;
+  TSSymbol symbol;
   TSFieldId field;
 } QueryPresenceRequirement;
 

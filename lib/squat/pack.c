@@ -44,7 +44,7 @@ typedef struct {
   const DirectFieldSlice *production_fields;
   uint64_t *masks;
   uint32_t mask_count, mask_capacity;
-  const uint16_t *supertype_indexes;
+  const uint16_t *supertype_indexes, *public_index;
   uint32_t symbol_space;
 
   // Language facts read for every frame, kept here so the hot paths do not
@@ -482,7 +482,9 @@ static bool emit(Builder *builder, const EmitNode *frame) {
       builder->extra_flags |= (uint64_t)extra << bit;
       builder->error_flags |= (uint64_t)has_error << bit;
       builder->missing_flags |= (uint64_t)missing << bit;
-      if (raw_symbol != grammar) {
+      uint16_t display = builder->public_index[encode_symbol(builder, raw_symbol)];
+      uint32_t grammar_id = encode_symbol(builder, grammar);
+      if (display != grammar_id) {
         if (builder->override_count == builder->override_capacity) {
           uint64_t capacity = builder->override_capacity ? (uint64_t)builder->override_capacity * 2 : 32;
           if (capacity > UINT32_MAX || capacity > SIZE_MAX / sizeof(*builder->overrides)) {
@@ -498,9 +500,9 @@ static bool emit(Builder *builder, const EmitNode *frame) {
           builder->override_capacity = (uint32_t)capacity;
         }
         builder->overrides[builder->override_count++] =
-            (struct GrammarOverride){distance(builder), encode_symbol(builder, grammar)};
+            (struct GrammarOverride){distance(builder), grammar_id};
       }
-      put_lane(&builder->symbol_lane, encode_symbol(builder, raw_symbol));
+      put_lane(&builder->symbol_lane, display);
       put_lane(&builder->field_lane, frame->field);
       slot->super = super;
       builder->count++;
@@ -870,6 +872,7 @@ static SQTree *pack_tree(SQPackContext *context, SQGrammar *grammar, const TSTre
   builder.overrides = context->scratch.overrides;
   builder.override_capacity = context->scratch.override_capacity;
   builder.supertype_indexes = grammar->supertype_indexes;
+  builder.public_index = grammar->public_index;
   stack = context->stack;
   if (stack) stack_capacity = context->stack_capacity;
   if (!stack) stack = malloc(stack_capacity * sizeof(Frame));
@@ -1026,8 +1029,8 @@ static SQTree *pack_tree(SQPackContext *context, SQGrammar *grammar, const TSTre
   }
 
   if (options.symbol_presence) {
-    bool ok = sq_build_presence_cached(builder.tree, grammar->public_index,
-                                        &context->presence, &context->presence_capacity, error);
+    bool ok = sq_build_presence_cached(builder.tree, &context->presence,
+                                       &context->presence_capacity, error);
     if (!ok) goto failure;
   }
 
