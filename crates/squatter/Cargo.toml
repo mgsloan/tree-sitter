@@ -6,9 +6,6 @@ license.workspace = true
 publish = false
 build = "build.rs"
 
-[features]
-fixed-width = []
-
 [dependencies]
 tree-sitter.workspace = true
 regex.workspace = true

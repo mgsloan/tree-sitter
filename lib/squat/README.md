@@ -30,15 +30,11 @@ sq_grammar_delete(grammar);
 Link the library before mainline Tree-sitter. Public declarations are in
 [`include/tree_sitter/squat.h`](include/tree_sitter/squat.h).
 
-Build with `-DSQ_FIXED_WIDTH=1` to use 16-bit symbol IDs (including grammar
-symbol overrides), field IDs, supertype masks/dictionary IDs, and group waste.
-Field and supertype columns are retained even for grammars that do not use them.
-Coordinates and boolean columns keep their existing widths. For example:
-
-```sh
-make -C lib/squat check BUILD=../../build/squat-fixed CFLAGS='-O2 -g -DSQ_FIXED_WIDTH=1'
-cargo build -p tree-sitter-squatter --features fixed-width
-```
+Symbol IDs (including grammar symbol overrides), field IDs, supertype
+masks/dictionary IDs, and group waste always use 16 bits. Field and supertype
+columns are retained even for grammars that do not use them. Coordinates and
+boolean columns keep their existing widths. No build flag or Cargo feature is
+needed.
 
 Fixed-width packing uses direct halfword stores. Iterators read IDs from the
 slab instead of unpacking and caching copies; only coordinates need expansion.
@@ -46,9 +42,8 @@ On x86-64, group equality uses SSE2 comparisons and a lane mask, with a portable
 scalar implementation elsewhere. These optimizations preserve the slab format.
 See [measurements](experiments/fixed-width.md).
 
-The default remains variable width. Use separate native build directories when
-switching flags. Fixed-width slabs have a distinct representation ID and cannot
-be loaded by a variable-width build, or vice versa. Grammar preparation returns
+The representation ID remains compatible with the previous fixed-width build;
+old variable-width slabs are rejected. Grammar preparation returns
 `SQ_ERROR_OVERFLOW` if symbol IDs (including the two error symbols) or field IDs
 need more than 16 bits. Supertype dictionaries retain their existing 65,536-entry
 limit and return `SQ_ERROR_DICTIONARY_FULL` if exceeded.
@@ -77,7 +72,7 @@ The caller may fall back to `sq_grammar_new`. Rust exposes these operations thro
 recovery. Corpus checks run this against each staged grammar.
 
 `make -C lib/squat check` checks column packing and value-preserving growth and
-compaction, including nine-bit lane realignment. For grammar comparisons:
+compaction, including fixed-width grammar limits. For grammar comparisons:
 
 ```sh
 python3 lib/squat/tests/container.py --output build/squat-check --queries
@@ -107,7 +102,7 @@ slabs, then reads the other executable's slabs. The probe requires identical
 bytes and compares every live node's attributes and topology through copied and
 borrowed loaders. Sixteen packing variants cover capacity hints, compaction,
 points, and presence-index options. Use a source exceeding 32 groups to exercise
-the presence index, and additional grammars/sources for variable-width IDs and
+the presence index, and additional grammars/sources for grammar IDs and
 grammar overrides. Both cross-endian directions run even if one fails.
 
 Conversion walks raw subtrees iteratively in reverse preorder. Each frame stages
@@ -158,10 +153,7 @@ cursor.goto_first_child();
 The runtime layout has named slab offsets, with no column enum or offset table.
 Flags, u8/u16 deltas, and u32/u64 bases have explicit typed reads and writes;
 multi-byte values are byte-swapped on big-endian hosts.
-Only variable-width IDs and group waste use the non-straddling bit decoder.
-Symbol and field decoders cache their lanes-per-word and masks in the runtime
-layout, avoiding repeated grammar-wide arithmetic. These constants add eight
-bytes to the runtime tree and do not change serialized slabs.
+Symbol, field, supertype, and waste columns use direct u16 accesses.
 
 After the header and per-group waste column, columns are ordered: start byte,
 end byte, span, symbol, field, supertype, flag bitmaps (`last`,
@@ -307,8 +299,8 @@ exhaustion. Rust exposes `Node::node_iterator(bool)` and a fused `NodeIterator`;
 its corresponding accessors return `None` outside a yielded position. The older
 allocation-free `Node::preorder()` remains available.
 
-The optional lazy cache stores display symbols, grammar symbols, and fields as
-u16 lanes, plus six absolute coordinate columns as u32 lanes. Coordinate decoding
+The optional lazy cache stores absolute coordinates; IDs are read directly
+from the slab. Coordinate decoding
 widens unsigned byte/u16 deltas directly from the slab and adds or subtracts a
 broadcast group base with AVX2 (eight lanes) or SSE2 (four lanes) on x86-64.
 Other platforms use a portable scalar implementation. Single-bit flags remain
@@ -319,20 +311,13 @@ AVX2 and scalar group decoding skip addition for zero bases. SSE2 and per-node
 scalar reads retain their arithmetic paths. Subtraction always retains its
 base-minus-delta semantics, including when the base is zero.
 
-A field-only consumer unpacks only fields; a navigation-only consumer never
-unpacks anything. Repeated attribute reads reuse the same window. Returned
-ordinary node handles do not use the iterator's cache.
-
-Portable ID unpacking expands four packed fields into u16 lanes with masks and
-shifts. Automatic variable-width decoding uses BMI2 PDEP on supported Intel
-CPUs, the vendor measured here, and portable SWAR elsewhere. AVX2 variable shifts
-and byte shuffles remain available for experiments. `SQ_UNPACK_KERNEL=1/2/3/4`
-selects scalar/SWAR/BMI2/AVX2 at build time; unavailable hardware selections fall
-back to SWAR. `SQ_COORDINATE_KERNEL=0/1/2/4` independently selects automatic,
-scalar, SSE2, or AVX2 coordinate reconstruction, with a supported fallback.
+Field-only and navigation-only consumers do not unpack coordinates. Repeated
+attribute reads reuse the same window. Ordinary node handles do not use the
+iterator's cache. `SQ_COORDINATE_KERNEL=0/1/2/4` selects automatic, scalar, SSE2,
+or AVX2 coordinate reconstruction, with a supported fallback.
 
 `SQ_ITERATOR_CACHE_ALL=2` is the default absolute-coordinate cache. Build mode `0`
-(IDs only) remains available for reproducing earlier experiments. The old
+(no coordinate cache) remains available for reproducing earlier experiments. The old
 delta-cache mode `1` has been removed. The public boolean constructor still selects
 cached or uncached operation. No slab format or cursor API changes.
 

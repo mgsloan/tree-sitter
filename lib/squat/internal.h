@@ -27,17 +27,12 @@ _Static_assert(SQ_ITERATOR_UNPACK_SLOTS >= SQ_GROUP_SIZE &&
 #endif
 _Static_assert(SQ_COLUMN_ALIGNMENT == 8 || SQ_COLUMN_ALIGNMENT == 64,
                "supported experimental column alignments");
-#ifndef SQ_FIXED_WIDTH
-#define SQ_FIXED_WIDTH 0
-#endif
-_Static_assert(SQ_FIXED_WIDTH == 0 || SQ_FIXED_WIDTH == 1, "fixed width must be 0 or 1");
-
 #define SQ_VERSION                                                                                 \
   (UINT32_C(0x535100c0) |                                                                          \
    (SQ_GROUP_SIZE == 32   ? 2u                                                                     \
     : SQ_GROUP_SIZE == 64 ? 4u                                                                     \
                           : 0u) |                                                                  \
-   (SQ_COLUMN_ALIGNMENT == 64 ? 8u : 0u) | (SQ_FIXED_WIDTH ? 1u : 0u))
+   (SQ_COLUMN_ALIGNMENT == 64 ? 8u : 0u) | 1u)
 
 // Version 12: measured ID width rounding and compact direct supertype masks.
 #define SQ_NO_POINTS 0x100u
@@ -54,7 +49,7 @@ typedef struct {
 
 _Static_assert(sizeof(SQHeader) == 16, "slab header size");
 
-#define SQ_WASTE_BITS (SQ_FIXED_WIDTH ? 16u : SQ_GROUP_SIZE == 16 ? 4u : SQ_GROUP_SIZE == 32 ? 5u : 6u)
+#define SQ_WASTE_BITS 16u
 
 typedef struct {
   // Slab offsets in persisted order; group bases precede their node values.
@@ -255,30 +250,6 @@ static inline uint32_t sq_get_packed(const uint8_t *data, uint32_t offset, uint3
   return (uint32_t)((word >> (index % lanes * bits)) & ((UINT64_C(1) << bits) - 1));
 }
 
-// Variable-width IDs reuse constants computed when the tree layout is created.
-// Keep fixed-width loads and constant-width callers on their existing paths.
-static inline uint32_t sq_get_packed_cached(const uint8_t *data, uint32_t offset,
-                                           uint32_t index, uint8_t bits,
-                                           uint8_t lanes, uint32_t mask) {
-  switch (bits) {
-  case 1:
-    return sq_get_bit(data, offset, index);
-  case 2:
-    return (sq_get_u8(data, offset, index / 4) >> ((index % 4) * 2)) & 3u;
-  case 4:
-    return (sq_get_u8(data, offset, index / 2) >> ((index % 2) * 4)) & 15u;
-  case 8:
-    return sq_get_u8(data, offset, index);
-  case 16:
-    return sq_get_u16(data, offset, index);
-  case 32:
-    return sq_get_u32(data, offset, index);
-  }
-
-  uint64_t word = sq_get_u64(data, offset, index / lanes);
-  return (uint32_t)(word >> (index % lanes * bits)) & mask;
-}
-
 void sq_set_packed(uint8_t *, uint32_t offset, uint32_t index, uint8_t bits, uint32_t);
 
 static inline uint32_t sq_group_waste(const SQTree *tree, uint32_t group) {
@@ -353,44 +324,20 @@ static inline uint32_t sq_node_end_point_key(SQNode node) {
   return sq_get_u16(node.tree->data, node.tree->layout.end_point, node.slot);
 }
 
-static inline uint8_t sq_id_width(uint8_t bits) {
-  return SQ_FIXED_WIDTH ? 16 : bits;
-}
-
 static inline uint32_t sq_node_supertype(SQNode node) {
-  if (!sq_id_width(node.tree->layout.supertype_bits)) return 0;
-  return sq_get_packed(node.tree->data, node.tree->layout.supertype, node.slot,
-                       sq_id_width(node.tree->layout.supertype_bits));
+  return sq_get_u16(node.tree->data, node.tree->layout.supertype, node.slot);
 }
 
 static inline uint32_t sq_node_symbol_id(SQNode node) {
-  return sq_get_packed_cached(node.tree->data, node.tree->layout.symbol, node.slot,
-                              sq_id_width(node.tree->layout.symbol_bits), node.tree->layout.symbol_lanes,
-                              node.tree->layout.symbol_mask);
+  return sq_get_u16(node.tree->data, node.tree->layout.symbol, node.slot);
 }
 
 uint32_t sq_node_grammar_id(SQNode);
 uint32_t sq_node_grammar_id_with_symbol(SQNode, uint32_t symbol);
 
 static inline uint32_t sq_node_field_value(SQNode node) {
-  if (!sq_id_width(node.tree->layout.field_bits)) return 0;
-  return sq_get_packed_cached(node.tree->data, node.tree->layout.field, node.slot,
-                              sq_id_width(node.tree->layout.field_bits), node.tree->layout.field_lanes,
-                              node.tree->layout.field_mask);
+  return sq_get_u16(node.tree->data, node.tree->layout.field, node.slot);
 }
-
-// Unpack little-endian, non-straddling fields of 1..16 bits. The caller
-// provides count u16 outputs and enough complete packed words for the range.
-// Kernels: 0 automatic, 1 scalar, 2 portable SWAR, 3 BMI2, 4 AVX2.
-typedef void (*SQUnpack)(const uint8_t *, uint32_t first, uint32_t count, uint8_t bits,
-                         uint16_t *out);
-void sq_unpack_u16_scalar(const uint8_t *, uint32_t, uint32_t, uint8_t, uint16_t *);
-void sq_unpack_u16_swar(const uint8_t *, uint32_t, uint32_t, uint8_t, uint16_t *);
-bool sq_unpack_supported(unsigned kernel);
-SQUnpack sq_unpack_select(unsigned kernel);
-#ifndef SQ_UNPACK_KERNEL
-#define SQ_UNPACK_KERNEL 0
-#endif
 
 // Reconstruct one group's 8- or 16-bit coordinate deltas into absolute u32s.
 // Kernels: 0 automatic, 1 scalar, 2 SSE2, 4 AVX2 (portable fallback elsewhere).

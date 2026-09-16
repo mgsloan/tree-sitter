@@ -10,12 +10,6 @@ _Static_assert(SQ_ITERATOR_CACHE_ALL == 0 || SQ_ITERATOR_CACHE_ALL == 2,
 typedef struct {
   uint32_t group;
   bool attributes_filled;
-#if !SQ_FIXED_WIDTH
-  bool field_filled;
-  SQUnpack unpack;
-  uint16_t symbol[SQ_ITERATOR_UNPACK_SLOTS];
-  uint16_t field[SQ_ITERATOR_UNPACK_SLOTS];
-#endif
 #if SQ_ITERATOR_CACHE_ALL == 2
   SQUnpackCoordinates coordinates;
   uint32_t start_byte[SQ_ITERATOR_UNPACK_SLOTS];
@@ -52,9 +46,6 @@ SQNodeIterator *sq_node_iterator_new(SQNode root, bool unpack_cache) {
     iterator->cache->group = SQ_NONE;
 #if SQ_ITERATOR_CACHE_ALL == 2
     iterator->cache->coordinates = sq_unpack_coordinates_select(SQ_COORDINATE_KERNEL);
-#endif
-#if !SQ_FIXED_WIDTH
-    iterator->cache->unpack = sq_unpack_select(SQ_UNPACK_KERNEL);
 #endif
   }
 
@@ -102,15 +93,12 @@ static UnpackCache *prepare_cache(SQNodeIterator *iterator) {
   if (cache->group != first_group) {
     cache->group = first_group;
     cache->attributes_filled = false;
-#if !SQ_FIXED_WIDTH
-    cache->field_filled = false;
-#endif
   }
 
   return cache;
 }
 
-#if !SQ_FIXED_WIDTH || SQ_ITERATOR_CACHE_ALL == 2
+#if SQ_ITERATOR_CACHE_ALL == 2
 static uint32_t cache_slot_count(const SQTree *tree, const UnpackCache *cache) {
   uint32_t groups = sq_header_get(tree, group_count) - cache->group;
   const unsigned groups_per_window = SQ_ITERATOR_UNPACK_SLOTS / SQ_GROUP_SIZE;
@@ -119,19 +107,6 @@ static uint32_t cache_slot_count(const SQTree *tree, const UnpackCache *cache) {
 }
 #endif
 
-#if !SQ_FIXED_WIDTH
-static void fill_field(const SQTree *tree, UnpackCache *cache) {
-  if (cache->field_filled) return;
-
-  if (!sq_id_width(tree->layout.field_bits)) {
-    memset(cache->field, 0, sizeof(cache->field));
-  } else {
-    cache->unpack(tree->data + tree->layout.field, cache->group * SQ_GROUP_SIZE,
-                  cache_slot_count(tree, cache), sq_id_width(tree->layout.field_bits), cache->field);
-  }
-  cache->field_filled = true;
-}
-#endif
 
 #if SQ_ITERATOR_CACHE_ALL == 2
 static void fill_coordinate(const SQTree *tree, const UnpackCache *cache, uint32_t delta_offset,
@@ -173,14 +148,6 @@ static void fill_attributes(SQNodeIterator *iterator, UnpackCache *cache) {
   (void)tree;
   if (cache->attributes_filled) return;
 
-#if !SQ_FIXED_WIDTH
-  fill_field(tree, cache);
-
-  uint32_t first = cache->group * SQ_GROUP_SIZE;
-  uint32_t count = cache_slot_count(tree, cache);
-  cache->unpack(tree->data + tree->layout.symbol, first, count, sq_id_width(tree->layout.symbol_bits),
-                cache->symbol);
-#endif
 #if SQ_ITERATOR_CACHE_ALL == 2
   fill_coordinate(tree, cache, tree->layout.start_byte_delta, tree->layout.start_byte_base, 8,
                   false, cache->start_byte);
@@ -203,13 +170,7 @@ static void fill_attributes(SQNodeIterator *iterator, UnpackCache *cache) {
 
 TSFieldId sq_node_iterator_field_id(SQNodeIterator *iterator) {
   if (!iterator || !iterator->current.tree) return 0;
-  if (SQ_FIXED_WIDTH || !iterator->cache) return (TSFieldId)sq_node_field_value(iterator->current);
-#if !SQ_FIXED_WIDTH
-  UnpackCache *cache = prepare_cache(iterator);
-  fill_field(iterator->tree, cache);
-  uint32_t lane = iterator->current.slot & (SQ_ITERATOR_UNPACK_SLOTS - 1u);
-  return cache->field[lane];
-#endif
+  return (TSFieldId)sq_node_field_value(iterator->current);
 }
 
 void sq_node_iterator_attributes(SQNodeIterator *iterator, SQCursorAttributes *out) {
@@ -226,14 +187,9 @@ void sq_node_iterator_attributes(SQNodeIterator *iterator, SQCursorAttributes *o
   UnpackCache *cache = prepare_cache(iterator);
   fill_attributes(iterator, cache);
   uint32_t lane = node.slot & (SQ_ITERATOR_UNPACK_SLOTS - 1u);
-#if SQ_FIXED_WIDTH
   uint32_t symbol = sq_node_symbol_id(node);
   TSFieldId field = (TSFieldId)sq_node_field_value(node);
   (void)lane;
-#else
-  uint32_t symbol = cache->symbol[lane];
-  TSFieldId field = cache->field[lane];
-#endif
 #if SQ_ITERATOR_CACHE_ALL == 2
   out->start_byte = cache->start_byte[lane];
   out->end_byte = cache->end_byte[lane];

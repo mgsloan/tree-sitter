@@ -59,7 +59,7 @@ SQPackOptions sq_pack_options_default(void);
 // libraries must remain loaded until every derived handle has been released.
 // Construction copies cached dictionary bytes; their storage may be released on
 // return. Other tables are derived from the language. More than 65536 dictionary
-// masks fails with SQ_ERROR_DICTIONARY_FULL. Fixed-width builds reject symbol
+// masks fails with SQ_ERROR_DICTIONARY_FULL. Grammars reject symbol
 // or field IDs exceeding 16 bits with SQ_ERROR_OVERFLOW. No global registry is used.
 SQGrammar *sq_grammar_new(const TSLanguage *, SQError *);
 SQGrammar *sq_grammar_new_with_cache(const TSLanguage *, const void *, size_t, SQError *);

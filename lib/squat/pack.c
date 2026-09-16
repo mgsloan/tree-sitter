@@ -24,10 +24,6 @@ typedef struct {
 // cursors are recomputed when a group opens.
 typedef struct {
   uint8_t *address;
-#if !SQ_FIXED_WIDTH
-  uint32_t shift, limit;
-  uint8_t bits;
-#endif
 } LaneCursor;
 
 typedef Length PackPosition;
@@ -214,33 +210,13 @@ static void set_group_flags(uint8_t *data, uint32_t offset, uint32_t group, uint
 }
 
 static void start_lanes(LaneCursor *cursor, uint8_t *column, uint8_t bits, uint32_t slot) {
-#if SQ_FIXED_WIDTH
   (void)bits;
   cursor->address = column + (size_t)slot * 2;
-#else
-  uint32_t lanes = 64 / bits;
-  cursor->address = column + (uint64_t)(slot / lanes) * 8;
-  cursor->shift = slot % lanes * bits;
-  cursor->limit = 64 - bits;
-  cursor->bits = bits;
-#endif
 }
 
 static inline void put_lane(LaneCursor *cursor, uint32_t value) {
-#if SQ_FIXED_WIDTH
   sq_set_u16(cursor->address, 0, 0, (uint16_t)value);
   cursor->address += 2;
-#else
-  // Unwritten lanes are zero. Preserve earlier groups sharing a boundary word.
-  uint64_t word = sq_get_u64(cursor->address, 0, 0);
-  word |= (uint64_t)value << cursor->shift;
-  sq_set_u64(cursor->address, 0, 0, word);
-  cursor->shift += cursor->bits;
-  if (cursor->shift > cursor->limit) {
-    cursor->shift = 0;
-    cursor->address += 8;
-  }
-#endif
 }
 
 // Groups are filled once, in slot order, into zeroed storage, so every lane of
@@ -257,12 +233,10 @@ static bool open_group(Builder *builder) {
   }
 
   SQTree *tree = builder->tree;
-  start_lanes(&builder->symbol_lane, tree->data + tree->layout.symbol, sq_id_width(tree->layout.symbol_bits),
+  start_lanes(&builder->symbol_lane, tree->data + tree->layout.symbol, 16,
               builder->slot_base);
-  if (sq_id_width(tree->layout.field_bits)) {
-    start_lanes(&builder->field_lane, tree->data + tree->layout.field, sq_id_width(tree->layout.field_bits),
-                builder->slot_base);
-  }
+  start_lanes(&builder->field_lane, tree->data + tree->layout.field, 16,
+              builder->slot_base);
   return true;
 }
 
@@ -308,7 +282,7 @@ static bool close_group(Builder *builder) {
   uint8_t *start_byte_delta = data + tree->layout.start_byte_delta + first;
   uint8_t *end_byte_delta = data + tree->layout.end_byte_delta + (size_t)first * 2;
   uint32_t supertype_offset = tree->layout.supertype;
-  uint8_t supertype_bits = sq_id_width(tree->layout.supertype_bits);
+  uint8_t supertype_bits = 16;
   bool points = builder->points;
   uint8_t *start_point = points ? data + tree->layout.start_point + (size_t)first * 2 : NULL;
   uint8_t *end_point = points ? data + tree->layout.end_point + (size_t)first * 2 : NULL;
@@ -527,11 +501,7 @@ static bool emit(Builder *builder, const EmitNode *frame) {
             (struct GrammarOverride){distance(builder), encode_symbol(builder, grammar)};
       }
       put_lane(&builder->symbol_lane, encode_symbol(builder, raw_symbol));
-      if (sq_id_width(builder->tree->layout.field_bits)) {
-        put_lane(&builder->field_lane, frame->field);
-      } else {
-        ts_assert(frame->field == 0);
-      }
+      put_lane(&builder->field_lane, frame->field);
       slot->super = super;
       builder->count++;
       return true;
@@ -715,13 +685,11 @@ void sq_pack_context_delete(SQPackContext *context) {
 static SQGrammar *grammar_new(const TSLanguage *language, const void *grammar_cache,
                                size_t grammar_cache_length, SQError *error) {
   sq_fail(error, SQ_OK);
-#if SQ_FIXED_WIDTH
   if (language && ((uint64_t)language->symbol_count + language->alias_count + 1 > UINT16_MAX ||
                    language->field_count > UINT16_MAX)) {
     sq_fail(error, SQ_ERROR_OVERFLOW);
     return NULL;
   }
-#endif
   if (!sq_language_compatible(language)) {
     sq_fail(error, SQ_ERROR_LANGUAGE);
     return NULL;
@@ -1073,7 +1041,7 @@ static SQTree *pack_tree(SQPackContext *context, SQGrammar *grammar, const TSTre
     sq_set_u32(packed->data, offset, 0, builder.override_count);
     for (uint32_t i = 0; i < builder.override_count; i++) {
       sq_set_bit(packed->data, bitmap, builder.overrides[i].slot, true);
-      sq_set_packed(packed->data, values, i, sq_id_width(packed->layout.symbol_bits), builder.overrides[i].symbol);
+      sq_set_packed(packed->data, values, i, 16, builder.overrides[i].symbol);
     }
     uint32_t rank = 0;
     for (uint32_t i = 0; i < words; i++) {

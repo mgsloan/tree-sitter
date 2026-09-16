@@ -109,7 +109,6 @@ static void exercise(uint32_t count, bool repack) {
 }
 
 static void direct_mask_tests(void) {
-  const uint8_t widths[] = {0, 1, 2, 4, 4, 8, 8, 8, 8};
   for (unsigned bits = 0; bits <= 8; bits++) {
     SupertypeFixture fixture;
     supertype_fixture(&fixture, bits, true);
@@ -121,7 +120,7 @@ static void direct_mask_tests(void) {
                        .language = language, .small_supertypes = true,
                        .symbol_count = language->symbol_count,
                        .symbol_space = language->symbol_count + 2, .error = &error};
-    assert(builder.tree && builder.tree->layout.supertype_bits == (SQ_FIXED_WIDTH ? 16 : widths[bits]));
+    assert(builder.tree && builder.tree->layout.supertype_bits == 16);
     Subtree leaf = {.data = {.is_inline = true, .symbol = 1}};
     uint32_t slots[256];
     unsigned count = 1u << bits;

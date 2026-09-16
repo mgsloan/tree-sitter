@@ -36,8 +36,5 @@ fn main() {
         "cargo:rerun-if-changed={}",
         root.join("include/tree_sitter/squat.h").display()
     );
-    if std::env::var_os("CARGO_FEATURE_FIXED_WIDTH").is_some() {
-        build.define("SQ_FIXED_WIDTH", "1");
-    }
     build.warnings(true).compile("tree-sitter-squat");
 }

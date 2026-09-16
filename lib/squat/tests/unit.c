@@ -3,23 +3,7 @@
 #include <stdio.h>
 #include "supertype_fixture.h"
 
-static void width_policy_tests(void) {
-  const struct { uint32_t max; uint8_t field, symbol; } cases[] = {
-    {0, 0, 0}, {1, 1, 1}, {3, 2, 2}, {4, 4, 4}, {7, 4, 4},
-    {15, 4, 4}, {16, 8, 8}, {31, 8, 8}, {63, 8, 8}, {127, 8, 8},
-    {255, 8, 8}, {256, 9, 9}, {511, 9, 9}, {512, 10, 10},
-    {1023, 10, 10}, {1024, 11, 16}, {2047, 11, 16},
-    {4095, 12, 16}, {8191, 13, 16}, {16383, 14, 16},
-    {32767, 15, 16}, {65535, 16, 16},
-  };
-  for (unsigned i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
-    assert(sq_field_width(cases[i].max) == (SQ_FIXED_WIDTH ? 16 : cases[i].field));
-    assert(sq_symbol_width(cases[i].max) == (SQ_FIXED_WIDTH ? 16 : cases[i].symbol));
-  }
-}
-
 static void fixed_layout_limit_tests(void) {
-#if SQ_FIXED_WIDTH
   TSLanguage language = {.abi_version = TREE_SITTER_LANGUAGE_VERSION, .symbol_count = 65535};
   SQError error;
   assert(!sq_grammar_new(&language, &error) && error == SQ_ERROR_OVERFLOW);
@@ -36,7 +20,6 @@ static void fixed_layout_limit_tests(void) {
   language.symbol_count = 65534;
   assert(sq_layout(&grammar, 1, false, true, &layout));
   assert(layout.symbol_bits == 16 && layout.field_bits == 16 && layout.supertype_bits == 16);
-#endif
 }
 
 static void empty_column_tests(void) {
@@ -52,18 +35,8 @@ static void empty_column_tests(void) {
   SQGrammar *grammar = sq_grammar_new(&language, &error);
   assert(grammar);
   SQTree *tree = sq_allocate(grammar, 1, true, &error);
-#if SQ_FIXED_WIDTH
   assert(tree && tree->layout.field_bits == 16 && tree->layout.supertype_bits == 16);
   assert(SQ_WASTE_BITS == 16);
-#else
-  assert(tree && !tree->layout.field_bits && !tree->layout.field_lanes);
-  assert(sq_column_size(SQ_GROUP_SIZE, 0) == 0);
-  assert(tree->layout.field == tree->layout.supertype);
-  assert(!tree->layout.supertype_bits);
-  assert(tree->layout.supertype == tree->layout.last);
-  // Missing columns must not read bytes belonging to the next column.
-  tree->data[tree->layout.field] = 0xff;
-#endif
   sq_header_set(tree, group_count, 1);
   for (unsigned waste = 0; waste < SQ_GROUP_SIZE; waste++) {
     sq_set_packed(tree->data, tree->layout.waste, 0, SQ_WASTE_BITS, waste);
@@ -82,7 +55,6 @@ static void empty_column_tests(void) {
       assert(!sq_node_has_supertype((SQNode){tree, slot}, 1));
     }
   }
-#if SQ_FIXED_WIDTH
   const uint16_t targets[] = {0, 32768, UINT16_MAX};
   const uint64_t patterns[] = {0, UINT64_MAX, UINT64_C(0xaaaaaaaaaaaaaaaa),
                                 UINT64_C(0x8001800180018001)};
@@ -113,7 +85,6 @@ static void empty_column_tests(void) {
     assert(!sq_tree_from_bytes_borrowed_safety_checked(grammar, tree->data, tree->size, &error));
     assert(error == SQ_ERROR_INVALID_SLAB);
   }
-#endif
   sq_tree_delete(tree);
   sq_grammar_delete(grammar);
 }
@@ -159,55 +130,8 @@ static void read_tests(void) {
     for (uint32_t index = 0; index < 16 * lanes; index++) {
       uint32_t expected = (uint32_t)((words[1 + index / lanes] >> (index % lanes * bits)) & mask);
       assert(sq_get_packed(serialized, 8, index, bits) == expected);
-      assert(sq_get_packed_cached(serialized, 8, index, bits,
-                                  (uint8_t)lanes, (uint32_t)mask) == expected);
+
     }
-  }
-}
-
-static void unpack_tests(void) {
-  for (uint8_t bits = 1; bits <= 16; bits++) {
-    uint32_t lanes = 64 / bits;
-    uint32_t slots = 4 * SQ_ITERATOR_UNPACK_SLOTS + lanes;
-    size_t bytes = (size_t)sq_column_size(slots, bits);
-    uint8_t *data = malloc(bytes);
-    assert(data);
-
-    // Deliberately dirty unused tail bits: no decoder may treat them as lanes.
-    memset(data, 0xff, bytes);
-    for (uint32_t index = 0; index < slots; index++) {
-      sq_set_packed(data, 0, index, bits, (index * 7919u) & ((1u << bits) - 1));
-    }
-
-    for (unsigned kernel = 1; kernel <= 4; kernel++) {
-      if (!sq_unpack_supported(kernel)) {
-        continue;
-      }
-
-      SQUnpack unpack = sq_unpack_select(kernel);
-      for (uint32_t first = 0; first < lanes; first++) {
-        for (uint32_t count = 0; count <= SQ_ITERATOR_UNPACK_SLOTS; count++) {
-          uint16_t values[SQ_ITERATOR_UNPACK_SLOTS + 2];
-          for (unsigned index = 0; index < SQ_ITERATOR_UNPACK_SLOTS + 2; index++)
-            values[index] = 0xbeef;
-          unpack(data, first, count, bits, values + 1);
-          assert(values[0] == 0xbeef && values[count + 1] == 0xbeef);
-          for (uint32_t index = 0; index < count; index++) {
-            assert(values[index + 1] == sq_get_packed(data, 0, first + index, bits));
-          }
-        }
-      }
-
-      // The last window ends at the last allocated word, with no overread slack.
-      uint16_t values[SQ_ITERATOR_UNPACK_SLOTS];
-      unpack(data, slots - SQ_ITERATOR_UNPACK_SLOTS, SQ_ITERATOR_UNPACK_SLOTS, bits, values);
-      for (uint32_t index = 0; index < SQ_ITERATOR_UNPACK_SLOTS; index++) {
-        assert(values[index] ==
-               sq_get_packed(data, 0, slots - SQ_ITERATOR_UNPACK_SLOTS + index, bits));
-      }
-    }
-
-    free(data);
   }
 }
 
@@ -428,7 +352,6 @@ static void sparse_grammar_tests(bool dictionary) {
 }
 
 int main(void) {
-  width_policy_tests();
   fixed_layout_limit_tests();
   empty_column_tests();
   sparse_grammar_tests(false);
@@ -436,7 +359,6 @@ int main(void) {
   equality_tests();
   read_tests();
   fixed_width_write_tests();
-  unpack_tests();
   coordinate_unpack_tests();
   for (uint32_t symbols = 2; symbols <= 32768; symbols *= 2) {
     TSSymbolMetadata *metadata = calloc(symbols, sizeof(TSSymbolMetadata));

@@ -68,9 +68,7 @@ uint32_t sq_node_grammar_id_with_symbol(SQNode node, uint32_t symbol) {
   uint32_t words = sq_grammar_words(tree), ranks = bitmap + words * 8;
   uint32_t rank = sq_get_u32(tree->data, ranks, node.slot / 64) +
                   (uint32_t)__builtin_popcountll(word & (bit - 1));
-  return sq_get_packed_cached(tree->data, ranks + (uint32_t)sq_array_size(words, 4), rank,
-                              sq_id_width(tree->layout.symbol_bits), tree->layout.symbol_lanes,
-                              tree->layout.symbol_mask);
+  return sq_get_u16(tree->data, ranks + (uint32_t)sq_array_size(words, 4), rank);
 }
 
 uint32_t sq_node_grammar_id(SQNode node) {

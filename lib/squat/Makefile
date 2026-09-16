@@ -58,9 +58,6 @@ $(BUILD)/context-bench: experiments/context.c $(BUILD)/libtree-sitter-squat.a $(
 $(BUILD)/query-check: tests/query.c tests/field_lookup.h $(BUILD)/libtree-sitter-squat.a $(BUILD)/runtime.o
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) $(filter %.c %.a %.o,$^) -ldl -o $@
 
-$(BUILD)/unpack-bench: experiments/unpack.c $(BUILD)/libtree-sitter-squat.a $(BUILD)/runtime.o
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) $(filter %.c %.a %.o,$^) -o $@
-
 $(BUILD)/context-check: tests/context.c tests/supertype_fixture.h tests/language_clone.h $(BUILD)/libtree-sitter-squat.a $(BUILD)/runtime.o
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) $(filter %.c %.a %.o,$^) -ldl \
 	  -Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc -o $@

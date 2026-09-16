@@ -59,21 +59,14 @@ uint8_t sq_width(uint32_t max) {
   return bits;
 }
 
-// Small powers of two permit byte loads with constant shifts. Keep compact
-// 1/2/4-bit columns; the query and walk benchmarks favor 3->4 and 5..7->8.
-static uint8_t small_width(uint8_t bits) {
-  return bits == 3 ? 4 : bits >= 5 && bits <= 7 ? 8 : bits;
-}
-
 uint8_t sq_field_width(uint32_t max) {
-  return SQ_FIXED_WIDTH ? 16 : small_width(sq_width(max));
+  (void)max;
+  return 16;
 }
 
 uint8_t sq_symbol_width(uint32_t max) {
-  uint8_t bits = sq_field_width(max);
-  // Symbols justify the space cost earlier than field IDs. Preserve 9/10-bit
-  // packing; 11/12 use five lanes per word and 13..16 already use four.
-  return bits >= 11 && bits < 16 ? 16 : bits;
+  (void)max;
+  return 16;
 }
 
 uint64_t sq_column_size(uint32_t count, uint8_t bits) {
@@ -94,17 +87,10 @@ bool sq_layout(const SQGrammar *grammar, uint32_t capacity, bool wide_supertypes
     return false;
   }
   const TSLanguage *language = grammar->language;
-#if SQ_FIXED_WIDTH
   (void)wide_supertypes;
   if ((uint64_t)language->symbol_count + language->alias_count + 1 > UINT16_MAX ||
       language->field_count > UINT16_MAX) return false;
   layout->supertype_bits = 16;
-#else
-  uint32_t supertype_count = grammar->supertype_count;
-  // Larger grammars retain byte/halfword dictionary IDs.
-  layout->supertype_bits = supertype_count <= 8 ? small_width((uint8_t)supertype_count)
-                                               : (wide_supertypes ? 16 : 8);
-#endif
   layout->symbol_bits = sq_symbol_width(language->symbol_count + language->alias_count + 1);
   layout->field_bits = sq_field_width(language->field_count);
   layout->symbol_lanes = (uint8_t)(64 / layout->symbol_bits);

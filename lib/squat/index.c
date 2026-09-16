@@ -82,7 +82,7 @@ bool sq_build_presence_cached(SQTree *tree, const uint16_t *cached_index,
   // at shift i * bits under a native load (see sq_get_packed), so decode whole
   // words and walk lanes downward instead of dividing per slot.
   const uint8_t *symbol_column = next + tree->layout.symbol;
-  uint8_t bits = sq_id_width(tree->layout.symbol_bits);
+  uint8_t bits = 16;
   uint32_t lanes = 64 / bits;
   uint64_t value_mask = (UINT64_C(1) << bits) - 1;
 
@@ -393,7 +393,7 @@ static bool validate_grammar(const SQTree *tree) {
       uint32_t slot = i * 64 + (uint32_t)__builtin_ctzll(word);
       SQNode node = sq_tree_node_at_slot(tree, slot);
       if (!node.tree || rank >= count) return false;
-      uint32_t grammar = sq_get_packed(tree->data, values, rank++, sq_id_width(tree->layout.symbol_bits));
+      uint32_t grammar = sq_get_packed(tree->data, values, rank++, 16);
       if (grammar >= sq_symbols(tree) || grammar == sq_node_symbol_id(node)) return false;
       word &= word - 1;
     }
@@ -404,7 +404,7 @@ static bool validate_grammar(const SQTree *tree) {
   uint32_t lanes = tree->layout.symbol_lanes;
   for (uint32_t i = 0; i < (count + (uint64_t)lanes - 1) / lanes; i++) {
     uint32_t remaining = count - i * lanes;
-    unsigned bits = (remaining < lanes ? remaining : lanes) * sq_id_width(tree->layout.symbol_bits);
+    unsigned bits = (remaining < lanes ? remaining : lanes) * 16;
     if (bits < 64 && sq_get_u64(tree->data, values, i) >> bits) return false;
   }
   return true;
@@ -440,11 +440,9 @@ static SQTree *load_bytes(SQGrammar *grammar, const void *bytes, size_t length,
     goto invalid;
   }
 
-#if SQ_FIXED_WIDTH
   for (uint32_t group = 0; group < header.group_count; group++) {
     if (sq_get_packed(bytes, layout.waste, group, SQ_WASTE_BITS) >= SQ_GROUP_SIZE) goto invalid;
   }
-#endif
 
   // Validate section sizes before allocating or accessing their contents.
   // A temporary descriptor is sufficient to derive the optional index length.
@@ -468,7 +466,7 @@ static SQTree *load_bytes(SQGrammar *grammar, const void *bytes, size_t length,
   if (!tree) return NULL;
   uint32_t dictionary_count = tree->supertype_grammar ? tree->supertype_grammar->count : 0;
   if (header.supertype_dictionary_count != dictionary_count ||
-      ((header.format_flags & SQ_WIDE_SUPERTYPES) != 0) != (SQ_FIXED_WIDTH || dictionary_count > 256)) {
+      !(header.format_flags & SQ_WIDE_SUPERTYPES)) {
     sq_tree_delete(tree);
     goto invalid;
   }
