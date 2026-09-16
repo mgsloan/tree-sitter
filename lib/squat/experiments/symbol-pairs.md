@@ -150,6 +150,76 @@ shared scheme fit both languages, and make YAML byte-aligned. It would introduce
 a mapping back to public IDs on node reads; the current implementation preserves
 literal public IDs instead.
 
+## Hash map for local selectors
+
+Compared with `d882de3c9`, 2026-09-16, on the same machine. The experimental
+map replaces only the local-selector decode array. Each four-byte entry stores
+a combined symbol code and original grammar ID. Multiplicative hashing and
+linear probing use a power-of-two capacity with a maximum 70% load. Other
+encodings, packing/validation tables, and tree slabs are unchanged.
+
+| Grammar | Pairs | Sparse array | Hash map | Buckets | Maximum probes |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| C++ | 570 | 8,960 B | 4,096 B | 1,024 | 7 |
+| YAML | 310 | 38,144 B | 2,048 B | 512 | 9 |
+
+The maps save 54% and 95% of decode storage, respectively: 40 KiB combined,
+once per prepared grammar. Sizes exclude the small map descriptor.
+
+An isolated lookup benchmark scans live node codes from the corpus in preorder,
+then shuffled order, and separately scans every valid dictionary key. Each
+measurement sums decoded IDs and verifies equal results. Medians use nine
+alternating repetitions of at least four million lookups, compiled with `-O2`
+and pinned to CPU 0. These are warm lookup throughput measurements, not
+dependency-chain latency.
+
+| Grammar | Order | Array ns/lookup | Hash ns/lookup |
+| --- | --- | ---: | ---: |
+| C++ | Preorder (4,723 nodes) | 0.223 | 0.838 |
+| C++ | Shuffled | 0.226 | 1.152 |
+| C++ | All keys | 0.226 | 0.745 |
+| YAML | Preorder (209,914 nodes) | 0.232 | 0.836 |
+| YAML | Shuffled | 0.226 | 3.132 |
+| YAML | All keys | 0.224 | 0.898 |
+
+Hashing costs 3.6–3.8 times as much in preorder, with larger shuffled penalties.
+Average probes on live codes are 1.21 for C++ and 1.36 for YAML. Sparse array
+holes cost allocation space but do not themselves require loads.
+
+Full workloads use eight C++/YAML files, four for queries, three alternating
+passes, nine repeats per pass, and three traversals per measurement. Ratios
+use the same per-file aggregation as above. Both builds use the same expanded
+table descriptor; only the hash build defines `SQ_LOCAL_HASH`.
+
+| Workload | Hash time change | Instruction change |
+| --- | ---: | ---: |
+| Cursor attribute digest | -1.53% | +1.37% |
+| Cached iterator digest | -1.57% | +1.68% |
+| Cursor attribute scan | -1.04% | +1.44% |
+| Cached iterator scan | -1.04% | +1.80% |
+| Query matches | +1.99% | -0.11% |
+| Query captures | +1.09% | -0.06% |
+| Parse + pack, reused context | +0.30% | +0.07% |
+
+The slower lookup does not produce a measured traversal slowdown. Instruction
+counts show the extra work, but timing differences are small; mainline controls
+move between -0.41% and +2.36%. Query instructions are essentially unchanged,
+consistent with matching display IDs directly. Neither language shows a large
+whole-workload regression. Grammar preparation is excluded from these timings.
+
+The map is a plausible memory tradeoff, especially for YAML. Direct indexing
+wins isolated lookup throughput; these full workloads do not establish a
+consistent speed advantage for either representation. Only one hash design and
+load factor were tested, without deliberate cache pressure. Production retains
+the arrays pending a decision about that tradeoff.
+
+Artifacts are in `build/local-hash/`: `experiment.patch` preserves the temporary
+implementation, `array-bench` and `hash-bench` the executables, and `bench.py`
+and `summarize.py` reproduce the paired measurements in `results/`. `lookup.c`,
+`cpp-lookup.csv`, and `yaml-lookup.csv` cover the lookup experiment. Native
+unit/supertype checks, C++ node comparisons, YAML query comparisons, and every
+paired benchmark passed. The experimental runtime edits were then restored.
+
 ## Reproduction and checks
 
 Artifacts are under `build/symbol-pairs/`. `bench.py` compares the sparse baseline,
