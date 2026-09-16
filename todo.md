@@ -4,7 +4,9 @@
 
 - [ ] Dig into how grammars are identified in persistence.  And what can be done to increase forward/back compat
 
-- [ ] revisit persistence and slab version tags - should be reset
+- [ ] Revisit persistence and slab version tags - should be reset
+
+- [ ] key-design.md
 
 # Backburner
 
