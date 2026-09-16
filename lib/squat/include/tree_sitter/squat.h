@@ -204,9 +204,15 @@ void sq_cursor_delete(SQCursor *);
 SQNode sq_cursor_node(const SQCursor *);
 SQNode sq_cursor_parent_node(const SQCursor *);
 uint32_t sq_cursor_depth(const SQCursor *);
+// Retains allocated ancestor storage; node becomes the cursor's root.
+void sq_cursor_reset(SQCursor *, SQNode);
 bool sq_cursor_goto_first_child(SQCursor *);
 bool sq_cursor_goto_last_child(SQCursor *);
 bool sq_cursor_goto_next_sibling(SQCursor *);
+// Previous sibling and child seeking can scan siblings. Failed moves preserve position.
+bool sq_cursor_goto_previous_sibling(SQCursor *);
+int64_t sq_cursor_goto_first_child_for_byte(SQCursor *, uint32_t);
+int64_t sq_cursor_goto_first_child_for_point(SQCursor *, TSPoint);
 bool sq_cursor_goto_parent(SQCursor *);
 
 // Constant-time snapshots; null nodes/cursors produce zeroed snapshots.

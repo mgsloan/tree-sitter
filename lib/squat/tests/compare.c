@@ -280,6 +280,45 @@ static void compare_iterator(const Nodes *nodes, SQNode root) {
   }
 }
 
+static void compare_cursor_seeks(Nodes *nodes) {
+  TSTreeCursor native = ts_tree_cursor_new(nodes->mainline[0]);
+  SQCursor *packed = sq_cursor_new(nodes->packed[0]);
+  CHECK(packed);
+  for (uint32_t index = 0; index < nodes->count; index += nodes->count / 32 + 1) {
+    TSNode parent = nodes->mainline[index];
+    SQNode root = nodes->packed[index];
+    uint32_t bytes[] = {0, ts_node_start_byte(parent), ts_node_end_byte(parent), UINT32_MAX};
+    TSPoint points[] = {{0}, ts_node_start_point(parent), ts_node_end_point(parent), {UINT32_MAX, 0}};
+    for (unsigned target = 0; target < 4; target++) {
+      for (unsigned by_point = 0; by_point < 2; by_point++) {
+        ts_tree_cursor_reset(&native, parent);
+        sq_cursor_reset(packed, root);
+        CHECK(sq_cursor_depth(packed) == 0);
+        CHECK(!sq_cursor_goto_parent(packed));
+        CHECK(!sq_cursor_goto_previous_sibling(packed));
+        int64_t expected = by_point ? ts_tree_cursor_goto_first_child_for_point(&native, points[target])
+                                   : ts_tree_cursor_goto_first_child_for_byte(&native, bytes[target]);
+        int64_t actual = by_point ? sq_cursor_goto_first_child_for_point(packed, points[target])
+                                 : sq_cursor_goto_first_child_for_byte(packed, bytes[target]);
+        CHECK(expected == actual);
+        SAME_NODE(ts_tree_cursor_current_node(&native), sq_cursor_node(packed));
+        CHECK(ts_tree_cursor_current_depth(&native) == sq_cursor_depth(packed));
+      }
+    }
+    ts_tree_cursor_reset(&native, parent);
+    sq_cursor_reset(packed, root);
+    CHECK(ts_tree_cursor_goto_last_child(&native) == sq_cursor_goto_last_child(packed));
+    do {
+      SAME_NODE(ts_tree_cursor_current_node(&native), sq_cursor_node(packed));
+      bool moved = ts_tree_cursor_goto_previous_sibling(&native);
+      CHECK(moved == sq_cursor_goto_previous_sibling(packed));
+      if (!moved) break;
+    } while (true);
+  }
+  ts_tree_cursor_delete(&native);
+  sq_cursor_delete(packed);
+}
+
 static void compare_tree(const TSTree *tree, const SQTree *packed, bool exhaustive) {
   compare_group_equality(packed);
   uint32_t count = ts_node_descendant_count(ts_tree_root_node(tree));
@@ -315,6 +354,7 @@ static void compare_tree(const TSTree *tree, const SQTree *packed, bool exhausti
 
   CHECK(i == count && sq_node_is_null(n));
   ts_tree_cursor_delete(&cursor);
+  compare_cursor_seeks(nodes);
   if (exhaustive) {
     for (i = 0; i < count; i++) {
       compare_node(nodes, i);

@@ -895,6 +895,30 @@ impl<'tree> Cursor<'tree> {
     pub fn node(&self) -> Node<'tree> {
         Node::from_raw(unsafe { ffi::sq_cursor_node(self.raw.as_ptr()) }).unwrap()
     }
+    /// Start at another node, retaining allocated ancestor storage.
+    pub fn reset(&mut self, node: Node<'tree>) {
+        unsafe { ffi::sq_cursor_reset(self.raw.as_ptr(), node.raw) }
+    }
+    /// Can scan preceding siblings; does not reconstruct the parent.
+    pub fn goto_previous_sibling(&mut self) -> bool {
+        unsafe { ffi::sq_cursor_goto_previous_sibling(self.raw.as_ptr()) }
+    }
+    /// Seek the first child ending after the byte, returning its child index.
+    /// Can scan children. Failure leaves the cursor unchanged.
+    pub fn goto_first_child_for_byte(&mut self, byte: usize) -> Option<usize> {
+        let index = unsafe {
+            ffi::sq_cursor_goto_first_child_for_byte(self.raw.as_ptr(), byte.try_into().ok()?)
+        };
+        index.try_into().ok()
+    }
+    /// Seek the first child ending after the point, returning its child index.
+    /// Can scan children. Failure leaves the cursor unchanged.
+    pub fn goto_first_child_for_point(&mut self, point: Point) -> Option<usize> {
+        let index = unsafe {
+            ffi::sq_cursor_goto_first_child_for_point(self.raw.as_ptr(), point.try_into().ok()?)
+        };
+        index.try_into().ok()
+    }
     pub fn depth(&self) -> u32 {
         unsafe { ffi::sq_cursor_depth(self.raw.as_ptr()) }
     }
@@ -1063,6 +1087,10 @@ mod ffi {
         pub fn sq_cursor_delete(cursor: *mut c_void);
         pub fn sq_cursor_node(cursor: *const c_void) -> RawNode;
         pub fn sq_cursor_depth(cursor: *const c_void) -> u32;
+        pub fn sq_cursor_reset(cursor: *mut c_void, node: RawNode);
+        pub fn sq_cursor_goto_previous_sibling(cursor: *mut c_void) -> bool;
+        pub fn sq_cursor_goto_first_child_for_byte(cursor: *mut c_void, byte: u32) -> i64;
+        pub fn sq_cursor_goto_first_child_for_point(cursor: *mut c_void, point: RawPoint) -> i64;
         pub fn sq_node_symbol(node: RawNode) -> u16;
         pub fn sq_node_grammar_symbol(node: RawNode) -> u16;
         pub fn sq_node_type(node: RawNode) -> *const c_char;
