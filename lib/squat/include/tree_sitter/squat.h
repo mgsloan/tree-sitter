@@ -233,6 +233,10 @@ SQNode sq_node_iterator_node(const SQNodeIterator *);
 void sq_node_iterator_attributes(SQNodeIterator *, SQCursorAttributes *);
 TSFieldId sq_node_iterator_field_id(SQNodeIterator *);
 
+// Selective reads do not fill unrelated cached columns.
+TSSymbol sq_node_iterator_symbol(SQNodeIterator *);
+void sq_node_iterator_byte_range(SQNodeIterator *, uint32_t *start, uint32_t *end);
+
 #ifdef __cplusplus
 }
 #endif

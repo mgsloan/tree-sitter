@@ -254,7 +254,11 @@ static void compare_iterator(const Nodes *nodes, SQNode root) {
       CHECK(sq_node_eq(node, sq_node_iterator_node(iterator)));
       SQCursorAttributes actual, expected;
 
-      // Exercise lazy field-only fills before full snapshots, then repeat reads.
+      uint32_t start, end;
+      CHECK(sq_node_iterator_symbol(iterator) == sq_node_symbol(node));
+      sq_node_iterator_byte_range(iterator, &start, &end);
+      CHECK(start == sq_node_start_byte(node) && end == sq_node_end_byte(node));
+      // Exercise selective fills before full snapshots, then repeat reads.
       CHECK(sq_node_iterator_field_id(iterator) == sq_node_field_id(node));
       sq_node_iterator_attributes(iterator, &actual);
       sq_cursor_attributes(cursor, &expected);

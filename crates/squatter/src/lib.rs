@@ -602,7 +602,7 @@ impl<'tree> Node<'tree> {
         }
     }
 
-    /// Native preorder iterator with an optional lazy ID and absolute-coordinate cache.
+    /// Native preorder iterator with an optional lazy absolute-coordinate cache.
     /// Returned nodes borrow the tree, independently of the iterator.
     pub fn node_iterator(self, unpack_cache: bool) -> Result<NodeIterator<'tree>, Error> {
         let raw = unsafe { ffi::sq_node_iterator_new(self.raw, unpack_cache) };
@@ -864,6 +864,18 @@ impl<'tree> NodeIterator<'tree> {
             raw.assume_init().into_attributes()
         })
     }
+    /// Read the last yielded node's kind directly from fixed-width storage.
+    pub fn kind_id(&mut self) -> Option<u16> {
+        self.current?;
+        Some(unsafe { ffi::sq_node_iterator_symbol(self.raw.as_ptr()) })
+    }
+    /// Read only byte coordinates, without decoding point coordinates or IDs.
+    pub fn byte_range(&mut self) -> Option<Range<usize>> {
+        self.current?;
+        let (mut start, mut end) = (0, 0);
+        unsafe { ffi::sq_node_iterator_byte_range(self.raw.as_ptr(), &mut start, &mut end) };
+        Some(start as usize..end as usize)
+    }
     pub fn field_id(&mut self) -> Option<u16> {
         self.current?;
         let field = unsafe { ffi::sq_node_iterator_field_id(self.raw.as_ptr()) };
@@ -1081,6 +1093,8 @@ mod ffi {
         pub fn sq_node_iterator_next(iterator: *mut c_void) -> RawNode;
         pub fn sq_node_iterator_attributes(iterator: *mut c_void, out: *mut RawCursorAttributes);
         pub fn sq_node_iterator_field_id(iterator: *mut c_void) -> u16;
+        pub fn sq_node_iterator_symbol(iterator: *mut c_void) -> u16;
+        pub fn sq_node_iterator_byte_range(iterator: *mut c_void, start: *mut u32, end: *mut u32);
         pub fn sq_node_attributes(node: RawNode, out: *mut RawCursorAttributes);
         pub fn sq_cursor_attributes(cursor: *mut c_void, out: *mut RawCursorAttributes);
         pub fn sq_cursor_new(node: RawNode) -> *mut c_void;

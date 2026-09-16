@@ -9,7 +9,7 @@ _Static_assert(SQ_ITERATOR_CACHE_ALL == 0 || SQ_ITERATOR_CACHE_ALL == 2,
 
 typedef struct {
   uint32_t group;
-  bool attributes_filled;
+  bool bytes_filled, attributes_filled;
 #if SQ_ITERATOR_CACHE_ALL == 2
   SQUnpackCoordinates coordinates;
   uint32_t start_byte[SQ_ITERATOR_UNPACK_SLOTS];
@@ -83,8 +83,7 @@ SQNode sq_node_iterator_next(SQNodeIterator *iterator) {
   return iterator->current;
 }
 
-// The API can request a field alone or a complete snapshot. Two fill states
-// express that directly, without a column mask or trailing-zero-bit dispatch.
+// Each coordinate column is decoded only when requested in this cache window.
 static UnpackCache *prepare_cache(SQNodeIterator *iterator) {
   UnpackCache *cache = iterator->cache;
   uint32_t group = iterator->current.slot / SQ_GROUP_SIZE;
@@ -92,7 +91,7 @@ static UnpackCache *prepare_cache(SQNodeIterator *iterator) {
   uint32_t first_group = group & ~(groups_per_window - 1u);
   if (cache->group != first_group) {
     cache->group = first_group;
-    cache->attributes_filled = false;
+    cache->bytes_filled = cache->attributes_filled = false;
   }
 
   return cache;
@@ -142,6 +141,17 @@ static void fill_point(const SQTree *tree, const UnpackCache *cache, uint32_t po
 }
 #endif
 
+#if SQ_ITERATOR_CACHE_ALL == 2
+static void fill_bytes(const SQTree *tree, UnpackCache *cache) {
+  if (cache->bytes_filled) return;
+  fill_coordinate(tree, cache, tree->layout.start_byte_delta, tree->layout.start_byte_base, 8,
+                  false, cache->start_byte);
+  fill_coordinate(tree, cache, tree->layout.end_byte_delta, tree->layout.end_byte_base, 16, true,
+                  cache->end_byte);
+  cache->bytes_filled = true;
+}
+#endif
+
 static void fill_attributes(SQNodeIterator *iterator, UnpackCache *cache) {
   SQNode node = iterator->current;
   const SQTree *tree = node.tree;
@@ -149,10 +159,7 @@ static void fill_attributes(SQNodeIterator *iterator, UnpackCache *cache) {
   if (cache->attributes_filled) return;
 
 #if SQ_ITERATOR_CACHE_ALL == 2
-  fill_coordinate(tree, cache, tree->layout.start_byte_delta, tree->layout.start_byte_base, 8,
-                  false, cache->start_byte);
-  fill_coordinate(tree, cache, tree->layout.end_byte_delta, tree->layout.end_byte_base, 16, true,
-                  cache->end_byte);
+  fill_bytes(tree, cache);
   if (sq_tree_has_points(tree)) {
     fill_point(tree, cache, tree->layout.start_point, tree->layout.start_point_base, false,
                cache->start_point);
@@ -171,6 +178,29 @@ static void fill_attributes(SQNodeIterator *iterator, UnpackCache *cache) {
 TSFieldId sq_node_iterator_field_id(SQNodeIterator *iterator) {
   if (!iterator || !iterator->current.tree) return 0;
   return (TSFieldId)sq_node_field_value(iterator->current);
+}
+
+TSSymbol sq_node_iterator_symbol(SQNodeIterator *iterator) {
+  if (!iterator || !iterator->current.tree) return 0;
+  return sq_node_symbol(iterator->current);
+}
+
+void sq_node_iterator_byte_range(SQNodeIterator *iterator, uint32_t *start, uint32_t *end) {
+  if (!start || !end) return;
+  *start = *end = 0;
+  if (!iterator || !iterator->current.tree) return;
+#if SQ_ITERATOR_CACHE_ALL == 2
+  if (iterator->cache) {
+    UnpackCache *cache = prepare_cache(iterator);
+    fill_bytes(iterator->tree, cache);
+    uint32_t lane = iterator->current.slot & (SQ_ITERATOR_UNPACK_SLOTS - 1u);
+    *start = cache->start_byte[lane];
+    *end = cache->end_byte[lane];
+    return;
+  }
+#endif
+  *start = sq_node_start_byte(iterator->current);
+  *end = sq_node_end_byte(iterator->current);
 }
 
 void sq_node_iterator_attributes(SQNodeIterator *iterator, SQCursorAttributes *out) {
