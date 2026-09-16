@@ -52,7 +52,7 @@ static void exercise(uint32_t count, bool repack) {
   assert(emit(&builder, &root));
   assert(close_group(&builder));
   uint32_t capacity = sq_header_get(builder.tree, group_count) + (repack ? 0 : 7);
-  assert(sq_prepare_final(&builder.tree, capacity, 0, &error));
+  assert(sq_prepare_final(&builder.tree, capacity, 0, builder.optional_flags, &error));
   check_tree(builder.tree, slots, count);
   assert(sq_resize(&builder.tree, capacity + 17, &error));
   check_tree(builder.tree, slots, count);
@@ -133,7 +133,7 @@ static void direct_mask_tests(void) {
     EmitNode root = {.subtree = &leaf, .boundary = 0};
     assert(emit(&builder, &root) && close_group(&builder));
     unsigned groups = sq_tree_group_count(builder.tree);
-    assert(sq_prepare_final(&builder.tree, groups, 0, &error));
+    assert(sq_prepare_final(&builder.tree, groups, 0, builder.optional_flags, &error));
     // Exercise the emitter, resize copy, and both persistence ownership modes.
     for (unsigned pass = 0; pass < 3; pass++) {
       assert(sq_resize(&builder.tree, groups + (pass == 1 ? 17 : 0), &error));

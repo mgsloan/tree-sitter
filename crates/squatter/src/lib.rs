@@ -715,6 +715,8 @@ impl<'tree> Node<'tree> {
     pub fn is_error(self) -> bool {
         unsafe { ffi::sq_node_is_error(self.raw) }
     }
+    /// Whether any node in this physical block has an error in its subtree.
+    /// May be true for an error-free node sharing a block with an erroneous node.
     pub fn has_error(self) -> bool {
         unsafe { ffi::sq_node_has_error(self.raw) }
     }

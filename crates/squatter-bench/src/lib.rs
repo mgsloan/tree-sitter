@@ -474,10 +474,21 @@ fn difference(expected: &Observation<'_>, actual: &Observation<'_>) -> Option<St
             Some(format!("scan count differs: expected {a}, actual {b}"))
         }
         (Observation::Walk(a), Observation::Walk(b)) => {
+            if a.len() == b.len()
+                && a.iter().zip(b).all(|(a, b)| {
+                    a.ordinal == b.ordinal
+                        && compare::attributes_match(&a.attributes, &b.attributes)
+                })
+            {
+                return None;
+            }
             let index = a
                 .iter()
                 .zip(b)
-                .position(|(a, b)| a != b)
+                .position(|(a, b)| {
+                    a.ordinal != b.ordinal
+                        || !compare::attributes_match(&a.attributes, &b.attributes)
+                })
                 .unwrap_or(a.len().min(b.len()));
             Some(format!(
                 "walk item {index}: expected {:?}, actual {:?}; lengths {}/{}",

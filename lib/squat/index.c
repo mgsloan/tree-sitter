@@ -395,15 +395,17 @@ static SQTree *load_bytes(SQGrammar *grammar, const void *bytes, size_t length,
   }
 
   header = sq_read_header(bytes);
-  if (!header.group_count || header.group_count > header.group_capacity ||
+  if (((header.format_flags & SQ_MISSING) && !(header.format_flags & SQ_ERRORS)) ||
+      !header.group_count || header.group_count > header.group_capacity ||
       (header.format_flags &
-       ~(SQ_NO_POINTS | SQ_PRESENCE | SQ_WIDE_SUPERTYPES | SQ_SEPARATE_GRAMMAR)) != SQ_VERSION) {
+       ~(SQ_NO_POINTS | SQ_PRESENCE | SQ_WIDE_SUPERTYPES | SQ_SEPARATE_GRAMMAR |
+         SQ_OPTIONAL_FLAGS)) != SQ_VERSION) {
     goto invalid;
   }
   SQLayout layout;
   if (!language || !sq_layout(grammar, header.group_capacity,
                               (header.format_flags & SQ_WIDE_SUPERTYPES) != 0,
-                              !(header.format_flags & SQ_NO_POINTS), &layout) ||
+                              !(header.format_flags & SQ_NO_POINTS), header.format_flags, &layout) ||
       layout.end > length) {
     goto invalid;
   }

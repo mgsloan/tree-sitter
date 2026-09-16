@@ -197,10 +197,40 @@ Symbol codes, fields, supertypes, and waste use u16 lanes; byte-pair symbol
 encodings also support direct u8 reads.
 
 After the header and per-group waste column, columns are ordered: start byte,
-end byte, span, symbol, optional grammar, field, supertype, flag bitmaps (`last`,
-`extra`, `error`, `missing`), start point, end point. Each group-base column
+end byte, span, symbol, optional grammar, field, supertype, `last`, start point,
+end point, optional `extra`, optional `missing`, optional `error`. Each group-base column
 immediately precedes its corresponding node-value column, with alignment padding
 where needed. The optional symbol-presence index follows the columns.
+
+`extra` and `missing` store one bit per slot. `error` stores one bit per group:
+`has_error` reports whether any visible node in the same physical group has
+positive Tree-sitter error cost (including missing nodes). It can return true
+for an error-free node; `is_error` and `is_missing` remain exact. Header flags
+record column presence. Finalization omits all-zero columns and reclaims their
+tail space before building the symbol-presence index.
+
+On the existing seed-42, 10,000-file corpus (`build/squat-corpus-10k/manifest.json`,
+11 grammars, 19 repositories),
+3,998 files (40.0%) have no visible extras, 9,661 (96.6%) have no visible missing
+nodes, and 8,956 (89.6%) have no visible nodes with positive error cost.
+The files without extras account for 4,767,296 of 23,808,661 visible nodes
+(20.0%). Counts come from freshly parsed, unmutated sources traversed through
+the public Tree-sitter cursor; this grammar-balanced sample includes dependency
+files and is not an estimate for all repositories.
+
+| Grammar | Files | Files without extras |
+| --- | ---: | ---: |
+| Bash | 192 | 5 |
+| C | 252 | 3 |
+| C++ | 958 | 61 |
+| CSS | 1,165 | 203 |
+| Go | 1,147 | 74 |
+| HTML | 466 | 335 |
+| JSON | 1,164 | 1,150 |
+| Python | 1,164 | 563 |
+| TSX | 1,164 | 414 |
+| TypeScript | 1,164 | 371 |
+| YAML | 1,164 | 819 |
 
 Subtree-span bases are zero when every live value in the group fits in u8;
 otherwise they use the actual minimum. Start-column bases retain their actual

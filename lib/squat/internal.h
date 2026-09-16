@@ -39,6 +39,10 @@ _Static_assert(SQ_COLUMN_ALIGNMENT == 8 || SQ_COLUMN_ALIGNMENT == 64,
 #define SQ_PRESENCE 0x200u
 #define SQ_WIDE_SUPERTYPES 0x400u
 #define SQ_SEPARATE_GRAMMAR 0x800u
+#define SQ_EXTRAS 0x1000u
+#define SQ_MISSING 0x2000u
+#define SQ_ERRORS 0x4000u
+#define SQ_OPTIONAL_FLAGS (SQ_EXTRAS | SQ_MISSING | SQ_ERRORS)
 #define SQ_NONE UINT32_MAX
 
 typedef struct {
@@ -65,13 +69,13 @@ typedef struct {
   uint32_t field;
   uint32_t supertype;
   uint32_t last;
-  uint32_t extra;
-  uint32_t error;
-  uint32_t missing;
   uint32_t start_point_base;
   uint32_t start_point;
   uint32_t end_point_base;
   uint32_t end_point;
+  uint32_t extra;
+  uint32_t missing;
+  uint32_t error;
   uint32_t end;
   uint8_t symbol_bits, field_bits, supertype_bits;
   // Grammar-wide decoder constants; runtime-only, never serialized.
@@ -174,7 +178,7 @@ static inline uint64_t sq_array_size(uint32_t count, unsigned bytes) {
 }
 
 bool sq_layout(const SQGrammar *, uint32_t capacity, bool wide_supertypes, bool points,
-               SQLayout *);
+               uint32_t flags, SQLayout *);
 
 // Serialized integers are little-endian; packed words start at their low bits.
 // The endian test and native-host conversions fold away.
@@ -315,15 +319,18 @@ static inline uint32_t sq_node_last_flag(SQNode node) {
 }
 
 static inline uint32_t sq_node_extra_flag(SQNode node) {
-  return sq_get_bit(node.tree->data, node.tree->layout.extra, node.slot);
+  return (sq_header_get(node.tree, format_flags) & SQ_EXTRAS) &&
+         sq_get_bit(node.tree->data, node.tree->layout.extra, node.slot);
 }
 
 static inline uint32_t sq_node_error_flag(SQNode node) {
-  return sq_get_bit(node.tree->data, node.tree->layout.error, node.slot);
+  return (sq_header_get(node.tree, format_flags) & SQ_ERRORS) &&
+         sq_get_bit(node.tree->data, node.tree->layout.error, node.slot / SQ_GROUP_SIZE);
 }
 
 static inline uint32_t sq_node_missing_flag(SQNode node) {
-  return sq_get_bit(node.tree->data, node.tree->layout.missing, node.slot);
+  return (sq_header_get(node.tree, format_flags) & SQ_MISSING) &&
+         sq_get_bit(node.tree->data, node.tree->layout.missing, node.slot);
 }
 
 static inline uint32_t sq_node_span_delta(SQNode node) {
@@ -406,7 +413,7 @@ size_t sq_runtime_size(void);
 SQTree *sq_allocate_loaded(SQGrammar *, uint32_t, const void *, uint32_t, bool borrowed,
                            bool points, SQError *);
 bool sq_resize(SQTree **, uint32_t, SQError *);
-bool sq_prepare_final(SQTree **, uint32_t capacity, uint32_t trailing_size, SQError *);
+bool sq_prepare_final(SQTree **, uint32_t capacity, uint32_t trailing_size, uint32_t flags, SQError *);
 bool sq_grow_data(SQTree **, uint32_t, SQError *);
 bool sq_build_presence(SQTree *, SQError *);
 bool sq_build_presence_cached(SQTree *, uint8_t **, size_t *, SQError *);

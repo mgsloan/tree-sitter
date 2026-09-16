@@ -28,7 +28,9 @@ typedef struct {
   TSPoint start_point, end_point;
   TSSymbol symbol, grammar_symbol;
   TSFieldId field_id;
-  bool is_named, is_extra, is_missing, is_error, has_error;
+  bool is_named, is_extra, is_missing, is_error;
+  // Same conservative block-level predicate as sq_node_has_error.
+  bool has_error;
 } SQCursorAttributes;
 
 typedef enum {
@@ -163,6 +165,8 @@ bool sq_node_is_named(SQNode);
 bool sq_node_is_extra(SQNode);
 bool sq_node_is_missing(SQNode);
 bool sq_node_is_error(SQNode);
+// Reports whether any node in this physical block has an error in its subtree.
+// May return true for an error-free node sharing a block with an erroneous node.
 bool sq_node_has_error(SQNode);
 bool sq_node_has_changes(SQNode);
 bool sq_node_has_supertype(SQNode, TSSymbol);

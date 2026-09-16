@@ -60,8 +60,6 @@ struct Node {
   is_last_child: bool,
   /// "extra" grammar nodes like comments. Not implied by symbol.
   is_extra: bool,
-  /// Whether this node or a descendant is an error symbol or is missing.
-  has_error: bool,
   /// Whether this symbol was inserted as part of error recovery.
   is_missing: bool,
 
@@ -98,6 +96,9 @@ struct Node {
 
 /// A struct of this layout is not used - instead each field is packed into columns.
 struct Group {
+  /// Whether any visible node in this group has positive Tree-sitter error cost.
+  /// Stored as one bit per group in the optional trailing error column.
+  has_error: bool,
   /// Number of trailing wasted slots, from 0 to 15. Could be a u8.
   trailing_waste: u4,
   subtree_size_base: u32,
@@ -107,6 +108,20 @@ struct Group {
   end_point_base: u64,
 }
 ```
+
+The optional flag columns follow the point columns in the order `extra`,
+`missing`, `error`, before the symbol-presence index. `extra` and `missing` have
+one bit per physical slot; `error` has one bit per group. Each column is omitted
+when all its values are zero, as recorded by `SQ_EXTRAS`, `SQ_MISSING`, and
+`SQ_ERRORS` in the header. Missing nodes imply the error column is present.
+The builder reserves all three columns, then removes unused columns at
+finalization. With unchanged group capacity, only retained flag columns move;
+the allocation is resized to reclaim the tail or reserve the presence index.
+
+`has_error` is conservative: every node in a group shares the OR of the original
+visible nodes' `missing || error_cost > 0` predicates. This preserves error
+contributions from omitted hidden nodes, but can report errors for an error-free
+node in the same group. `is_error` and `is_missing` remain exact.
 
 Tree-sitter's hidden nodes are omitted entirely since they are not helpful for
 the flat representation without incremental reparse. Their effects are recorded
@@ -232,7 +247,7 @@ Omission of files 100kb to 1mb is intentional. The theory is that these files ju
 
 * `cold-parse`: Cold parse time.
 
-The comparison contract covers freshly parsed mainline trees and their packed equivalents, including parses of mutated source text. Supported attributes are public symbol/type, grammar symbol/type, start/end bytes and stored points, named/extra/missing/error/has-error flags, `has_changes` (false for these fresh trees), child and named-child counts, and logical descendant counts. Point-free trees instead expose byte offsets as columns on row zero. The contract also compares parent/child/sibling relationships, child field IDs/names, and named-child navigation. Nodes are identified across representations by their visible preorder ordinal, not their pointer or physical slot. Seek results use the same identity, including null results.
+The comparison contract covers freshly parsed mainline trees and their packed equivalents, including parses of mutated source text. Supported attributes are public symbol/type, grammar symbol/type, start/end bytes and stored points, named/extra/missing/error flags, `has_changes` (false for these fresh trees), child and named-child counts, and logical descendant counts. `has_error` is compared with the OR of mainline predicates across the corresponding physical group. Point-free trees instead expose byte offsets as columns on row zero. The contract also compares parent/child/sibling relationships, child field IDs/names, and named-child navigation. Nodes are identified across representations by their visible preorder ordinal, not their pointer or physical slot. Seek results use the same identity, including null results.
 
 Without a finite match limit, query comparisons cover match/capture order,
 pattern and capture IDs, and captured-node identities, including field, anchor,

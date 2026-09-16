@@ -56,7 +56,9 @@ typedef struct {
   // Packed IDs and flags are written as each node is accepted rather than when
   // its group closes; see open_group.
   LaneCursor symbol_lane, grammar_lane, field_lane;
-  uint64_t last_flags, extra_flags, error_flags, missing_flags;
+  uint64_t last_flags, extra_flags, missing_flags;
+  bool group_has_error;
+  uint32_t optional_flags;
   SQError *error;
 } Builder;
 
@@ -268,9 +270,13 @@ static bool close_group(Builder *builder) {
 
   set_group_flags(tree->data, tree->layout.last, group, builder->last_flags);
   set_group_flags(tree->data, tree->layout.extra, group, builder->extra_flags);
-  set_group_flags(tree->data, tree->layout.error, group, builder->error_flags);
+  sq_set_bit(tree->data, tree->layout.error, group, builder->group_has_error);
   set_group_flags(tree->data, tree->layout.missing, group, builder->missing_flags);
-  builder->last_flags = builder->extra_flags = builder->error_flags = builder->missing_flags = 0;
+  if (builder->extra_flags) builder->optional_flags |= SQ_EXTRAS;
+  if (builder->group_has_error) builder->optional_flags |= SQ_ERRORS;
+  if (builder->missing_flags) builder->optional_flags |= SQ_MISSING;
+  builder->last_flags = builder->extra_flags = builder->missing_flags = 0;
+  builder->group_has_error = false;
 
   // Stores through the slab's byte pointer may alias the tree, so the column
   // offsets and the destination base are read once rather than per slot.
@@ -476,7 +482,7 @@ static bool emit(Builder *builder, const EmitNode *frame) {
       uint32_t bit = builder->count;
       builder->last_flags |= (uint64_t)!frame->later << bit;
       builder->extra_flags |= (uint64_t)extra << bit;
-      builder->error_flags |= (uint64_t)has_error << bit;
+      builder->group_has_error |= has_error;
       builder->missing_flags |= (uint64_t)missing << bit;
       uint32_t grammar_id = encode_symbol(builder, grammar);
       const SQGrammar *prepared = builder->tree->grammar;
@@ -1010,7 +1016,8 @@ static SQTree *pack_tree(SQPackContext *context, SQGrammar *grammar, const TSTre
 
   uint32_t final_capacity = options.repack ? sq_header_get(builder.tree, group_count)
                                            : sq_header_get(builder.tree, group_capacity);
-  if (!sq_prepare_final(&builder.tree, final_capacity, (uint32_t)trailing_bytes, error)) {
+  if (!sq_prepare_final(&builder.tree, final_capacity, (uint32_t)trailing_bytes,
+                         builder.optional_flags, error)) {
     goto failure;
   }
 

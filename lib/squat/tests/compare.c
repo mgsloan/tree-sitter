@@ -128,7 +128,16 @@ static void compare_node(Nodes *nodes, uint32_t i) {
   CHECK(ts_node_is_extra(a) == sq_node_is_extra(b));
   CHECK(ts_node_is_missing(a) == sq_node_is_missing(b));
   CHECK(ts_node_is_error(a) == sq_node_is_error(b));
-  CHECK(ts_node_has_error(a) == sq_node_has_error(b));
+  bool block_error = false;
+  for (uint32_t neighbor = i; neighbor < nodes->count &&
+       nodes->packed[neighbor].slot / SQ_GROUP_SIZE == b.slot / SQ_GROUP_SIZE; neighbor++) {
+    block_error |= ts_node_has_error(nodes->mainline[neighbor]);
+  }
+  for (uint32_t neighbor = i; neighbor > 0 &&
+       nodes->packed[neighbor - 1].slot / SQ_GROUP_SIZE == b.slot / SQ_GROUP_SIZE; neighbor--) {
+    block_error |= ts_node_has_error(nodes->mainline[neighbor - 1]);
+  }
+  CHECK(block_error == sq_node_has_error(b));
   CHECK(ts_node_has_changes(a) == sq_node_has_changes(b));
   CHECK(ts_node_descendant_count(a) == sq_node_descendant_count(b));
   CHECK(ts_node_child_count(a) == sq_node_child_count(b));
@@ -358,6 +367,14 @@ static void compare_tree(const TSTree *tree, const SQTree *packed, bool exhausti
   }
 
   CHECK(i == count && sq_node_is_null(n));
+  uint32_t flags = 0;
+  for (uint32_t index = 0; index < count; index++) {
+    TSNode node = nodes->mainline[index];
+    if (ts_node_is_extra(node)) flags |= SQ_EXTRAS;
+    if (ts_node_is_missing(node)) flags |= SQ_MISSING;
+    if (ts_node_has_error(node)) flags |= SQ_ERRORS;
+  }
+  CHECK((sq_header_get(packed, format_flags) & SQ_OPTIONAL_FLAGS) == flags);
   ts_tree_cursor_delete(&cursor);
   compare_cursor_seeks(nodes);
   if (exhaustive) {
@@ -855,10 +872,10 @@ static void omitted_points(const TSLanguage *language) {
   CHECK(grammar);
   SQTree *packed = sq_tree_pack(grammar, tree, options, &error);
   CHECK(packed && error == SQ_OK && !sq_tree_has_points(packed));
-  CHECK(packed->layout.start_point_base == packed->layout.end);
-  CHECK(packed->layout.start_point == packed->layout.end);
-  CHECK(packed->layout.end_point_base == packed->layout.end);
-  CHECK(packed->layout.end_point == packed->layout.end);
+  CHECK(packed->layout.start_point_base == packed->layout.extra);
+  CHECK(packed->layout.start_point == packed->layout.extra);
+  CHECK(packed->layout.end_point_base == packed->layout.extra);
+  CHECK(packed->layout.end_point == packed->layout.extra);
 
   for (SQNode node = sq_tree_root_node(packed); node.tree; node = sq_node_next_preorder(node)) {
     TSPoint start = sq_node_start_point(node), end = sq_node_end_point(node);
