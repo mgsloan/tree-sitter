@@ -4,7 +4,15 @@
 
 - [ ] Dig into how grammars are identified in persistence.  And what can be done to increase forward/back compat
 
+- [ ] revisit persistence and slab version tags - should be reset
+
 # Backburner
+
+- [ ] Skip persisting when it's better to just reparse
+
+  - Also similar logic for the caches
+
+- [ ] Skip caching when frequently edited? (reduce churn)
 
 - [ ] Consider what APIs could make it faster
 
