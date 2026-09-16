@@ -13,6 +13,9 @@ aligned to the word's MSB: leaving spare bits at the top keeps codes small enoug
 to use directly as dictionary indexes. Consecutive display IDs still occupy
 consecutive intervals, and masked equality ignores the selector bits.
 
+The [GCP ablation](symbol-ablation.md) compares removing each optional encoding
+across sixteen grammars.
+
 ## Selection
 
 The encoding is grammar-wide and deterministic; trees share immutable tables.
@@ -28,6 +31,8 @@ The encoding is grammar-wide and deterministic; trees share immutable tables.
 4. **Separate column:** only when the local split also exceeds 16 bits, keep
    public display IDs in the symbol column and add a dense u16 grammar-ID column.
    It participates in ordinary growth, compaction, persistence, and validation.
+   Since `c4bd2dfe2`, it is the final optional column and is omitted per tree
+   when every grammar ID equals its display ID.
 
 Byte alignment takes priority over minimizing selector bits. With literal public
 IDs and the current error encoding, all measured grammars whose display IDs fit

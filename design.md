@@ -109,10 +109,10 @@ struct Group {
 }
 ```
 
-The optional flag columns follow the point columns in the order `extra`,
-`missing`, `error`, `grammar_id`, before the symbol-presence index. `extra` and `missing` have
-one bit per physical slot; `error` has one bit per group. Each column is omitted
-when all its values are zero, as recorded by `SQ_EXTRAS`, `SQ_MISSING`, and
+The optional columns follow the point columns in the order `extra`,
+`missing`, `error`, `grammar_id`, before the symbol-presence index. `extra` and
+`missing` have one bit per physical slot; `error` has one bit per group. Each flag column is
+omitted when all its values are zero, as recorded by `SQ_EXTRAS`, `SQ_MISSING`, and
 `SQ_ERRORS` in the header. Missing nodes imply the error column is present.
 The builder reserves the three flag columns and, for fallback grammars, the
 grammar-ID column. Finalization removes unused columns. With unchanged group
