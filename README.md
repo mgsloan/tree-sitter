@@ -1,5 +1,11 @@
 # tree-sitter
 
+Tree-squatter is a prototype. No data has been persisted for ongoing use;
+temporary test databases do not create a compatibility obligation. All prototype
+format, schema, and profile versions remain at 0. Backward compatibility and
+migration support are not wanted yet: change the representation directly and
+regenerate temporary caches. Tree-sitter's upstream ABI versions are independent.
+
 [![DOI](https://zenodo.org/badge/14164618.svg)](https://zenodo.org/badge/latestdoi/14164618)
 [![discord][discord]](https://discord.gg/w7nTvsVJhm)
 [![matrix][matrix]](https://matrix.to/#/#tree-sitter-chat:matrix.org)
