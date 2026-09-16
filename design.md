@@ -110,12 +110,13 @@ struct Group {
 ```
 
 The optional flag columns follow the point columns in the order `extra`,
-`missing`, `error`, before the symbol-presence index. `extra` and `missing` have
+`missing`, `error`, `grammar_id`, before the symbol-presence index. `extra` and `missing` have
 one bit per physical slot; `error` has one bit per group. Each column is omitted
 when all its values are zero, as recorded by `SQ_EXTRAS`, `SQ_MISSING`, and
 `SQ_ERRORS` in the header. Missing nodes imply the error column is present.
-The builder reserves all three columns, then removes unused columns at
-finalization. With unchanged group capacity, only retained flag columns move;
+The builder reserves the three flag columns and, for fallback grammars, the
+grammar-ID column. Finalization removes unused columns. With unchanged group
+capacity, only retained optional columns move;
 the allocation is shrunk when the unused tail is at least 256 bytes, or grown
 to reserve the presence index. Smaller tails are excluded from serialization
 but retained in the allocation.
@@ -129,23 +130,16 @@ Tree-sitter's hidden nodes are omitted entirely since they are not helpful for
 the flat representation without incremental reparse. Their effects are recorded
 in `supertypes`, `is_last_child`, and `field`.
 
-Original grammar IDs are sparse overrides of raw `display_symbol`. The
-`SQ_GRAMMAR_OVERRIDES` header flag indicates an optional section after the
-symbol-presence index. Trees without differing IDs
-omit the section entirely. It contains an eight-byte header (`u32` override
-count and a zero reserved word), a bitmap over live physical slot extent
-(including zero bits for waste), an array of `u32` prefix ranks for each 64-slot
-bitmap word, and packed grammar IDs in ascending physical-slot order. Bitmap,
-ranks, and values are each padded to eight bytes; all padding is zero. The
-section depends on group count, not allocated capacity, so repacking preserves
-it verbatim. The loader validates bounds, ranks, slot membership, IDs, and padding
-before exposing nodes.
+Symbol codes combine public display IDs with grammar selectors when both fit
+in sixteen bits. Byte pairs allow direct reads; larger grammars use shared or
+local selector dictionaries. See [encoding choices](lib/squat/experiments/symbol-pairs.md).
 
-Grammar access checks the bitmap and uses a checkpoint plus `popcount` to
-locate an override, falling back to the raw display ID. Iterator attribute
-access resolves this per node; grammar IDs are not bulk-unpacked or cached.
-Display-symbol scans retain their dense column; grammar-symbol scans correct
-the display equality mask at override slots.
+When combined codes cannot fit, the symbol column stores display IDs and a
+separate u16 column stores original grammar IDs. The `SQ_SEPARATE_GRAMMAR`
+header flag records its presence. A fallback tree with identical display and
+grammar IDs omits this column and reads grammar IDs from the symbol column.
+The grammar-ID column is last so omitting it moves no other columns before
+finalization reserves and builds the symbol-presence index.
 
 Little-endian representation is used on big-endian systems. This is
 for simplicity and support for inter-machine communication. Since

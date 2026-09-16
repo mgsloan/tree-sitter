@@ -402,62 +402,78 @@ static void optional_flag_tests(void) {
   SQGrammar *grammar = sq_grammar_new(&language, &error);
   assert(grammar);
   const uint32_t combinations[] = {0, SQ_EXTRAS, SQ_ERRORS, SQ_EXTRAS | SQ_ERRORS,
-                                   SQ_MISSING | SQ_ERRORS, SQ_OPTIONAL_FLAGS};
-  for (unsigned combination = 0; combination < 6; combination++) {
-    uint32_t flags = combinations[combination];
-    for (unsigned variant = 0; variant < 4; variant++) {
-      SQTree *tree = sq_allocate(grammar, 70, variant & 1, &error);
-      assert(tree);
-      uint32_t root = 64 * SQ_GROUP_SIZE;
-      sq_header_set(tree, group_count, 65);
-      sq_set_u16(tree->data, tree->layout.waste, 64, SQ_GROUP_SIZE - 1);
-      sq_set_u32(tree->data, tree->layout.span_base, 64, root);
-      sq_set_bit(tree->data, tree->layout.last, 0, true);
-      sq_set_bit(tree->data, tree->layout.last, root, true);
-      for (uint32_t slot = 0; slot <= root; slot++)
-        sq_set_u16(tree->data, tree->layout.symbol, slot, 1);
-      if (flags & SQ_EXTRAS) sq_set_bit(tree->data, tree->layout.extra, 2, true);
-      if (flags & SQ_MISSING)
-        sq_set_bit(tree->data, tree->layout.missing, 63 * SQ_GROUP_SIZE, true);
-      if (flags & SQ_ERRORS) {
-        sq_set_bit(tree->data, tree->layout.error, 63, true);
-        sq_set_bit(tree->data, tree->layout.error, 64, true);
-      }
-      assert(sq_prepare_final(&tree, variant & 2 ? 65 : 70, 0, flags, &error));
-      assert((sq_header_get(tree, format_flags) & SQ_OPTIONAL_FLAGS) == flags);
-      assert(tree->layout.extra <= tree->layout.missing &&
-             tree->layout.missing <= tree->layout.error && tree->layout.error <= tree->size);
-      uint32_t capacity = sq_header_get(tree, group_capacity);
-      SQLayout full;
-      assert(sq_layout(grammar, capacity, true, variant & 1, SQ_OPTIONAL_FLAGS, &full));
-      uint32_t saved = 0;
-      if (!(flags & SQ_EXTRAS)) saved += full.missing - full.extra;
-      if (!(flags & SQ_MISSING)) saved += full.error - full.missing;
-      if (!(flags & SQ_ERRORS)) saved += full.end - full.error;
-      assert(tree->size == full.end - saved);
-      for (unsigned pass = 0; pass < 3; pass++) {
+                                   SQ_MISSING | SQ_ERRORS, SQ_EXTRAS | SQ_MISSING | SQ_ERRORS};
+  for (unsigned representation = 0; representation < 3; representation++) {
+    grammar->symbols.separate = representation != 0;
+    grammar->symbols.encoding = representation ? SQ_SYMBOL_LOCAL : SQ_SYMBOL_BYTES;
+    grammar->symbols.shift = representation ? 0 : 8;
+    for (unsigned combination = 0; combination < 6; combination++) {
+      uint32_t flags = combinations[combination] |
+                       (representation == 2 ? SQ_SEPARATE_GRAMMAR : 0);
+      for (unsigned variant = 0; variant < 4; variant++) {
+        SQTree *tree = sq_allocate(grammar, 70, variant & 1, &error);
+        assert(tree);
+        uint32_t root = 64 * SQ_GROUP_SIZE;
+        sq_header_set(tree, group_count, 65);
+        sq_set_u16(tree->data, tree->layout.waste, 64, SQ_GROUP_SIZE - 1);
+        sq_set_u32(tree->data, tree->layout.span_base, 64, root);
+        sq_set_bit(tree->data, tree->layout.last, 0, true);
+        sq_set_bit(tree->data, tree->layout.last, root, true);
         for (uint32_t slot = 0; slot <= root; slot++) {
-          SQNode node = {tree, slot};
-          assert(sq_node_is_extra(node) == ((flags & SQ_EXTRAS) && slot == 2));
-          assert(sq_node_is_missing(node) ==
-                 ((flags & SQ_MISSING) && slot == 63 * SQ_GROUP_SIZE));
-          assert(sq_node_has_error(node) ==
-                 ((flags & SQ_ERRORS) && slot / SQ_GROUP_SIZE >= 63));
+          sq_set_u16(tree->data, tree->layout.symbol, slot, representation ? 1 : 257);
+          if (representation)
+            sq_set_u16(tree->data, tree->layout.grammar, slot, representation == 2 && slot == 2 ? 0 : 1);
         }
-        uint32_t size = sq_tree_compact_size(tree);
-        uint8_t *bytes = sq_allocate_data(size);
-        assert(bytes && sq_tree_copy_compact(tree, bytes, size, &error));
-        SQTree *copy = sq_tree_from_bytes(grammar, bytes, size, &error);
-        SQTree *borrowed = sq_tree_from_bytes_borrowed(grammar, bytes, size, &error);
-        assert(copy && borrowed);
-        assert(sq_node_has_error(sq_tree_root_node(borrowed)) == !!(flags & SQ_ERRORS));
-        sq_tree_delete(borrowed);
-        free(bytes);
+        if (flags & SQ_EXTRAS) sq_set_bit(tree->data, tree->layout.extra, 2, true);
+        if (flags & SQ_MISSING)
+          sq_set_bit(tree->data, tree->layout.missing, 63 * SQ_GROUP_SIZE, true);
+        if (flags & SQ_ERRORS) {
+          sq_set_bit(tree->data, tree->layout.error, 63, true);
+          sq_set_bit(tree->data, tree->layout.error, 64, true);
+        }
+        assert(sq_prepare_final(&tree, variant & 2 ? 65 : 70, 0, flags, &error));
+        assert((sq_header_get(tree, format_flags) & SQ_OPTIONAL_FLAGS) == flags);
+        assert(tree->layout.extra <= tree->layout.missing &&
+               tree->layout.missing <= tree->layout.error &&
+               tree->layout.error <= tree->layout.grammar && tree->layout.grammar <= tree->size);
+        uint32_t capacity = sq_header_get(tree, group_capacity);
+        SQLayout full;
+        assert(sq_layout(grammar, capacity, true, variant & 1, SQ_EXTRAS | SQ_MISSING | SQ_ERRORS |
+                          (representation ? SQ_SEPARATE_GRAMMAR : 0), &full));
+        uint32_t saved = 0;
+        if (!(flags & SQ_EXTRAS)) saved += full.missing - full.extra;
+        if (!(flags & SQ_MISSING)) saved += full.error - full.missing;
+        if (!(flags & SQ_ERRORS)) saved += full.grammar - full.error;
+        if (!(flags & SQ_SEPARATE_GRAMMAR)) saved += full.end - full.grammar;
+        assert(tree->size == full.end - saved);
+        for (unsigned pass = 0; pass < 3; pass++) {
+          for (uint32_t slot = 0; slot <= root; slot++) {
+            SQNode node = {tree, slot};
+            assert(sq_node_symbol_id(node) == 1);
+            assert(sq_node_grammar_id(node) == (representation == 2 && slot == 2 ? 0 : 1));
+            assert(sq_node_is_extra(node) == ((flags & SQ_EXTRAS) && slot == 2));
+            assert(sq_node_is_missing(node) ==
+                   ((flags & SQ_MISSING) && slot == 63 * SQ_GROUP_SIZE));
+            assert(sq_node_has_error(node) ==
+                   ((flags & SQ_ERRORS) && slot / SQ_GROUP_SIZE >= 63));
+          }
+          uint64_t expected = representation == 2 ? UINT64_C(1) << 2 : 0;
+          assert(sq_tree_group_grammar_symbol_equal(tree, 0, 0) == expected);
+          uint32_t size = sq_tree_compact_size(tree);
+          uint8_t *bytes = sq_allocate_data(size);
+          assert(bytes && sq_tree_copy_compact(tree, bytes, size, &error));
+          SQTree *copy = sq_tree_from_bytes(grammar, bytes, size, &error);
+          SQTree *borrowed = sq_tree_from_bytes_borrowed(grammar, bytes, size, &error);
+          assert(copy && borrowed);
+          assert(sq_node_has_error(sq_tree_root_node(borrowed)) == !!(flags & SQ_ERRORS));
+          sq_tree_delete(borrowed);
+          free(bytes);
+          sq_tree_delete(tree);
+          tree = copy;
+          assert(sq_resize(&tree, pass == 0 ? 90 : 65, &error));
+        }
         sq_tree_delete(tree);
-        tree = copy;
-        assert(sq_resize(&tree, pass == 0 ? 90 : 65, &error));
       }
-      sq_tree_delete(tree);
     }
   }
   sq_grammar_delete(grammar);

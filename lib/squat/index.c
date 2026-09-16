@@ -441,7 +441,7 @@ static SQTree *load_bytes(SQGrammar *grammar, const void *bytes, size_t length,
     goto invalid;
   }
 
-  if (!!(header.format_flags & SQ_SEPARATE_GRAMMAR) != grammar->symbols.separate) {
+  if ((header.format_flags & SQ_SEPARATE_GRAMMAR) && !grammar->symbols.separate) {
     sq_tree_delete(tree);
     goto invalid;
   }

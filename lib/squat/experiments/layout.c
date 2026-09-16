@@ -113,8 +113,8 @@ int main(int argc, char **argv) {
                                   ((tree->supertype_count + 63) / 64) * 8;
     uint64_t grammar_bytes = sq_column_size(slots, tree->layout.symbol_bits);
 
-    // The grammar column exists only when combined codes do not fit.
-    uint64_t separate_grammar_bytes = grammar->symbols.separate ? grammar_bytes : 0;
+    // Fallback trees with identical display and grammar IDs omit the column.
+    uint64_t separate_grammar_bytes = header.format_flags & SQ_SEPARATE_GRAMMAR ? grammar_bytes : 0;
     uint8_t super_bits = 0;
     if (tree->supertype_count > 8) {
       if (header.supertype_dictionary_count > 1) {

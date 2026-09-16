@@ -233,7 +233,8 @@ static bool open_group(Builder *builder) {
   SQTree *tree = builder->tree;
   start_lanes(&builder->symbol_lane, tree->data + tree->layout.symbol, 16,
               builder->slot_base);
-  start_lanes(&builder->grammar_lane, tree->data + tree->layout.grammar, 16, builder->slot_base);
+  if (tree->grammar->symbols.separate)
+    start_lanes(&builder->grammar_lane, tree->data + tree->layout.grammar, 16, builder->slot_base);
   start_lanes(&builder->field_lane, tree->data + tree->layout.field, 16,
               builder->slot_base);
   return true;
@@ -494,7 +495,10 @@ static bool emit(Builder *builder, const EmitNode *frame) {
         return false;
       }
       put_lane(&builder->symbol_lane, code);
-      if (prepared->symbols.separate) put_lane(&builder->grammar_lane, grammar_id);
+      if (prepared->symbols.separate) {
+        put_lane(&builder->grammar_lane, grammar_id);
+        if (grammar_id != code) builder->optional_flags |= SQ_SEPARATE_GRAMMAR;
+      }
       put_lane(&builder->field_lane, frame->field);
       slot->super = super;
       builder->count++;

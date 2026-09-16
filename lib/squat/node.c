@@ -60,7 +60,10 @@ TSSymbol sq_node_symbol(SQNode node) {
 
 uint32_t sq_node_grammar_id_with_code(SQNode node, uint16_t code) {
   const SQSymbolTable *symbols = &node.tree->grammar->symbols;
-  if (symbols->separate) return sq_get_u16(node.tree->data, node.tree->layout.grammar, node.slot);
+  if (symbols->separate) {
+    return sq_header_get(node.tree, format_flags) & SQ_SEPARATE_GRAMMAR
+        ? sq_get_u16(node.tree->data, node.tree->layout.grammar, node.slot) : code;
+  }
   if (symbols->encoding == SQ_SYMBOL_BYTES) return code & UINT8_MAX;
   if (symbols->encoding == SQ_SYMBOL_GLOBAL) {
     uint32_t variant = code & ((1u << symbols->shift) - 1);

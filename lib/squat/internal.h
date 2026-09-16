@@ -42,7 +42,7 @@ _Static_assert(SQ_COLUMN_ALIGNMENT == 8 || SQ_COLUMN_ALIGNMENT == 64,
 #define SQ_EXTRAS 0x1000u
 #define SQ_MISSING 0x2000u
 #define SQ_ERRORS 0x4000u
-#define SQ_OPTIONAL_FLAGS (SQ_EXTRAS | SQ_MISSING | SQ_ERRORS)
+#define SQ_OPTIONAL_FLAGS (SQ_EXTRAS | SQ_MISSING | SQ_ERRORS | SQ_SEPARATE_GRAMMAR)
 #define SQ_NONE UINT32_MAX
 
 typedef struct {
@@ -65,7 +65,6 @@ typedef struct {
   uint32_t span_base;
   uint32_t span_delta;
   uint32_t symbol;
-  uint32_t grammar;
   uint32_t field;
   uint32_t supertype;
   uint32_t last;
@@ -76,6 +75,7 @@ typedef struct {
   uint32_t extra;
   uint32_t missing;
   uint32_t error;
+  uint32_t grammar;
   uint32_t end;
   uint8_t symbol_bits, field_bits, supertype_bits;
   // Grammar-wide decoder constants; runtime-only, never serialized.

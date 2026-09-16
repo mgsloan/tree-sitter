@@ -342,20 +342,24 @@ static void separate_grammar_emission(void) {
   SQError error;
   SQGrammar *grammar = sq_grammar_new(&language, &error);
   assert(grammar && grammar->symbols.separate);
-  Builder builder = {.public_index = grammar->public_index,
-                     .tree = sq_allocate(grammar, 1, true, &error),
-                     .language = &language, .symbol_count = language.symbol_count,
-                     .symbol_space = language.symbol_count + 2, .small_supertypes = true, .error = &error};
-  assert(builder.tree);
-  Subtree leaf = {.data = {.is_inline = true, .symbol = 1}};
-  EmitNode node = {.subtree = &leaf};
-  assert(emit(&builder, &node) && close_group(&builder));
-  SQNode root = sq_tree_root_node(builder.tree);
-  assert(sq_node_symbol_id(root) == 0 && sq_node_grammar_id(root) == 1);
-  SQTree *loaded = sq_tree_from_bytes(grammar, builder.tree->data, builder.tree->size, &error);
-  assert(loaded);
-  sq_tree_delete(loaded);
-  sq_tree_delete(builder.tree);
+  for (uint16_t original = 0; original < 2; original++) {
+    Builder builder = {.public_index = grammar->public_index,
+                       .tree = sq_allocate(grammar, 1, true, &error),
+                       .language = &language, .symbol_count = language.symbol_count,
+                       .symbol_space = language.symbol_count + 2, .small_supertypes = true, .error = &error};
+    assert(builder.tree);
+    Subtree leaf = {.data = {.is_inline = true, .symbol = original}};
+    EmitNode node = {.subtree = &leaf};
+    assert(emit(&builder, &node) && close_group(&builder));
+    assert(!!(builder.optional_flags & SQ_SEPARATE_GRAMMAR) == !!original);
+    assert(sq_prepare_final(&builder.tree, 1, 0, builder.optional_flags, &error));
+    SQNode root = sq_tree_root_node(builder.tree);
+    assert(sq_node_symbol_id(root) == 0 && sq_node_grammar_id(root) == original);
+    SQTree *loaded = sq_tree_from_bytes(grammar, builder.tree->data, builder.tree->size, &error);
+    assert(loaded);
+    sq_tree_delete(loaded);
+    sq_tree_delete(builder.tree);
+  }
   sq_grammar_delete(grammar);
   free(public_symbols);
   free(metadata);

@@ -44,7 +44,9 @@ needed. Symbol codes put the public display ID above the grammar selector.
 When both literal IDs fit in bytes, the high byte stores display and the low
 byte stores grammar. Otherwise, grammar selectors use shared dictionaries.
 A separate u16 grammar column is present only when the combined code cannot fit
-in 16 bits. See [encoding choices and measurements](experiments/symbol-pairs.md).
+in 16 bits and at least one node has different display and grammar IDs.
+It is the final optional column; absent fallback columns decode to the display ID.
+See [encoding choices and measurements](experiments/symbol-pairs.md).
 
 Fixed-width packing uses direct halfword stores. Iterators read IDs from the
 slab instead of unpacking and caching copies; only coordinates need expansion.
@@ -197,8 +199,8 @@ Symbol codes, fields, supertypes, and waste use u16 lanes; byte-pair symbol
 encodings also support direct u8 reads.
 
 After the header and per-group waste column, columns are ordered: start byte,
-end byte, span, symbol, optional grammar, field, supertype, `last`, start point,
-end point, optional `extra`, optional `missing`, optional `error`. Each group-base column
+end byte, span, symbol, field, supertype, `last`, start point,
+end point, optional `extra`, optional `missing`, optional `error`, optional grammar. Each group-base column
 immediately precedes its corresponding node-value column, with alignment padding
 where needed. The optional symbol-presence index follows the columns.
 

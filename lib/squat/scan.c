@@ -129,7 +129,9 @@ uint64_t sq_tree_group_symbol_equal(const SQTree *tree, uint32_t group, uint32_t
 uint64_t sq_tree_group_grammar_symbol_equal(const SQTree *tree, uint32_t group, uint32_t value) {
   if (!tree || group >= sq_tree_group_count(tree) || value >= sq_symbols(tree)) return 0;
   if (tree->grammar->symbols.separate) {
-    return group_equal(tree, group, tree->layout.grammar, 16, value);
+    uint32_t column = sq_header_get(tree, format_flags) & SQ_SEPARATE_GRAMMAR
+        ? tree->layout.grammar : tree->layout.symbol;
+    return group_equal(tree, group, column, 16, value);
   }
   uint64_t matches = 0;
   uint32_t used = SQ_GROUP_SIZE - sq_group_waste(tree, group);

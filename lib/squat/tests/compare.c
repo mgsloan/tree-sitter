@@ -513,7 +513,7 @@ static void check_grammar_validation(const SQTree *tree) {
   sq_write_header(bytes, header);
   reject_index_mutation(tree, bytes, false);
   uint32_t root = sq_tree_root_node(tree).slot;
-  if (tree->grammar->symbols.separate) {
+  if (sq_header_get(tree, format_flags) & SQ_SEPARATE_GRAMMAR) {
     if (sq_symbols(tree) <= UINT16_MAX) {
       sq_set_u16(bytes, tree->layout.grammar, root, sq_symbols(tree));
       reject_index_mutation(tree, bytes, false);
