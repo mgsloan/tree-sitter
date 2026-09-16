@@ -7,10 +7,9 @@ migration support are not wanted yet: change the representation directly and
 regenerate temporary caches. Tree-sitter's upstream ABI versions are independent.
 
 
-Status: implemented prototype, 2026-09-15. This document records the intended
-design; the implementation notes below identify current boundaries. See
-[the persistence API](crates/persistence/README.md#injections-and-derived-caches)
-for usage.
+Status: design for a fresh prototype, 2026-09-16. The previous implementation
+has been discarded; this document specifies intended behavior, not existing APIs
+or disk formats.
 
 Investigation: `/home/mgsloan/proj/zed`, HEAD
 `ce48461eaadd16c65c31f835511ab96bd3b6e746`, including its uncommitted changes.
@@ -42,6 +41,9 @@ release. No Zed files were changed or Zed tests run for this investigation.
   bytes and the exact source; optionally cache them outside the slab and in a
   separate LMDB database. Point-cache availability never changes the tree key.
   Reconsider local storage with external placement later if measurements justify it.
+- Cache allocations have one owner; tree views and cursors borrow them. Attaching,
+  replacing, or removing a cache requires exclusive access to its owner. The cache
+  implementation needs no locks, atomics, or reference counts.
 - Grammar-order scanning and document-order results are separate operations.
 
 The existing [persistence design](tree-squatter-persistence.md) covers whole-file
@@ -216,10 +218,38 @@ per exact grammar. Per-node supertype encodings still need that grammar's
 interpretation. Grammar-symbol overrides depend on tree contents and require
 explicit tree or region scope and index relocation when copied.
 
+### Cache ownership
+
+Separate allocation does not imply shared ownership. Each host or injection blob
+owner owns its slab and optional presence/point allocations. Tree descriptors and
+cursors borrow these allocations; they neither retain nor free them independently.
+A document source owner owns the line-start index (`SQSourcePoints`). Host and
+injection views borrow that index through a source-aware context whose lifetime
+covers point access. Multiple borrowers require no per-tree reference counts.
+
+Build or load a cache into a temporary owned allocation, then transfer it to the
+blob owner when complete. Attachment, replacement, and removal require exclusive
+access to that owner (`&mut` in Rust; caller-enforced exclusion in C). Existing
+views/cursors must be released before those operations. Afterwards, new views
+borrow the current caches. Cancellation discards the temporary allocation.
+
+Concurrent readers may share immutable views. They never observe cache mutation,
+and point/presence lookup uses ordinary reads without locks or atomic operations.
+Loading a tree first and filling its caches later does not require changing
+caches underneath active readers. Removing a cache frees its allocation without
+changing slab bytes or IDs; missing caches use the normal fallback paths.
+
+Concurrent background publication is outside the initial cache API. If needed,
+an application can publish a new immutable owner/view and keep the previous one
+alive for existing readers. Any sharing of slab/source storage and synchronization
+belongs at that outer ownership boundary, not in each cache or query lookup.
+LMDB publication and cleanup remain independent transactions; they do not mutate
+allocations borrowed by live readers.
+
 ### Optional symbol-presence allocation
 
 Provide per-grammar-region symbol-presence bitmaps in a separate allocation,
-owned independently of immutable forest columns. For each public symbol, a
+owned by the blob owner alongside immutable forest columns. For each public symbol, a
 bitmap has one bit per physical group in that region. Set bits conservatively
 identify groups that may contain the symbol; a clear bit permits skipping.
 Define alias/public-symbol mapping consistently with query candidate selection.
@@ -231,11 +261,10 @@ construction and publication are optional and cancellable. A partial bitmap
 must never be treated as complete: publish an immutable completed region cache,
 with absence represented explicitly rather than by an all-zero bitmap.
 
-Use a runtime cache owner associated with the exact forest snapshot. Attach
-completed region entries atomically or under a short lock; a cursor retains the
-entry it uses. Do not mutate bitmap words under readers or retain mutable state
-inside the slab. Dropping the cache leaves the tree valid and changes only
-performance. Host and injection blobs have independent presence-cache owners. Exact attachment/eviction API remains to be selected.
+Use the exclusive-access ownership rules above. Each completed region cache is
+owned once by its blob owner; tree views borrow it with a region-relative group
+offset. Dropping the cache leaves the tree valid and changes only performance.
+Host and injection blobs own their respective presence allocations.
 
 LMDB gets a separate presence database. A proposed logical key is:
 
@@ -281,7 +310,7 @@ a final newline. Do not normalize CRLF/BOM/encoding while building this cache.
 The document-point convention is versioned; supporting other input encodings or
 coordinate units requires an explicit source/coordinate profile.
 
-A source owner can share a line-start index between the host and all injections.
+The source owner owns one line-start index, borrowed by the host and all injections.
 A point lookup without cached per-node values derives its result from the byte
 offset and source/line index. A caller can subsequently build or load a separate
 allocation of start/end points indexed by the owning blob's physical slots.
@@ -658,7 +687,8 @@ Focused cases drawn from
   completed empty versus missing manifests, and independent artifact eviction;
 - missing, loaded, built, evicted, malformed, and cancelled presence caches;
   identical forest keys and query results with and without sidecars, including
-  mismatched region order and concurrent late attachment;
+  mismatched region order, late attachment after releasing views, and concurrent
+  immutable readers;
 - identical source-derived and cached start/end points, including zero/EOF,
   final newlines, CRLF, multibyte UTF-8 byte columns, empty/missing nodes, and
   injected ranges with gaps; point-range queries agree before/after attachment;
@@ -668,67 +698,25 @@ Focused cases drawn from
   resolver availability and query profiles;
 - exact raw-byte eligibility versus BOM/newline/encoding transformations.
 
-## Implementation notes
-
-- `crates/squatter` exposes `Forest`, `ForestInput`, grammar regions,
-  `SourceCoordinates`, and separate point/presence caches. Forest construction
-  groups exact grammar bindings and shares native columns. Tree-local topology
-  remains independent; input-to-tree mapping accounts for grouping.
-- `crates/injections` owns registry/profile identity, full-snapshot discovery,
-  native included-range parsing, pending languages, canonical manifests, and
-  absolute packed output. Persistence depends on this crate. Unsupported query
-  predicates are configuration errors. Changing discovery semantics requires
-  updating the profile identity inputs when needed; its version remains 0 during
-  prototyping, independently of the host runtime fingerprint.
-- Persistence schema 0 stores host slabs, injection forest/manifests, symbol
-  presence, and points independently. Optional caches can be built, loaded,
-  cleared, or republished after a hit. They do not affect authoritative keys.
-- Packed persistence/forest nodes contain no point columns or inline presence.
-  Symbol presence is always separately allocated, including standalone packing.
-  Standalone packing currently also offers inline point columns as a layout option;
-  it is not an older-format decoder.
-- Forest serialization currently writes grouped compact slabs and reassembles
-  shared columns on load. It is an owned archive format, not a directly mapped
-  shared-column image. Queries use existing per-tree matchers and region-wide
-  presence data. Whole-region candidate scanning and source-order result merging
-  remain separate work.
-- Native injection trees are retained on discovery and absent on cache hits.
-  Their order follows parsed manifest layers, and their coordinates remain local
-  parser coordinates. Packed output always uses absolute document coordinates.
-- Source-less Rust node point access is fallible through `try_start_position`
-  and `try_end_position`; infallible access requires attached coordinates or
-  inline points. The shared engine reuses one line index across injection
-  parsing and packing.
-- Host transfer frames are supported. Injection transfer policy currently uses
-  in-process deferred publication; no injection IPC frame is defined.
-- No Zed code is changed. Registry construction and full-snapshot comparison
-  against Zed are the next integration step; editor-owned incremental machinery
-  remains there.
-
 ## Follow-up considerations
 
 Proceed with implementation; revisit these after the initial integration:
 
-- Source-coordinate ownership and source-less point APIs: share a line index,
-  avoid per-access caller plumbing, and measure whether per-node points should
-  be eagerly materialized.
+- Refine source-less point API signatures and measure whether per-node points
+  should be eagerly materialized; retain the simple ownership rules above.
 - Distinguish storage grouping by exact grammar from execution grouping by
   application query configuration.
 - Qualify the shared discovery profile against Zed's full-snapshot output,
   including resolver behavior and recursion/termination rules.
-- Measure cache attachment/eviction synchronization; retain immutable cache
-  owners across scans rather than paying synchronization per candidate.
 - Compare segmented grammar scanning with optional contiguous reassembly,
   including predicates, viewport selection, and result merging.
 
-- Benchmark the compact-tree archive against direct shared-column persistence;
+- Compare a compact-tree archive with direct shared-column persistence;
   consider transaction-backed injection ownership only if it pays for its
   additional validation and lifetime machinery.
-- Consolidate standalone point packing with source-derived points; no user or
-  persisted-format migration is needed.
 - Add injection IPC transfer if consumers need it; keep publication bound to an
   already available host/source generation.
 - Extend Zed conformance coverage before claiming interchangeable injection
   profiles, particularly comment toggles, language selectors, and nested combined
-  parses. Native parsing cancellation exists; cache construction and query calls
-  currently observe cancellation between operations rather than inside each scan.
+  parses. Choose cancellation checkpoints for parsing, cache construction, and
+  query scans without exposing partially built results.
