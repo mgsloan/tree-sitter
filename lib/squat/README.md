@@ -129,11 +129,8 @@ dispatch; generic callers do not need to select a representation per node.
 
 `KindSet` is a reusable set of public kind IDs for one language. Filtered scans
 include the root, stay inside its subtree, preserve preorder, and deduplicate
-requested IDs. Small sets merge per-kind scans: rare-symbol occurrence lists are
-searched directly, and common-symbol bitmaps skip groups. Broad sets use a single
-preorder scan with constant-time membership checks. Trees without indexes scan
-node symbols. The C primitive is `sq_node_find_symbol(root, symbol, slot)`, where
-`slot` is an inclusive physical upper bound; decrement a returned slot to advance.
+requested IDs. Filtering uses a linear preorder scan with constant-time
+membership checks.
 
 Individual node getters avoid constructing a full attribute snapshot.
 `NodeIteratorLike` exposes the last yielded node's kind, byte range, and full

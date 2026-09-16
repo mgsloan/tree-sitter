@@ -29,7 +29,6 @@
 //! # Ok(()) }
 //! ```
 use std::{
-    collections::BinaryHeap,
     ffi::{CStr, c_char, c_void},
     marker::PhantomData,
     ops::{Deref, Range},
@@ -623,30 +622,10 @@ impl<'tree> Node<'tree> {
         self,
         kinds: &'kinds KindSet,
     ) -> KindMatches<'tree, 'kinds> {
-        // A broad filter scans once rather than merging many per-kind scans.
-        let scan = (kinds.ids.len() > 8).then(|| self.preorder());
-        let candidates = if scan.is_none() {
-            kinds
-                .ids
-                .iter()
-                .filter_map(|&kind| {
-                    self.find_symbol(kind, self.slot())
-                        .map(|node| (node.slot(), kind))
-                })
-                .collect()
-        } else {
-            BinaryHeap::new()
-        };
         KindMatches {
-            root: self,
             kinds,
-            candidates,
-            scan,
+            scan: self.preorder(),
         }
-    }
-
-    fn find_symbol(self, kind: u16, slot: u32) -> Option<Self> {
-        Self::from_raw(unsafe { ffi::sq_node_find_symbol(self.raw, kind, slot) })
     }
 
     /// Test for a child without counting siblings.
@@ -889,30 +868,18 @@ impl FromIterator<u16> for KindSet {
     }
 }
 
-/// Indexed kind streams merged in preorder; broad filters use a single scan.
+/// Preorder traversal filtered by public kind IDs.
 pub struct KindMatches<'tree, 'kinds> {
-    root: Node<'tree>,
     kinds: &'kinds KindSet,
-    candidates: BinaryHeap<(u32, u16)>,
-    scan: Option<Preorder<'tree>>,
+    scan: Preorder<'tree>,
 }
 impl<'tree> Iterator for KindMatches<'tree, '_> {
     type Item = Node<'tree>;
     fn next(&mut self) -> Option<Self::Item> {
-        if let Some(scan) = &mut self.scan {
-            return scan.find(|node| self.kinds.contains(node.kind_id()));
+        if self.kinds.is_empty() {
+            return None;
         }
-        let (slot, kind) = self.candidates.pop()?;
-        if let Some(previous) = slot.checked_sub(1)
-            && let Some(next) = self.root.find_symbol(kind, previous)
-        {
-            self.candidates.push((next.slot(), kind));
-        }
-        // Candidates were checked by sq_node_find_symbol against the subtree.
-        Node::from_raw(RawNode {
-            tree: self.root.raw.tree,
-            slot,
-        })
+        self.scan.find(|node| self.kinds.contains(node.kind_id()))
     }
 }
 impl std::iter::FusedIterator for KindMatches<'_, '_> {}
@@ -1205,7 +1172,6 @@ mod ffi {
         pub fn sq_node_iterator_field_id(iterator: *mut c_void) -> u16;
         pub fn sq_node_iterator_symbol(iterator: *mut c_void) -> u16;
         pub fn sq_node_iterator_byte_range(iterator: *mut c_void, start: *mut u32, end: *mut u32);
-        pub fn sq_node_find_symbol(root: RawNode, symbol: u16, slot: u32) -> RawNode;
         pub fn sq_node_attributes(node: RawNode, out: *mut RawCursorAttributes);
         pub fn sq_cursor_attributes(cursor: *mut c_void, out: *mut RawCursorAttributes);
         pub fn sq_cursor_new(node: RawNode) -> *mut c_void;

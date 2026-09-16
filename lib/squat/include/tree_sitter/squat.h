@@ -147,10 +147,6 @@ uint64_t sq_tree_group_field_equal(const SQTree *, uint32_t group, uint32_t valu
 // False positives are possible for common symbols, never false negatives.
 bool sq_tree_group_has_symbol(const SQTree *, uint32_t group, TSSymbol public_symbol);
 
-// First matching node in root's preorder at or below the inclusive physical slot.
-// Uses public symbols, includes root, and never leaves its subtree.
-SQNode sq_node_find_symbol(SQNode root, TSSymbol public_symbol, uint32_t slot);
-
 bool sq_node_is_null(SQNode);
 bool sq_node_eq(SQNode, SQNode);
 TSSymbol sq_node_symbol(SQNode);
