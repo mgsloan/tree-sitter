@@ -323,6 +323,23 @@ static void compare_cursor_seeks(Nodes *nodes) {
   sq_cursor_delete(packed);
 }
 
+static void compare_symbol_scans(const Nodes *nodes) {
+  for (uint32_t index = 0; index < nodes->count; index += nodes->count / 16 + 1) {
+    SQNode root = nodes->packed[index];
+    uint32_t end = sq_node_first_slot(root);
+    TSSymbol symbols[] = {0, ts_node_symbol(nodes->mainline[index]), ts_builtin_sym_error};
+    for (unsigned target = 0; target < 3; target++) {
+      SQNode actual = sq_node_find_symbol(root, symbols[target], UINT32_MAX);
+      for (uint32_t ordinal = index; ordinal < nodes->count && nodes->packed[ordinal].slot >= end; ordinal++) {
+        if (ts_node_symbol(nodes->mainline[ordinal]) != symbols[target]) continue;
+        CHECK(sq_node_eq(actual, nodes->packed[ordinal]));
+        actual = actual.slot ? sq_node_find_symbol(root, symbols[target], actual.slot - 1) : sq_null();
+      }
+      CHECK(sq_node_is_null(actual));
+    }
+  }
+}
+
 static void compare_tree(const TSTree *tree, const SQTree *packed, bool exhaustive) {
   compare_group_equality(packed);
   uint32_t count = ts_node_descendant_count(ts_tree_root_node(tree));
@@ -359,6 +376,7 @@ static void compare_tree(const TSTree *tree, const SQTree *packed, bool exhausti
   CHECK(i == count && sq_node_is_null(n));
   ts_tree_cursor_delete(&cursor);
   compare_cursor_seeks(nodes);
+  compare_symbol_scans(nodes);
   if (exhaustive) {
     for (i = 0; i < count; i++) {
       compare_node(nodes, i);
@@ -480,6 +498,18 @@ static void reject_index_mutation(const SQTree *tree, uint8_t *bytes, bool prese
   for (uint32_t group = 0; group < sq_tree_group_count(safety); group++) {
     for (uint32_t symbol = 0; symbol < sq_symbols(safety); symbol++) {
       (void)sq_tree_group_has_symbol(safety, group, sq_decode_symbol(safety, symbol));
+    }
+  }
+  SQNode root = sq_tree_root_node(safety);
+  for (uint32_t symbol = 0; symbol < sq_symbols(safety); symbol++) {
+    TSSymbol public_symbol = sq_decode_symbol(safety, symbol);
+    SQNode node = sq_node_find_symbol(root, public_symbol, root.slot);
+    while (node.tree) {
+      CHECK(node.slot <= root.slot && sq_node_symbol(node) == public_symbol);
+      if (!node.slot) break;
+      SQNode next = sq_node_find_symbol(root, public_symbol, node.slot - 1);
+      CHECK(!next.tree || next.slot < node.slot);
+      node = next;
     }
   }
   sq_tree_delete(safety);

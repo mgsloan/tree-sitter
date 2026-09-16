@@ -29,6 +29,7 @@
 //! # Ok(()) }
 //! ```
 use std::{
+    collections::BinaryHeap,
     ffi::{CStr, c_char, c_void},
     marker::PhantomData,
     ops::{Deref, Range},
@@ -615,6 +616,39 @@ impl<'tree> Node<'tree> {
             .ok_or(Error::Allocation)
     }
 
+    /// Scan this node and its descendants in preorder, matching public kind IDs.
+    /// The set is reusable across trees of the same language. Duplicate IDs yield
+    /// no duplicate nodes; an empty set yields no nodes.
+    pub fn descendants_matching_kinds<'kinds>(
+        self,
+        kinds: &'kinds KindSet,
+    ) -> KindMatches<'tree, 'kinds> {
+        // A broad filter scans once rather than merging many per-kind scans.
+        let scan = (kinds.ids.len() > 8).then(|| self.preorder());
+        let candidates = if scan.is_none() {
+            kinds
+                .ids
+                .iter()
+                .filter_map(|&kind| {
+                    self.find_symbol(kind, self.slot())
+                        .map(|node| (node.slot(), kind))
+                })
+                .collect()
+        } else {
+            BinaryHeap::new()
+        };
+        KindMatches {
+            root: self,
+            kinds,
+            candidates,
+            scan,
+        }
+    }
+
+    fn find_symbol(self, kind: u16, slot: u32) -> Option<Self> {
+        Self::from_raw(unsafe { ffi::sq_node_find_symbol(self.raw, kind, slot) })
+    }
+
     pub fn children(self) -> Children<'tree> {
         Children {
             next: self.child(0),
@@ -806,6 +840,66 @@ impl<'tree> Node<'tree> {
         unsafe { ffi::sq_node_has_supertype(self.raw, symbol) }
     }
 }
+
+/// A reusable set of public kind IDs, interpreted in the scanned tree's language.
+#[derive(Clone, Debug, Default)]
+pub struct KindSet {
+    ids: Vec<u16>,
+    words: Vec<u64>,
+}
+impl KindSet {
+    pub fn new(kinds: impl IntoIterator<Item = u16>) -> Self {
+        kinds.into_iter().collect()
+    }
+    pub fn contains(&self, kind: u16) -> bool {
+        self.words
+            .get(kind as usize / 64)
+            .is_some_and(|word| word & (1u64 << (kind % 64)) != 0)
+    }
+    pub fn is_empty(&self) -> bool {
+        self.ids.is_empty()
+    }
+}
+impl FromIterator<u16> for KindSet {
+    fn from_iter<I: IntoIterator<Item = u16>>(kinds: I) -> Self {
+        let mut ids: Vec<_> = kinds.into_iter().collect();
+        ids.sort_unstable();
+        ids.dedup();
+        let mut words = vec![0; ids.last().map_or(0, |&kind| kind as usize / 64 + 1)];
+        for &kind in &ids {
+            words[kind as usize / 64] |= 1u64 << (kind % 64);
+        }
+        Self { ids, words }
+    }
+}
+
+/// Indexed kind streams merged in preorder; broad filters use a single scan.
+pub struct KindMatches<'tree, 'kinds> {
+    root: Node<'tree>,
+    kinds: &'kinds KindSet,
+    candidates: BinaryHeap<(u32, u16)>,
+    scan: Option<Preorder<'tree>>,
+}
+impl<'tree> Iterator for KindMatches<'tree, '_> {
+    type Item = Node<'tree>;
+    fn next(&mut self) -> Option<Self::Item> {
+        if let Some(scan) = &mut self.scan {
+            return scan.find(|node| self.kinds.contains(node.kind_id()));
+        }
+        let (slot, kind) = self.candidates.pop()?;
+        if let Some(previous) = slot.checked_sub(1)
+            && let Some(next) = self.root.find_symbol(kind, previous)
+        {
+            self.candidates.push((next.slot(), kind));
+        }
+        // Candidates were checked by sq_node_find_symbol against the subtree.
+        Node::from_raw(RawNode {
+            tree: self.root.raw.tree,
+            slot,
+        })
+    }
+}
+impl std::iter::FusedIterator for KindMatches<'_, '_> {}
 
 pub struct Preorder<'tree> {
     next: Option<Node<'tree>>,
@@ -1095,6 +1189,7 @@ mod ffi {
         pub fn sq_node_iterator_field_id(iterator: *mut c_void) -> u16;
         pub fn sq_node_iterator_symbol(iterator: *mut c_void) -> u16;
         pub fn sq_node_iterator_byte_range(iterator: *mut c_void, start: *mut u32, end: *mut u32);
+        pub fn sq_node_find_symbol(root: RawNode, symbol: u16, slot: u32) -> RawNode;
         pub fn sq_node_attributes(node: RawNode, out: *mut RawCursorAttributes);
         pub fn sq_cursor_attributes(cursor: *mut c_void, out: *mut RawCursorAttributes);
         pub fn sq_cursor_new(node: RawNode) -> *mut c_void;

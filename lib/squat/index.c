@@ -175,6 +175,72 @@ bool sq_tree_group_has_symbol(const SQTree *tree, uint32_t group, TSSymbol symbo
   return false;
 }
 
+SQNode sq_node_find_symbol(SQNode root, TSSymbol symbol, uint32_t slot) {
+  if (!root.tree) return sq_null();
+  const SQTree *tree = root.tree;
+  uint32_t symbol_index = sq_encode_symbol(tree, symbol);
+  if (symbol_index >= sq_symbols(tree) || sq_decode_symbol(tree, symbol_index) != symbol) {
+    return sq_null();
+  }
+  if (slot > root.slot) slot = root.slot;
+  uint32_t end = sq_node_first_slot(root);
+  if (slot < end) return sq_null();
+
+  uint32_t offset = sq_presence_offset(tree);
+  const uint8_t *entry = NULL;
+  if (offset) {
+    uint32_t entry_bytes = (sq_tree_group_count(tree) + 31) / 32 * 4;
+    entry = tree->data + offset + sq_column_size(sq_symbols(tree), 1) +
+            (size_t)symbol_index * entry_bytes;
+    if (!sq_get_packed(tree->data, offset, symbol_index, 1)) {
+      // Sparse entries descend in preorder, followed by SQ_NONE padding.
+      uint32_t low = 0, high = entry_bytes / 4;
+      while (low < high) {
+        uint32_t middle = low + (high - low) / 2;
+        uint32_t candidate = sq_get_u32(entry, 0, middle);
+        if (candidate != SQ_NONE && candidate > slot) low = middle + 1;
+        else high = middle;
+      }
+      for (; low < entry_bytes / 4; low++) {
+        uint32_t candidate = sq_get_u32(entry, 0, low);
+        if (candidate == SQ_NONE || candidate < end) break;
+        if (candidate > slot) continue;
+        // Safety-only loaders do not validate index contents. Never trust an
+        // occurrence as a node handle until its slot and symbol are checked.
+        SQNode node = sq_tree_node_at_slot(tree, candidate);
+        if (node.tree && sq_node_symbol(node) == symbol) return node;
+      }
+      return sq_null();
+    }
+  }
+
+  uint32_t group = slot / SQ_GROUP_SIZE, last_group = end / SQ_GROUP_SIZE;
+  for (;;) {
+    if (entry) {
+      uint32_t word_index = group / 32;
+      uint32_t word = sq_get_u32(entry, 0, word_index) &
+                      (UINT32_MAX >> (31 - group % 32));
+      while (!word && word_index > last_group / 32) {
+        word = sq_get_u32(entry, 0, --word_index);
+      }
+      if (!word) break;
+      group = word_index * 32 + 31 - (uint32_t)__builtin_clz(word);
+      if (group < last_group) break;
+    }
+    uint32_t first = group * SQ_GROUP_SIZE;
+    uint32_t limit = first + SQ_GROUP_SIZE - sq_group_waste(tree, group);
+    if (limit > slot + 1) limit = slot + 1;
+    if (first < end) first = end;
+    for (uint32_t candidate = limit; candidate > first;) {
+      SQNode node = {tree, --candidate};
+      if (sq_node_symbol(node) == symbol) return node;
+    }
+    if (group == last_group) break;
+    group--;
+  }
+  return sq_null();
+}
+
 // Validate before exposing any nodes. Layout offsets must be canonical, so no
 // column read can escape the buffer even when the input is hostile.
 static bool validate_nodes(SQTree *tree, SQError *error) {
@@ -495,7 +561,7 @@ static SQTree *load_bytes(SQGrammar *grammar, const void *bytes, size_t length,
   }
 
   // Presence readers only inspect a size-checked bitmap or bounded sparse list.
-  // Sparse values are compared with group numbers, never dereferenced as slots.
+  // Readers using sparse values as node slots validate them before dereferencing.
   // Reconstructing membership and checking padding is a semantic integrity check.
   if (check_auxiliary_contents && (header.format_flags & SQ_PRESENCE) &&
       !validate_presence(tree, error)) {
