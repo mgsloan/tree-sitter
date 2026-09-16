@@ -124,13 +124,13 @@ bool sq_cursor_goto_previous_sibling(SQCursor *cursor) {
   return true;
 }
 
-static int64_t goto_first_child_for(SQCursor *cursor, uint32_t byte, TSPoint point) {
+int64_t sq_cursor_goto_first_child_for_byte(SQCursor *cursor, uint32_t byte) {
   if (!sq_cursor_goto_first_child(cursor)) return -1;
   int64_t index = 0;
   do {
     TSPoint end = sq_node_end_point(cursor->node);
     if (sq_node_end_byte(cursor->node) > byte &&
-        (end.row > point.row || (end.row == point.row && end.column > point.column))) {
+        (end.row > 0 || end.column > 0)) {
       return index;
     }
     index++;
@@ -139,12 +139,19 @@ static int64_t goto_first_child_for(SQCursor *cursor, uint32_t byte, TSPoint poi
   return -1;
 }
 
-int64_t sq_cursor_goto_first_child_for_byte(SQCursor *cursor, uint32_t byte) {
-  return goto_first_child_for(cursor, byte, (TSPoint){0});
-}
-
 int64_t sq_cursor_goto_first_child_for_point(SQCursor *cursor, TSPoint point) {
-  return goto_first_child_for(cursor, 0, point);
+  if (!sq_cursor_goto_first_child(cursor)) return -1;
+  int64_t index = 0;
+  do {
+    TSPoint end = sq_node_end_point(cursor->node);
+    if (sq_node_end_byte(cursor->node) > 0 &&
+        (end.row > point.row || (end.row == point.row && end.column > point.column))) {
+      return index;
+    }
+    index++;
+  } while (sq_cursor_goto_next_sibling(cursor));
+  sq_cursor_goto_parent(cursor);
+  return -1;
 }
 
 void sq_cursor_attributes(SQCursor *cursor, SQCursorAttributes *out) {
