@@ -27,14 +27,14 @@ _Static_assert(SQ_ITERATOR_UNPACK_SLOTS >= SQ_GROUP_SIZE &&
 #endif
 _Static_assert(SQ_COLUMN_ALIGNMENT == 8 || SQ_COLUMN_ALIGNMENT == 64,
                "supported experimental column alignments");
+// Prototype format version 0; no persisted data or backward compatibility contract.
 #define SQ_VERSION                                                                                 \
-  (UINT32_C(0x535100c0) |                                                                          \
+  (UINT32_C(0x53510000) |                                                                          \
    (SQ_GROUP_SIZE == 32   ? 2u                                                                     \
     : SQ_GROUP_SIZE == 64 ? 4u                                                                     \
                           : 0u) |                                                                  \
    (SQ_COLUMN_ALIGNMENT == 64 ? 8u : 0u))
 
-// Version 12: measured ID width rounding and compact direct supertype masks.
 #define SQ_NO_POINTS 0x100u
 #define SQ_PRESENCE 0x200u
 #define SQ_WIDE_SUPERTYPES 0x400u

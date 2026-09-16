@@ -28,7 +28,7 @@ fn hash_tree(path: &Path, root: &Path, hash: &mut blake3::Hasher) {
 
 fn main() {
     let root = Path::new("../..");
-    let mut hash = blake3::Hasher::new_derive_key("tree-squatter persistence development build v1");
+    let mut hash = blake3::Hasher::new_derive_key("tree-squatter persistence development build v0");
     for path in [
         "lib/src",
         "lib/include",

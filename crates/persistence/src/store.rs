@@ -11,7 +11,8 @@ use heed::{Env, EnvOpenOptions, WithoutTls, types::Bytes};
 
 pub(crate) type Database = heed::Database<Bytes, Bytes>;
 
-const SCHEMA: &[u8] = b"tree-squatter-persistence owned prototype 3";
+// Prototype formats stay at version 0; no persisted data needs backward compatibility.
+const SCHEMA: &[u8] = b"tree-squatter-persistence owned prototype 0";
 
 pub(crate) struct Store {
     pub(crate) env: Env<WithoutTls>,

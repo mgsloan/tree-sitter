@@ -5,7 +5,8 @@ use crate::{
 use std::io::{self, Read, Write};
 use std::sync::Arc;
 
-const MAGIC: &[u8; 8] = b"TSQXFR02";
+// Prototype formats stay at version 0; no persisted data needs backward compatibility.
+const MAGIC: &[u8; 8] = b"TSQXFR00";
 const HEADER_LEN: usize = 192;
 const PREFIX_LEN: usize = 8 + 3 * 8 + HEADER_LEN;
 

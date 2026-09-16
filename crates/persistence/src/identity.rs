@@ -1,3 +1,4 @@
+// Prototype formats stay at version 0; no persisted data needs backward compatibility.
 use std::path::{Component, Path, PathBuf};
 
 /// Digest of the actual grammar implementation, supplied by its provider.
@@ -44,7 +45,7 @@ pub(crate) fn digest(domain: &str, bytes: &[u8]) -> [u8; 32] {
 
 pub(crate) fn representation() -> [u8; 32] {
     let bytes = tree_sitter_squatter::representation_id().to_le_bytes();
-    digest("tree-squatter representation v1", &bytes)
+    digest("tree-squatter representation v0", &bytes)
 }
 
 pub(crate) fn runtime() -> [u8; 32] {
@@ -77,7 +78,7 @@ impl Request {
         presence: bool,
         points: bool,
     ) -> Self {
-        let path_id = digest("tree-squatter path v1", &path);
+        let path_id = digest("tree-squatter path v0", &path);
         let mut source_key = [0; 72];
         source_key[..32].copy_from_slice(&path_id);
         source_key[32..40].copy_from_slice(&(source.len() as u64).to_le_bytes());
@@ -89,11 +90,11 @@ impl Request {
         // Compact whole-file/raw-byte mode; transient capacity is not identity.
         identity.extend_from_slice(&u64::from(presence).to_le_bytes());
         identity.extend_from_slice(&u64::from(points).to_le_bytes());
-        let variant = digest("tree-squatter cache variant v1", &identity);
+        let variant = digest("tree-squatter cache variant v0", &identity);
         let mut tree_key = [0; 104];
         tree_key[..72].copy_from_slice(&source_key);
         tree_key[72..].copy_from_slice(&variant);
-        let mut header = b"TSQENT02".to_vec();
+        let mut header = b"TSQENT00".to_vec();
         header.extend_from_slice(&source_key[32..]);
         header.extend_from_slice(&identity);
         header.extend_from_slice(&variant);

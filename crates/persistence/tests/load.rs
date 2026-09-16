@@ -385,37 +385,6 @@ fn independent_reader_opens_while_writer_admission_is_held() {
     );
 }
 
-/// Supply the pre-migration load test executable, built from the same native
-/// runtime/grammar sources. Its child_load entry point is the compatibility probe.
-#[test]
-#[ignore = "requires TSQ_LEGACY_LOAD_TEST_BIN from the lmdb 0.8 backend"]
-fn legacy_backend_round_trip() {
-    let legacy = std::env::var_os("TSQ_LEGACY_LOAD_TEST_BIN").expect("legacy test executable");
-    let current = std::env::current_exe().unwrap();
-    let root = tempfile::tempdir().unwrap();
-    fs::write(root.path().join("input.json"), "{\"old_writer\": true}").unwrap();
-    let probe = |binary: &std::path::Path, expected: &str| {
-        let output = std::process::Command::new(binary)
-            .args(["--exact", "child_load", "--nocapture"])
-            .env("TSQ_TEST_PROJECT", root.path())
-            .env("TSQ_TEST_EXPECT_HIT", expected)
-            .output()
-            .unwrap();
-        assert!(
-            output.status.success(),
-            "{}\n{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
-    };
-    probe(Path::new(&legacy), "no");
-    probe(&current, "yes");
-    fs::write(root.path().join("input.json"), "{\"heed_writer\": true}").unwrap();
-    probe(&current, "no");
-    probe(Path::new(&legacy), "yes");
-    probe(&current, "yes");
-}
-
 #[test]
 #[ignore = "subprocess helper"]
 fn child_writer_lock() {
