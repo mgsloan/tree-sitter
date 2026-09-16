@@ -151,7 +151,7 @@ Proposed canonical derivation, pending the identity choices above:
 
 ```text
 variant_digest = BLAKE3(
-  "tree-squatter cache variant v1" ||
+  "tree-squatter cache variant v0" ||
   GrammarFingerprint || ParseRuntimeFingerprint ||
   RepresentationFingerprint || canonical persisted packing options ||
   canonical parse options
@@ -588,8 +588,9 @@ retaining conservative node/topology/coordinate checks. See
 remains pending. The crate also implements Linux parse-work cooperation with
 bounded waits/resumable deferral, optional bounded obsolete-generation and
 deleted-path cleanup, and explicit stale-reader checks. The prototype stores the
-advisory generation pointer in a separate `current` named database; schema version
-2 is intentionally incompatible with prototype 1 and does not migrate it.
+advisory generation pointer in a separate `current` named database. All prototype
+format versions are 0; no data has been persisted for ongoing use and backward
+compatibility or migrations are not wanted.
 Opt-in transaction-backed slab hits now retain a sealed MDB_NOTLS read owner with
 actual-pointer alignment checks and owned fallback. Their source stays an owned
 disk capture. A fixed limit of 32 local owners bounds admission; explicit detach

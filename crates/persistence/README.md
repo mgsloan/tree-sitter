@@ -1,5 +1,11 @@
 # tree-squatter-persistence
 
+Tree-squatter is a prototype. No data has been persisted for ongoing use;
+temporary test databases do not create a compatibility obligation. All prototype
+format, schema, and profile versions remain at 0. Backward compatibility and
+migration support are not wanted yet: change the representation directly and
+regenerate temporary caches. Tree-sitter's upstream ABI versions are independent.
+
 Initial implementation of [the persistence design](../../tree-squatter-persistence.md).
 The database format is a development prototype, not a released compatibility
 contract. Built on Pareto commit `7734a5741`.
@@ -102,6 +108,5 @@ Saving CRLF files does not necessarily make them eligible.
 Run `cargo test -p tree-squatter-persistence` for lifecycle, codec, cooperation,
 and maintenance tests.
 
-Schema version 3 adds the grammar dictionary database. Version 2 caches are
-intentionally rejected rather than upgraded in place. The earlier backend
-migration probe therefore applies only to retained version 2 builds.
+The current schema includes the grammar dictionary database. Schema and transfer
+format versions are 0; no migration is provided.

@@ -1,5 +1,11 @@
 # Squat C runtime
 
+Tree-squatter is a prototype. No data has been persisted for ongoing use;
+temporary test databases do not create a compatibility obligation. All prototype
+format, schema, and profile versions remain at 0. Backward compatibility and
+migration support are not wanted yet: change the representation directly and
+regenerate temporary caches. Tree-sitter's upstream ABI versions are independent.
+
 An immutable packed-tree API alongside this checkout's unchanged Tree-sitter
 runtime. The implementation follows [design.md](../../design.md): 16-slot
 reverse-filled groups, aligned columns, non-straddling packed IDs, physical
@@ -161,14 +167,12 @@ stored symmetrically as one u64 key, with the row in the high word. The payload
 still uses four bytes per node and 16 bytes per group before column padding,
 while lexicographic point comparisons now use one integer key.
 
-The version-9 serialized header is 16 bytes: a format/flags word, live group
+The serialized header is 16 bytes: a format/flags word, live group
 count, allocated group capacity, and supertype-dictionary count. Column and
 auxiliary-section offsets are derived from the exact grammar, capacity, and
-feature flags. The symbol-presence index has an explicit presence flag. All
-previous versions are rejected. Columns start on eight-byte boundaries (64 in
+feature flags. The symbol-presence index has an explicit presence flag. Columns start on eight-byte boundaries (64 in
 the experimental alignment build); auxiliary sections remain eight-byte aligned.
 Slabs and grammar caches are little-endian on all hosts, including 32-bit hosts.
-Existing little-endian slabs are unchanged; old native big-endian slabs are rejected.
 
 Each newly packed tree has one private allocation: runtime descriptor, alignment
 padding, then the persisted slab. Grammar tables are shared through its retained
@@ -187,8 +191,7 @@ conservative mask set exceeds 65,536 entries. Retaining the grammar handle keeps
 its tables available even when no trees or contexts remain.
 Analysis distinguishes nonterminal extras from ordinary recursive gotos and only
 explores hidden definitions reachable from supertypes or hidden extras. Unary
-productions avoid building the full predecessor graph. Version 9 rejects older
-slabs because the tighter analysis can change dictionary IDs.
+productions avoid building the full predecessor graph.
 Historical mask-analysis benchmarks record the dictionary-size, initialization,
 conversion, and memory effects.
 
@@ -230,8 +233,7 @@ exception table or conversion bookkeeping is retained for these cases.
 Negated-field queries consequently follow visible-child fields too. The C query
 test counts attributable differences for its simple `(_ !field) @parent` probes;
 other query comparisons remain strict.
-Historical comparisons document the upstream inconsistency and the removed
-version-2 compatibility mechanism.
+Historical comparisons document the upstream inconsistency.
 
 The known mainline difference in `tests/fixtures/hidden-seek.css` is counted but
 ignored by `squatter-bench` unless `--strict-seeks` is used. Other differences
