@@ -18,7 +18,7 @@ exported functions use the `SQ`/`sq_` namespace; tree access uses slab nodes and
 cursors. JIT and the reference's block/spine/offset/edit machinery are omitted.
 The existing repository license covers these derivative files.
 
-The slab adapters implement public display and sparse grammar IDs, direct supertype tests,
+The slab adapters implement combined public display and grammar IDs, direct supertype tests,
 word-boundary-aware masked SWAR roots, group presence lookups, and exact combined
 field/symbol masks. Physical slot indexes include leading waste; all traversal
 and child scheduling normalize that waste. Conversion is not performed per query.

@@ -235,9 +235,8 @@ static void exercise_columns(SQTree *tree, bool fill) {
   assert(tree->layout.field_lanes == (tree->layout.field_bits ? 64 / tree->layout.field_bits : 0));
   for (uint32_t slot = 0; slot < 2 * SQ_GROUP_SIZE; slot++) {
     SQNode node = {tree, slot};
-    assert(sq_node_symbol_id(node) == sq_get_packed(tree->data, tree->layout.symbol,
+    assert(sq_node_symbol_code(node) == sq_get_packed(tree->data, tree->layout.symbol,
                                                   slot, tree->layout.symbol_bits));
-    assert(sq_node_grammar_id(node) == sq_node_symbol_id(node));
     uint32_t field = tree->layout.field_bits
       ? sq_get_packed(tree->data, tree->layout.field, slot, tree->layout.field_bits) : 0;
     assert(sq_node_field_value(node) == field);
@@ -281,64 +280,67 @@ static void fixed_width_write_tests(void) {
   }
 }
 
-static void sparse_grammar_tests(bool dictionary) {
+static void symbol_pair_tests(uint32_t symbols, bool separate) {
   SupertypeFixture fixture;
-  supertype_fixture(&fixture, dictionary ? 9 : 0, false);
+  supertype_fixture(&fixture, 0, false);
   TSLanguage language = fixture.language;
-  // The override fixture needs sixteen raw symbol IDs.
-  language.symbol_count = 16;
+  TSSymbol *public_symbols = malloc(symbols * sizeof(TSSymbol));
+  TSSymbolMetadata *metadata = calloc(symbols, sizeof(TSSymbolMetadata));
+  assert(public_symbols && metadata);
+  for (uint32_t symbol = 0; symbol < symbols; symbol++) public_symbols[symbol] = symbol;
+  // Two grammar IDs share display zero. The error IDs force the fallback at 32767.
+  public_symbols[1] = 0;
+  language.symbol_count = symbols;
+  language.public_symbol_map = public_symbols;
+  language.symbol_metadata = metadata;
   language.state_count = language.large_state_count = 1;
   SQError error;
   SQGrammar *grammar = sq_grammar_new(&language, &error);
-  assert(grammar);
+  assert(grammar && grammar->symbols.separate == separate);
+  assert(grammar->symbols.shift == (separate ? 0 : symbols <= 254 ? 8 : symbols == 300 ? 2 : 1));
+  if (symbols == 300) {
+    assert(grammar->symbols.encoding == SQ_SYMBOL_GLOBAL);
+    assert(grammar->symbols.default_codes[0] != 0);
+    assert((grammar->symbols.default_codes[2] & 3) == 0);
+  }
   const uint32_t groups = (130 + SQ_GROUP_SIZE - 1) / SQ_GROUP_SIZE;
   SQTree *tree = sq_allocate(grammar, groups + 3, true, &error);
   assert(tree);
   sq_header_set(tree, group_count, groups);
   sq_set_packed(tree->data, tree->layout.waste, groups - 1, SQ_WASTE_BITS,
                 groups * SQ_GROUP_SIZE - 130);
-  // 129 leaf siblings followed physically by their root.
   sq_set_bit(tree->data, tree->layout.last, 0, true);
   sq_set_bit(tree->data, tree->layout.last, 129, true);
   sq_set_u8(tree->data, tree->layout.span_delta, 129, 129);
-  const uint32_t slots[] = {0, 63, 64, 127, 128, 129};
-  const uint32_t count = sizeof(slots) / sizeof(slots[0]);
-  uint32_t bytes = (uint32_t)sq_grammar_size(tree, count);
-  assert(sq_prepare_final(&tree, groups + 3, bytes, &error));
-  uint32_t offset = sq_grammar_offset(tree), words = sq_grammar_words(tree);
-  uint32_t bitmap = offset + 8, ranks = bitmap + words * 8;
-  uint32_t values = ranks + (uint32_t)sq_array_size(words, 4);
-  memset(tree->data + offset, 0, bytes);
-  sq_set_u32(tree->data, offset, 0, count);
-  for (uint32_t i = 0; i < count; i++) {
-    sq_set_bit(tree->data, bitmap, slots[i], true);
-    sq_set_packed(tree->data, values, i, tree->layout.symbol_bits, i + 1);
+  for (uint32_t slot = 0; slot < 130; slot++) {
+    uint16_t original = slot % 4;
+    sq_set_u16(tree->data, tree->layout.symbol, slot, grammar->symbols.default_codes[original]);
+    if (separate) sq_set_u16(tree->data, tree->layout.grammar, slot, original);
   }
-  // Known ranks at the word boundaries, independent of the reader's popcount.
-  sq_set_u32(tree->data, ranks, 0, 0);
-  sq_set_u32(tree->data, ranks, 1, 2);
-  sq_set_u32(tree->data, ranks, 2, 4);
-  sq_header_set(tree, format_flags, sq_header_get(tree, format_flags) | SQ_GRAMMAR_OVERRIDES);
   SQTree *loaded = sq_tree_from_bytes(grammar, tree->data, tree->size, &error);
   assert(loaded && error == SQ_OK);
   sq_tree_delete(loaded);
+  uint32_t invalid_column = separate ? tree->layout.grammar : tree->layout.symbol;
+  sq_set_u16(tree->data, invalid_column, 0, separate ? UINT16_MAX : symbols <= 254 ? 0xff00 : 5);
+  assert(!sq_tree_from_bytes(grammar, tree->data, tree->size, &error));
+  assert(error == SQ_ERROR_INVALID_SLAB);
+  assert(!sq_tree_from_bytes_borrowed_safety_checked(grammar, tree->data, tree->size, &error));
+  assert(error == SQ_ERROR_INVALID_SLAB);
+  sq_set_u16(tree->data, invalid_column, 0, separate ? 0 : grammar->symbols.default_codes[0]);
   const uint32_t capacities[] = {groups + 7, groups, groups + 1};
   for (unsigned pass = 0; pass < sizeof(capacities) / sizeof(capacities[0]); pass++) {
     assert(sq_resize(&tree, capacities[pass], &error));
     for (uint32_t slot = 0; slot < 130; slot++) {
-      uint32_t expected = 0;
-      for (uint32_t i = 0; i < count; i++) if (slots[i] == slot) expected = i + 1;
-      assert(sq_node_grammar_id((SQNode){tree, slot}) == expected);
+      SQNode node = {tree, slot};
+      assert(sq_node_symbol_id(node) == (slot % 4 < 2 ? 0 : slot % 4));
+      assert(sq_node_grammar_id(node) == slot % 4);
     }
     for (uint32_t group = 0; group < groups; group++) {
-      for (uint32_t symbol = 0; symbol < 8; symbol++) {
+      for (uint32_t symbol = 0; symbol < 4; symbol++) {
         uint64_t expected = 0;
         for (uint32_t lane = 0; lane < SQ_GROUP_SIZE; lane++) {
           uint32_t slot = group * SQ_GROUP_SIZE + lane;
-          if (slot >= 130) continue;
-          uint32_t grammar = 0;
-          for (uint32_t i = 0; i < count; i++) if (slots[i] == slot) grammar = i + 1;
-          if (grammar == symbol) expected |= UINT64_C(1) << lane;
+          if (slot < 130 && slot % 4 == symbol) expected |= UINT64_C(1) << lane;
         }
         assert(sq_tree_group_grammar_symbol_equal(tree, group, symbol) == expected);
       }
@@ -349,13 +351,53 @@ static void sparse_grammar_tests(bool dictionary) {
   }
   sq_tree_delete(tree);
   sq_grammar_delete(grammar);
+  free(metadata);
+  free(public_symbols);
+}
+
+static void terminal_alias_tests(void) {
+  TSSymbol public_symbols[300], aliases[] = {0, 0, 3, 0}, alias_map[] = {0};
+  TSSymbolMetadata metadata[300] = {0};
+  uint16_t parse_table[4 * 300] = {0};
+  for (uint32_t symbol = 0; symbol < 300; symbol++) public_symbols[symbol] = symbol;
+  TSParseActionEntry actions[5] = {0};
+  actions[1].entry.count = 1;
+  actions[2].action = (TSParseAction){.shift = {.type = TSParseActionTypeShift, .state = 2}};
+  actions[3].entry.count = 1;
+  actions[4].action = (TSParseAction){.reduce = {
+      .type = TSParseActionTypeReduce, .symbol = 2, .child_count = 2, .production_id = 1}};
+  parse_table[300 + 1] = 1;
+  parse_table[600 + 2] = 3;
+  parse_table[900] = 3;
+  // A terminal shift followed by a nonterminal goto, with the first child aliased.
+  TSLanguage language = {.abi_version = TREE_SITTER_LANGUAGE_VERSION,
+      .symbol_count = 300, .token_count = 2, .state_count = 4, .large_state_count = 4,
+      .production_id_count = 2, .max_alias_sequence_length = 2,
+      .public_symbol_map = public_symbols, .symbol_metadata = metadata,
+      .parse_table = parse_table, .parse_actions = actions,
+      .alias_map = alias_map, .alias_sequences = aliases};
+  SQError error;
+  SQGrammar *grammar = sq_grammar_new(&language, &error);
+  assert(grammar && grammar->symbols.encoding == SQ_SYMBOL_GLOBAL);
+  assert(grammar->symbols.counts[3] == 2);
+  uint32_t code = sq_symbol_code(grammar, 3, 1);
+  assert(code != SQ_NONE && code >> grammar->symbols.shift == 3);
+  SQTree *tree = sq_allocate(grammar, 1, true, &error);
+  assert(tree);
+  sq_set_u16(tree->data, tree->layout.symbol, 0, code);
+  assert(sq_node_grammar_id((SQNode){tree, 0}) == 1);
+  sq_tree_delete(tree);
+  sq_grammar_delete(grammar);
 }
 
 int main(void) {
+  terminal_alias_tests();
   fixed_layout_limit_tests();
   empty_column_tests();
-  sparse_grammar_tests(false);
-  sparse_grammar_tests(true);
+  symbol_pair_tests(16, false);
+  symbol_pair_tests(300, false);
+  symbol_pair_tests(32766, false);
+  symbol_pair_tests(32767, true);
   equality_tests();
   read_tests();
   fixed_width_write_tests();
@@ -397,6 +439,6 @@ int main(void) {
     free(metadata);
   }
 
-  puts("ok: sparse grammar IDs, packed-column decoding, stable physical lanes, colocated growth, compaction, overflow");
+  puts("ok: combined and separate grammar IDs, packed-column decoding, stable physical lanes, colocated growth, compaction, overflow");
   return 0;
 }

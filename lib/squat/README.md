@@ -36,13 +36,15 @@ sq_grammar_delete(grammar);
 Link the library before mainline Tree-sitter. Public declarations are in
 [`include/tree_sitter/squat.h`](include/tree_sitter/squat.h).
 
-Symbol IDs (including grammar symbol overrides), field IDs, supertype
+Symbol codes, field IDs, supertype
 masks/dictionary IDs, and group waste always use 16 bits. Field and supertype
 columns are retained even for grammars that do not use them. Coordinates and
 boolean columns keep their existing widths. No build flag or Cargo feature is
-needed. The symbol column stores public display IDs. Sparse grammar overrides
-preserve original grammar IDs wherever they differ, including aliases and public
-symbol canonicalization.
+needed. Symbol codes put the public display ID above the grammar selector.
+When both literal IDs fit in bytes, the high byte stores display and the low
+byte stores grammar. Otherwise, grammar selectors use shared dictionaries.
+A separate u16 grammar column is present only when the combined code cannot fit
+in 16 bits. See [encoding choices and measurements](experiments/symbol-pairs.md).
 
 Fixed-width packing uses direct halfword stores. Iterators read IDs from the
 slab instead of unpacking and caching copies; only coordinates need expansion.
@@ -111,7 +113,7 @@ bytes and compares every live node's attributes and topology through copied and
 borrowed loaders. Sixteen packing variants cover capacity hints, compaction,
 points, and presence-index options. Use a source exceeding 32 groups to exercise
 the presence index, and additional grammars/sources for grammar IDs and
-grammar overrides. Both cross-endian directions run even if one fails.
+symbol encodings. Both cross-endian directions run even if one fails.
 
 Conversion walks raw subtrees iteratively in reverse preorder. Each frame stages
 child positions because multiline point offsets cannot be subtracted. Only the
@@ -191,14 +193,14 @@ cursor.goto_first_child();
 The runtime layout has named slab offsets, with no column enum or offset table.
 Flags, u8/u16 deltas, and u32/u64 bases have explicit typed reads and writes;
 multi-byte values are byte-swapped on big-endian hosts.
-Symbol, field, supertype, and waste columns use direct u16 accesses.
+Symbol codes, fields, supertypes, and waste use u16 lanes; byte-pair symbol
+encodings also support direct u8 reads.
 
 After the header and per-group waste column, columns are ordered: start byte,
-end byte, span, symbol, field, supertype, flag bitmaps (`last`,
+end byte, span, symbol, optional grammar, field, supertype, flag bitmaps (`last`,
 `extra`, `error`, `missing`), start point, end point. Each group-base column
 immediately precedes its corresponding node-value column, with alignment padding
-where needed. The optional symbol-presence index and sparse grammar-symbol
-overrides follow the columns.
+where needed. The optional symbol-presence index follows the columns.
 
 Subtree-span bases are zero when every live value in the group fits in u8;
 otherwise they use the actual minimum. Start-column bases retain their actual

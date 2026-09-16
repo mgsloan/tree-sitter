@@ -58,21 +58,22 @@ TSSymbol sq_node_symbol(SQNode node) {
   return node.tree ? display_symbol(node) : 0;
 }
 
-uint32_t sq_node_grammar_id_with_symbol(SQNode node, uint32_t symbol) {
-  const SQTree *tree = node.tree;
-  if (!(sq_header_get(tree, format_flags) & SQ_GRAMMAR_OVERRIDES)) return symbol;
-  uint32_t bitmap = sq_grammar_offset(tree) + 8;
-  uint64_t word = sq_get_u64(tree->data, bitmap, node.slot / 64);
-  uint64_t bit = UINT64_C(1) << (node.slot % 64);
-  if (!(word & bit)) return symbol;
-  uint32_t words = sq_grammar_words(tree), ranks = bitmap + words * 8;
-  uint32_t rank = sq_get_u32(tree->data, ranks, node.slot / 64) +
-                  (uint32_t)__builtin_popcountll(word & (bit - 1));
-  return sq_get_u16(tree->data, ranks + (uint32_t)sq_array_size(words, 4), rank);
+uint32_t sq_node_grammar_id_with_code(SQNode node, uint16_t code) {
+  const SQSymbolTable *symbols = &node.tree->grammar->symbols;
+  if (symbols->separate) return sq_get_u16(node.tree->data, node.tree->layout.grammar, node.slot);
+  if (symbols->encoding == SQ_SYMBOL_BYTES) return code & UINT8_MAX;
+  if (symbols->encoding == SQ_SYMBOL_GLOBAL) {
+    uint32_t variant = code & ((1u << symbols->shift) - 1);
+    return variant ? symbols->grammar_ids[variant] : symbols->defaults[code >> symbols->shift];
+  }
+  return symbols->grammar_ids[code];
 }
 
 uint32_t sq_node_grammar_id(SQNode node) {
-  return sq_node_grammar_id_with_symbol(node, sq_node_symbol_id(node));
+  if (node.tree->grammar->symbols.encoding == SQ_SYMBOL_BYTES) {
+    return node.tree->data[node.tree->layout.symbol + (uint64_t)node.slot * 2];
+  }
+  return sq_node_grammar_id_with_code(node, sq_node_symbol_code(node));
 }
 
 TSSymbol sq_node_grammar_symbol(SQNode node) {

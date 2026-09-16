@@ -55,9 +55,7 @@ typedef struct {
 
   // Packed IDs and flags are written as each node is accepted rather than when
   // its group closes; see open_group.
-  LaneCursor symbol_lane, field_lane;
-  struct GrammarOverride { uint32_t slot, symbol; } *overrides;
-  uint32_t override_count, override_capacity;
+  LaneCursor symbol_lane, grammar_lane, field_lane;
   uint64_t last_flags, extra_flags, error_flags, missing_flags;
   SQError *error;
 } Builder;
@@ -100,8 +98,6 @@ struct SQPackContext {
   struct {
     PackPosition *positions;
     uint64_t *masks;
-    struct GrammarOverride *overrides;
-    uint32_t override_capacity;
     uint32_t position_capacity, mask_capacity;
   } scratch;
   Frame *stack;
@@ -235,6 +231,7 @@ static bool open_group(Builder *builder) {
   SQTree *tree = builder->tree;
   start_lanes(&builder->symbol_lane, tree->data + tree->layout.symbol, 16,
               builder->slot_base);
+  start_lanes(&builder->grammar_lane, tree->data + tree->layout.grammar, 16, builder->slot_base);
   start_lanes(&builder->field_lane, tree->data + tree->layout.field, 16,
               builder->slot_base);
   return true;
@@ -419,7 +416,6 @@ static bool emit(Builder *builder, const EmitNode *frame) {
   // ts_subtree_error_cost reports a positive constant for a missing subtree
   // regardless of the stored cost, so the recorded flag is the same predicate.
   bool has_error = missing || error_cost > 0;
-  TSSymbol raw_symbol = frame->alias ? frame->alias : grammar;
   uint32_t start_byte = frame->position.bytes;
   Length end = {0};
   if (builder->points) end = length_add(frame->position, size);
@@ -482,27 +478,17 @@ static bool emit(Builder *builder, const EmitNode *frame) {
       builder->extra_flags |= (uint64_t)extra << bit;
       builder->error_flags |= (uint64_t)has_error << bit;
       builder->missing_flags |= (uint64_t)missing << bit;
-      uint16_t display = builder->public_index[encode_symbol(builder, raw_symbol)];
       uint32_t grammar_id = encode_symbol(builder, grammar);
-      if (display != grammar_id) {
-        if (builder->override_count == builder->override_capacity) {
-          uint64_t capacity = builder->override_capacity ? (uint64_t)builder->override_capacity * 2 : 32;
-          if (capacity > UINT32_MAX || capacity > SIZE_MAX / sizeof(*builder->overrides)) {
-            sq_fail(builder->error, SQ_ERROR_OVERFLOW);
-            return false;
-          }
-          void *next = realloc(builder->overrides, (size_t)capacity * sizeof(*builder->overrides));
-          if (!next) {
-            sq_fail(builder->error, SQ_ERROR_ALLOCATION);
-            return false;
-          }
-          builder->overrides = next;
-          builder->override_capacity = (uint32_t)capacity;
-        }
-        builder->overrides[builder->override_count++] =
-            (struct GrammarOverride){distance(builder), grammar_id};
+      const SQGrammar *prepared = builder->tree->grammar;
+      uint32_t code = frame->alias
+          ? sq_symbol_code(prepared, builder->public_index[frame->alias], grammar_id)
+          : prepared->symbols.default_codes[grammar_id];
+      if (code == SQ_NONE) {
+        sq_fail(builder->error, SQ_ERROR_LANGUAGE);
+        return false;
       }
-      put_lane(&builder->symbol_lane, display);
+      put_lane(&builder->symbol_lane, code);
+      if (prepared->symbols.separate) put_lane(&builder->grammar_lane, grammar_id);
       put_lane(&builder->field_lane, frame->field);
       slot->super = super;
       builder->count++;
@@ -669,7 +655,6 @@ void sq_pack_context_trim(SQPackContext *context) {
   free(context->stack);
   free(context->scratch.positions);
   free(context->scratch.masks);
-  free(context->scratch.overrides);
   free(context->presence);
   memset(&context->scratch, 0, sizeof(context->scratch));
   context->stack = NULL;
@@ -700,6 +685,10 @@ static SQGrammar *grammar_new(const TSLanguage *language, const void *grammar_ca
   if (grammar) atomic_init(&grammar->references, 1);
   if (!grammar) goto allocation;
   grammar->language = ts_language_copy(language);
+  if (!sq_symbol_table_init(language, &grammar->symbols, error)) {
+    sq_grammar_delete(grammar);
+    return NULL;
+  }
   uint32_t symbols = language->symbol_count + language->alias_count;
   size_t space = (size_t)symbols + 2;
   grammar->supertypes = calloc(3 * space, sizeof(uint16_t));
@@ -797,6 +786,7 @@ void sq_grammar_delete(SQGrammar *grammar) {
     return;
   sq_supertype_grammar_delete(grammar->supertype_grammar);
   ts_language_delete(grammar->language);
+  sq_symbol_table_delete(&grammar->symbols);
   free(grammar->supertypes);
   free(grammar->production_fields);
   free(grammar->direct_fields);
@@ -869,8 +859,6 @@ static SQTree *pack_tree(SQPackContext *context, SQGrammar *grammar, const TSTre
   builder.production_fields = grammar->production_fields;
   builder.masks = context->scratch.masks;
   builder.mask_capacity = context->scratch.mask_capacity;
-  builder.overrides = context->scratch.overrides;
-  builder.override_capacity = context->scratch.override_capacity;
   builder.supertype_indexes = grammar->supertype_indexes;
   builder.public_index = grammar->public_index;
   stack = context->stack;
@@ -1014,9 +1002,7 @@ static SQTree *pack_tree(SQPackContext *context, SQGrammar *grammar, const TSTre
 
   uint64_t presence_bytes = options.symbol_presence ? sq_presence_size(builder.tree) : 0;
   if (sq_header_get(builder.tree, group_count) <= 32) presence_bytes = 0;
-  uint64_t grammar_bytes = builder.override_count
-      ? sq_grammar_size(builder.tree, builder.override_count) : 0;
-  uint64_t trailing_bytes = presence_bytes + grammar_bytes;
+  uint64_t trailing_bytes = presence_bytes;
   if (trailing_bytes > UINT32_MAX) {
     sq_fail(error, SQ_ERROR_OVERFLOW);
     goto failure;
@@ -1034,34 +1020,12 @@ static SQTree *pack_tree(SQPackContext *context, SQGrammar *grammar, const TSTre
     if (!ok) goto failure;
   }
 
-  if (builder.override_count) {
-    SQTree *packed = builder.tree;
-    uint32_t offset = sq_grammar_offset(packed);
-    uint32_t words = sq_grammar_words(packed);
-    uint32_t bitmap = offset + 8, ranks = bitmap + words * 8;
-    uint32_t values = ranks + (uint32_t)sq_array_size(words, 4);
-    memset(packed->data + offset, 0, (size_t)grammar_bytes);
-    sq_set_u32(packed->data, offset, 0, builder.override_count);
-    for (uint32_t i = 0; i < builder.override_count; i++) {
-      sq_set_bit(packed->data, bitmap, builder.overrides[i].slot, true);
-      sq_set_packed(packed->data, values, i, 16, builder.overrides[i].symbol);
-    }
-    uint32_t rank = 0;
-    for (uint32_t i = 0; i < words; i++) {
-      sq_set_u32(packed->data, ranks, i, rank);
-      rank += (uint32_t)__builtin_popcountll(sq_get_u64(packed->data, bitmap, i));
-    }
-    sq_header_set(packed, format_flags, sq_header_get(packed, format_flags) | SQ_GRAMMAR_OVERRIDES);
-  }
-
   goto cleanup;
 failure:
   sq_tree_delete(builder.tree);
   builder.tree = NULL;
 cleanup:
   result = builder.tree;
-  context->scratch.overrides = builder.overrides;
-  context->scratch.override_capacity = builder.override_capacity;
   context->scratch.positions = builder.positions;
   context->scratch.position_capacity = builder.position_capacity;
   context->scratch.masks = builder.masks;

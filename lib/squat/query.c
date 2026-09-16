@@ -412,6 +412,7 @@ typedef TSRange SQRange;
 struct SQQueryCursor {
   SQQueryExecutionError error;
   const SQQuery *query;
+  QuerySymbolFilter scan_filter;
   QueryTreeCursor cursor;
   QueryStateList states;
   QueryStateList pending_states; // empty between enter events
@@ -3810,6 +3811,15 @@ void sq_query__prepare_symbol_scan(SQQuery *query) {
 }
 
 void sq_query_cursor_exec(SQQueryCursor *self, const SQQuery *query, SQNode node) {
+  self->scan_filter = query ? query->scan_filter : (QuerySymbolFilter){0};
+  if (query && node.tree) {
+    uint8_t shift = node.tree->layout.symbol_shift;
+    uint64_t mask = sq_lane_starts(16) * (uint16_t)(UINT16_MAX << shift);
+    for (uint32_t index = 0; index < self->scan_filter.count; index++) {
+      self->scan_filter.values[index] <<= shift;
+      self->scan_filter.masks[index] = (self->scan_filter.masks[index] << shift) & mask;
+    }
+  }
   if (query) {
     LOG("query steps:\n");
     for (unsigned i = 0; i < query->steps.size; i++) {
@@ -4762,8 +4772,8 @@ static bool sq_query_cursor__scan_seek(SQQueryCursor *self) {
   SQNode current = query_tree_cursor_node(&self->cursor);
   const SQQuery *query = self->query;
   uint32_t target = sq_node_position(current), end = self->scan_root_end;
-  if (query->scan_filter.count) {
-    target = query_execution_find_symbols(self, current.tree, &query->scan_filter, target, end);
+  if (self->scan_filter.count) {
+    target = query_execution_find_symbols(self, current.tree, &self->scan_filter, target, end);
   } else {
     while (target < end) {
       SQNode node = sq_position_node(current.tree, target);

@@ -3,7 +3,7 @@ CC ?= cc
 CFLAGS ?= -O2 -g
 CPPFLAGS += -I$(ROOT)/lib/include -I$(ROOT)/lib/src -Iinclude
 WARNINGS := -std=c11 -Wall -Wextra -Werror
-SOURCES := supertypes.c slab.c pack.c node.c cursor.c iterator.c unpack.c index.c scan.c query.c
+SOURCES := symbols.c supertypes.c slab.c pack.c node.c cursor.c iterator.c unpack.c index.c scan.c query.c
 BUILD ?= $(ROOT)/build/squat
 
 .PHONY: all clean test

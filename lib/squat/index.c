@@ -83,7 +83,7 @@ bool sq_build_presence_cached(SQTree *tree, uint8_t **scratch_pointer, size_t *c
     uint32_t word_index = slot / lanes, lane = slot % lanes;
     uint64_t word = sq_get_u64(symbol_column, 0, word_index);
     for (;;) {
-      uint32_t symbol_index = (word >> (lane * bits)) & value_mask;
+      uint32_t symbol_index = ((word >> (lane * bits)) & value_mask) >> tree->layout.symbol_shift;
       uint8_t *entry = entries + (size_t)symbol_index * entry_bytes;
       uint32_t count = counts[symbol_index];
       if (count > entry_slots) {
@@ -204,10 +204,23 @@ static bool validate_nodes(SQTree *tree, SQError *error) {
         goto invalid;
       }
 
-      uint32_t symbol = sq_node_symbol_id(node);
+      uint16_t code = sq_node_symbol_code(node);
+      uint32_t symbol = code >> tree->layout.symbol_shift;
+      const SQSymbolTable *table = &tree->grammar->symbols;
       if (symbol >= symbols || field > tree->language->field_count ||
           (symbol < symbols - 2 && tree->language->public_symbol_map[symbol] != symbol)) {
         goto invalid;
+      }
+      if (table->separate || table->encoding == SQ_SYMBOL_BYTES) {
+        if (sq_node_grammar_id(node) >= symbols) goto invalid;
+      } else {
+        uint32_t variant = code & ((1u << table->shift) - 1);
+        if (table->encoding == SQ_SYMBOL_GLOBAL) {
+          if (!table->counts[symbol] || variant >= table->length ||
+              (!variant && table->counts[symbol] != 1)) goto invalid;
+        } else if (variant >= table->counts[symbol]) {
+          goto invalid;
+        }
       }
 
       uint32_t super = sq_node_supertype(node);
@@ -365,37 +378,6 @@ invalid:
   return false;
 }
 
-// Called only after the complete sparse section has been bounds-checked.
-static bool validate_grammar(const SQTree *tree) {
-  uint32_t offset = sq_grammar_offset(tree), words = sq_grammar_words(tree);
-  uint32_t count = sq_get_u32(tree->data, offset, 0);
-  uint32_t bitmap = offset + 8, ranks = bitmap + words * 8;
-  uint32_t values = ranks + (uint32_t)sq_array_size(words, 4), rank = 0;
-  if (!count || sq_get_u32(tree->data, offset, 1)) return false;
-  for (uint32_t i = 0; i < words; i++) {
-    if (sq_get_u32(tree->data, ranks, i) != rank) return false;
-    uint64_t word = sq_get_u64(tree->data, bitmap, i);
-    while (word) {
-      uint32_t slot = i * 64 + (uint32_t)__builtin_ctzll(word);
-      SQNode node = sq_tree_node_at_slot(tree, slot);
-      if (!node.tree || rank >= count) return false;
-      uint32_t grammar = sq_get_packed(tree->data, values, rank++, 16);
-      if (grammar >= sq_symbols(tree) || grammar == sq_node_symbol_id(node)) return false;
-      word &= word - 1;
-    }
-  }
-  if (rank != count) return false;
-  if (words % 2 && sq_get_u32(tree->data, ranks, words)) return false;
-  // Reject unused lanes and high padding bits in every packed value word.
-  uint32_t lanes = tree->layout.symbol_lanes;
-  for (uint32_t i = 0; i < (count + (uint64_t)lanes - 1) / lanes; i++) {
-    uint32_t remaining = count - i * lanes;
-    unsigned bits = (remaining < lanes ? remaining : lanes) * 16;
-    if (bits < 64 && sq_get_u64(tree->data, values, i) >> bits) return false;
-  }
-  return true;
-}
-
 static SQTree *load_bytes(SQGrammar *grammar, const void *bytes, size_t length,
                           bool borrowed, bool check_auxiliary_contents,
                           SQError *error) {
@@ -415,7 +397,7 @@ static SQTree *load_bytes(SQGrammar *grammar, const void *bytes, size_t length,
   header = sq_read_header(bytes);
   if (!header.group_count || header.group_count > header.group_capacity ||
       (header.format_flags &
-       ~(SQ_NO_POINTS | SQ_PRESENCE | SQ_WIDE_SUPERTYPES | SQ_GRAMMAR_OVERRIDES)) != SQ_VERSION) {
+       ~(SQ_NO_POINTS | SQ_PRESENCE | SQ_WIDE_SUPERTYPES | SQ_SEPARATE_GRAMMAR)) != SQ_VERSION) {
     goto invalid;
   }
   SQLayout layout;
@@ -457,13 +439,9 @@ static SQTree *load_bytes(SQGrammar *grammar, const void *bytes, size_t length,
     goto invalid;
   }
 
-  if (header.format_flags & SQ_GRAMMAR_OVERRIDES) {
-    if (expected + 8 > length) {
-      sq_tree_delete(tree);
-      goto invalid;
-    }
-    uint32_t count = sq_get_u32(tree->data, (uint32_t)expected, 0);
-    expected += sq_grammar_size(tree, count);
+  if (!!(header.format_flags & SQ_SEPARATE_GRAMMAR) != grammar->symbols.separate) {
+    sq_tree_delete(tree);
+    goto invalid;
   }
 
   if (expected != length) {
@@ -471,10 +449,6 @@ static SQTree *load_bytes(SQGrammar *grammar, const void *bytes, size_t length,
     goto invalid;
   }
 
-  if ((header.format_flags & SQ_GRAMMAR_OVERRIDES) && !validate_grammar(tree)) {
-    sq_tree_delete(tree);
-    goto invalid;
-  }
   if (!validate_nodes(tree, error)) {
     sq_tree_delete(tree);
     return NULL;

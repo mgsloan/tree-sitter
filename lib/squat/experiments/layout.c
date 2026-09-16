@@ -35,7 +35,9 @@ int main(int argc, char **argv) {
 
   const TSLanguage *language = language_function();
   SQError grammar_error;
+  double grammar_start = now();
   SQGrammar *grammar = sq_grammar_new(language, &grammar_error);
+  double grammar_ms = (now() - grammar_start) * 1000;
   if (!grammar) return 1;
   TSParser *parser = ts_parser_new();
   if (!ts_parser_set_language(parser, language)) {
@@ -46,9 +48,9 @@ int main(int argc, char **argv) {
   if (!override_counts) return 1;
 
   puts("file_index,group_size,alignment,source_bytes,nodes,groups,slots,slab_bytes,presence_bytes,"
-       "dictionary_bytes,grammar_overrides,sparse_grammar_bytes,grammar_bytes,var_"
+       "dictionary_bytes,grammar_differences,separate_grammar_bytes,grammar_bytes,var_"
        "super_bytes,super_bytes,"
-       "interleaved_symbol_field_bytes,separate_symbol_field_bytes,median_pack_ms,grammar_override_kinds");
+       "interleaved_symbol_field_bytes,separate_symbol_field_bytes,median_pack_ms,grammar_difference_kinds,symbol_variant_bits,symbol_dictionary_entries,symbol_pairs,max_symbol_variants,grammar_prepare_ms,symbol_encoding,symbol_table_bytes");
   for (int file_index = 3; file_index < argc; file_index++) {
     FILE *file = fopen(argv[file_index], "rb");
     if (!file || fseek(file, 0, SEEK_END)) {
@@ -111,8 +113,8 @@ int main(int argc, char **argv) {
                                   ((tree->supertype_count + 63) / 64) * 8;
     uint64_t grammar_bytes = sq_column_size(slots, tree->layout.symbol_bits);
 
-    // Actual sparse section bytes, compared with the former dense column.
-    uint64_t sparse_bytes = grammar_overrides ? sq_grammar_size(tree, grammar_overrides) : 0;
+    // The grammar column exists only when combined codes do not fit.
+    uint64_t separate_grammar_bytes = grammar->symbols.separate ? grammar_bytes : 0;
     uint8_t super_bits = 0;
     if (tree->supertype_count > 8) {
       if (header.supertype_dictionary_count > 1) {
@@ -127,14 +129,27 @@ int main(int argc, char **argv) {
         sq_column_size(slots, tree->layout.symbol_bits + tree->layout.field_bits);
     uint64_t separate = sq_column_size(slots, tree->layout.symbol_bits) +
                         sq_column_size(slots, tree->layout.field_bits);
-    printf("%d,%u,%u,%ld,%u,%u,%u,%u,%u,%u,%u,%llu,%llu,%llu,%llu,%llu,%llu,%.6f,%u\n", file_index - 3,
+    uint32_t pairs = 0, maximum = 0;
+    if (grammar->symbols.counts) {
+      for (uint32_t symbol = 0; symbol < sq_symbols(tree); symbol++) {
+        uint32_t count = grammar->symbols.counts[symbol];
+        pairs += count;
+        if (count > maximum) maximum = count;
+      }
+    }
+    printf("%d,%u,%u,%ld,%u,%u,%u,%u,%u,%u,%u,%llu,%llu,%llu,%llu,%llu,%llu,%.6f,%u,%u,%u,%u,%u,%.6f,%u,%llu\n", file_index - 3,
            SQ_GROUP_SIZE, SQ_COLUMN_ALIGNMENT, length,
            sq_node_descendant_count(sq_tree_root_node(tree)), header.group_count, slots,
            tree->size, presence_bytes, dictionary_bytes, grammar_overrides,
-           (unsigned long long)sparse_bytes,
+           (unsigned long long)separate_grammar_bytes,
            (unsigned long long)grammar_bytes, (unsigned long long)super_bytes,
            (unsigned long long)sq_column_size(slots, 8), (unsigned long long)interleaved,
-           (unsigned long long)separate, timings[3], override_kinds);
+           (unsigned long long)separate, timings[3], override_kinds, grammar->symbols.shift,
+           grammar->symbols.length, pairs, maximum, grammar_ms,
+           grammar->symbols.separate ? 3 : grammar->symbols.encoding,
+           (unsigned long long)(2 * ((uint64_t)grammar->symbols.length + sq_symbols(tree) *
+               (1u + !!grammar->symbols.counts + !!grammar->symbols.defaults +
+                !!grammar->symbols.grammar_codes))));
     sq_tree_delete(tree);
     ts_tree_delete(parsed);
     free(source);

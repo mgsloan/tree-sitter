@@ -38,7 +38,7 @@ _Static_assert(SQ_COLUMN_ALIGNMENT == 8 || SQ_COLUMN_ALIGNMENT == 64,
 #define SQ_NO_POINTS 0x100u
 #define SQ_PRESENCE 0x200u
 #define SQ_WIDE_SUPERTYPES 0x400u
-#define SQ_GRAMMAR_OVERRIDES 0x800u
+#define SQ_SEPARATE_GRAMMAR 0x800u
 #define SQ_NONE UINT32_MAX
 
 typedef struct {
@@ -61,6 +61,7 @@ typedef struct {
   uint32_t span_base;
   uint32_t span_delta;
   uint32_t symbol;
+  uint32_t grammar;
   uint32_t field;
   uint32_t supertype;
   uint32_t last;
@@ -74,7 +75,7 @@ typedef struct {
   uint32_t end;
   uint8_t symbol_bits, field_bits, supertype_bits;
   // Grammar-wide decoder constants; runtime-only, never serialized.
-  uint8_t symbol_lanes, field_lanes;
+  uint8_t symbol_lanes, field_lanes, symbol_shift;
   uint32_t symbol_mask, field_mask;
 } SQLayout;
 
@@ -97,12 +98,33 @@ typedef struct {
   uint32_t offset, length;
 } DirectFieldSlice;
 
+// Codes place the public display ID immediately above a grammar-wide variant.
+// Dictionaries are shared by trees. Zero selects the unique display default
+// in global mode; local mode indexes the dictionary by the whole code.
+typedef enum { SQ_SYMBOL_LOCAL, SQ_SYMBOL_GLOBAL, SQ_SYMBOL_BYTES } SQSymbolEncoding;
+
+typedef struct {
+  uint16_t *grammar_ids; // local code or global selector -> original ID
+  uint16_t *default_codes; // original ID -> unaliased code
+  uint16_t *counts; // variants per public display ID
+  uint16_t *defaults, *grammar_codes; // global: unique display default, original ID -> selector
+  SQSymbolEncoding encoding;
+  uint32_t length;
+  uint8_t shift;
+  bool separate;
+} SQSymbolTable;
+
+bool sq_symbol_table_init(const TSLanguage *, SQSymbolTable *, SQError *);
+void sq_symbol_table_delete(SQSymbolTable *);
+uint32_t sq_symbol_code(const SQGrammar *, uint32_t display, uint32_t original);
+
 struct SQGrammar {
   atomic_size_t references;
   const TSLanguage *language;
   TSSymbol *supertypes;
   uint32_t supertype_count;
   uint16_t *supertype_indexes, *public_index;
+  SQSymbolTable symbols;
   DirectFieldSlice *production_fields;
   TSFieldId *direct_fields;
   SQSupertypeGrammar *supertype_grammar;
@@ -328,12 +350,18 @@ static inline uint32_t sq_node_supertype(SQNode node) {
   return sq_get_u16(node.tree->data, node.tree->layout.supertype, node.slot);
 }
 
-static inline uint32_t sq_node_symbol_id(SQNode node) {
+static inline uint16_t sq_node_symbol_code(SQNode node) {
   return sq_get_u16(node.tree->data, node.tree->layout.symbol, node.slot);
 }
 
+static inline uint32_t sq_node_symbol_id(SQNode node) {
+  return node.tree->layout.symbol_shift == 8
+      ? node.tree->data[node.tree->layout.symbol + (uint64_t)node.slot * 2 + 1]
+      : sq_node_symbol_code(node) >> node.tree->layout.symbol_shift;
+}
+
 uint32_t sq_node_grammar_id(SQNode);
-uint32_t sq_node_grammar_id_with_symbol(SQNode, uint32_t symbol);
+uint32_t sq_node_grammar_id_with_code(SQNode, uint16_t code);
 
 static inline uint32_t sq_node_field_value(SQNode node) {
   return sq_get_u16(node.tree->data, node.tree->layout.field, node.slot);
@@ -385,23 +413,6 @@ bool sq_build_presence_cached(SQTree *, uint8_t **, size_t *, SQError *);
 uint64_t sq_presence_size(const SQTree *);
 static inline uint32_t sq_presence_offset(const SQTree *tree) {
   return sq_header_get(tree, format_flags) & SQ_PRESENCE ? tree->layout.end : 0;
-}
-
-// Optional suffix after presence data. Header: count, reserved; then a live-slot
-// bitmap, u32 ranks per 64 slots, and packed grammar IDs.
-static inline uint32_t sq_grammar_offset(const SQTree *tree) {
-  return tree->layout.end +
-         (sq_presence_offset(tree) ? (uint32_t)sq_presence_size(tree) : 0);
-}
-
-static inline uint32_t sq_grammar_words(const SQTree *tree) {
-  return (uint32_t)(((uint64_t)sq_tree_slot_count(tree) + 63) / 64);
-}
-
-static inline uint64_t sq_grammar_size(const SQTree *tree, uint32_t count) {
-  uint32_t words = sq_grammar_words(tree);
-  return 8 + (uint64_t)words * 8 + sq_array_size(words, 4) +
-         sq_column_size(count, tree->layout.symbol_bits);
 }
 
 static inline void sq_fail(SQError *error, SQError value) {

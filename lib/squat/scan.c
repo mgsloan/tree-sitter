@@ -25,19 +25,22 @@ uint64_t sq_equal_lanes(uint64_t word, uint32_t value, uint8_t bits) {
   return ~(((difference & low_bits) + low_bits) | difference | low_bits) & high_bits;
 }
 
-static uint64_t equal_u16(const uint8_t *column, uint16_t value) {
+static uint64_t equal_u16(const uint8_t *column, uint16_t value, uint16_t mask) {
   uint64_t matches = 0;
 #if defined(__x86_64__)
   __m128i target = _mm_set1_epi16((short)value);
+  __m128i selected = _mm_set1_epi16((short)mask);
   for (unsigned lane = 0; lane < SQ_GROUP_SIZE; lane += 16) {
     __m128i low = _mm_loadu_si128((const __m128i *)(column + lane * 2));
     __m128i high = _mm_loadu_si128((const __m128i *)(column + lane * 2 + 16));
+    low = _mm_and_si128(low, selected);
+    high = _mm_and_si128(high, selected);
     __m128i equal = _mm_packs_epi16(_mm_cmpeq_epi16(low, target), _mm_cmpeq_epi16(high, target));
     matches |= (uint64_t)(unsigned)_mm_movemask_epi8(equal) << lane;
   }
 #else
   for (unsigned lane = 0; lane < SQ_GROUP_SIZE; lane++) {
-    matches |= (uint64_t)(sq_get_u16(column, 0, lane) == value) << lane;
+    matches |= (uint64_t)((sq_get_u16(column, 0, lane) & mask) == value) << lane;
   }
 #endif
   return matches;
@@ -59,7 +62,7 @@ static uint64_t group_equal(const SQTree *tree, uint32_t group, uint32_t offset,
   }
   if (bits == 16) {
     uint64_t matches = equal_u16(tree->data + offset + (size_t)group * SQ_GROUP_SIZE * 2,
-                                  (uint16_t)value);
+                                  (uint16_t)value, UINT16_MAX);
     return matches & (UINT64_MAX >> (64 - SQ_GROUP_SIZE + sq_group_waste(tree, group)));
   }
   uint32_t lanes = 64 / bits;
@@ -115,23 +118,24 @@ uint64_t sq_tree_group_supertype_equal(const SQTree *tree, uint32_t group, uint3
 }
 
 uint64_t sq_tree_group_symbol_equal(const SQTree *tree, uint32_t group, uint32_t value) {
-  return tree ? group_equal(tree, group, tree->layout.symbol, 16, value) : 0;
+  if (!tree || group >= sq_tree_group_count(tree) || value >= sq_symbols(tree)) return 0;
+  uint8_t shift = tree->layout.symbol_shift;
+  uint16_t mask = (uint16_t)(UINT16_MAX << shift);
+  uint64_t matches = equal_u16(tree->data + tree->layout.symbol + (size_t)group * SQ_GROUP_SIZE * 2,
+                              (uint16_t)(value << shift), mask);
+  return matches & (UINT64_MAX >> (64 - SQ_GROUP_SIZE + sq_group_waste(tree, group)));
 }
 
 uint64_t sq_tree_group_grammar_symbol_equal(const SQTree *tree, uint32_t group, uint32_t value) {
-  uint64_t matches = sq_tree_group_symbol_equal(tree, group, value);
-  if (!tree || group >= sq_tree_group_count(tree) ||
-      !(sq_header_get(tree, format_flags) & SQ_GRAMMAR_OVERRIDES)) return matches;
-  uint32_t first = group * SQ_GROUP_SIZE;
-  uint64_t overrides = sq_get_u64(tree->data, sq_grammar_offset(tree) + 8, first / 64)
-                       >> (first % 64);
-  overrides &= UINT64_MAX >> (64 - SQ_GROUP_SIZE);
-  while (overrides) {
-    unsigned lane = (unsigned)__builtin_ctzll(overrides);
-    uint64_t bit = UINT64_C(1) << lane;
-    matches &= ~bit;
-    if (sq_node_grammar_id((SQNode){tree, first + lane}) == value) matches |= bit;
-    overrides &= overrides - 1;
+  if (!tree || group >= sq_tree_group_count(tree) || value >= sq_symbols(tree)) return 0;
+  if (tree->grammar->symbols.separate) {
+    return group_equal(tree, group, tree->layout.grammar, 16, value);
+  }
+  uint64_t matches = 0;
+  uint32_t used = SQ_GROUP_SIZE - sq_group_waste(tree, group);
+  for (uint32_t lane = 0; lane < used; lane++) {
+    SQNode node = {tree, group * SQ_GROUP_SIZE + lane};
+    matches |= (uint64_t)(sq_node_grammar_id(node) == value) << lane;
   }
   return matches;
 }

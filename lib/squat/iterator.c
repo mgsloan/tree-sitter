@@ -217,7 +217,8 @@ void sq_node_iterator_attributes(SQNodeIterator *iterator, SQCursorAttributes *o
   UnpackCache *cache = prepare_cache(iterator);
   fill_attributes(iterator, cache);
   uint32_t lane = node.slot & (SQ_ITERATOR_UNPACK_SLOTS - 1u);
-  uint32_t symbol = sq_node_symbol_id(node);
+  uint16_t code = sq_node_symbol_code(node);
+  uint32_t symbol = code >> node.tree->layout.symbol_shift;
   TSFieldId field = (TSFieldId)sq_node_field_value(node);
   (void)lane;
 #if SQ_ITERATOR_CACHE_ALL == 2
@@ -229,12 +230,12 @@ void sq_node_iterator_attributes(SQNodeIterator *iterator, SQCursorAttributes *o
   out->is_missing = sq_node_missing_flag(node);
   out->has_error = sq_node_error_flag(node);
 #else
-  sq_attributes_with_ids(node, symbol, sq_node_grammar_id_with_symbol(node, symbol), field,
+  sq_attributes_with_ids(node, symbol, sq_node_grammar_id_with_code(node, code), field,
                          out);
   return;
 #endif
 #if SQ_ITERATOR_CACHE_ALL != 0
-  sq_attributes_finish(node, symbol, sq_node_grammar_id_with_symbol(node, symbol), field,
+  sq_attributes_finish(node, symbol, sq_node_grammar_id_with_code(node, code), field,
                        out);
 #endif
 }

@@ -90,6 +90,7 @@ bool sq_layout(const SQGrammar *grammar, uint32_t capacity, bool wide_supertypes
   (void)wide_supertypes;
   if ((uint64_t)language->symbol_count + language->alias_count + 1 > UINT16_MAX ||
       language->field_count > UINT16_MAX) return false;
+  layout->symbol_shift = grammar->symbols.shift;
   layout->supertype_bits = 16;
   layout->symbol_bits = sq_symbol_width(language->symbol_count + language->alias_count + 1);
   layout->field_bits = sq_field_width(language->field_count);
@@ -108,6 +109,7 @@ bool sq_layout(const SQGrammar *grammar, uint32_t capacity, bool wide_supertypes
   layout->span_base = column_offset(&next, sq_array_size(capacity, 4));
   layout->span_delta = column_offset(&next, sq_array_size(slots, 1));
   layout->symbol = column_offset(&next, sq_column_size(slots, layout->symbol_bits));
+  layout->grammar = column_offset(&next, grammar->symbols.separate ? sq_column_size(slots, 16) : 0);
   layout->field = column_offset(&next, sq_column_size(slots, layout->field_bits));
   layout->supertype = column_offset(&next, sq_column_size(slots, layout->supertype_bits));
   layout->last = column_offset(&next, sq_column_size(slots, 1));
@@ -213,6 +215,7 @@ SQTree *sq_allocate(SQGrammar *grammar, uint32_t capacity, bool points, SQError 
   if (tree) {
     sq_write_header(tree->data, (SQHeader){
         .format_flags = SQ_VERSION | (!points ? SQ_NO_POINTS : 0) |
+                        (grammar->symbols.separate ? SQ_SEPARATE_GRAMMAR : 0) |
                         (tree->layout.supertype_bits == 16 ? SQ_WIDE_SUPERTYPES : 0),
         .group_capacity = capacity,
         .supertype_dictionary_count = tree->supertype_grammar ? tree->supertype_grammar->count : 0,
@@ -293,6 +296,7 @@ static void copy_columns(const SQTree *tree, uint8_t *data, const SQLayout *next
   COPY(span_base, sq_array_size(groups, 4));
   COPY(span_delta, sq_array_size(slots, 1));
   COPY(symbol, sq_column_size(slots, next->symbol_bits));
+  COPY(grammar, tree->grammar->symbols.separate ? sq_column_size(slots, 16) : 0);
   COPY(field, sq_column_size(slots, next->field_bits));
   COPY(supertype, sq_column_size(slots, next->supertype_bits));
   COPY(last, sq_column_size(slots, 1));

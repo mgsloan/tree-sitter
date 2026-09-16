@@ -557,7 +557,7 @@ static uint32_t query_execution_find_root(SQQueryCursor *self, const SQTree *tre
     }
 
     if (query->scan_filter.count) {
-      start = query_execution_find_symbols(self, tree, &query->scan_filter, start, end);
+      start = query_execution_find_symbols(self, tree, &self->scan_filter, start, end);
       if (start == end) {
         break;
       }

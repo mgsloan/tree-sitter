@@ -491,60 +491,29 @@ static void check_grammar_validation(const SQTree *tree) {
   uint8_t *bytes = sq_allocate_data(tree->size);
   CHECK(bytes);
   memcpy(bytes, tree->data, tree->size);
-  for (uint32_t symbol = 0; symbol < sq_symbols(tree) - 2; symbol++) {
-    if (tree->language->public_symbol_map[symbol] != symbol) {
-      sq_set_u16(bytes, tree->layout.symbol, sq_tree_root_node(tree).slot, symbol);
+  SQHeader header = sq_read_header(bytes);
+  header.format_flags ^= SQ_SEPARATE_GRAMMAR;
+  sq_write_header(bytes, header);
+  reject_index_mutation(tree, bytes, false);
+  uint32_t root = sq_tree_root_node(tree).slot;
+  if (tree->grammar->symbols.separate) {
+    if (sq_symbols(tree) <= UINT16_MAX) {
+      sq_set_u16(bytes, tree->layout.grammar, root, sq_symbols(tree));
       reject_index_mutation(tree, bytes, false);
-      break;
     }
-  }
-  if (!(sq_header_get(tree, format_flags) & SQ_GRAMMAR_OVERRIDES)) {
-    free(bytes);
-    return;
-  }
-  uint32_t offset = sq_grammar_offset(tree), words = sq_grammar_words(tree);
-  uint32_t bitmap = offset + 8, ranks = bitmap + words * 8;
-  uint32_t values = ranks + (uint32_t)sq_array_size(words, 4);
-  uint32_t count = sq_get_u32(bytes, offset, 0);
-  sq_set_u32(bytes, offset, 0, UINT32_MAX);
-  reject_index_mutation(tree, bytes, false);
-  sq_set_u32(bytes, offset, 1, 1);
-  reject_index_mutation(tree, bytes, false);
-  sq_set_u32(bytes, ranks, 0, 1);
-  reject_index_mutation(tree, bytes, false);
-  sq_set_u32(bytes, ranks, words - 1, count + 1);
-  reject_index_mutation(tree, bytes, false);
-  if (sq_symbols(tree) <= tree->layout.symbol_mask) {
-    sq_set_packed(bytes, values, 0, tree->layout.symbol_bits, sq_symbols(tree));
-    reject_index_mutation(tree, bytes, false);
-  }
-  for (uint32_t i = 0; i < words; i++) {
-    uint64_t word = sq_get_u64(bytes, bitmap, i);
-    if (!word) continue;
-    uint32_t slot = i * 64 + (uint32_t)__builtin_ctzll(word);
-    sq_set_packed(bytes, values, 0, tree->layout.symbol_bits,
-                  sq_node_symbol_id((SQNode){tree, slot}));
-    reject_index_mutation(tree, bytes, false);
-    sq_set_bit(bytes, bitmap, slot, false);
-    reject_index_mutation(tree, bytes, false);
-    break;
-  }
-  // Includes wasted physical slots and bitmap tail bits.
-  for (uint32_t slot = 0; slot < words * 64; slot++) {
-    if (sq_tree_node_at_slot(tree, slot).tree) continue;
-    sq_set_bit(bytes, bitmap, slot, true);
-    reject_index_mutation(tree, bytes, false);
-    break;
-  }
-  if (words % 2) {
-    sq_set_u32(bytes, ranks, words, 1);
-    reject_index_mutation(tree, bytes, false);
-  }
-  unsigned tail_bits = (count % tree->layout.symbol_lanes) * tree->layout.symbol_bits;
-  if (tail_bits) {
-    uint32_t last = count / tree->layout.symbol_lanes;
-    sq_set_u64(bytes, values, last,
-                sq_get_u64(bytes, values, last) | (UINT64_C(1) << tail_bits));
+  } else {
+    uint32_t symbols = sq_symbols(tree), shift = tree->layout.symbol_shift;
+    uint32_t invalid = symbols;
+    if (((uint64_t)invalid << shift) > UINT16_MAX) {
+      for (invalid = 0; invalid < symbols - 2; invalid++) {
+        if (tree->language->public_symbol_map[invalid] != invalid) break;
+      }
+      if (invalid == symbols - 2) {
+        free(bytes);
+        return;
+      }
+    }
+    sq_set_u16(bytes, tree->layout.symbol, root, invalid << shift);
     reject_index_mutation(tree, bytes, false);
   }
   free(bytes);
@@ -759,8 +728,7 @@ static void exercise(const TSLanguage *language, const char *source, uint32_t le
   }
 
   if (sq_tree_group_count(packed) > 32 && length <= 4096) {
-    // Large enough for an index, but explicitly omit it. Optional grammar
-    // overrides must then immediately follow the ordinary columns.
+    // Large enough for an index, but explicitly omit it.
     options.symbol_presence = false;
     SQTree *without_index = sq_tree_pack(grammar, tree, options, &error);
     CHECK(without_index && !(sq_header_get(without_index, format_flags) & SQ_PRESENCE));
