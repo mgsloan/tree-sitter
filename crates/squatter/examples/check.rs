@@ -50,27 +50,25 @@ fn check_shared_navigation<'tree, N: NodeLike<'tree>>(
             .collect();
         assert!(root.descendants_matching_kinds(&kinds).collect::<Vec<_>>() == filtered);
     }
-    for cached in [false, true] {
-        let mut iterator = root.node_iterator(cached)?;
+    let mut iterator = root.node_iterator()?;
+    assert!(iterator.node().is_none());
+    assert!(iterator.kind_id().is_none());
+    assert!(iterator.byte_range().is_none());
+    assert!(iterator.attributes().is_none());
+    for &node in &expected {
+        assert!(iterator.next() == Some(node));
+        assert!(iterator.node() == Some(node));
+        assert_eq!(iterator.kind_id(), Some(node.kind_id()));
+        assert_eq!(iterator.byte_range(), Some(node.byte_range()));
+        assert_eq!(iterator.attributes(), Some(node.attributes()));
+        assert_eq!(iterator.kind_id(), Some(node.kind_id()));
+    }
+    for _ in 0..2 {
+        assert!(iterator.next().is_none());
         assert!(iterator.node().is_none());
         assert!(iterator.kind_id().is_none());
         assert!(iterator.byte_range().is_none());
         assert!(iterator.attributes().is_none());
-        for &node in &expected {
-            assert!(iterator.next() == Some(node));
-            assert!(iterator.node() == Some(node));
-            assert_eq!(iterator.kind_id(), Some(node.kind_id()));
-            assert_eq!(iterator.byte_range(), Some(node.byte_range()));
-            assert_eq!(iterator.attributes(), Some(node.attributes()));
-            assert_eq!(iterator.kind_id(), Some(node.kind_id()));
-        }
-        for _ in 0..2 {
-            assert!(iterator.next().is_none());
-            assert!(iterator.node().is_none());
-            assert!(iterator.kind_id().is_none());
-            assert!(iterator.byte_range().is_none());
-            assert!(iterator.attributes().is_none());
-        }
     }
     for &node in &expected {
         let attributes = node.attributes();
@@ -171,25 +169,23 @@ fn check_shared_navigation<'tree, N: NodeLike<'tree>>(
 fn check_iterators(tree: &Tree) -> Result<(), Box<dyn Error>> {
     for root in tree.root_node().preorder().take(32) {
         let expected: Vec<_> = root.preorder().collect();
-        for cached in [false, true] {
-            let mut iterator = root.node_iterator(cached)?;
-            assert!(iterator.attributes().is_none());
-            for &node in &expected {
-                assert_eq!(iterator.next(), Some(node));
-                assert_eq!(iterator.node(), Some(node));
-                assert_eq!(iterator.attributes().unwrap(), node.attributes());
-                assert_eq!(
-                    iterator.field_id(),
-                    (node.field_id() != 0).then_some(node.field_id())
-                );
-            }
-            assert_eq!(iterator.next(), None);
-            assert_eq!(iterator.next(), None);
-            assert!(iterator.attributes().is_none());
-            assert!(iterator.field_id().is_none());
-            drop(iterator);
-            assert_eq!(expected[0], root);
+        let mut iterator = root.node_iterator()?;
+        assert!(iterator.attributes().is_none());
+        for &node in &expected {
+            assert_eq!(iterator.next(), Some(node));
+            assert_eq!(iterator.node(), Some(node));
+            assert_eq!(iterator.attributes().unwrap(), node.attributes());
+            assert_eq!(
+                iterator.field_id(),
+                (node.field_id() != 0).then_some(node.field_id())
+            );
         }
+        assert_eq!(iterator.next(), None);
+        assert_eq!(iterator.next(), None);
+        assert!(iterator.attributes().is_none());
+        assert!(iterator.field_id().is_none());
+        drop(iterator);
+        assert_eq!(expected[0], root);
     }
     Ok(())
 }
@@ -434,7 +430,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
     check_shared_navigation(mainline.root_node(), language.field_count() as u16)?;
     check_shared_navigation(packed.root_node(), language.field_count() as u16)?;
-    // Cross the presence-index threshold and several unpack windows, retaining
+    // Cross the presence-index threshold and several physical groups, retaining
     // a rare boolean beside common number and punctuation symbols.
     let large_source = format!("[true,{}null]", "123,\n".repeat(600));
     let large_native = parser.parse(&large_source, None).ok_or("parse failed")?;

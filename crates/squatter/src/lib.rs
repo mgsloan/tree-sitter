@@ -602,10 +602,10 @@ impl<'tree> Node<'tree> {
         }
     }
 
-    /// Native preorder iterator with an optional lazy absolute-coordinate cache.
+    /// Native preorder iterator.
     /// Returned nodes borrow the tree, independently of the iterator.
-    pub fn node_iterator(self, unpack_cache: bool) -> Result<NodeIterator<'tree>, Error> {
-        let raw = unsafe { ffi::sq_node_iterator_new(self.raw, unpack_cache) };
+    pub fn node_iterator(self) -> Result<NodeIterator<'tree>, Error> {
+        let raw = unsafe { ffi::sq_node_iterator_new(self.raw) };
         NonNull::new(raw)
             .map(|raw| NodeIterator {
                 raw,
@@ -934,7 +934,7 @@ impl<'tree> NodeIterator<'tree> {
     pub fn node(&self) -> Option<Node<'tree>> {
         self.current
     }
-    /// Read the last yielded node's constant-time attributes, using the optional cache.
+    /// Read the last yielded node's constant-time attributes.
     pub fn attributes(&mut self) -> Option<traits::Attributes<'tree>> {
         self.current?;
         let mut raw = std::mem::MaybeUninit::uninit();
@@ -1167,7 +1167,7 @@ mod ffi {
         ) -> RawNode;
         pub fn sq_node_child_with_descendant(node: RawNode, descendant: RawNode) -> RawNode;
         pub fn sq_node_has_supertype(node: RawNode, symbol: u16) -> bool;
-        pub fn sq_node_iterator_new(node: RawNode, cache: bool) -> *mut c_void;
+        pub fn sq_node_iterator_new(node: RawNode) -> *mut c_void;
         pub fn sq_node_iterator_delete(iterator: *mut c_void);
         pub fn sq_node_iterator_next(iterator: *mut c_void) -> RawNode;
         pub fn sq_node_iterator_attributes(iterator: *mut c_void, out: *mut RawCursorAttributes);

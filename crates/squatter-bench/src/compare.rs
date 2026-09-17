@@ -114,8 +114,8 @@ pub fn digest<'tree, N: NodeLike<'tree>>(root: N, iterations: usize) -> Result<D
     Ok(result)
 }
 
-fn digest_iterator_once(root: tree_sitter_squatter::Node<'_>, cached: bool) -> Result<Digest> {
-    let mut iterator = root.node_iterator(cached)?;
+fn digest_iterator_once(root: tree_sitter_squatter::Node<'_>) -> Result<Digest> {
+    let mut iterator = root.node_iterator()?;
     let mut nodes = 0;
     let mut value = 42;
     while iterator.next().is_some() {
@@ -125,14 +125,10 @@ fn digest_iterator_once(root: tree_sitter_squatter::Node<'_>, cached: bool) -> R
     Ok(Digest { nodes, value })
 }
 
-pub fn digest_iterator(
-    root: tree_sitter_squatter::Node<'_>,
-    cached: bool,
-    iterations: usize,
-) -> Result<Digest> {
+pub fn digest_iterator(root: tree_sitter_squatter::Node<'_>, iterations: usize) -> Result<Digest> {
     let mut result = Digest { nodes: 0, value: 0 };
     for _ in 0..iterations {
-        result = std::hint::black_box(digest_iterator_once(root, cached)?);
+        result = std::hint::black_box(digest_iterator_once(root)?);
     }
     result.nodes *= iterations;
     Ok(result)
@@ -166,8 +162,8 @@ pub fn scan<'tree, N: NodeLike<'tree>>(root: N, iterations: usize) -> Result<usi
     Ok(nodes)
 }
 
-fn scan_iterator_once(root: tree_sitter_squatter::Node<'_>, cached: bool) -> Result<usize> {
-    let mut iterator = root.node_iterator(cached)?;
+fn scan_iterator_once(root: tree_sitter_squatter::Node<'_>) -> Result<usize> {
+    let mut iterator = root.node_iterator()?;
     let mut nodes = 0;
     while iterator.next().is_some() {
         std::hint::black_box(iterator.attributes().unwrap());
@@ -176,14 +172,10 @@ fn scan_iterator_once(root: tree_sitter_squatter::Node<'_>, cached: bool) -> Res
     Ok(nodes)
 }
 
-pub fn scan_iterator(
-    root: tree_sitter_squatter::Node<'_>,
-    cached: bool,
-    iterations: usize,
-) -> Result<usize> {
+pub fn scan_iterator(root: tree_sitter_squatter::Node<'_>, iterations: usize) -> Result<usize> {
     let mut nodes = 0;
     for _ in 0..iterations {
-        nodes += std::hint::black_box(scan_iterator_once(root, cached)?);
+        nodes += std::hint::black_box(scan_iterator_once(root)?);
     }
     Ok(nodes)
 }
@@ -211,15 +203,13 @@ pub fn walk<'tree, N: NodeLike<'tree>>(root: N, ids: &Identities) -> Result<Vec<
     }
 }
 
-/// Read the same constant-time snapshot as cursor walks, using the optional
-/// block unpack cache. Counts and depth are not reconstructed.
+/// Read the same constant-time snapshot as cursor walks. Counts and depth are not reconstructed.
 pub fn walk_iterator<'tree>(
     root: tree_sitter_squatter::Node<'tree>,
     ids: &Identities,
-    cached: bool,
 ) -> Result<Vec<Record<'tree>>> {
     let mut records = Vec::with_capacity(ids.len());
-    let mut iterator = root.node_iterator(cached)?;
+    let mut iterator = root.node_iterator()?;
     while let Some(node) = iterator.next() {
         records.push(Record {
             ordinal: ids[&node.identity()],
@@ -232,10 +222,9 @@ pub fn walk_iterator<'tree>(
 pub fn navigate_iterator(
     root: tree_sitter_squatter::Node<'_>,
     ids: &Identities,
-    cached: bool,
 ) -> Result<Vec<usize>> {
     let mut nodes = Vec::with_capacity(ids.len());
-    for node in root.node_iterator(cached)? {
+    for node in root.node_iterator()? {
         nodes.push(ids[&node.identity()]);
     }
     Ok(nodes)

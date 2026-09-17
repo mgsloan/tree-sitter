@@ -82,12 +82,12 @@ The shared workload set is:
 
 - `query-matches` and `query-captures`
 - `walk-forward` and `cursor-forward`
-- cached and uncached iterator navigation/attribute walks
-- allocation-free cursor and cached-iterator attribute digests and scans
+- iterator navigation/attribute walks
+- allocation-free cursor and iterator attribute digests and scans
 - `seek-byte` and, in point-enabled builds, `seek-point`
 - `cold-parse`, comparing parse against parse plus one-shot packing
 
-The digest and scan workloads avoid result vectors and identity maps so cache
+The digest and scan workloads avoid result vectors and identity maps so
 experiments measure tree traversal rather than benchmark bookkeeping. Scans
 also avoid per-node checksum arithmetic. Use `--traversal-iterations` to put
 repeated editor-like passes inside one measurement, after a single pressure
@@ -123,7 +123,7 @@ Only durable native probes remain under `lib/squat/experiments`:
 - `layout.c`: packing time, occupancy, and actual layout bytes.
 - `memory.c`/`memory.py`: retained allocations and construction peaks.
 - `load.c`: deserialization cost from an existing slab.
-- `scan.c` and `unpack.c`: explanatory scan/decoder microkernels.
+- `scan.c`: explanatory scan microkernels.
 
 Top-level performance decisions should be based on `squatter-bench`; native
 microbenchmarks are diagnostic evidence.

@@ -2,8 +2,7 @@
 #define SQUAT_ATTRIBUTES_H_
 #include "internal.h"
 
-// Shared constant-time metadata construction keeps cursor and iterator semantics
-// identical, whether coordinates and IDs come from packed reads or a cache.
+// Shared constant-time metadata construction keeps cursor and iterator semantics identical.
 static inline void sq_attributes_finish(SQNode node, uint32_t symbol, uint32_t grammar,
                                         TSFieldId field, SQCursorAttributes *out) {
   const TSLanguage *language = node.tree->language;

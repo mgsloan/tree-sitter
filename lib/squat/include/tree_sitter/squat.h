@@ -227,17 +227,15 @@ void sq_node_attributes(SQNode, SQCursorAttributes *);
 void sq_cursor_attributes(SQCursor *, SQCursorAttributes *);
 
 // Iterates root and its descendants in visible preorder, including empty nodes.
-// The tree must outlive the iterator and returned SQNodes. Cache storage belongs
-// to the iterator; returned nodes remain ordinary independent handles.
+// The tree must outlive the iterator and returned SQNodes.
 // next returns null permanently after exhaustion. Attributes/field_id refer to
 // the last returned node and are zero before iteration and after exhaustion.
-SQNodeIterator *sq_node_iterator_new(SQNode root, bool unpack_cache);
+SQNodeIterator *sq_node_iterator_new(SQNode root);
 void sq_node_iterator_delete(SQNodeIterator *);
 SQNode sq_node_iterator_next(SQNodeIterator *);
 SQNode sq_node_iterator_node(const SQNodeIterator *);
 void sq_node_iterator_attributes(SQNodeIterator *, SQCursorAttributes *);
 TSFieldId sq_node_iterator_field_id(SQNodeIterator *);
-// Selective reads do not fill unrelated cached columns.
 TSSymbol sq_node_iterator_symbol(SQNodeIterator *);
 void sq_node_iterator_byte_range(SQNodeIterator *, uint32_t *start, uint32_t *end);
 

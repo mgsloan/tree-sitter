@@ -10,8 +10,7 @@
 //!         .sum()
 //! }
 //! ```
-//! For repeated attribute reads, use `node_iterator` and read through
-//! `NodeIteratorLike`. Getters on the returned nodes do not use its unpack cache.
+//! For stateful attribute reads, use `node_iterator` and `NodeIteratorLike`.
 use crate::{Cursor, Error, KindSet, Node, NodeIterator, Tree};
 use std::ops::Range;
 use tree_sitter::Point;
@@ -67,11 +66,8 @@ pub trait NodeLike<'tree>: Copy + Eq {
     fn has_changes(self) -> bool;
     /// Preorder including this node, using the backend's native traversal.
     fn preorder(self) -> impl Iterator<Item = Self>;
-    /// Stateful preorder reads. The cache hint applies only to packed trees.
-    fn node_iterator(
-        self,
-        unpack_cache: bool,
-    ) -> Result<impl NodeIteratorLike<'tree, Node = Self>, Error>;
+    /// Stateful preorder reads.
+    fn node_iterator(self) -> Result<impl NodeIteratorLike<'tree, Node = Self>, Error>;
     /// Public kind IDs, in preorder including this node. Never leaves its subtree.
     fn descendants_matching_kinds(self, kinds: &KindSet) -> impl Iterator<Item = Self>;
     /// Structural children, including empty nodes, without requiring a count.
@@ -130,7 +126,7 @@ pub trait CursorLike<'tree> {
 }
 
 /// Reads refer to the last yielded node, and return None before iteration and
-/// after exhaustion. Read through the iterator to retain backend decoding caches.
+/// after exhaustion.
 pub trait NodeIteratorLike<'tree>: Iterator<Item = Self::Node> {
     type Node: NodeLike<'tree>;
     fn node(&self) -> Option<Self::Node>;
@@ -258,7 +254,7 @@ impl<'tree> NodeLike<'tree> for tree_sitter::Node<'tree> {
     fn preorder(self) -> impl Iterator<Item = Self> {
         NativePreorder::new(self)
     }
-    fn node_iterator(self, _: bool) -> Result<impl NodeIteratorLike<'tree, Node = Self>, Error> {
+    fn node_iterator(self) -> Result<impl NodeIteratorLike<'tree, Node = Self>, Error> {
         Ok(NativePreorder::new(self))
     }
     fn descendants_matching_kinds(self, kinds: &KindSet) -> impl Iterator<Item = Self> {
@@ -348,11 +344,8 @@ impl<'tree> NodeLike<'tree> for Node<'tree> {
     fn preorder(self) -> impl Iterator<Item = Self> {
         Node::preorder(self)
     }
-    fn node_iterator(
-        self,
-        unpack_cache: bool,
-    ) -> Result<impl NodeIteratorLike<'tree, Node = Self>, Error> {
-        Node::node_iterator(self, unpack_cache)
+    fn node_iterator(self) -> Result<impl NodeIteratorLike<'tree, Node = Self>, Error> {
+        Node::node_iterator(self)
     }
     fn descendants_matching_kinds(self, kinds: &KindSet) -> impl Iterator<Item = Self> {
         Node::descendants_matching_kinds(self, kinds)

@@ -135,45 +135,6 @@ static void read_tests(void) {
   }
 }
 
-static void coordinate_unpack_tests(void) {
-  const uint32_t bases[] = {0, 255, 65535, 0x80000000u, UINT32_MAX};
-  const unsigned kernels[] = {0, 1, 2, 4};
-  for (uint8_t bits = 8; bits <= 16; bits += 8) {
-    // An exact allocation catches vector loads crossing the last packed word.
-    uint32_t slots = SQ_ITERATOR_UNPACK_SLOTS + 8;
-    uint8_t *data = malloc(sq_column_size(slots, bits));
-    assert(data);
-    memset(data, 0, sq_column_size(slots, bits));
-    for (uint32_t index = 0; index < slots; index++) {
-      sq_set_packed(data, 0, index, bits, (index * 7919u) & ((1u << bits) - 1));
-    }
-
-    for (unsigned kernel = 0; kernel < sizeof(kernels) / sizeof(kernels[0]); kernel++) {
-      SQUnpackCoordinates unpack = sq_unpack_coordinates_select(kernels[kernel]);
-      for (unsigned base_index = 0; base_index < sizeof(bases) / sizeof(bases[0]); base_index++) {
-        uint32_t base = bases[base_index];
-        for (unsigned subtract = 0; subtract < 2; subtract++) {
-          for (uint32_t count = 0; count <= SQ_ITERATOR_UNPACK_SLOTS; count++) {
-            uint32_t values[SQ_ITERATOR_UNPACK_SLOTS + 2];
-            values[0] = values[count + 1] = 0xdeadbeef;
-
-            // Vary the input alignment and exercise every scalar/vector tail.
-            uint32_t first = slots - count;
-            unpack(data, first, count, bits, base, subtract, values + 1);
-            assert(values[0] == 0xdeadbeef && values[count + 1] == 0xdeadbeef);
-            for (uint32_t index = 0; index < count; index++) {
-              uint32_t delta = sq_get_packed(data, 0, first + index, bits);
-              assert(values[index + 1] == (subtract ? base - delta : base + delta));
-            }
-          }
-        }
-      }
-    }
-
-    free(data);
-  }
-}
-
 // Use the scalar packed-word contract to check every named column through
 // repeated growth/compaction. Tags distinguish equal-width columns.
 static void exercise_column(SQTree *tree, uint32_t offset, uint8_t bits, uint32_t scale,
@@ -491,7 +452,6 @@ int main(void) {
   equality_tests();
   read_tests();
   fixed_width_write_tests();
-  coordinate_unpack_tests();
   for (uint32_t symbols = 2; symbols <= 32768; symbols *= 2) {
     TSSymbolMetadata *metadata = calloc(symbols, sizeof(TSSymbolMetadata));
     assert(metadata);

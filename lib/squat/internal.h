@@ -15,13 +15,6 @@
 _Static_assert(SQ_GROUP_SIZE == 16 || SQ_GROUP_SIZE == 32 || SQ_GROUP_SIZE == 64,
                "supported experimental group sizes");
 
-// Iterator unpack windows are independent of the serialized group layout.
-#ifndef SQ_ITERATOR_UNPACK_SLOTS
-#define SQ_ITERATOR_UNPACK_SLOTS SQ_GROUP_SIZE
-#endif
-_Static_assert(SQ_ITERATOR_UNPACK_SLOTS >= SQ_GROUP_SIZE &&
-                   (SQ_ITERATOR_UNPACK_SLOTS & (SQ_ITERATOR_UNPACK_SLOTS - 1)) == 0,
-               "unpack windows must contain a power-of-two number of whole groups");
 #ifndef SQ_COLUMN_ALIGNMENT
 #define SQ_COLUMN_ALIGNMENT 8u
 #endif
@@ -373,16 +366,6 @@ uint32_t sq_node_grammar_id_with_code(SQNode, uint16_t code);
 static inline uint32_t sq_node_field_value(SQNode node) {
   return sq_get_u16(node.tree->data, node.tree->layout.field, node.slot);
 }
-
-// Reconstruct one group's 8- or 16-bit coordinate deltas into absolute u32s.
-// Kernels: 0 automatic, 1 scalar, 2 SSE2, 4 AVX2 (portable fallback elsewhere).
-// Base arithmetic is unsigned, matching the ordinary node accessors.
-typedef void (*SQUnpackCoordinates)(const uint8_t *, uint32_t first, uint32_t count, uint8_t bits,
-                                    uint32_t base, bool subtract, uint32_t *out);
-SQUnpackCoordinates sq_unpack_coordinates_select(unsigned kernel);
-#ifndef SQ_COORDINATE_KERNEL
-#define SQ_COORDINATE_KERNEL 0
-#endif
 
 uint32_t sq_previous_slot(const SQTree *, uint32_t);
 uint32_t sq_next_position(const SQTree *, uint32_t);

@@ -13,7 +13,6 @@ fn main() {
         "node.c",
         "cursor.c",
         "iterator.c",
-        "unpack.c",
         "index.c",
         "scan.c",
         "query.c",

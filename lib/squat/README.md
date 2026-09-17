@@ -130,7 +130,7 @@ decoded-column cache.
 
 ## Rust traversal APIs
 
-`NodeLike` exposes backend-native `preorder()`, `node_iterator(unpack_cache)`,
+`NodeLike` exposes backend-native `preorder()`, `node_iterator()`,
 `descendants_matching_kinds(&KindSet)`, and child iterators. These use static
 dispatch; generic callers do not need to select a representation per node.
 
@@ -142,10 +142,9 @@ membership checks.
 Individual node getters avoid constructing a full attribute snapshot.
 `NodeIteratorLike` exposes the last yielded node's kind, byte range, and full
 attributes. Kind and field IDs are read directly from fixed-width storage.
-The packed iterator lazily decodes requested coordinates and retains them across
-a cache window. Read through the iterator to use that cache; returned
-nodes are independent handles. Reads return `None` before iteration and after
-exhaustion. The cache hint has no effect on mainline traversal.
+The packed iterator decodes requested coordinates directly from the slab.
+Returned nodes are independent handles. Reads return `None` before iteration
+and after exhaustion.
 
 `children()`, `named_children()`, and `children_by_field_id()` do not require an
 exact count. Field zero yields no children. `has_children()` avoids counting;
@@ -303,8 +302,7 @@ conversion, and memory effects.
 Physical columns are filled from the beginning in reverse preorder. Nodes use
 direct physical slot indexes, and preorder traversal walks toward lower slots.
 There is no capacity-minus-count lookup or cache. Growth and compaction copy
-used packed words without changing lane phase. Iterator caches decode physical
-windows normally and consume them in descending order. Query plans translate
+used packed words without changing lane phase. Query plans translate
 slots to ascending preorder positions only where ordered scan intervals need it.
 
 `sq_tree_from_bytes` copies arbitrary-alignment input into a single colocated
@@ -379,7 +377,7 @@ depends on the representation.
 ## Preorder node iterator
 
 `SQNodeIterator` walks a root and its descendants in preorder, including empty
-nodes. Construct it with `sq_node_iterator_new(root, unpack_cache)`, consume nodes
+nodes. Construct it with `sq_node_iterator_new(root)`, consume nodes
 with `sq_node_iterator_next`, and release it with `sq_node_iterator_delete`.
 The iterator owns no tree and keeps no ancestor stack. It advances consecutive
 physical slots in descending order and reads trailing waste only at group boundaries. Exhaustion is
@@ -387,40 +385,13 @@ permanent. The tree must outlive both the iterator and returned ordinary nodes.
 
 `sq_node_iterator_attributes` and `sq_node_iterator_field_id` read the last yielded
 node; they return zeroed attributes / field zero before the first yield and after
-exhaustion. Rust exposes `Node::node_iterator(bool)` and a fused `NodeIterator`;
+exhaustion. Rust exposes `Node::node_iterator()` and a fused `NodeIterator`;
 its corresponding accessors return `None` outside a yielded position. The older
 allocation-free `Node::preorder()` remains available.
 
-The optional lazy cache stores absolute coordinates; IDs are read directly
-from the slab. Coordinate decoding
-widens unsigned byte/u16 deltas directly from the slab and adds or subtracts a
-broadcast group base with AVX2 (eight lanes) or SSE2 (four lanes) on x86-64.
-Other platforms use a portable scalar implementation. Single-bit flags remain
-packed. Bulk snapshots exclude child and descendant counts; their explicit node
-APIs still use ordinary tree scans.
-
-AVX2 and scalar group decoding skip addition for zero bases. SSE2 and per-node
-scalar reads retain their arithmetic paths. Subtraction always retains its
-base-minus-delta semantics, including when the base is zero.
-
-Field-only and navigation-only consumers do not unpack coordinates. Repeated
-attribute reads reuse the same window. Ordinary node handles do not use the
-iterator's cache. `SQ_COORDINATE_KERNEL=0/1/2/4` selects automatic, scalar, SSE2,
-or AVX2 coordinate reconstruction, with a supported fallback.
-
-`SQ_ITERATOR_CACHE_ALL=2` is the default absolute-coordinate cache. Build mode `0`
-(no coordinate cache) remains available for reproducing earlier experiments. The old
-delta-cache mode `1` has been removed. The public boolean constructor still selects
-cached or uncached operation. No slab format or cursor API changes.
-
-`SQ_ITERATOR_UNPACK_SLOTS=32/64/128` widens the iterator cache independently of
-`SQ_GROUP_SIZE`. With the default 16-slot slab groups, these windows decode ahead
-across 2/4/8 groups without changing serialization or node addresses. Every group
-uses its own bases during reconstruction, and the final window stops at the last
-live group. The default unpack window remains one group.
-
-Historical absolute-coordinate cache benchmarks compare cached and uncached
-operation at all four window sizes.
+Iterator reads decode coordinates directly from the slab. IDs and flags also
+remain in the slab; there is no unpack cache. Bulk snapshots exclude child and
+descendant counts; their explicit node APIs still use ordinary tree scans.
 
 ## Memory benchmark
 
@@ -483,13 +454,6 @@ Named equality functions replace the old `SQColumn` selector. For example,
 exposed encoded column has its own function, including byte deltas and point keys,
 supertypes, public display symbols, and grammar symbols. These are exact
 physical-lane masks, with the same SWAR kernel and encoded-value semantics.
-
-Iterator caches likewise use named lane arrays. A field-only request fills only
-fields; a snapshot fills the remaining named attributes once per unpack window.
-Two booleans track those states. There is no column-bitmask/ctz dispatch. Byte
-coordinates retain absolute u32 SIMD reconstruction. Point fill expands each
-u16 key, combines it with one packed group base, and caches the absolute point
-as one u64 value.
 
 Historical named-column comparisons record cloud timings and byte-for-byte
 compatibility with the storage commit.

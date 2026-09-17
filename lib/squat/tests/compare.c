@@ -250,48 +250,46 @@ static void compare_group_equality(const SQTree *tree) {
 
 static void compare_iterator(const Nodes *nodes, SQNode root) {
   uint32_t end = sq_node_first_slot(root);
-  for (unsigned cached = 0; cached < 2; cached++) {
-    SQNodeIterator *iterator = sq_node_iterator_new(root, cached);
-    CHECK(iterator && sq_node_is_null(sq_node_iterator_node(iterator)));
-    CHECK(sq_node_iterator_field_id(iterator) == 0);
-    SQCursor *cursor = sq_cursor_new(root);
-    CHECK(cursor);
-    uint32_t ordinal = 0;
-    while (!sq_node_eq(nodes->packed[ordinal], root)) ordinal++;
-    for (; ordinal < nodes->count && nodes->packed[ordinal].slot >= end; ordinal++) {
-      SQNode node = sq_node_iterator_next(iterator);
-      CHECK(sq_node_eq(node, nodes->packed[ordinal]));
-      CHECK(sq_node_eq(node, sq_node_iterator_node(iterator)));
-      SQCursorAttributes actual, expected;
+  SQNodeIterator *iterator = sq_node_iterator_new(root);
+  CHECK(iterator && sq_node_is_null(sq_node_iterator_node(iterator)));
+  CHECK(sq_node_iterator_field_id(iterator) == 0);
+  SQCursor *cursor = sq_cursor_new(root);
+  CHECK(cursor);
+  uint32_t ordinal = 0;
+  while (!sq_node_eq(nodes->packed[ordinal], root)) ordinal++;
+  for (; ordinal < nodes->count && nodes->packed[ordinal].slot >= end; ordinal++) {
+    SQNode node = sq_node_iterator_next(iterator);
+    CHECK(sq_node_eq(node, nodes->packed[ordinal]));
+    CHECK(sq_node_eq(node, sq_node_iterator_node(iterator)));
+    SQCursorAttributes actual, expected;
 
-      uint32_t start, end;
-      CHECK(sq_node_iterator_symbol(iterator) == sq_node_symbol(node));
-      sq_node_iterator_byte_range(iterator, &start, &end);
-      CHECK(start == sq_node_start_byte(node) && end == sq_node_end_byte(node));
-      // Exercise selective fills before full snapshots, then repeat reads.
-      CHECK(sq_node_iterator_field_id(iterator) == sq_node_field_id(node));
-      sq_node_iterator_attributes(iterator, &actual);
-      sq_cursor_attributes(cursor, &expected);
-      CHECK(!memcmp(&actual, &expected, sizeof(actual)));
-      sq_node_iterator_attributes(iterator, &actual);
-      CHECK(!memcmp(&actual, &expected, sizeof(actual)));
-      if (!sq_cursor_goto_first_child(cursor)) {
-        while (!sq_cursor_goto_next_sibling(cursor) && sq_cursor_goto_parent(cursor)) {
-        }
+    uint32_t start, end;
+    CHECK(sq_node_iterator_symbol(iterator) == sq_node_symbol(node));
+    sq_node_iterator_byte_range(iterator, &start, &end);
+    CHECK(start == sq_node_start_byte(node) && end == sq_node_end_byte(node));
+    // Exercise selective reads before full snapshots, then repeat reads.
+    CHECK(sq_node_iterator_field_id(iterator) == sq_node_field_id(node));
+    sq_node_iterator_attributes(iterator, &actual);
+    sq_cursor_attributes(cursor, &expected);
+    CHECK(!memcmp(&actual, &expected, sizeof(actual)));
+    sq_node_iterator_attributes(iterator, &actual);
+    CHECK(!memcmp(&actual, &expected, sizeof(actual)));
+    if (!sq_cursor_goto_first_child(cursor)) {
+      while (!sq_cursor_goto_next_sibling(cursor) && sq_cursor_goto_parent(cursor)) {
       }
     }
-
-    CHECK(sq_node_is_null(sq_node_iterator_next(iterator)));
-    CHECK(sq_node_is_null(sq_node_iterator_next(iterator)));
-    CHECK(sq_node_is_null(sq_node_iterator_node(iterator)));
-    CHECK(sq_node_iterator_field_id(iterator) == 0);
-    SQCursorAttributes empty, actual;
-    memset(&empty, 0, sizeof(empty));
-    sq_node_iterator_attributes(iterator, &actual);
-    CHECK(!memcmp(&actual, &empty, sizeof(actual)));
-    sq_cursor_delete(cursor);
-    sq_node_iterator_delete(iterator);
   }
+
+  CHECK(sq_node_is_null(sq_node_iterator_next(iterator)));
+  CHECK(sq_node_is_null(sq_node_iterator_next(iterator)));
+  CHECK(sq_node_is_null(sq_node_iterator_node(iterator)));
+  CHECK(sq_node_iterator_field_id(iterator) == 0);
+  SQCursorAttributes empty, actual;
+  memset(&empty, 0, sizeof(empty));
+  sq_node_iterator_attributes(iterator, &actual);
+  CHECK(!memcmp(&actual, &empty, sizeof(actual)));
+  sq_cursor_delete(cursor);
+  sq_node_iterator_delete(iterator);
 }
 
 static void compare_cursor_seeks(Nodes *nodes) {
@@ -896,7 +894,7 @@ static void omitted_points(const TSLanguage *language) {
   CHECK(!sq_tree_group_start_point_equal(packed, 0, 0));
   CHECK(!sq_tree_group_end_point_equal(packed, 0, 0));
 
-  SQNodeIterator *iterator = sq_node_iterator_new(root, true);
+  SQNodeIterator *iterator = sq_node_iterator_new(root);
   CHECK(iterator);
   for (SQNode node = sq_node_iterator_next(iterator); node.tree;
        node = sq_node_iterator_next(iterator)) {
@@ -925,8 +923,7 @@ static void omitted_points(const TSLanguage *language) {
 }
 
 static void packing_tests(void) {
-  CHECK(!sq_node_iterator_new(sq_null(), false));
-  CHECK(!sq_node_iterator_new(sq_null(), true));
+  CHECK(!sq_node_iterator_new(sq_null()));
   CHECK(sq_node_is_null(sq_node_iterator_next(NULL)));
   CHECK(sq_node_is_null(sq_node_iterator_node(NULL)));
   CHECK(sq_node_iterator_field_id(NULL) == 0);
@@ -1007,7 +1004,7 @@ int main(int argc, char **argv) {
   }
 
   if (!getenv("SQ_SKIP_EDGE_CASES")) {
-    // Several unpack windows, changing group bases, and a partial final window.
+    // Several physical groups, changing group bases, and a partial final group.
     // Other grammars also exercise the iterator over their error recovery trees.
     char source[4096];
     size_t length = 0;
@@ -1021,7 +1018,7 @@ int main(int argc, char **argv) {
     }
 
     source[length++] = ']';
-    input_name = "iterator unpack windows";
+    input_name = "iterator group boundaries";
     exercise(language, source, (uint32_t)length, false);
   }
 
