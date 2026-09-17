@@ -1,12 +1,22 @@
 # Queue
 
-- [ ] Review and polish design.md.
+- [ ] Persistence API for using cache even though source file is not yet loaded
+
+- [ ] Persistence API for using cache with source file that's loaded in a rope or similar
+
+     * Have some transformation flags enough to support Zed's transforms (BOM removal, newline canonicalization).  Support loading files with these transforms applied.
 
 - [ ] Dig into how grammars are identified in persistence.  And what can be done to increase forward/back compat - key-design.md
 
-- [ ] Better representation of grammar_id
+- [ ] Pull PackOptions out of CacheMiss and LoadOptions
+
+- [ ] Persistence API for re-checking a CacheMiss
+
+- [ ] Persistence API for waiting on other writer for some amount of time?
 
 # Backburner
+
+- [ ] Review and polish design.md.
 
 - [ ] Once there's a release have a test for back compat. Store a bunch of
   persisted trees and check that they decode. Consider how to also check forwards compat efficiently
