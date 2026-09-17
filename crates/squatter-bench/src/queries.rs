@@ -92,7 +92,7 @@ impl Queries {
     pub fn load(language: &Language, sources: &[QuerySource]) -> Result<Self> {
         ensure!(
             !sources.is_empty(),
-            "no query sources in registry; use tools/squatter/run.py or populate grammar.queries"
+            "no query sources in registry; use cargo xtask squat or populate grammar.queries"
         );
         let mut result = Self {
             pairs: Vec::new(),
@@ -153,7 +153,7 @@ impl Queries {
     pub fn mainline(
         &self,
         root: tree_sitter::Node<'_>,
-        ids: &Identities,
+        ids: Option<&Identities>,
         source: &[u8],
         captures: bool,
     ) -> Result<Vec<Record>> {
@@ -174,6 +174,10 @@ impl Queries {
             };
             let options = QueryCursorOptions::new().progress_callback(&mut progress);
             let mut append = |result: &tree_sitter::QueryMatch<'_, '_>, capture| -> Result<()> {
+                let Some(ids) = ids else {
+                    std::hint::black_box((result, capture));
+                    return Ok(());
+                };
                 let nodes: Vec<_> = result
                     .captures()
                     .iter()
@@ -218,7 +222,7 @@ impl Queries {
     pub fn squat(
         &self,
         root: tree_sitter_squatter::Node<'_>,
-        ids: &Identities,
+        ids: Option<&Identities>,
         source: &[u8],
         captures: bool,
         optimized: bool,
@@ -240,6 +244,10 @@ impl Queries {
                 };
                 let Some((result, capture)) = next else {
                     break;
+                };
+                let Some(ids) = ids else {
+                    std::hint::black_box((result, capture));
+                    continue;
                 };
                 ensure!(
                     result.pattern_index < pair.squat.pattern_count(),

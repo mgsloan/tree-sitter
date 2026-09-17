@@ -195,8 +195,6 @@ the limit was exceeded.
 
 `corpus-analysis sample` creates a representative sample of input files, including some samples that have rare combinations etc.
 
-`corpus-analysis memory-pareto` explores the tradeoff space of memory layout choices.
-
 
 # Corpus sampling
 

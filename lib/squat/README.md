@@ -87,8 +87,8 @@ recovery. Corpus checks run this against each staged grammar.
 compaction, including fixed-width grammar limits. For grammar comparisons:
 
 ```sh
-python3 lib/squat/tests/container.py --output build/squat-check --queries
-python3 lib/squat/tests/container.py --output build/squat-sanitize --sanitize --queries
+cargo xtask squat test corpus --output build/squat-check
+cargo xtask squat test sanitize --output build/squat-sanitize
 ```
 
 The runner defaults to `../../code-corpora`, reads its pinned build image ID,

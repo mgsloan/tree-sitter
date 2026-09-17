@@ -10,7 +10,7 @@ use std::{
 };
 
 #[derive(Parser)]
-#[command(about = "Deterministic Tree-sitter corpus sampling and storage experiments")]
+#[command(about = "Deterministic Tree-sitter corpus sampling")]
 struct Arguments {
     #[command(subcommand)]
     command: Command,
@@ -18,11 +18,6 @@ struct Arguments {
 #[derive(Subcommand)]
 enum Command {
     Sample(Sample),
-    #[command(trailing_var_arg = true)]
-    MemoryPareto {
-        #[arg(allow_hyphen_values = true)]
-        arguments: Vec<String>,
-    },
 }
 #[derive(clap::Args)]
 struct Sample {
@@ -114,14 +109,8 @@ impl Features {
 fn bucket(bytes: u64, nodes: usize) -> Option<&'static str> {
     if nodes < 10 {
         Some("tiny")
-    } else if bytes < 4096 {
-        Some("small")
-    } else if bytes <= 100 * 1024 {
-        Some("normal")
-    } else if bytes > 1024 * 1024 {
-        Some("large")
     } else {
-        None
+        corpus_analysis::size_bucket(bytes)
     }
 }
 fn split(input: &Input) -> &'static str {
@@ -281,7 +270,6 @@ fn sample(arguments: Sample) -> Result<()> {
 fn main() -> Result<()> {
     match Arguments::parse().command {
         Command::Sample(arguments) => sample(arguments),
-        Command::MemoryPareto { arguments } => corpus_analysis::pareto::run(&arguments),
     }
 }
 

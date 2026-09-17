@@ -398,9 +398,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
- "signal-hook",
  "tree-sitter",
- "tree-sitter-language 0.1.8",
  "walkdir",
 ]
 
@@ -2044,6 +2042,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "serde_spanned"
+version = "1.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6662b5879511e06e8999a8a235d848113e942c9124f211511b16466ee2995f26"
+dependencies = [
+ "serde_core",
+]
+
+[[package]]
 name = "sha2"
 version = "0.10.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2071,26 +2078,6 @@ name = "shlex"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
-
-[[package]]
-name = "signal-hook"
-version = "0.4.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b2a0c28ca5908dbdbcd52e6fdaa00358ab88637f8ab33e1f188dd510eb44b53d"
-dependencies = [
- "libc",
- "signal-hook-registry",
-]
-
-[[package]]
-name = "signal-hook-registry"
-version = "1.4.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c4db69cba1110affc0e9f7bcd48bbf87b3f4fc7c61fc9155afd4c469eb3d6c1b"
-dependencies = [
- "errno",
- "libc",
-]
 
 [[package]]
 name = "simd_cesu8"
@@ -2304,6 +2291,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6975367e4d2ef766d86af01ffad14b622fecc8d4357a998fbc4deb6e9bacaf9b"
 dependencies = [
  "indexmap",
+ "serde_core",
+ "serde_spanned",
  "toml_datetime",
  "toml_parser",
  "winnow",
@@ -2499,9 +2488,9 @@ name = "tree-sitter-squatter"
 version = "0.1.0"
 dependencies = [
  "cc",
- "libloading 0.9.0",
  "regex",
  "tree-sitter",
+ "tree-sitter-json",
 ]
 
 [[package]]
@@ -3072,6 +3061,7 @@ dependencies = [
  "anyhow",
  "bindgen",
  "clap",
+ "corpus-analysis",
  "etcetera",
  "indoc",
  "notify",
@@ -3079,9 +3069,12 @@ dependencies = [
  "regex",
  "schemars",
  "semver",
+ "serde",
  "serde_json",
+ "toml_edit",
  "tree-sitter-cli",
  "tree-sitter-loader",
+ "walkdir",
 ]
 
 [[package]]

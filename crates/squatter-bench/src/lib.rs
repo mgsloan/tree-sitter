@@ -24,12 +24,8 @@ use tree_sitter_squatter::{PackContext, PackOptions, Tree};
 const BENCHMARKS: &[&str] = &[
     "query-matches",
     "query-captures",
-    "walk-forward",
     "cursor-forward",
     "iterator-forward",
-    "walk-iterator",
-    "digest-forward",
-    "digest-iterator",
     "scan-forward",
     "scan-iterator",
     "seek-byte",
@@ -93,8 +89,8 @@ struct Arguments {
     /// Stable condition name recorded for matrix summarization.
     #[arg(long)]
     pressure_label: Option<String>,
-    /// Traversals performed inside each allocation-free measurement.
-    #[arg(long, alias = "digest-iterations", default_value_t = 1)]
+    /// Traversals performed inside each navigation/attribute measurement.
+    #[arg(long, default_value_t = 1)]
     traversal_iterations: usize,
     /// Pin the benchmark thread to this Linux CPU.
     #[arg(long)]
@@ -205,8 +201,8 @@ struct Pair<'source> {
     source: &'source Source,
     mainline: tree_sitter::Tree,
     squat: Tree,
-    mainline_ids: Option<compare::Identities>,
-    squat_ids: Option<compare::Identities>,
+    mainline_ids: compare::Identities,
+    squat_ids: compare::Identities,
     seek_bytes: Vec<usize>,
     seek_points: Vec<Point>,
 }
@@ -417,61 +413,176 @@ fn accumulate(
 
 #[derive(Debug, Eq, PartialEq)]
 enum Observation<'tree> {
-    Digest(compare::Digest),
-    Scan(usize),
     Walk(Vec<compare::Record<'tree>>),
     Seek(Vec<Option<usize>>),
-    Navigation(Vec<usize>),
     Query(Vec<queries::Record>),
 }
 fn observe<'tree, N: tree_sitter_squatter::traits::NodeLike<'tree>>(
     root: N,
-    ids: Option<&compare::Identities>,
+    ids: &compare::Identities,
     benchmark: &str,
     bytes: &[usize],
     points: &[Point],
-    traversal_iterations: usize,
 ) -> Result<Observation<'tree>> {
-    match benchmark {
-        "digest-forward" | "digest-iterator" => Ok(Observation::Digest(compare::digest(
-            root,
-            traversal_iterations,
-        )?)),
-        "scan-forward" | "scan-iterator" => Ok(Observation::Scan(compare::scan(
-            root,
-            traversal_iterations,
-        )?)),
-        "cursor-forward" | "iterator-forward" => Ok(Observation::Navigation(compare::navigate(
-            root.cursor()?,
-            ids.unwrap(),
-        ))),
-        "walk-forward" | "walk-iterator" => {
-            Ok(Observation::Walk(compare::walk(root, ids.unwrap())?))
+    Ok(match benchmark {
+        "cursor-forward" | "iterator-forward" | "scan-forward" | "scan-iterator" => {
+            Observation::Walk(compare::walk(root, ids)?)
         }
-        "seek-byte" => Ok(Observation::Seek(compare::seek_bytes(
-            root,
-            ids.unwrap(),
-            bytes,
-        ))),
-        "seek-point" => Ok(Observation::Seek(compare::seek_points(
-            root,
-            ids.unwrap(),
-            points,
-        ))),
+        "seek-byte" => Observation::Seek(compare::seek_bytes(root, ids, bytes)),
+        "seek-point" => Observation::Seek(compare::seek_points(root, ids, points)),
+        _ => unreachable!(),
+    })
+}
+
+fn read_nodes<'tree, N: tree_sitter_squatter::traits::NodeLike<'tree>>(
+    root: N,
+    benchmark: &str,
+    bytes: &[usize],
+    points: &[Point],
+    iterations: usize,
+) -> Result<usize> {
+    match benchmark {
+        "cursor-forward" | "iterator-forward" => compare::scan::<_, false>(root, iterations),
+        "scan-forward" | "scan-iterator" => compare::scan::<_, true>(root, iterations),
+        "seek-byte" => {
+            for &byte in bytes {
+                std::hint::black_box(root.descendant_for_byte_range(byte, byte));
+            }
+            Ok(bytes.len())
+        }
+        "seek-point" => {
+            for &point in points {
+                std::hint::black_box(root.descendant_for_point_range(point, point));
+            }
+            Ok(points.len())
+        }
         _ => unreachable!(),
     }
 }
+
+// Timed reads do not consult identity maps or build correctness snapshots.
+fn read_workload(
+    pair: &Pair<'_>,
+    queries: &BTreeMap<String, queries::Queries>,
+    benchmark: &str,
+    mainline: bool,
+    iterations: usize,
+    optimized: bool,
+) -> Result<usize> {
+    if benchmark.starts_with("query-") {
+        let queries = &queries[&pair.source.input.grammar];
+        if mainline {
+            queries.mainline(
+                pair.mainline.root_node(),
+                None,
+                &pair.source.bytes,
+                benchmark == "query-captures",
+            )?;
+        } else {
+            queries.squat(
+                pair.squat.root_node(),
+                None,
+                &pair.source.bytes,
+                benchmark == "query-captures",
+                optimized,
+            )?;
+        }
+        return Ok(0);
+    }
+    if mainline {
+        read_nodes(
+            pair.mainline.root_node(),
+            benchmark,
+            &pair.seek_bytes,
+            &pair.seek_points,
+            iterations,
+        )
+    } else {
+        match benchmark {
+            "iterator-forward" => {
+                compare::scan_iterator::<false>(pair.squat.root_node(), iterations)
+            }
+            "scan-iterator" => compare::scan_iterator::<true>(pair.squat.root_node(), iterations),
+            _ => read_nodes(
+                pair.squat.root_node(),
+                benchmark,
+                &pair.seek_bytes,
+                &pair.seek_points,
+                iterations,
+            ),
+        }
+    }
+}
+
+fn validate_workload(
+    pair: &Pair<'_>,
+    queries: &BTreeMap<String, queries::Queries>,
+    benchmark: &str,
+    optimized: bool,
+) -> Result<()> {
+    let expected = if benchmark.starts_with("query-") {
+        queries[&pair.source.input.grammar]
+            .mainline(
+                pair.mainline.root_node(),
+                Some(&pair.mainline_ids),
+                &pair.source.bytes,
+                benchmark == "query-captures",
+            )
+            .map(Observation::Query)
+    } else {
+        observe(
+            pair.mainline.root_node(),
+            &pair.mainline_ids,
+            benchmark,
+            &pair.seek_bytes,
+            &pair.seek_points,
+        )
+    }?;
+    let actual = if benchmark.starts_with("query-") {
+        queries[&pair.source.input.grammar]
+            .squat(
+                pair.squat.root_node(),
+                Some(&pair.squat_ids),
+                &pair.source.bytes,
+                benchmark == "query-captures",
+                optimized,
+            )
+            .map(Observation::Query)
+    } else if matches!(benchmark, "iterator-forward" | "scan-iterator") {
+        compare::walk_iterator(pair.squat.root_node(), &pair.squat_ids).map(Observation::Walk)
+    } else {
+        observe(
+            pair.squat.root_node(),
+            &pair.squat_ids,
+            benchmark,
+            &pair.seek_bytes,
+            &pair.seek_points,
+        )
+    }?;
+
+    if let (Observation::Query(expected), Observation::Query(actual)) = (&expected, &actual) {
+        if benchmark == "query-captures" {
+            let matches = queries[&pair.source.input.grammar].mainline(
+                pair.mainline.root_node(),
+                Some(&pair.mainline_ids),
+                &pair.source.bytes,
+                false,
+            )?;
+            queries::check_capture_coverage(expected, &matches)?;
+            return queries::check_capture_coverage(actual, &matches);
+        }
+    }
+    if let Some(message) = difference(&expected, &actual) {
+        bail!("{message}");
+    }
+    Ok(())
+}
+
 fn difference(expected: &Observation<'_>, actual: &Observation<'_>) -> Option<String> {
     if expected == actual {
         return None;
     }
     match (expected, actual) {
-        (Observation::Digest(a), Observation::Digest(b)) => {
-            Some(format!("digest differs: expected {a:?}, actual {b:?}"))
-        }
-        (Observation::Scan(a), Observation::Scan(b)) => {
-            Some(format!("scan count differs: expected {a}, actual {b}"))
-        }
         (Observation::Walk(a), Observation::Walk(b)) => {
             if a.len() == b.len()
                 && a.iter().zip(b).all(|(a, b)| {
@@ -491,20 +602,6 @@ fn difference(expected: &Observation<'_>, actual: &Observation<'_>) -> Option<St
                 .unwrap_or(a.len().min(b.len()));
             Some(format!(
                 "walk item {index}: expected {:?}, actual {:?}; lengths {}/{}",
-                a.get(index),
-                b.get(index),
-                a.len(),
-                b.len()
-            ))
-        }
-        (Observation::Navigation(a), Observation::Navigation(b)) => {
-            let index = a
-                .iter()
-                .zip(b)
-                .position(|(a, b)| a != b)
-                .unwrap_or(a.len().min(b.len()));
-            Some(format!(
-                "navigation item {index}: expected {:?}, actual {:?}; lengths {}/{}",
                 a.get(index),
                 b.get(index),
                 a.len(),
@@ -681,7 +778,7 @@ pub fn run(check_only: bool) -> Result<()> {
     )?;
     let batches = input_batches(&inputs, arguments.batch_size, pressure.carousel_bytes());
     let mut manifest = serde_json::json!({
-        "schema": 2, "purpose": if check_only { "correctness" } else { "benchmark" }, "parse_benchmark": parse_benchmark, "reuse_pack_context": !cold_parse, "arguments": arguments, "benchmarks": benchmarks, "seed": arguments.seed,
+        "schema": 3, "purpose": if check_only { "correctness" } else { "benchmark" }, "parse_benchmark": parse_benchmark, "reuse_pack_context": !cold_parse, "arguments": arguments, "benchmarks": benchmarks, "seed": arguments.seed,
         "inputs": inputs, "planned": inputs.len(), "completed": 0, "failed": 0, "partial": true,
         "coverage": coverage, "registry": registry, "counter_status": if check_only { "disabled for correctness" } else { &meter.counter_status },
         "tool": {"checkout": git_identity(Path::new(".")), "container_revision": std::env::var("SQUAT_TOOL_SHA").ok(), "source_sha256": std::env::var("SQUAT_SOURCE_SHA256").ok(),
@@ -695,8 +792,9 @@ pub fn run(check_only: bool) -> Result<()> {
         "build": {"debug_assertions": cfg!(debug_assertions), "package_version": env!("CARGO_PKG_VERSION")},
         "pressure": pressure_report(&pressure, &batches),
         "field_contract": "field API differences expected only when squat agrees with mainline visible-child fields; ERROR parents have no fields",
-        "iterator_contract": "native preorder; walks read O(1) bulk attributes; digest workloads avoid result allocations and identity maps; mainline uses its forward cursor",
-        "cursor_contract": "walk-forward reads O(1) bulk attributes, excluding counts, fields, and depth from the Rust snapshot; cursor-forward measures native navigation",
+        "timing_contract": "v3: exact validation and snapshots outside timing; read kernels consume results with black_box; no identity lookups or result collections in timed reads",
+        "iterator_contract": "native preorder; mainline uses its forward cursor",
+        "cursor_contract": "scan-forward reads O(1) bulk attributes; cursor-forward measures navigation",
         "workload_order": "rotate by batch and every two repeats, retaining both backend orders for each rotation",
         "query_engine": "slab NFA and structural plans adapted from ../main", "seek_contract": if arguments.strict_seeks { "strict" } else { "only hidden-seek.css differences are counted and ignored" },
         "query_contract": "exact completed matches; captures cover completed captures, with event order, provisional snapshots, and duplicates allowed to differ; coverage checked outside timing",
@@ -710,9 +808,6 @@ pub fn run(check_only: bool) -> Result<()> {
     let mut pack_contexts = BTreeMap::new();
     let mut queries = BTreeMap::new();
     let wants_queries = benchmarks.iter().any(|name| name.starts_with("query-"));
-    let wants_identities = benchmarks.iter().any(|name| {
-        name == "cold-parse" || !(name.starts_with("digest-") || name.starts_with("scan-"))
-    });
     let mut failures = Failures::default();
     let mut results = BTreeMap::new();
     let mut completed = BTreeSet::new();
@@ -818,20 +913,16 @@ pub fn run(check_only: bool) -> Result<()> {
                 };
                 match (mainline, squat) {
                     (Ok(mainline), Ok(squat)) => {
-                        let ids = wants_identities.then(|| {
-                            (
-                                compare::identities(mainline.root_node()),
-                                compare::identities(squat.root_node()),
-                            )
-                        });
-                        let (mainline_ids, squat_ids) = match ids {
-                            None => (None, None),
-                            Some((Ok(a), Ok(b))) => (Some(a), Some(b)),
-                            Some((a, b)) => {
+                        let (mainline_ids, squat_ids) = match (
+                            compare::identities(mainline.root_node()),
+                            compare::identities(squat.root_node()),
+                        ) {
+                            (Ok(mainline), Ok(squat)) => (mainline, squat),
+                            (mainline, squat) => {
                                 failures.record(
                                     &source.input.path,
                                     "identity",
-                                    format!("{a:?} {b:?}"),
+                                    format!("{mainline:?} {squat:?}"),
                                 );
                                 failed_files.insert(source.input.path.clone());
                                 if arguments.short_circuit {
@@ -841,17 +932,17 @@ pub fn run(check_only: bool) -> Result<()> {
                                 }
                             }
                         };
-                        let mut cold_failed = false;
+                        let mut parse_failed = false;
                         let mut expected_fields = 0;
                         if cold_parse {
                             let check = (|| -> Result<()> {
                                 let expected = Observation::Walk(compare::walk(
                                     mainline.root_node(),
-                                    mainline_ids.as_ref().unwrap(),
+                                    &mainline_ids,
                                 )?);
                                 let actual = Observation::Walk(compare::walk(
                                     squat.root_node(),
-                                    squat_ids.as_ref().unwrap(),
+                                    &squat_ids,
                                 )?);
                                 if let Some(message) = difference(&expected, &actual) {
                                     bail!("{message}");
@@ -859,15 +950,15 @@ pub fn run(check_only: bool) -> Result<()> {
                                 compare::relationships(
                                     mainline.root_node(),
                                     squat.root_node(),
-                                    mainline_ids.as_ref().unwrap(),
-                                    squat_ids.as_ref().unwrap(),
+                                    &mainline_ids,
+                                    &squat_ids,
                                     language,
                                     &mut expected_fields,
                                 )
                             })();
                             if let Err(error) = check {
-                                failures.record(&source.input.path, "cold-parse", error);
-                                cold_failed = true;
+                                failures.record(&source.input.path, parse_benchmark, error);
+                                parse_failed = true;
                                 failed_files.insert(source.input.path.clone());
                             }
                         }
@@ -878,7 +969,7 @@ pub fn run(check_only: bool) -> Result<()> {
                             mainline_time,
                             squat_time,
                             &squat,
-                            cold_failed,
+                            parse_failed,
                         );
                         expected_field_differences += expected_fields;
                         results
@@ -886,7 +977,7 @@ pub fn run(check_only: bool) -> Result<()> {
                             .unwrap()
                             .result
                             .expected_field_differences += expected_fields;
-                        if cold_failed && arguments.short_circuit {
+                        if parse_failed && arguments.short_circuit {
                             break 'batches;
                         }
                         let (seek_bytes, seek_points) = seek_positions(source, arguments.seed);
@@ -927,129 +1018,53 @@ pub fn run(check_only: bool) -> Result<()> {
                 .skip(first_workload)
                 .take(workload_count)
             {
-                let mut mainline_observations = Vec::new();
-                let mut squat_observations = Vec::new();
-                // Each backend traverses the entire parsed batch before the other
-                // starts. Alternate their order to reduce cache/order bias.
-                for pass in 0..2 {
-                    let mainline_first = (batch_index + repeat) % 2 == 0;
-                    let run_mainline = (pass == 0) == mainline_first;
-                    for pair in &pairs {
-                        if run_mainline {
-                            mainline_observations.push(measured(
-                                !check_only,
-                                &mut meter,
-                                &mut pressure,
-                                || {
-                                    if benchmark.starts_with("query-") {
-                                        return queries[&pair.source.input.grammar]
-                                            .mainline(
-                                                pair.mainline.root_node(),
-                                                pair.mainline_ids.as_ref().unwrap(),
-                                                &pair.source.bytes,
-                                                benchmark == "query-captures",
-                                            )
-                                            .map(Observation::Query);
-                                    }
-                                    observe(
-                                        pair.mainline.root_node(),
-                                        pair.mainline_ids.as_ref(),
-                                        benchmark,
-                                        &pair.seek_bytes,
-                                        &pair.seek_points,
-                                        arguments.traversal_iterations,
-                                    )
-                                },
-                            ));
-                        } else {
-                            squat_observations.push(measured(
-                                !check_only,
-                                &mut meter,
-                                &mut pressure,
-                                || {
-                                    if benchmark.starts_with("query-") {
-                                        return queries[&pair.source.input.grammar]
-                                            .squat(
-                                                pair.squat.root_node(),
-                                                pair.squat_ids.as_ref().unwrap(),
-                                                &pair.source.bytes,
-                                                benchmark == "query-captures",
-                                                !arguments.unoptimized_query,
-                                            )
-                                            .map(Observation::Query);
-                                    }
-                                    if benchmark == "walk-iterator" {
-                                        return compare::walk_iterator(
-                                            pair.squat.root_node(),
-                                            pair.squat_ids.as_ref().unwrap(),
-                                        )
-                                        .map(Observation::Walk);
-                                    }
-                                    if benchmark == "iterator-forward" {
-                                        return compare::navigate_iterator(
-                                            pair.squat.root_node(),
-                                            pair.squat_ids.as_ref().unwrap(),
-                                        )
-                                        .map(Observation::Navigation);
-                                    }
-                                    if benchmark == "digest-iterator" {
-                                        return compare::digest_iterator(
-                                            pair.squat.root_node(),
-                                            arguments.traversal_iterations,
-                                        )
-                                        .map(Observation::Digest);
-                                    }
-                                    if benchmark == "scan-iterator" {
-                                        return compare::scan_iterator(
-                                            pair.squat.root_node(),
-                                            arguments.traversal_iterations,
-                                        )
-                                        .map(Observation::Scan);
-                                    }
-                                    observe(
-                                        pair.squat.root_node(),
-                                        pair.squat_ids.as_ref(),
-                                        benchmark,
-                                        &pair.seek_bytes,
-                                        &pair.seek_points,
-                                        arguments.traversal_iterations,
-                                    )
-                                },
-                            ));
+                // Release correctness snapshots before either timed pass. Validation
+                // must not interleave with a carousel pass and change its resident set.
+                let mut messages: Vec<_> = pairs
+                    .iter()
+                    .map(|pair| {
+                        validate_workload(pair, &queries, benchmark, !arguments.unoptimized_query)
+                            .err()
+                            .map(|error| error.to_string())
+                    })
+                    .collect();
+                let mut times = vec![[Metrics::default(); 2]; pairs.len()];
+                if !check_only {
+                    for pass in 0..2 {
+                        let mainline = ((batch_index + repeat) % 2 == 0) == (pass == 0);
+                        for (index, pair) in pairs.iter().enumerate() {
+                            let (result, time) = measured(true, &mut meter, &mut pressure, || {
+                                read_workload(
+                                    pair,
+                                    &queries,
+                                    benchmark,
+                                    mainline,
+                                    arguments.traversal_iterations,
+                                    !arguments.unoptimized_query,
+                                )
+                            });
+                            times[index][usize::from(!mainline)] = time;
+                            if let Err(error) = result.and_then(|count| {
+                                if !benchmark.starts_with("query-")
+                                    && !benchmark.starts_with("seek-")
+                                {
+                                    ensure!(
+                                        count
+                                            == pair.squat_ids.len()
+                                                * arguments.traversal_iterations,
+                                        "timed traversal count differs"
+                                    );
+                                }
+                                Ok(())
+                            }) {
+                                messages[index].get_or_insert_with(|| error.to_string());
+                            }
                         }
                     }
                 }
-                for ((pair, (expected, mainline_time)), (actual, squat_time)) in pairs
-                    .iter()
-                    .zip(mainline_observations)
-                    .zip(squat_observations)
+                for ((pair, message), [mainline_time, squat_time]) in
+                    pairs.iter().zip(messages).zip(times)
                 {
-                    let message = match (&expected, &actual) {
-                        (Ok(Observation::Query(expected)), Ok(Observation::Query(actual)))
-                            if benchmark == "query-captures" =>
-                        {
-                            // Validate coverage outside the timed capture traversal.
-                            queries[&pair.source.input.grammar]
-                                .mainline(
-                                    pair.mainline.root_node(),
-                                    pair.mainline_ids.as_ref().unwrap(),
-                                    &pair.source.bytes,
-                                    false,
-                                )
-                                .and_then(|matches| {
-                                    queries::check_capture_coverage(expected, &matches)?;
-                                    queries::check_capture_coverage(actual, &matches)
-                                })
-                                .err()
-                                .map(|error| error.to_string())
-                        }
-                        (Ok(expected), Ok(actual)) => difference(expected, actual),
-                        (a, b) => Some(format!(
-                            "mainline: {:?}; squat: {:?}",
-                            a.as_ref().err(),
-                            b.as_ref().err()
-                        )),
-                    };
                     let known_fixture = pair.source.input.path.ends_with("hidden-seek.css");
                     let ignore =
                         !arguments.strict_seeks && benchmark.starts_with("seek-") && known_fixture;

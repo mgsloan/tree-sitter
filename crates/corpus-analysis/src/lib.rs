@@ -1,5 +1,4 @@
 //! Corpus inventory, grammar loading, and deterministic input preparation.
-pub mod pareto;
 
 use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
@@ -421,5 +420,18 @@ mod tests {
                 .map(|input| input.path)
                 .collect::<Vec<_>>()
         );
+    }
+}
+
+/// Size buckets shared by staging and structural sampling; the middle gap is intentional.
+pub fn size_bucket(bytes: u64) -> Option<&'static str> {
+    if bytes < 4096 {
+        Some("small")
+    } else if bytes <= 100 * 1024 {
+        Some("normal")
+    } else if bytes > 1024 * 1024 {
+        Some("large")
+    } else {
+        None
     }
 }

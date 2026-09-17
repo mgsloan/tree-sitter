@@ -71,8 +71,8 @@ def pressure_summary(results):
         baseline_manifest, baseline = baselines[mutated]
         if baseline.keys() != pressured.keys():
             raise SystemExit(f"pressure mode {mode} changed benchmark coverage")
-        for field in ("registry", "grammar_sha256", "benchmarks"):
-            if baseline_manifest[field] != manifest[field]:
+        for field in ("schema", "timing_contract", "registry", "grammar_sha256", "benchmarks"):
+            if baseline_manifest.get(field) != manifest.get(field):
                 raise SystemExit(f"pressure mode {mode} changed {field}")
         condition = []
         for key in sorted(pressured):
@@ -113,7 +113,7 @@ def layout_summary(directory, matrix, inputs):
             if not path.exists():
                 continue
             lines = path.read_text().splitlines()
-            start = next(index for index, line in enumerate(lines) if line.startswith("path,"))
+            start = next(index for index, line in enumerate(lines) if line.startswith("file_index,"))
             records.extend(csv.DictReader(io.StringIO("\n".join(lines[start:]))))
         if not records:
             continue
@@ -138,6 +138,8 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     arguments = parser.parse_args()
     manifest = read(arguments.run / "container-run.json")
+    if manifest.get("partial", False):
+        raise SystemExit("run is incomplete")
     failed = [operation for operation in manifest["operations"]
               if operation["status"] != "passed"]
     if failed:

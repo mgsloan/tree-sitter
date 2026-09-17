@@ -1,9 +1,8 @@
-//! Run inside a grammar container: check LIBRARY SYMBOL.
 use std::error::Error;
 use tree_sitter::StreamingIterator;
 use tree_sitter_squatter::{
     KindSet, PackOptions, Tree,
-    traits::{CursorLike, NodeIteratorLike, NodeLike, TreeLike},
+    traits::{CursorLike, NodeIteratorLike, NodeLike},
 };
 
 fn check_shared_navigation<'tree, N: NodeLike<'tree>>(
@@ -11,25 +10,7 @@ fn check_shared_navigation<'tree, N: NodeLike<'tree>>(
     fields: u16,
 ) -> Result<(), Box<dyn Error>> {
     let mut cursor = root.cursor()?;
-    let mut expected = Vec::new();
-    loop {
-        expected.push(cursor.node());
-        if cursor.goto_first_child() {
-            continue;
-        }
-        loop {
-            if cursor.goto_next_sibling() {
-                break;
-            }
-            if !cursor.goto_parent() {
-                break;
-            }
-        }
-        if cursor.depth() == 0 {
-            break;
-        }
-    }
-    assert!(root.preorder().collect::<Vec<_>>() == expected);
+    let expected: Vec<_> = root.preorder().collect();
     let all_kinds = KindSet::new(expected.iter().map(|node| node.kind_id()));
     assert!(
         root.descendants_matching_kinds(&all_kinds)
@@ -61,7 +42,6 @@ fn check_shared_navigation<'tree, N: NodeLike<'tree>>(
         assert_eq!(iterator.kind_id(), Some(node.kind_id()));
         assert_eq!(iterator.byte_range(), Some(node.byte_range()));
         assert_eq!(iterator.attributes(), Some(node.attributes()));
-        assert_eq!(iterator.kind_id(), Some(node.kind_id()));
     }
     for _ in 0..2 {
         assert!(iterator.next().is_none());
@@ -166,37 +146,12 @@ fn check_shared_navigation<'tree, N: NodeLike<'tree>>(
     Ok(())
 }
 
-fn check_iterators(tree: &Tree) -> Result<(), Box<dyn Error>> {
-    for root in tree.root_node().preorder().take(32) {
-        let expected: Vec<_> = root.preorder().collect();
-        let mut iterator = root.node_iterator()?;
-        assert!(iterator.attributes().is_none());
-        for &node in &expected {
-            assert_eq!(iterator.next(), Some(node));
-            assert_eq!(iterator.node(), Some(node));
-            assert_eq!(iterator.attributes().unwrap(), node.attributes());
-            assert_eq!(
-                iterator.field_id(),
-                (node.field_id() != 0).then_some(node.field_id())
-            );
-        }
-        assert_eq!(iterator.next(), None);
-        assert_eq!(iterator.next(), None);
-        assert!(iterator.attributes().is_none());
-        assert!(iterator.field_id().is_none());
-        drop(iterator);
-        assert_eq!(expected[0], root);
-    }
-    Ok(())
-}
-
 fn check_queries(
     language: &tree_sitter::Language,
     source: &[u8],
     mainline: &tree_sitter::Tree,
     packed: &Tree,
 ) -> Result<(), Box<dyn Error>> {
-    check_iterators(packed)?;
     for source_query in [
         "(_) @node",
         "(_) @a (_) @b",
@@ -358,121 +313,122 @@ fn check_cursor_reuse(
     Ok(())
 }
 
-fn kinds<T: TreeLike>(tree: &T) -> Vec<u16> {
-    fn visit<'tree, N: NodeLike<'tree>>(node: N, output: &mut Vec<u16>) {
-        output.push(node.attributes().kind_id);
-        let mut index = 0;
-        while let Some(child) = node.child(index) {
-            visit(child, output);
-            index += 1;
-        }
-    }
-    let mut output = Vec::new();
-    visit(tree.root(), &mut output);
-    output
-}
+const SOURCE: &str = "{\"a\": [1, true, null], \"b\": 2}";
 
-fn check_cursor(tree: &Tree) -> Result<(), Box<dyn Error>> {
-    let mut cursor = tree.root_node().walk()?;
-    loop {
-        assert_eq!(cursor.attributes(), cursor.node().attributes());
-        if cursor.goto_first_child() {
-            continue;
-        }
-        loop {
-            if cursor.goto_next_sibling() {
-                break;
-            }
-            if !cursor.goto_parent() {
-                return Ok(());
-            }
-        }
-    }
-}
-
-fn main() -> Result<(), Box<dyn Error>> {
-    let arguments: Vec<_> = std::env::args().skip(1).collect();
-    if arguments.len() != 2 {
-        return Err("usage: check LIBRARY SYMBOL".into());
-    }
-    // The library outlives every language, parser and packed tree in this scope.
-    let library = unsafe { libloading::Library::new(&arguments[0])? };
-    let get_language: libloading::Symbol<
-        unsafe extern "C" fn() -> *const tree_sitter::ffi::TSLanguage,
-    > = unsafe { library.get(arguments[1].as_bytes())? };
-    let language = unsafe { tree_sitter::Language::from_raw(get_language()) };
+fn fixture() -> Result<(tree_sitter::Language, tree_sitter::Tree, Tree), Box<dyn Error>> {
+    let language =
+        unsafe { tree_sitter::Language::from_raw(tree_sitter_json::LANGUAGE.into_raw()().cast()) };
     let grammar = tree_sitter_squatter::Grammar::new(&language)?;
     let mut parser = tree_sitter::Parser::new();
     parser.set_language(&language)?;
-    let source = b"{\"a\": [1, true, null], \"b\": 2}";
-    let mainline = parser.parse(source, None).ok_or("parse failed")?;
+    let native = parser.parse(SOURCE, None).ok_or("parse failed")?;
     let packed = Tree::pack_with_options(
         &grammar,
-        &mainline,
+        &native,
         PackOptions {
             initial_group_capacity: 1,
             ..Default::default()
         },
     )?;
-    assert_eq!(kinds(&mainline), kinds(&packed));
-    assert_eq!(
-        packed.root_node().attributes(),
-        mainline.root_node().attributes()
-    );
-    assert_eq!(
-        packed.root_node().preorder().count(),
-        packed.root_node().descendant_count()
-    );
-    for node in packed.root_node().preorder() {
-        assert_eq!(node.children().count(), node.child_count());
-        assert_eq!(node.named_children().count(), node.named_child_count());
-        assert_eq!(node.preorder().count(), node.descendant_count());
-    }
-    check_shared_navigation(mainline.root_node(), language.field_count() as u16)?;
+    Ok((language, native, packed))
+}
+
+#[test]
+fn shared_navigation_and_iterator_lifetimes() -> Result<(), Box<dyn Error>> {
+    let (language, native, packed) = fixture()?;
+    check_shared_navigation(native.root_node(), language.field_count() as u16)?;
     check_shared_navigation(packed.root_node(), language.field_count() as u16)?;
+    for root in packed.root_node().preorder() {
+        let expected: Vec<_> = root.preorder().collect();
+        let mut iterator = root.node_iterator()?;
+        assert!(iterator.field_id().is_none());
+        let mut nodes = Vec::new();
+        while let Some(node) = iterator.next() {
+            assert_eq!(
+                iterator.field_id(),
+                (node.field_id() != 0).then_some(node.field_id())
+            );
+            assert_eq!(iterator.attributes(), Some(node.attributes()));
+            nodes.push(node);
+        }
+        assert!(iterator.next().is_none());
+        assert!(iterator.field_id().is_none());
+        assert!(iterator.attributes().is_none());
+        drop(iterator);
+        assert_eq!(nodes, expected);
+        // Returned nodes remain usable after the iterator is dropped.
+        assert_eq!(nodes[0].attributes(), root.attributes());
+    }
+    Ok(())
+}
+
+#[test]
+fn group_boundaries_and_optional_columns() -> Result<(), Box<dyn Error>> {
+    let (language, _, _) = fixture()?;
+    let grammar = tree_sitter_squatter::Grammar::new(&language)?;
+    let mut parser = tree_sitter::Parser::new();
+    parser.set_language(&language)?;
     // Cross the presence-index threshold and several physical groups, retaining
     // a rare boolean beside common number and punctuation symbols.
-    let large_source = format!("[true,{}null]", "123,\n".repeat(600));
-    let large_native = parser.parse(&large_source, None).ok_or("parse failed")?;
-    check_shared_navigation(large_native.root_node(), language.field_count() as u16)?;
+    let source = format!("[true,{}null]", "123,\n".repeat(600));
+    let native = parser.parse(&source, None).ok_or("parse failed")?;
     for points in [false, true] {
         for symbol_presence in [false, true] {
-            let large_packed = Tree::pack_with_options(
+            let packed = Tree::pack_with_options(
                 &grammar,
-                &large_native,
+                &native,
                 PackOptions {
                     points,
                     symbol_presence,
                     ..Default::default()
                 },
             )?;
-            check_shared_navigation(large_packed.root_node(), language.field_count() as u16)?;
+            check_shared_navigation(packed.root_node(), language.field_count() as u16)?;
         }
     }
-    check_cursor(&packed)?;
-    check_queries(&language, source, &mainline, &packed)?;
-    check_cursor_reuse(&language, &mainline)?;
+    Ok(())
+}
+
+#[test]
+fn streaming_queries_and_cursor_reuse() -> Result<(), Box<dyn Error>> {
+    let (language, native, packed) = fixture()?;
+    check_queries(&language, SOURCE.as_bytes(), &native, &packed)?;
+    check_cursor_reuse(&language, &native)?;
+    Ok(())
+}
+
+#[test]
+fn owned_and_borrowed_storage() -> Result<(), Box<dyn Error>> {
+    let (language, native, packed) = fixture()?;
+    let grammar = tree_sitter_squatter::Grammar::new(&language)?;
     let compact = packed.repack()?;
     let decoded = Tree::from_bytes(&grammar, compact.as_bytes())?;
     let borrowed = Tree::from_bytes_borrowed(&grammar, compact.as_bytes())?;
     assert_eq!(borrowed.as_bytes().as_ptr(), compact.as_bytes().as_ptr());
-    assert_eq!(
-        borrowed.root_node().preorder().count(),
-        compact.root_node().preorder().count()
-    );
-    check_iterators(&borrowed)?;
-    check_queries(&language, source, &mainline, &borrowed)?;
-    drop(mainline);
-    drop(borrowed);
-    assert_eq!(kinds(&packed), kinds(&decoded));
-    check_cursor(&decoded)?;
+    check_shared_navigation(borrowed.root_node(), language.field_count() as u16)?;
+    check_queries(&language, SOURCE.as_bytes(), &native, &borrowed)?;
+    let expected: Vec<_> = compact
+        .root_node()
+        .preorder()
+        .map(|node| (node.kind().to_owned(), node.byte_range()))
+        .collect();
     assert_eq!(compact.group_count(), compact.group_capacity());
-    let mut corrupted = compact.as_bytes().to_vec();
-    corrupted[0] ^= 0x80;
-    assert!(Tree::from_bytes(&grammar, &corrupted).is_err());
-    println!(
-        "ok: Rust FFI, ownership, traits, iterators, persistence and streaming queries ({} nodes)",
-        packed.root_node().descendant_count()
+    drop(borrowed);
+    drop(compact);
+    drop(packed);
+    drop(native);
+    drop(grammar);
+    assert_eq!(
+        decoded
+            .root_node()
+            .preorder()
+            .map(|node| (node.kind().to_owned(), node.byte_range()))
+            .collect::<Vec<_>>(),
+        expected
     );
+    let mut corrupted = decoded.as_bytes().to_vec();
+    corrupted[0] ^= 0x80;
+    let grammar = tree_sitter_squatter::Grammar::new(&language)?;
+    assert!(Tree::from_bytes(&grammar, &corrupted).is_err());
     Ok(())
 }

@@ -29,3 +29,7 @@ semver.workspace = true
 serde_json.workspace = true
 tree-sitter-cli = { path = "../cli/" }
 tree-sitter-loader = { path = "../loader/" }
+corpus-analysis = { path = "../corpus-analysis" }
+serde.workspace = true
+walkdir.workspace = true
+toml_edit = { version = "0.25", default-features = false, features = ["parse", "serde"] }

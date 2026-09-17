@@ -35,12 +35,6 @@ pub struct Record<'tree> {
     pub attributes: Attributes<'tree>,
 }
 
-#[derive(Debug, Eq, PartialEq)]
-pub struct Digest {
-    pub nodes: usize,
-    pub value: u64,
-}
-
 pub fn attributes_match(expected: &Attributes<'_>, actual: &Attributes<'_>) -> bool {
     if expected.has_error && !actual.has_error {
         return false;
@@ -50,95 +44,15 @@ pub fn attributes_match(expected: &Attributes<'_>, actual: &Attributes<'_>) -> b
     expected == *actual
 }
 
-fn digest_attributes(mut value: u64, attributes: &Attributes<'_>) -> u64 {
-    std::hint::black_box(attributes.kind);
-    std::hint::black_box(attributes.grammar_name);
-    // Block-level error flags can differ from mainline without changing tree contents.
-    std::hint::black_box(attributes.has_error);
-    let mut mix = |part| {
-        value = value.rotate_left(7) ^ part;
-        value = value.wrapping_mul(0x9e37_79b1_85eb_ca87);
-    };
-    for part in [
-        u64::from(attributes.kind_id),
-        u64::from(attributes.grammar_id),
-        attributes.start_byte as u64,
-        attributes.end_byte as u64,
-        u64::from(attributes.is_named),
-        u64::from(attributes.is_extra),
-        u64::from(attributes.is_missing),
-        u64::from(attributes.is_error),
-        u64::from(attributes.has_changes),
-    ] {
-        mix(part);
-    }
-    for part in [
-        attributes.start_position.row as u64,
-        attributes.start_position.column as u64,
-        attributes.end_position.row as u64,
-        attributes.end_position.column as u64,
-    ] {
-        mix(part);
-    }
-    value
-}
-
-fn digest_once<'tree, N: NodeLike<'tree>>(root: N) -> Result<Digest> {
-    let mut cursor = root.cursor()?;
-    let mut nodes = 0;
-    let mut value = 42;
-    loop {
-        value = digest_attributes(value, &cursor.attributes());
-        nodes += 1;
-        if cursor.goto_first_child() {
-            continue;
-        }
-        loop {
-            if cursor.goto_next_sibling() {
-                break;
-            }
-            if !cursor.goto_parent() {
-                return Ok(Digest { nodes, value });
-            }
-        }
-    }
-}
-
-/// Allocation-free attribute traversal for resident-set and cache experiments.
-pub fn digest<'tree, N: NodeLike<'tree>>(root: N, iterations: usize) -> Result<Digest> {
-    let mut result = Digest { nodes: 0, value: 0 };
-    for _ in 0..iterations {
-        result = std::hint::black_box(digest_once(root)?);
-    }
-    result.nodes *= iterations;
-    Ok(result)
-}
-
-fn digest_iterator_once(root: tree_sitter_squatter::Node<'_>) -> Result<Digest> {
-    let mut iterator = root.node_iterator()?;
-    let mut nodes = 0;
-    let mut value = 42;
-    while iterator.next().is_some() {
-        value = digest_attributes(value, &iterator.attributes().unwrap());
-        nodes += 1;
-    }
-    Ok(Digest { nodes, value })
-}
-
-pub fn digest_iterator(root: tree_sitter_squatter::Node<'_>, iterations: usize) -> Result<Digest> {
-    let mut result = Digest { nodes: 0, value: 0 };
-    for _ in 0..iterations {
-        result = std::hint::black_box(digest_iterator_once(root)?);
-    }
-    result.nodes *= iterations;
-    Ok(result)
-}
-
-fn scan_once<'tree, N: NodeLike<'tree>>(root: N) -> Result<usize> {
+fn scan_once<'tree, N: NodeLike<'tree>, const ATTRIBUTES: bool>(root: N) -> Result<usize> {
     let mut cursor = root.cursor()?;
     let mut nodes = 0;
     loop {
-        std::hint::black_box(cursor.attributes());
+        if ATTRIBUTES {
+            std::hint::black_box(cursor.attributes());
+        } else {
+            std::hint::black_box(cursor.node());
+        }
         nodes += 1;
         if cursor.goto_first_child() {
             continue;
@@ -154,28 +68,40 @@ fn scan_once<'tree, N: NodeLike<'tree>>(root: N) -> Result<usize> {
     }
 }
 
-pub fn scan<'tree, N: NodeLike<'tree>>(root: N, iterations: usize) -> Result<usize> {
+pub fn scan<'tree, N: NodeLike<'tree>, const ATTRIBUTES: bool>(
+    root: N,
+    iterations: usize,
+) -> Result<usize> {
     let mut nodes = 0;
     for _ in 0..iterations {
-        nodes += std::hint::black_box(scan_once(root)?);
+        nodes += std::hint::black_box(scan_once::<_, ATTRIBUTES>(root)?);
     }
     Ok(nodes)
 }
 
-fn scan_iterator_once(root: tree_sitter_squatter::Node<'_>) -> Result<usize> {
+fn scan_iterator_once<const ATTRIBUTES: bool>(
+    root: tree_sitter_squatter::Node<'_>,
+) -> Result<usize> {
     let mut iterator = root.node_iterator()?;
     let mut nodes = 0;
-    while iterator.next().is_some() {
-        std::hint::black_box(iterator.attributes().unwrap());
+    while let Some(node) = iterator.next() {
+        if ATTRIBUTES {
+            std::hint::black_box(iterator.attributes().unwrap());
+        } else {
+            std::hint::black_box(node);
+        }
         nodes += 1;
     }
     Ok(nodes)
 }
 
-pub fn scan_iterator(root: tree_sitter_squatter::Node<'_>, iterations: usize) -> Result<usize> {
+pub fn scan_iterator<const ATTRIBUTES: bool>(
+    root: tree_sitter_squatter::Node<'_>,
+    iterations: usize,
+) -> Result<usize> {
     let mut nodes = 0;
     for _ in 0..iterations {
-        nodes += std::hint::black_box(scan_iterator_once(root)?);
+        nodes += std::hint::black_box(scan_iterator_once::<ATTRIBUTES>(root)?);
     }
     Ok(nodes)
 }
@@ -217,37 +143,6 @@ pub fn walk_iterator<'tree>(
         });
     }
     Ok(records)
-}
-
-pub fn navigate_iterator(
-    root: tree_sitter_squatter::Node<'_>,
-    ids: &Identities,
-) -> Result<Vec<usize>> {
-    let mut nodes = Vec::with_capacity(ids.len());
-    for node in root.node_iterator()? {
-        nodes.push(ids[&node.identity()]);
-    }
-    Ok(nodes)
-}
-
-/// Native cursor movement without attribute decoding.
-/// Recording every identity keeps correctness checks stronger than a checksum.
-pub fn navigate<'tree, C: CursorLike<'tree>>(mut cursor: C, ids: &Identities) -> Vec<usize> {
-    let mut nodes = Vec::with_capacity(ids.len());
-    loop {
-        nodes.push(ids[&cursor.node().identity()]);
-        if cursor.goto_first_child() {
-            continue;
-        }
-        loop {
-            if cursor.goto_next_sibling() {
-                break;
-            }
-            if !cursor.goto_parent() {
-                return nodes;
-            }
-        }
-    }
 }
 
 pub fn seek_bytes<'tree, N: NodeLike<'tree>>(

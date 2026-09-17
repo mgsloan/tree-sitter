@@ -12,7 +12,5 @@ libloading.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2 = "0.10.9"
-signal-hook = "0.4.4"
 tree-sitter.workspace = true
-tree-sitter-language.workspace = true
 walkdir.workspace = true
