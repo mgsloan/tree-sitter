@@ -34,3 +34,15 @@
 - [ ] Update persistence cache properly for renames
 
 - [ ] Consider allowing persistent cache waiters
+
+- [ ] Consider other layer(s) above group bases. Like if the group bases made a very shallow b-tree. Storing such a layer could be more cache friendly for the first few steps of search.
+
+      * Especially could be nice to have hierarchical symbol presence.  Maybe should just change symbol presence stride?  Tricky interaction with forests.
+
+- [ ] Could postorder be better for direct parse to packed?
+
+- [ ] Compression support for persistence?  Compress while compacting.  Use bitpacker?
+
+      * Could also decompress group bases on the fly.  Symbol / field / supertype search doesn't need em
+
+- [ ] Consider using fastpfor style exceptions?  Probably not, avoid branches
