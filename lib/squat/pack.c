@@ -139,18 +139,21 @@ static inline ChildFacts child_facts(Subtree subtree) {
   return facts;
 }
 
+static uint32_t grown_capacity(uint32_t capacity, uint64_t needed, size_t element_size) {
+  if (needed > UINT32_MAX || needed > SIZE_MAX / element_size) return 0;
+  if (!capacity) capacity = 32;
+  while (capacity < needed) {
+    if (capacity > UINT32_MAX / 2) return (uint32_t)needed;
+    capacity *= 2;
+  }
+  return capacity > SIZE_MAX / element_size ? (uint32_t)needed : capacity;
+}
+
 static bool reserve_positions(Builder *builder, uint32_t count, uint32_t *offset) {
   uint64_t needed = (uint64_t)builder->position_count + count;
-  if (needed > UINT32_MAX || needed > SIZE_MAX / sizeof(PackPosition)) goto allocation;
   if (needed > builder->position_capacity) {
-    uint32_t capacity = builder->position_capacity ? builder->position_capacity : 32;
-    while (capacity < needed) {
-      if (capacity > UINT32_MAX / 2) {
-        capacity = (uint32_t)needed;
-        break;
-      }
-      capacity *= 2;
-    }
+    uint32_t capacity = grown_capacity(builder->position_capacity, needed, sizeof(PackPosition));
+    if (!capacity) goto allocation;
 
     PackPosition *next = realloc(builder->positions, (size_t)capacity * sizeof(PackPosition));
     if (!next) goto allocation;
@@ -168,16 +171,9 @@ allocation:
 
 static bool reserve_masks(Builder *builder, uint32_t count, uint32_t *offset) {
   uint64_t needed = (uint64_t)builder->mask_count + count;
-  if (needed > UINT32_MAX || needed > SIZE_MAX / sizeof(uint64_t)) goto allocation;
   if (needed > builder->mask_capacity) {
-    uint32_t capacity = builder->mask_capacity ? builder->mask_capacity : 32;
-    while (capacity < needed) {
-      if (capacity > UINT32_MAX / 2) {
-        capacity = (uint32_t)needed;
-        break;
-      }
-      capacity *= 2;
-    }
+    uint32_t capacity = grown_capacity(builder->mask_capacity, needed, sizeof(uint64_t));
+    if (!capacity) goto allocation;
 
     uint64_t *next = realloc(builder->masks, (size_t)capacity * sizeof(uint64_t));
     if (!next) goto allocation;
