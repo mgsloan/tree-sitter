@@ -18,23 +18,3 @@ mode = "carousel"
 [pressure.bursty]
 mode = "tenant"
 duty_percent = 10
-
-[[layout]]
-name = "group16-align8"
-group_size = 16
-alignment = 8
-
-[[layout]]
-name = "group32-align8"
-group_size = 32
-alignment = 8
-
-[[layout]]
-name = "group64-align8"
-group_size = 64
-alignment = 8
-
-[[layout]]
-name = "group16-align64"
-group_size = 16
-alignment = 64

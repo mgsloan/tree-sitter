@@ -132,7 +132,7 @@ in `supertypes`, `is_last_child`, and `field`.
 
 Symbol codes combine public display IDs with grammar selectors when both fit
 in sixteen bits. Byte pairs allow direct reads; larger grammars use shared or
-local selector dictionaries. See [encoding choices](lib/squat/experiments/symbol-pairs.md).
+local selector dictionaries.
 
 When combined codes cannot fit, the symbol column stores display IDs and a
 separate u16 column stores original grammar IDs. The `SQ_SEPARATE_GRAMMAR`

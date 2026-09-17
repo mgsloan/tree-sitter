@@ -55,7 +55,7 @@ its navigation, query, and seek timings are not directly comparable with old
 results. Without `cold-parse`, prerequisite parsing reuses a grammar pack context
 and is labeled `setup-parse`.
 
-## Pressure, layouts, and results
+## Pressure and results
 
 The matrix in `matrix.toml` defines isolated, carousel, wash, and bursty pressure.
 Use repeated `--pressure-profile NAME`, with optional `--pressure-bytes`,
@@ -63,10 +63,6 @@ Use repeated `--pressure-profile NAME`, with optional `--pressure-bytes`,
 wash traverses a randomized buffer; bursty runs a concurrent tenant. Default
 pressure size is twice the detected LLC, falling back to 32 MiB. Put a tenant on
 a different physical core sharing the benchmark core's LLC.
-
-`--layouts` additionally builds and measures the matrix's storage layouts.
-The remaining C probes measure actual layout/packing, retained allocations and
-construction peaks (`memory.c`/`memory.py`), and slab loading (`load.c`).
 
 `container-run.json` records source/input/grammar hashes, selection coverage,
 commands, logs, and operation status. The benchmark writes per-file, per-language,

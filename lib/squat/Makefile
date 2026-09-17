@@ -46,25 +46,12 @@ check: $(BUILD)/unit $(BUILD)/supertype-check
 	$(BUILD)/unit
 	$(BUILD)/supertype-check
 
-$(BUILD)/layout-bench: experiments/layout.c $(BUILD)/libtree-sitter-squat.a $(BUILD)/runtime.o
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) $^ -ldl -o $@
-
 $(BUILD)/query-check: tests/query.c tests/field_lookup.h $(BUILD)/libtree-sitter-squat.a $(BUILD)/runtime.o
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) $(filter %.c %.a %.o,$^) -ldl -o $@
 
 $(BUILD)/context-check: tests/context.c tests/supertype_fixture.h tests/language_clone.h $(BUILD)/libtree-sitter-squat.a $(BUILD)/runtime.o
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) $(filter %.c %.a %.o,$^) -ldl \
 	  -Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc -o $@
-
-# Repeated sq_tree_from_bytes over pre-serialized slabs: the persistence read path.
-$(BUILD)/load-bench: experiments/load.c $(BUILD)/libtree-sitter-squat.a $(BUILD)/runtime.o
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) $^ -ldl -o $@
-
-# GNU ld wrapping counts runtime and Squatter allocations without changing their
-# sizes. Prebuilt grammar-internal libc calls are outside this accounting.
-$(BUILD)/memory-bench: experiments/memory.c $(BUILD)/libtree-sitter-squat.a $(BUILD)/runtime.o
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) $(filter %.c %.a %.o,$^) -ldl \
-	  -Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc,--wrap=aligned_alloc,--wrap=free -o $@
 
 # Public-API probe for comparing persisted bytes with another build.
 $(BUILD)/slab-compatibility: tests/slab-compatibility.c $(BUILD)/libtree-sitter-squat.a $(BUILD)/runtime.o

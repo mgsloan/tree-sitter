@@ -2,13 +2,9 @@
 """Validate and summarize every supported result in one Squatter run directory."""
 
 import argparse
-import csv
 import hashlib
-import io
 import json
 from pathlib import Path
-import statistics
-import tomllib
 
 
 def read(path):
@@ -103,33 +99,6 @@ def pressure_summary(results):
     return records, summaries
 
 
-def layout_summary(directory, matrix, inputs):
-    variants = {}
-    grammars = sorted({entry["grammar"] for entry in inputs})
-    for layout in matrix.get("layout", []):
-        records = []
-        for grammar in grammars:
-            path = directory / f"layout-{layout['name']}-{grammar}.log"
-            if not path.exists():
-                continue
-            lines = path.read_text().splitlines()
-            start = next(index for index, line in enumerate(lines) if line.startswith("file_index,"))
-            records.extend(csv.DictReader(io.StringIO("\n".join(lines[start:]))))
-        if not records:
-            continue
-        nodes = sum(int(row["nodes"]) for row in records)
-        slab_bytes = sum(int(row["slab_bytes"]) for row in records)
-        slots = sum(int(row["slots"]) for row in records)
-        variants[layout["name"]] = dict(
-            files=len(records), nodes=nodes, slab_bytes=slab_bytes,
-            bytes_per_node=slab_bytes / nodes, occupancy=nodes / slots,
-            summed_median_pack_ms=sum(float(row["median_pack_ms"]) for row in records),
-            median_file_bytes_per_node=statistics.median(
-                int(row["slab_bytes"]) / int(row["nodes"]) for row in records),
-        )
-    return variants
-
-
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("run", type=Path)
@@ -148,7 +117,6 @@ def main():
     matrix_bytes = matrix_path.read_bytes()
     if manifest.get("matrix_sha256") != hashlib.sha256(matrix_bytes).hexdigest():
         raise SystemExit(f"matrix does not match run manifest: {matrix_path}")
-    matrix = tomllib.loads(matrix_bytes.decode())
     benchmarks = benchmark_results(arguments.run)
     pressure_records, pressure_summaries = pressure_summary(benchmarks)
     result = dict(
@@ -161,7 +129,6 @@ def main():
                         for key, value in benchmarks.items()},
         pressure_summaries=pressure_summaries,
         pressure_records=pressure_records,
-        layouts=layout_summary(arguments.run, matrix, manifest["inputs"]),
         ratio_contract="pressure/isolated per-file medians; relative slowdown is Squatter slowdown divided by mainline slowdown",
     )
     with arguments.output.open("x") as output:

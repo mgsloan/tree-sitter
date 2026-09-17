@@ -46,14 +46,11 @@ byte stores grammar. Otherwise, grammar selectors use shared dictionaries.
 A separate u16 grammar column is present only when the combined code cannot fit
 in 16 bits and at least one node has different display and grammar IDs.
 It is the final optional column; absent fallback columns decode to the display ID.
-See [encoding choices and measurements](experiments/symbol-pairs.md).
 
 Fixed-width packing uses direct halfword stores. Iterators read IDs from the
 slab instead of unpacking and caching copies; only coordinates need expansion.
 On x86-64, group equality uses SSE2 comparisons and a lane mask, with a portable
 scalar implementation elsewhere. These optimizations preserve the slab format.
-See [fixed-width measurements](experiments/fixed-width.md) and
-[public display ID measurements](experiments/public-display.md).
 
 Grammar preparation returns
 `SQ_ERROR_OVERFLOW` if symbol IDs (including the two error symbols) or field IDs
@@ -392,44 +389,6 @@ allocation-free `Node::preorder()` remains available.
 Iterator reads decode coordinates directly from the slab. IDs and flags also
 remain in the slab; there is no unpack cache. Bulk snapshots exclude child and
 descendant counts; their explicit node APIs still use ordinary tree scans.
-
-## Memory benchmark
-
-The historical measured memory comparison covers mainline and Squatter,
-default/compact packing, and stored/synthetic point configurations.
-It measures live allocations from the implementation, rather than estimating
-storage from public nodes. Retained sizes include the tree object and auxiliary
-allocations; the parser is released first. Construction peaks are separate.
-
-On Linux/glibc with GNU-compatible linker wrapping, build and run:
-
-```sh
-make -C lib/squat BUILD=../../build/squat-memory CFLAGS="-O3 -g" \
-  ../../build/squat-memory/memory-bench
-python3 lib/squat/experiments/memory.py --output build/squat-memory/results.json
-```
-
-The runner uses the saved iterator corpus manifest and grammar bundles. It checks
-their hashes, prepares the same seed-42 mutations, compares both point modes, and
-requires two identical measurements per input. For a single file, invoke either
-`memory-bench GRAMMAR_LIBRARY GRAMMAR_SYMBOL SOURCE` directly.
-
-Requested bytes and glibc usable bytes are both recorded. Neither is process RSS:
-allocator metadata, free arenas, source text, shared grammar mappings, and the
-out-of-band allocation tracker are excluded. Link wrapping covers runtime and
-Squatter objects, including serialized scanner states owned by trees. Direct libc
-allocations inside prebuilt grammar scanners are not intercepted; these scanners
-are destroyed with the parser before retained tree measurements. Reported peaks
-therefore cover runtime/Squatter allocations, not every construction allocation.
-
-The historical column-addressing investigation records the earlier pointer/bias
-work. The subsequent version-4 format
-uses the smaller header and reverse preorder, which eliminates index bias entirely.
-
-Historical version-4 storage results compare the new layout with version 3 on
-the two-vCPU cloud VM, including both
-point modes, cached/uncached walks, queries, compact packing, and retained memory.
-
 
 ## Optional point positions
 

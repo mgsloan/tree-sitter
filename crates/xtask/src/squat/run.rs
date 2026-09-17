@@ -45,9 +45,6 @@ pub struct Options {
     benchmark: Vec<String>,
     #[arg(long)]
     skip_mutated: bool,
-    /// Also measure the layout variants in the matrix.
-    #[arg(long)]
-    layouts: bool,
     #[arg(long)]
     unoptimized_query: bool,
     #[arg(long)]
@@ -572,54 +569,6 @@ pub fn run(options: Options, test: Option<TestLevel>) -> Result<()> {
                 }
                 arguments.extend(options.benchmark.clone());
                 run.shell(&label, "/lib64/ld-linux-x86-64.so.2 \"$@\"", &arguments)?;
-            }
-        }
-        if options.layouts {
-            for layout in matrix["layout"].as_array().context("missing layouts")? {
-                let name = text(&layout["name"])?;
-                let directory = format!("/out/layout-{name}");
-                let flags = format!(
-                    "-O3 -g -DSQ_GROUP_SIZE={} -DSQ_COLUMN_ALIGNMENT={}",
-                    layout["group_size"], layout["alignment"]
-                );
-                run.shell(&format!("build-layout-{name}"), "make -C /work/lib/squat -j4 BUILD=\"$1\" CFLAGS=\"$2\" \"$1/layout-bench\" \"$1/compare\" check", &[directory.clone(),flags])?;
-                for (grammar, entry) in &registry.grammars {
-                    let files: Vec<_> = staged
-                        .iter()
-                        .filter(|input| input["grammar"] == *grammar)
-                        .collect();
-                    if files.is_empty() {
-                        continue;
-                    }
-                    let mut arguments = vec![
-                        entry.library.to_string_lossy().into_owned(),
-                        entry.symbol.clone(),
-                    ];
-                    arguments.extend(
-                        files.iter().map(|input| {
-                            format!("/out/corpus/{}", input["path"].as_str().unwrap())
-                        }),
-                    );
-                    run.shell(
-                        &format!("layout-{name}-{grammar}"),
-                        "program=$1; shift; \"$program\" \"$@\"",
-                        &[vec![format!("{directory}/layout-bench")], arguments.clone()].concat(),
-                    )?;
-                    let mut arguments = arguments[..2].to_vec();
-                    arguments.extend(
-                        files
-                            .iter()
-                            .filter(|input| input["bytes"].as_u64().unwrap() < 4096)
-                            .map(|input| {
-                                format!("/out/corpus/{}", input["path"].as_str().unwrap())
-                            }),
-                    );
-                    run.shell(
-                        &format!("check-layout-{name}-{grammar}"),
-                        "program=$1; shift; \"$program\" \"$@\"",
-                        &[vec![format!("{directory}/compare")], arguments].concat(),
-                    )?;
-                }
             }
         }
     }
