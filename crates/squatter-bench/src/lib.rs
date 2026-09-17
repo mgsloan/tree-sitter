@@ -71,9 +71,6 @@ struct Arguments {
     max_file_bytes: u64,
     #[arg(long)]
     repack: bool,
-    /// Treat the known hidden-seek fixture difference as a failure.
-    #[arg(long)]
-    strict_seeks: bool,
     /// Disable squat query scan/plan shortcuts for an ablation run.
     #[arg(long)]
     unoptimized_query: bool,
@@ -223,7 +220,6 @@ struct FileResult {
     squat: Metrics,
     ratios: BTreeMap<&'static str, Option<f64>>,
     failures: usize,
-    ignored_differences: usize,
     expected_field_differences: usize,
 }
 struct Accumulated {
@@ -400,7 +396,6 @@ fn accumulate(
                 squat: Metrics::default(),
                 ratios: BTreeMap::new(),
                 failures: 0,
-                ignored_differences: 0,
                 expected_field_differences: 0,
             },
             mainline: Vec::new(),
@@ -796,7 +791,7 @@ pub fn run(check_only: bool) -> Result<()> {
         "iterator_contract": "native preorder; mainline uses its forward cursor",
         "cursor_contract": "scan-forward reads O(1) bulk attributes; cursor-forward measures navigation",
         "workload_order": "rotate by batch and every two repeats, retaining both backend orders for each rotation",
-        "query_engine": "slab NFA and structural plans adapted from ../main", "seek_contract": if arguments.strict_seeks { "strict" } else { "only hidden-seek.css differences are counted and ignored" },
+        "query_engine": "slab NFA and structural plans adapted from ../main", "seek_contract": "strict",
         "query_contract": "exact completed matches; captures cover completed captures, with event order, provisional snapshots, and duplicates allowed to differ; coverage checked outside timing",
     });
     fs::write(
@@ -812,7 +807,6 @@ pub fn run(check_only: bool) -> Result<()> {
     let mut results = BTreeMap::new();
     let mut completed = BTreeSet::new();
     let mut failed_files = BTreeSet::new();
-    let mut ignored_seek_differences = 0usize;
     let mut expected_field_differences = 0usize;
     'batches: for (batch_index, batch) in batches.into_iter().enumerate() {
         let mut sources = Vec::new();
@@ -1065,15 +1059,8 @@ pub fn run(check_only: bool) -> Result<()> {
                 for ((pair, message), [mainline_time, squat_time]) in
                     pairs.iter().zip(messages).zip(times)
                 {
-                    let known_fixture = pair.source.input.path.ends_with("hidden-seek.css");
-                    let ignore =
-                        !arguments.strict_seeks && benchmark.starts_with("seek-") && known_fixture;
-                    let ignored = message.is_some() && ignore;
-                    let failed = message.is_some() && !ignore;
-                    if ignored {
-                        ignored_seek_differences += 1;
-                    }
-                    if let Some(message) = message.filter(|_| !ignore) {
+                    let failed = message.is_some();
+                    if let Some(message) = message {
                         failures.record(&pair.source.input.path, benchmark, message);
                         failed_files.insert(pair.source.input.path.clone());
                     }
@@ -1086,13 +1073,6 @@ pub fn run(check_only: bool) -> Result<()> {
                         &pair.squat,
                         failed,
                     );
-                    if ignored {
-                        results
-                            .get_mut(&(pair.source.input.path.clone(), benchmark.clone()))
-                            .unwrap()
-                            .result
-                            .ignored_differences += 1;
-                    }
                     if failed && arguments.short_circuit {
                         break 'batches;
                     }
@@ -1141,7 +1121,6 @@ pub fn run(check_only: bool) -> Result<()> {
     write_summaries(&output_path("aggregate.jsonl"), &finalized, false, partial)?;
     manifest["completed"] = completed.len().into();
     manifest["failed"] = failed_files.len().into();
-    manifest["ignored_seek_differences"] = ignored_seek_differences.into();
     manifest["expected_field_differences"] = expected_field_differences.into();
     manifest["failures"] = serde_json::to_value(&failures)?;
     manifest["partial"] = partial.into();

@@ -338,9 +338,9 @@ test counts attributable differences for its simple `(_ !field) @parent` probes;
 other query comparisons remain strict.
 Historical comparisons document the upstream inconsistency.
 
-The known mainline difference in `tests/fixtures/hidden-seek.css` is counted but
-ignored by `squatter-bench` unless `--strict-seeks` is used. Other differences
-fail. No hidden-node or seek-barrier index is stored.
+Descendant seeks must match mainline exactly, including hidden zero-width
+boundaries covered by `tests/fixtures/hidden-seek.css` and `hidden-seek.sh`.
+No hidden-node or seek-barrier index is stored.
 
 `tests/seek.c` compares byte seeks and, when enabled, point seeks exactly with the
 previous sibling-descent algorithms, independently of mainline differences.

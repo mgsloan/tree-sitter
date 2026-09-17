@@ -79,7 +79,6 @@ python3 tools/squatter/summarize.py build/squat-bench --output build/summary.jso
 
 The summarizer rejects failed runs and mismatched pressure comparisons. Completed
 query matches compare exactly; capture checks require coverage of completed
-matches while permitting provisional events and different order. The known seek
-difference is accepted only for `hidden-seek.css` (direct harness runs can use
-`--strict-seeks`). Field differences are accepted only when Squatter agrees with
-mainline's visible-child field lookup.
+matches while permitting provisional events and different order. Descendant seeks
+compare exactly with mainline. Field differences are accepted only when Squatter
+agrees with mainline's visible-child field lookup.

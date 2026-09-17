@@ -304,6 +304,7 @@ pub fn run(options: Options, test: Option<TestLevel>) -> Result<()> {
         staged.push(json!({"path":input.path,"grammar":input.grammar,"bytes":input.bytes,"sha256":digest(&fs::read(destination)?)}));
     }
     for (grammar, filename) in [
+        ("bash", "hidden-seek.sh"),
         ("css", "hidden-seek.css"),
         ("typescript", "inherited-field.ts"),
         ("tsx", "inherited-field.ts"),

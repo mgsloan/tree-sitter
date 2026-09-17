@@ -4,9 +4,7 @@
 #include <dlfcn.h>
 #include <stdio.h>
 
-// Preserve the old sibling-descent algorithm as an independent oracle. Mainline
-// has known empty-node differences, so comparing only against it can conceal
-// a regression in Squatter's existing behavior.
+// Preserve sibling descent as an independent oracle for the indexed search.
 static SQNode reference(SQNode node, uint32_t left, uint32_t right, bool named) {
   if (!node.tree || left > right) return sq_null();
   SQNode result = node;
