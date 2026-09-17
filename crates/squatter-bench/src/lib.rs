@@ -573,61 +573,39 @@ fn validate_workload(
     Ok(())
 }
 
+fn sequence_difference<T: std::fmt::Debug>(
+    label: &str,
+    expected: &[T],
+    actual: &[T],
+    matches: impl Fn(&T, &T) -> bool,
+) -> Option<String> {
+    let index = expected
+        .iter()
+        .zip(actual)
+        .position(|(expected, actual)| !matches(expected, actual))
+        .or_else(|| (expected.len() != actual.len()).then_some(expected.len().min(actual.len())))?;
+    Some(format!(
+        "{label} {index}: expected {:?}, actual {:?}; lengths {}/{}",
+        expected.get(index),
+        actual.get(index),
+        expected.len(),
+        actual.len()
+    ))
+}
+
 fn difference(expected: &Observation<'_>, actual: &Observation<'_>) -> Option<String> {
-    if expected == actual {
-        return None;
-    }
     match (expected, actual) {
-        (Observation::Walk(a), Observation::Walk(b)) => {
-            if a.len() == b.len()
-                && a.iter().zip(b).all(|(a, b)| {
-                    a.ordinal == b.ordinal
-                        && compare::attributes_match(&a.attributes, &b.attributes)
-                })
-            {
-                return None;
-            }
-            let index = a
-                .iter()
-                .zip(b)
-                .position(|(a, b)| {
-                    a.ordinal != b.ordinal
-                        || !compare::attributes_match(&a.attributes, &b.attributes)
-                })
-                .unwrap_or(a.len().min(b.len()));
-            Some(format!(
-                "walk item {index}: expected {:?}, actual {:?}; lengths {}/{}",
-                a.get(index),
-                b.get(index),
-                a.len(),
-                b.len()
-            ))
+        (Observation::Walk(expected), Observation::Walk(actual)) => {
+            sequence_difference("walk item", expected, actual, |expected, actual| {
+                expected.ordinal == actual.ordinal
+                    && compare::attributes_match(&expected.attributes, &actual.attributes)
+            })
         }
-        (Observation::Seek(a), Observation::Seek(b)) => {
-            let index = a
-                .iter()
-                .zip(b)
-                .position(|(a, b)| a != b)
-                .unwrap_or(a.len().min(b.len()));
-            Some(format!(
-                "seek sample {index}: expected ordinal {:?}, actual {:?}",
-                a.get(index),
-                b.get(index)
-            ))
+        (Observation::Seek(expected), Observation::Seek(actual)) => {
+            sequence_difference("seek sample", expected, actual, PartialEq::eq)
         }
-        (Observation::Query(a), Observation::Query(b)) => {
-            let index = a
-                .iter()
-                .zip(b)
-                .position(|(a, b)| a != b)
-                .unwrap_or(a.len().min(b.len()));
-            Some(format!(
-                "query event {index}: expected {:?}, actual {:?}; lengths {}/{}",
-                a.get(index),
-                b.get(index),
-                a.len(),
-                b.len()
-            ))
+        (Observation::Query(expected), Observation::Query(actual)) => {
+            sequence_difference("query event", expected, actual, PartialEq::eq)
         }
         _ => unreachable!(),
     }
