@@ -151,36 +151,85 @@ impl TreeLike for tree_sitter::Tree {
 // Both node APIs intentionally share names and signatures. Keep the forwarding
 // list in one place so extending the comparison contract extends both backends.
 macro_rules! node_navigation {
-    ($node:ty) => {
+    ($node:ty $(, $borrow:tt)?) => {
         fn parent(self) -> Option<Self> {
-            <$node>::parent(&self)
+            <$node>::parent($($borrow)? self)
         }
         fn child(self, index: usize) -> Option<Self> {
-            <$node>::child(&self, index.try_into().ok()?)
+            <$node>::child($($borrow)? self, index.try_into().ok()?)
         }
         fn named_child(self, index: usize) -> Option<Self> {
-            <$node>::named_child(&self, index.try_into().ok()?)
+            <$node>::named_child($($borrow)? self, index.try_into().ok()?)
         }
         fn next_sibling(self) -> Option<Self> {
-            <$node>::next_sibling(&self)
+            <$node>::next_sibling($($borrow)? self)
         }
         fn prev_sibling(self) -> Option<Self> {
-            <$node>::prev_sibling(&self)
+            <$node>::prev_sibling($($borrow)? self)
         }
         fn next_named_sibling(self) -> Option<Self> {
-            <$node>::next_named_sibling(&self)
+            <$node>::next_named_sibling($($borrow)? self)
         }
         fn prev_named_sibling(self) -> Option<Self> {
-            <$node>::prev_named_sibling(&self)
+            <$node>::prev_named_sibling($($borrow)? self)
         }
         fn child_by_field_id(self, field: u16) -> Option<Self> {
-            <$node>::child_by_field_id(&self, field)
+            <$node>::child_by_field_id($($borrow)? self, field)
         }
         fn descendant_for_byte_range(self, start: usize, end: usize) -> Option<Self> {
-            <$node>::descendant_for_byte_range(&self, start, end)
+            <$node>::descendant_for_byte_range($($borrow)? self, start, end)
         }
         fn descendant_for_point_range(self, start: Point, end: Point) -> Option<Self> {
-            <$node>::descendant_for_point_range(&self, start, end)
+            <$node>::descendant_for_point_range($($borrow)? self, start, end)
+        }
+    };
+}
+macro_rules! node_attributes {
+    ($node:ty $(, $borrow:tt)?) => {
+        fn kind_id(self) -> u16 {
+            <$node>::kind_id($($borrow)? self)
+        }
+        fn grammar_id(self) -> u16 {
+            <$node>::grammar_id($($borrow)? self)
+        }
+        fn kind(self) -> &'tree str {
+            <$node>::kind($($borrow)? self)
+        }
+        fn grammar_name(self) -> &'tree str {
+            <$node>::grammar_name($($borrow)? self)
+        }
+        fn byte_range(self) -> Range<usize> {
+            <$node>::byte_range($($borrow)? self)
+        }
+        fn start_byte(self) -> usize {
+            <$node>::start_byte($($borrow)? self)
+        }
+        fn end_byte(self) -> usize {
+            <$node>::end_byte($($borrow)? self)
+        }
+        fn start_position(self) -> Point {
+            <$node>::start_position($($borrow)? self)
+        }
+        fn end_position(self) -> Point {
+            <$node>::end_position($($borrow)? self)
+        }
+        fn is_named(self) -> bool {
+            <$node>::is_named($($borrow)? self)
+        }
+        fn is_extra(self) -> bool {
+            <$node>::is_extra($($borrow)? self)
+        }
+        fn is_missing(self) -> bool {
+            <$node>::is_missing($($borrow)? self)
+        }
+        fn is_error(self) -> bool {
+            <$node>::is_error($($borrow)? self)
+        }
+        fn has_error(self) -> bool {
+            <$node>::has_error($($borrow)? self)
+        }
+        fn has_changes(self) -> bool {
+            <$node>::has_changes($($borrow)? self)
         }
     };
 }
@@ -206,51 +255,7 @@ macro_rules! attributes {
 }
 impl<'tree> NodeLike<'tree> for tree_sitter::Node<'tree> {
     type Cursor = tree_sitter::TreeCursor<'tree>;
-    fn kind_id(self) -> u16 {
-        <tree_sitter::Node<'tree>>::kind_id(&self)
-    }
-    fn grammar_id(self) -> u16 {
-        <tree_sitter::Node<'tree>>::grammar_id(&self)
-    }
-    fn kind(self) -> &'tree str {
-        <tree_sitter::Node<'tree>>::kind(&self)
-    }
-    fn grammar_name(self) -> &'tree str {
-        <tree_sitter::Node<'tree>>::grammar_name(&self)
-    }
-    fn byte_range(self) -> Range<usize> {
-        <tree_sitter::Node<'tree>>::byte_range(&self)
-    }
-    fn start_byte(self) -> usize {
-        <tree_sitter::Node<'tree>>::start_byte(&self)
-    }
-    fn end_byte(self) -> usize {
-        <tree_sitter::Node<'tree>>::end_byte(&self)
-    }
-    fn start_position(self) -> Point {
-        <tree_sitter::Node<'tree>>::start_position(&self)
-    }
-    fn end_position(self) -> Point {
-        <tree_sitter::Node<'tree>>::end_position(&self)
-    }
-    fn is_named(self) -> bool {
-        <tree_sitter::Node<'tree>>::is_named(&self)
-    }
-    fn is_extra(self) -> bool {
-        <tree_sitter::Node<'tree>>::is_extra(&self)
-    }
-    fn is_missing(self) -> bool {
-        <tree_sitter::Node<'tree>>::is_missing(&self)
-    }
-    fn is_error(self) -> bool {
-        <tree_sitter::Node<'tree>>::is_error(&self)
-    }
-    fn has_error(self) -> bool {
-        <tree_sitter::Node<'tree>>::has_error(&self)
-    }
-    fn has_changes(self) -> bool {
-        <tree_sitter::Node<'tree>>::has_changes(&self)
-    }
+    node_attributes!(tree_sitter::Node<'tree>, &);
     fn preorder(self) -> impl Iterator<Item = Self> {
         NativePreorder::new(self)
     }
@@ -292,55 +297,11 @@ impl<'tree> NodeLike<'tree> for tree_sitter::Node<'tree> {
     fn cursor(self) -> Result<Self::Cursor, Error> {
         Ok(self.walk())
     }
-    node_navigation!(tree_sitter::Node<'tree>);
+    node_navigation!(tree_sitter::Node<'tree>, &);
 }
 impl<'tree> NodeLike<'tree> for Node<'tree> {
     type Cursor = Cursor<'tree>;
-    fn kind_id(self) -> u16 {
-        <Node<'tree>>::kind_id(self)
-    }
-    fn grammar_id(self) -> u16 {
-        <Node<'tree>>::grammar_id(self)
-    }
-    fn kind(self) -> &'tree str {
-        <Node<'tree>>::kind(self)
-    }
-    fn grammar_name(self) -> &'tree str {
-        <Node<'tree>>::grammar_name(self)
-    }
-    fn byte_range(self) -> Range<usize> {
-        <Node<'tree>>::byte_range(self)
-    }
-    fn start_byte(self) -> usize {
-        <Node<'tree>>::start_byte(self)
-    }
-    fn end_byte(self) -> usize {
-        <Node<'tree>>::end_byte(self)
-    }
-    fn start_position(self) -> Point {
-        <Node<'tree>>::start_position(self)
-    }
-    fn end_position(self) -> Point {
-        <Node<'tree>>::end_position(self)
-    }
-    fn is_named(self) -> bool {
-        <Node<'tree>>::is_named(self)
-    }
-    fn is_extra(self) -> bool {
-        <Node<'tree>>::is_extra(self)
-    }
-    fn is_missing(self) -> bool {
-        <Node<'tree>>::is_missing(self)
-    }
-    fn is_error(self) -> bool {
-        <Node<'tree>>::is_error(self)
-    }
-    fn has_error(self) -> bool {
-        <Node<'tree>>::has_error(self)
-    }
-    fn has_changes(self) -> bool {
-        <Node<'tree>>::has_changes(self)
-    }
+    node_attributes!(Node<'tree>);
     fn preorder(self) -> impl Iterator<Item = Self> {
         Node::preorder(self)
     }
@@ -380,36 +341,7 @@ impl<'tree> NodeLike<'tree> for Node<'tree> {
     fn cursor(self) -> Result<Self::Cursor, Error> {
         self.walk()
     }
-    fn parent(self) -> Option<Self> {
-        Node::parent(self)
-    }
-    fn child(self, index: usize) -> Option<Self> {
-        Node::child(self, index)
-    }
-    fn named_child(self, index: usize) -> Option<Self> {
-        Node::named_child(self, index)
-    }
-    fn next_sibling(self) -> Option<Self> {
-        Node::next_sibling(self)
-    }
-    fn prev_sibling(self) -> Option<Self> {
-        Node::prev_sibling(self)
-    }
-    fn next_named_sibling(self) -> Option<Self> {
-        Node::next_named_sibling(self)
-    }
-    fn prev_named_sibling(self) -> Option<Self> {
-        Node::prev_named_sibling(self)
-    }
-    fn child_by_field_id(self, field: u16) -> Option<Self> {
-        Node::child_by_field_id(self, field)
-    }
-    fn descendant_for_byte_range(self, start: usize, end: usize) -> Option<Self> {
-        Node::descendant_for_byte_range(self, start, end)
-    }
-    fn descendant_for_point_range(self, start: Point, end: Point) -> Option<Self> {
-        Node::descendant_for_point_range(self, start, end)
-    }
+    node_navigation!(Node<'tree>);
 }
 macro_rules! cursor_navigation {
     ($cursor:ty) => {
