@@ -1,23 +1,9 @@
+mod common;
+use common::{grammar, load};
+
 use std::{fs, path::Path, sync::atomic::AtomicBool};
 use tree_squatter_persistence::*;
 
-fn grammar() -> Grammar {
-    let language =
-        unsafe { tree_sitter::Language::from_raw(tree_sitter_json::LANGUAGE.into_raw()().cast()) };
-    Grammar::new(
-        tree_sitter_squatter::Grammar::new(&language).unwrap(),
-        GrammarFingerprint([42; 32]),
-    )
-}
-fn load(cache: &Persistence) -> LoadedFile {
-    cache
-        .load(
-            Path::new("file.json"),
-            &grammar(),
-            &mut tree_sitter::Parser::new(),
-        )
-        .unwrap()
-}
 fn finish(work: &mut Maintenance) -> usize {
     let mut deleted = 0;
     for _ in 0..100 {

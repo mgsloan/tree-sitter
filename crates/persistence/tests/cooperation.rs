@@ -1,22 +1,9 @@
 #![cfg(target_os = "linux")]
-use std::{
-    fs,
-    io::{BufRead, BufReader, Read, Write},
-    os::fd::AsRawFd,
-    path::Path,
-    process::{Child, Command, Stdio},
-    sync::atomic::AtomicBool,
-};
-use tree_squatter_persistence::*;
+mod common;
+use common::{ChildProcess, grammar, load};
 
-fn grammar() -> Grammar {
-    let language =
-        unsafe { tree_sitter::Language::from_raw(tree_sitter_json::LANGUAGE.into_raw()().cast()) };
-    Grammar::new(
-        tree_sitter_squatter::Grammar::new(&language).unwrap(),
-        GrammarFingerprint([42; 32]),
-    )
-}
+use std::{fs, os::fd::AsRawFd, path::Path, sync::atomic::AtomicBool};
+use tree_squatter_persistence::*;
 
 #[test]
 #[ignore = "subprocess helper"]
@@ -38,41 +25,15 @@ fn child_work_owner() {
         unsafe { libc::fcntl(file.as_raw_fd(), libc::F_OFD_SETLK, &lock) },
         0
     );
-    println!("OWNER_READY");
-    std::io::stdout().flush().unwrap();
-    let _ = std::io::stdin().read(&mut [0]);
+    common::wait_until_killed();
 }
 
-struct Owner(Child);
-impl Owner {
-    fn start(root: &Path) -> Self {
-        let mut child = Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", "child_work_owner", "--ignored", "--nocapture"])
-            .env(
-                "TSQ_WORK_LOCK",
-                root.join(CACHE_DIRECTORY).join("cooperation.lock"),
-            )
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .spawn()
-            .unwrap();
-        let mut reader = BufReader::new(child.stdout.take().unwrap());
-        let mut line = String::new();
-        loop {
-            line.clear();
-            assert_ne!(reader.read_line(&mut line).unwrap(), 0);
-            if line.trim() == "OWNER_READY" {
-                break;
-            }
-        }
-        Self(child)
-    }
-}
-impl Drop for Owner {
-    fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
-    }
+fn owner(root: &Path) -> ChildProcess {
+    ChildProcess::start(
+        "child_work_owner",
+        "TSQ_WORK_LOCK",
+        root.join(CACHE_DIRECTORY).join("cooperation.lock"),
+    )
 }
 
 #[test]
@@ -82,7 +43,7 @@ fn deferred_capture_survives_owner_death_and_source_change() {
     fs::write(&path, "[1]").unwrap();
     let cache = Persistence::open(root.path(), Options::default()).unwrap();
     let mut context = tree_squatter_persistence::LoadContext::default();
-    let owner = Owner::start(root.path());
+    let owner = owner(root.path());
     let LoadStep::Deferred(pending) = cache
         .load_step_with_context(
             Path::new("file.json"),
@@ -104,13 +65,7 @@ fn deferred_capture_survives_owner_death_and_source_change() {
         panic!("dead owner retained ownership")
     };
     assert_eq!(result.file.source(), b"[1]");
-    let current = cache
-        .load(
-            Path::new("file.json"),
-            &grammar(),
-            &mut tree_sitter::Parser::new(),
-        )
-        .unwrap();
+    let current = load(&cache);
     assert_eq!(current.source(), b"[2]");
     assert!(!current.cache_hit());
 }
@@ -127,7 +82,7 @@ fn wait_budget_bypasses_live_owner_and_cancellation_stops_deferred_work() {
         },
     )
     .unwrap();
-    let _owner = Owner::start(root.path());
+    let _owner = owner(root.path());
     let LoadStep::Deferred(pending) = cache
         .load_step(
             Path::new("file.json"),
@@ -147,27 +102,12 @@ fn wait_budget_bypasses_live_owner_and_cancellation_stops_deferred_work() {
         Err(LoadError::Cancelled)
     ));
     let start = std::time::Instant::now();
-    let result = cache
-        .load(
-            Path::new("file.json"),
-            &grammar(),
-            &mut tree_sitter::Parser::new(),
-        )
-        .unwrap();
+    let result = load(&cache);
     assert!(start.elapsed() < std::time::Duration::from_secs(5));
     assert_eq!(result.source(), b"true");
     assert!(!result.cache_hit());
     // A fresh probe sees the result even while the advisory work owner remains.
-    assert!(
-        cache
-            .load(
-                Path::new("file.json"),
-                &grammar(),
-                &mut tree_sitter::Parser::new()
-            )
-            .unwrap()
-            .cache_hit()
-    );
+    assert!(load(&cache).cache_hit());
 }
 
 #[test]
@@ -175,7 +115,7 @@ fn deferred_contender_reuses_winner_publication() {
     let root = tempfile::tempdir().unwrap();
     fs::write(root.path().join("file.json"), "[42]").unwrap();
     let cache = Persistence::open(root.path(), Options::default()).unwrap();
-    let _owner = Owner::start(root.path());
+    let _owner = owner(root.path());
     let LoadStep::Deferred(contender) = cache
         .load_step(
             Path::new("file.json"),

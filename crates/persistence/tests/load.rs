@@ -1,3 +1,6 @@
+mod common;
+use common::{ChildProcess, grammar, load};
+
 use std::{
     fs,
     ops::ControlFlow,
@@ -8,34 +11,14 @@ use std::{
     },
 };
 use tree_squatter_persistence::{
-    CACHE_DIRECTORY, Grammar, GrammarFingerprint, LoadError, LoadOptions, Options, Persistence,
+    CACHE_DIRECTORY, GrammarFingerprint, LoadError, LoadOptions, Options, Persistence,
     WriteOutcome, WritePolicy,
 };
-
-fn grammar() -> Grammar {
-    // Synthetic provider identity scoped to this test fixture, not a production
-    // grammar fingerprint. Every test pairs it with the same packaged JSON parser.
-    let language =
-        unsafe { tree_sitter::Language::from_raw(tree_sitter_json::LANGUAGE.into_raw()().cast()) };
-    Grammar::new(
-        tree_sitter_squatter::Grammar::new(&language).unwrap(),
-        GrammarFingerprint([42; 32]),
-    )
-}
-fn load(cache: &Persistence) -> tree_squatter_persistence::LoadedFile {
-    cache
-        .load(
-            Path::new("input.json"),
-            &grammar(),
-            &mut tree_sitter::Parser::new(),
-        )
-        .unwrap()
-}
 
 #[test]
 fn miss_hit_and_old_reader_survives_update() {
     let root = tempfile::tempdir().unwrap();
-    fs::write(root.path().join("input.json"), b"{\"old\": [1, 2]}\r\n").unwrap();
+    fs::write(root.path().join("file.json"), b"{\"old\": [1, 2]}\r\n").unwrap();
     let cache = Persistence::open(root.path(), Options::default()).unwrap();
     let first = load(&cache);
     assert!(!first.cache_hit());
@@ -48,7 +31,7 @@ fn miss_hit_and_old_reader_survives_update() {
         first.tree().repack().unwrap().as_bytes()
     );
     assert_eq!(reader.source(), b"{\"old\": [1, 2]}\r\n");
-    fs::write(root.path().join("input.json"), b"[false, true]").unwrap();
+    fs::write(root.path().join("file.json"), b"[false, true]").unwrap();
     let new = load(&cache);
     assert!(!new.cache_hit());
     assert!(load(&cache).cache_hit());
@@ -74,12 +57,12 @@ fn miss_hit_and_old_reader_survives_update() {
 #[test]
 fn deferred_disabled_and_cancelled_publication() {
     let root = tempfile::tempdir().unwrap();
-    fs::write(root.path().join("input.json"), "123").unwrap();
+    fs::write(root.path().join("file.json"), "123").unwrap();
     let cache = Persistence::open(root.path(), Options::default()).unwrap();
     let mut parser = tree_sitter::Parser::new();
     let result = cache
         .load_with_options(
-            Path::new("input.json"),
+            Path::new("file.json"),
             &grammar(),
             &mut parser,
             LoadOptions {
@@ -92,7 +75,7 @@ fn deferred_disabled_and_cancelled_publication() {
     let disabled = || {
         cache
             .load_with_options(
-                Path::new("input.json"),
+                Path::new("file.json"),
                 &grammar(),
                 &mut tree_sitter::Parser::new(),
                 LoadOptions {
@@ -117,11 +100,11 @@ fn deferred_disabled_and_cancelled_publication() {
 #[test]
 fn stale_deferred_writer_cannot_create_wrong_hit() {
     let root = tempfile::tempdir().unwrap();
-    fs::write(root.path().join("input.json"), "123").unwrap();
+    fs::write(root.path().join("file.json"), "123").unwrap();
     let cache = Persistence::open(root.path(), Options::default()).unwrap();
     let old = cache
         .load_with_options(
-            Path::new("input.json"),
+            Path::new("file.json"),
             &grammar(),
             &mut tree_sitter::Parser::new(),
             LoadOptions {
@@ -130,7 +113,7 @@ fn stale_deferred_writer_cannot_create_wrong_hit() {
             },
         )
         .unwrap();
-    fs::write(root.path().join("input.json"), "456").unwrap();
+    fs::write(root.path().join("file.json"), "456").unwrap();
     load(&cache);
     old.pending_write.unwrap().publish().unwrap();
     let current = load(&cache);
@@ -141,7 +124,7 @@ fn stale_deferred_writer_cannot_create_wrong_hit() {
 #[test]
 fn reset_cancelled_parser_and_clear_included_ranges() {
     let root = tempfile::tempdir().unwrap();
-    fs::write(root.path().join("input.json"), "[1,2,3]").unwrap();
+    fs::write(root.path().join("file.json"), "[1,2,3]").unwrap();
     let cache = Persistence::open(root.path(), Options::default()).unwrap();
     let mut parser = tree_sitter::Parser::new();
     let language =
@@ -167,7 +150,7 @@ fn reset_cancelled_parser_and_clear_included_ranges() {
         }])
         .unwrap();
     let result = cache
-        .load(Path::new("input.json"), &grammar(), &mut parser)
+        .load(Path::new("file.json"), &grammar(), &mut parser)
         .unwrap();
     assert_eq!(
         result.tree().root_node().named_child(0).unwrap().kind(),
@@ -180,11 +163,11 @@ fn reset_cancelled_parser_and_clear_included_ranges() {
 #[test]
 fn cancellation_never_creates_entry() {
     let root = tempfile::tempdir().unwrap();
-    fs::write(root.path().join("input.json"), "[1]").unwrap();
+    fs::write(root.path().join("file.json"), "[1]").unwrap();
     let cache = Persistence::open(root.path(), Options::default()).unwrap();
     let cancellation = AtomicBool::new(true);
     let result = cache.load_with_options(
-        Path::new("input.json"),
+        Path::new("file.json"),
         &grammar(),
         &mut tree_sitter::Parser::new(),
         LoadOptions {
@@ -200,7 +183,7 @@ fn cancellation_never_creates_entry() {
 #[test]
 fn packing_variants_and_invalid_syntax_are_cacheable() {
     let root = tempfile::tempdir().unwrap();
-    fs::write(root.path().join("input.json"), "[\n1,").unwrap();
+    fs::write(root.path().join("file.json"), "[\n1,").unwrap();
     let a = Persistence::open(root.path(), Options::default()).unwrap();
     let b = Persistence::open(
         root.path(),
@@ -236,7 +219,7 @@ fn packing_variants_and_invalid_syntax_are_cacheable() {
 #[test]
 fn unavailable_cache_and_full_map_fall_back() {
     let blocked = tempfile::tempdir().unwrap();
-    fs::write(blocked.path().join("input.json"), "true").unwrap();
+    fs::write(blocked.path().join("file.json"), "true").unwrap();
     fs::write(blocked.path().join(CACHE_DIRECTORY), "do not change").unwrap();
     let cache = Persistence::open(blocked.path(), Options::default()).unwrap();
     assert!(!load(&cache).cache_hit());
@@ -247,7 +230,7 @@ fn unavailable_cache_and_full_map_fall_back() {
 
     let root = tempfile::tempdir().unwrap();
     let source = format!("\"{}\"", "x".repeat(1024 * 1024));
-    fs::write(root.path().join("input.json"), &source).unwrap();
+    fs::write(root.path().join("file.json"), &source).unwrap();
     let cache = Persistence::open(
         root.path(),
         Options {
@@ -258,7 +241,7 @@ fn unavailable_cache_and_full_map_fall_back() {
     .unwrap();
     let result = cache
         .load_with_options(
-            Path::new("input.json"),
+            Path::new("file.json"),
             &grammar(),
             &mut tree_sitter::Parser::new(),
             LoadOptions {
@@ -280,7 +263,7 @@ fn unavailable_cache_and_full_map_fall_back() {
 #[test]
 fn multiple_owned_readers() {
     let root = tempfile::tempdir().unwrap();
-    fs::write(root.path().join("input.json"), "[1,2,3]").unwrap();
+    fs::write(root.path().join("file.json"), "[1,2,3]").unwrap();
     let cache = Arc::new(Persistence::open(root.path(), Options::default()).unwrap());
     load(&cache);
     std::thread::scope(|scope| {
@@ -312,16 +295,12 @@ fn source_symlink_outside_root_and_cache_symlinks() {
     let root = tempfile::tempdir().unwrap();
     let outside = tempfile::tempdir().unwrap();
     fs::write(outside.path().join("source"), "0").unwrap();
-    symlink(
-        outside.path().join("source"),
-        root.path().join("input.json"),
-    )
-    .unwrap();
+    symlink(outside.path().join("source"), root.path().join("file.json")).unwrap();
     let cache = Persistence::open(root.path(), Options::default()).unwrap();
     assert!(!load(&cache).cache_hit());
     assert!(!load(&cache).cache_hit());
     let other = tempfile::tempdir().unwrap();
-    fs::write(other.path().join("input.json"), "1").unwrap();
+    fs::write(other.path().join("file.json"), "1").unwrap();
     symlink(outside.path(), other.path().join(CACHE_DIRECTORY)).unwrap();
     let cache = Persistence::open(other.path(), Options::default()).unwrap();
     assert!(!load(&cache).cache_hit());
@@ -342,7 +321,7 @@ fn child_load() {
 #[test]
 fn independent_processes_reopen_persisted_contents() {
     let root = tempfile::tempdir().unwrap();
-    fs::write(root.path().join("input.json"), "{\"cross_process\": true}").unwrap();
+    fs::write(root.path().join("file.json"), "{\"cross_process\": true}").unwrap();
     for expected in ["no", "yes"] {
         let result = std::process::Command::new(std::env::current_exe().unwrap())
             .args(["--exact", "child_load", "--nocapture"])
@@ -362,7 +341,7 @@ fn independent_processes_reopen_persisted_contents() {
 #[test]
 fn independent_reader_opens_while_writer_admission_is_held() {
     let root = tempfile::tempdir().unwrap();
-    fs::write(root.path().join("input.json"), "[true]").unwrap();
+    fs::write(root.path().join("file.json"), "[true]").unwrap();
     let cache = Persistence::open(root.path(), Options::default()).unwrap();
     assert!(!load(&cache).cache_hit());
     let lock = fs::OpenOptions::new()
@@ -388,7 +367,6 @@ fn independent_reader_opens_while_writer_admission_is_held() {
 #[test]
 #[ignore = "subprocess helper"]
 fn child_writer_lock() {
-    use std::io::{Read, Write};
     let Some(path) = std::env::var_os("TSQ_TEST_LOCK") else {
         return;
     };
@@ -398,21 +376,17 @@ fn child_writer_lock() {
         .open(path)
         .unwrap();
     lock.lock().unwrap();
-    println!("WRITER_LOCK_READY");
-    std::io::stdout().flush().unwrap();
-    let _ = std::io::stdin().read(&mut [0]);
+    common::wait_until_killed();
 }
 
 #[test]
 fn writer_death_releases_admission_without_stale_files() {
-    use std::io::{BufRead, BufReader};
-    use std::process::{Command, Stdio};
     let root = tempfile::tempdir().unwrap();
-    fs::write(root.path().join("input.json"), "[true]").unwrap();
+    fs::write(root.path().join("file.json"), "[true]").unwrap();
     let cache = Persistence::open(root.path(), Options::default()).unwrap();
     let result = cache
         .load_with_options(
-            Path::new("input.json"),
+            Path::new("file.json"),
             &grammar(),
             &mut tree_sitter::Parser::new(),
             LoadOptions {
@@ -422,33 +396,14 @@ fn writer_death_releases_admission_without_stale_files() {
         )
         .unwrap();
     let write = result.pending_write.unwrap();
-    let mut child = Command::new(std::env::current_exe().unwrap())
-        .args(["--exact", "child_writer_lock", "--ignored", "--nocapture"])
-        .env(
-            "TSQ_TEST_LOCK",
-            root.path().join(CACHE_DIRECTORY).join("cooperation.lock"),
-        )
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn()
-        .unwrap();
-    let mut reader = BufReader::new(child.stdout.take().unwrap());
-    let mut line = String::new();
-    loop {
-        line.clear();
-        assert_ne!(
-            reader.read_line(&mut line).unwrap(),
-            0,
-            "child exited before locking"
-        );
-        if line.trim() == "WRITER_LOCK_READY" {
-            break;
-        }
-    }
+    let child = ChildProcess::start(
+        "child_writer_lock",
+        "TSQ_TEST_LOCK",
+        root.path().join(CACHE_DIRECTORY).join("cooperation.lock"),
+    );
     // Child owns admission, not an LMDB transaction. Parent must not block.
     let outcome = write.publish().unwrap();
-    child.kill().unwrap();
-    child.wait().unwrap();
+    child.kill();
     assert_eq!(outcome, WriteOutcome::Busy);
     assert_eq!(write.publish().unwrap(), WriteOutcome::Published);
     assert!(load(&cache).cache_hit());
@@ -458,7 +413,7 @@ fn writer_death_releases_admission_without_stale_files() {
 fn worker_context_switches_grammars_and_loads_restored_dictionary() {
     use tree_squatter_persistence::{LoadContext, LoadStep};
     let root = tempfile::tempdir().unwrap();
-    fs::write(root.path().join("input.json"), "[1, 2]").unwrap();
+    fs::write(root.path().join("file.json"), "[1, 2]").unwrap();
     fs::write(root.path().join("input.cs"), "class C { int x; }").unwrap();
     let cache = Persistence::open(root.path(), Options::default()).unwrap();
     let json_language =
@@ -475,7 +430,7 @@ fn worker_context_switches_grammars_and_loads_restored_dictionary() {
     let mut context = LoadContext::default();
     for _ in 0..3 {
         for (grammar, path, kind) in [
-            (&json, "input.json", "document"),
+            (&json, "file.json", "document"),
             (&c_sharp, "input.cs", "compilation_unit"),
         ] {
             let result = cache

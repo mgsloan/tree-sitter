@@ -71,41 +71,19 @@ mod tests {
             Err(CacheError::Cancelled)
         ));
         let before = store.env.read_txn().unwrap();
-        assert!(
-            store
-                .sources
-                .get(&before, &request.source_key)
-                .unwrap()
-                .is_none()
-        );
-        assert!(
-            store
-                .trees
-                .get(&before, &request.tree_key)
-                .unwrap()
-                .is_none()
-        );
-        assert!(
-            store
-                .grammars
-                .get(&before, &crate::identity::grammar_key(grammar.fingerprint))
-                .unwrap()
-                .is_none()
-        );
-        assert!(
-            store
-                .paths
-                .get(&before, &request.source_key[..32])
-                .unwrap()
-                .is_none()
-        );
-        assert!(
-            store
-                .current
-                .get(&before, &request.source_key[..32])
-                .unwrap()
-                .is_none()
-        );
+        for (name, database, key) in [
+            ("sources", store.sources, request.source_key.as_slice()),
+            ("trees", store.trees, request.tree_key.as_slice()),
+            (
+                "grammars",
+                store.grammars,
+                crate::identity::grammar_key(grammar.fingerprint).as_slice(),
+            ),
+            ("paths", store.paths, &request.source_key[..32]),
+            ("current", store.current, &request.source_key[..32]),
+        ] {
+            assert!(database.get(&before, key).unwrap().is_none(), "{name}");
+        }
         assert_eq!(
             store
                 .publish(&request, b"[1]", &tree, &grammar, || false)

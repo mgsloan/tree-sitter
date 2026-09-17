@@ -1,3 +1,6 @@
+mod common;
+use common::{ChildProcess, load};
+
 use std::{
     fs,
     path::Path,
@@ -8,76 +11,31 @@ use tree_squatter_persistence::*;
 #[test]
 #[ignore = "subprocess helper"]
 fn child_snapshot_holder() {
-    use std::io::{Read, Write};
     let Some(root) = std::env::var_os("TSQ_SNAPSHOT_ROOT") else {
         return;
     };
     let cache = cache(Path::new(&root));
     let reader = load(&cache);
     assert!(reader.transaction_backed());
-    println!("SNAPSHOT_READY");
-    std::io::stdout().flush().unwrap();
-    let _ = std::io::stdin().read(&mut [0]);
+    common::wait_until_killed();
     drop(reader);
 }
 
 #[test]
 fn crashed_snapshot_reader_slot_is_reclaimable() {
-    use std::{
-        io::{BufRead, BufReader},
-        process::{Command, Stdio},
-    };
     let root = tempfile::tempdir().unwrap();
     fs::write(root.path().join("file.json"), source(1)).unwrap();
     let cache = cache(root.path());
     load(&cache);
-    let mut child = Command::new(std::env::current_exe().unwrap())
-        .args([
-            "--exact",
-            "child_snapshot_holder",
-            "--ignored",
-            "--nocapture",
-        ])
-        .env("TSQ_SNAPSHOT_ROOT", root.path())
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn()
-        .unwrap();
-    let mut output = BufReader::new(child.stdout.take().unwrap());
-    let mut line = String::new();
-    loop {
-        line.clear();
-        assert_ne!(output.read_line(&mut line).unwrap(), 0);
-        if line.trim() == "SNAPSHOT_READY" {
-            break;
-        }
-    }
-    child.kill().unwrap();
-    child.wait().unwrap();
+    let child = ChildProcess::start("child_snapshot_holder", "TSQ_SNAPSHOT_ROOT", root.path());
+    child.kill();
     assert_eq!(cache.check_stale_readers().unwrap(), 1);
     assert_eq!(cache.check_stale_readers().unwrap(), 0);
     assert!(load(&cache).transaction_backed());
 }
 
-fn grammar() -> Grammar {
-    let language =
-        unsafe { tree_sitter::Language::from_raw(tree_sitter_json::LANGUAGE.into_raw()().cast()) };
-    Grammar::new(
-        tree_sitter_squatter::Grammar::new(&language).unwrap(),
-        GrammarFingerprint([42; 32]),
-    )
-}
 fn source(value: u8) -> String {
     format!("[{}0]", format!("{value},").repeat(4096))
-}
-fn load(cache: &Persistence) -> LoadedFile {
-    cache
-        .load(
-            Path::new("file.json"),
-            &grammar(),
-            &mut tree_sitter::Parser::new(),
-        )
-        .unwrap()
 }
 fn cache(root: &Path) -> Persistence {
     Persistence::open(
