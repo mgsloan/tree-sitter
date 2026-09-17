@@ -6,7 +6,6 @@ format, schema, and profile versions remain at 0. Backward compatibility and
 migration support are not wanted yet: change the representation directly and
 regenerate temporary caches. Tree-sitter's upstream ABI versions are independent.
 
-Initial implementation of [the persistence design](../../tree-squatter-persistence.md).
 The database format is a development prototype, not a released compatibility
 contract. Built on Pareto commit `7734a5741`.
 
