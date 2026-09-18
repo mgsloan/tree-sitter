@@ -14,6 +14,14 @@
 
 - [ ] Persistence API for waiting on other writer for some amount of time?
 
+- [ ] https://github.com/Dekker1/tree-feller
+
+      >   codex resume 01a0b257-8b8e-7123-bdd6-c5deddc08fb7
+
+      * [ ] Relatedly, also have a postorder representation?!
+
+- [ ] iteration api should have preorder(), postorder(), and all().  All just gives the one that's more efficient.
+
 # Backburner
 
 - [ ] Review and polish design.md.
@@ -51,8 +59,16 @@
 
 - [ ] Could postorder be better for direct parse to packed?
 
-- [ ] Compression support for persistence?  Compress while compacting.  Use bitpacker?
+- [ ] Compression support for persistence?  Compress while compacting.  Use bitpacker crate? `fastlanes` crate (has cmp support)?
 
       * Could also decompress group bases on the fly.  Symbol / field / supertype search doesn't need em
 
 - [ ] Consider using fastpfor style exceptions?  Probably not, avoid branches
+
+- [ ] Potentially relevant technique: selection pushdown
+
+- [ ] Potentially relevant: vortex-array
+
+- [ ] Use blocking file reads during TS chunk reads to avoid full materialize? Skipping this for now, gnarly to block threads. Maybe better to
+
+- [ ] Test that Zed file decode/transform code works.  How to make sure it doesn't diverge? Divergence does not cause incorrectness, but does cause hash mismatches
