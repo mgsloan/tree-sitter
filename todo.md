@@ -1,12 +1,8 @@
 # Queue
 
-- [ ] Persistence API for using cache even though source file is not yet loaded
-
-- [ ] Persistence API for using cache with source file that's loaded in a rope or similar
-
-     * Have some transformation flags enough to support Zed's transforms (BOM removal, newline canonicalization).  Support loading files with these transforms applied.
-
 - [ ] Dig into how grammars are identified in persistence.  And what can be done to increase forward/back compat - key-design.md
+
+     * Do sources specify their grammar?
 
 - [ ] Pull PackOptions out of CacheMiss and LoadOptions
 
@@ -22,6 +18,8 @@
 
 - [ ] iteration api should have preorder(), postorder(), and all().  All just gives the one that's more efficient.
 
+- [ ] Something akin to Zed RelPath?
+
 # Backburner
 
 - [ ] Review and polish design.md.
@@ -31,7 +29,10 @@
 
 - [ ] Skip persisting when it's better to just reparse
 
-  - Also similar logic for the caches
+      * Consider similar logic for the side caches
+
+      * Consider also tracking loading speed - may be better to parse
+        instead when I/O is slow.
 
 - [ ] Skip caching when frequently edited? (reduce churn)
 
@@ -72,3 +73,5 @@
 - [ ] Use blocking file reads during TS chunk reads to avoid full materialize? Skipping this for now, gnarly to block threads. Maybe better to
 
 - [ ] Test that Zed file decode/transform code works.  How to make sure it doesn't diverge? Divergence does not cause incorrectness, but does cause hash mismatches
+
+- [ ] Document choice to not cache for symlinks that point outside the root
