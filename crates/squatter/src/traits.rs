@@ -2,7 +2,7 @@
 //!
 //! Request a whole scan so each backend can choose its traversal:
 //! ```
-//! use tree_sitter_squatter::{KindSet, traits::NodeLike};
+//! use tree_squatter::{KindSet, traits::NodeLike};
 //!
 //! fn matching_bytes<'tree, N: NodeLike<'tree>>(root: N, kinds: &KindSet) -> usize {
 //!     root.descendants_matching_kinds(kinds)

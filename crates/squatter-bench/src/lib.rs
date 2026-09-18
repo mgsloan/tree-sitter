@@ -19,7 +19,7 @@ use std::{
     time::Duration,
 };
 use tree_sitter::Point;
-use tree_sitter_squatter::{PackContext, PackOptions, Tree};
+use tree_squatter::{PackContext, PackOptions, Tree};
 
 const BENCHMARKS: &[&str] = &[
     "query-matches",
@@ -412,7 +412,7 @@ enum Observation<'tree> {
     Seek(Vec<Option<usize>>),
     Query(Vec<queries::Record>),
 }
-fn observe<'tree, N: tree_sitter_squatter::traits::NodeLike<'tree>>(
+fn observe<'tree, N: tree_squatter::traits::NodeLike<'tree>>(
     root: N,
     ids: &compare::Identities,
     benchmark: &str,
@@ -429,7 +429,7 @@ fn observe<'tree, N: tree_sitter_squatter::traits::NodeLike<'tree>>(
     })
 }
 
-fn read_nodes<'tree, N: tree_sitter_squatter::traits::NodeLike<'tree>>(
+fn read_nodes<'tree, N: tree_squatter::traits::NodeLike<'tree>>(
     root: N,
     benchmark: &str,
     bytes: &[usize],
@@ -802,7 +802,7 @@ pub fn run(check_only: bool) -> Result<()> {
                     pack_contexts.insert(
                         input.grammar.clone(),
                         (
-                            tree_sitter_squatter::Grammar::new(&grammars[&input.grammar].language)?,
+                            tree_squatter::Grammar::new(&grammars[&input.grammar].language)?,
                             PackContext::new()?,
                         ),
                     );
@@ -861,7 +861,7 @@ pub fn run(check_only: bool) -> Result<()> {
                     };
                     Ok(if cold_parse {
                         Tree::pack_with_options(
-                            &tree_sitter_squatter::Grammar::new(language)?,
+                            &tree_squatter::Grammar::new(language)?,
                             &parsed,
                             options,
                         )?

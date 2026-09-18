@@ -43,7 +43,7 @@ grammar and loader across jobs using the appropriate cache for each source.
 ```rust
 use std::{io, path::Path, sync::{Arc, atomic::AtomicBool}};
 use tree_sitter::Point;
-use tree_sitter_squatter::PackOptions;
+use tree_squatter::PackOptions;
 use tree_squatter_persistence::*;
 
 type ExampleResult<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
@@ -464,16 +464,16 @@ parser.set_language(&language)?;
 let mut read = |offset, point| input.read(offset, point);
 let native = parser.parse_with_options(&mut read, None, None)
     .ok_or_else(|| io::Error::other("parse did not complete"))?;
-let grammar = tree_sitter_squatter::Grammar::new(&language)?;
-let mut packer = tree_sitter_squatter::TreePacker::new()?;
+let grammar = tree_squatter::Grammar::new(&language)?;
+let mut packer = tree_squatter::TreePacker::new()?;
 let tree = packer.pack(&grammar, &native)?;
 ```
 
 ## 19. Queries using source text
 
 ```rust
-let query = tree_sitter_squatter::Query::new(&language, "(_) @node")?;
-let mut cursor = tree_sitter_squatter::QueryCursor::new();
+let query = tree_squatter::Query::new(&language, "(_) @node")?;
+let mut cursor = tree_squatter::QueryCursor::new();
 let mut execution = cursor.execute(&query, tree.tree().root_node(), contents.bytes());
 while let Some((matched, index)) = execution.next_capture() {
     let node = matched.captures[index].node;

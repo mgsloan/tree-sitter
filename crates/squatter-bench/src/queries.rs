@@ -15,7 +15,7 @@ pub struct Queries {
 }
 struct Pair {
     mainline: tree_sitter::Query,
-    squat: tree_sitter_squatter::Query,
+    squat: tree_squatter::Query,
     name: String,
 }
 #[derive(Serialize)]
@@ -108,7 +108,7 @@ impl Queries {
             );
             let start = Instant::now();
             let mainline = tree_sitter::Query::new(language, &text);
-            let squat = tree_sitter_squatter::Query::new(language, &text);
+            let squat = tree_squatter::Query::new(language, &text);
             let report = Report {
                 name: source.name.clone(),
                 sha256: source.sha256.clone(),
@@ -221,7 +221,7 @@ impl Queries {
     }
     pub fn squat(
         &self,
-        root: tree_sitter_squatter::Node<'_>,
+        root: tree_squatter::Node<'_>,
         ids: Option<&Identities>,
         source: &[u8],
         captures: bool,
@@ -230,7 +230,7 @@ impl Queries {
         let mut output = Vec::new();
         let mut total_captures = 0;
         for (query_index, pair) in self.pairs.iter().enumerate() {
-            let mut cursor = tree_sitter_squatter::QueryCursor::new();
+            let mut cursor = tree_squatter::QueryCursor::new();
             cursor.set_optimized(optimized);
             cursor.set_timeout(Some(Duration::from_secs(30)));
             let mut execution = cursor.execute(&pair.squat, root, source);

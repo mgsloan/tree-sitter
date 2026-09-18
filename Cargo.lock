@@ -2179,7 +2179,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tree-sitter",
- "tree-sitter-squatter",
+ "tree-squatter",
 ]
 
 [[package]]
@@ -2536,7 +2536,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "tree-sitter-squatter"
+name = "tree-squatter"
 version = "0.1.0"
 dependencies = [
  "cc",
@@ -2576,7 +2576,7 @@ dependencies = [
  "tree-sitter",
  "tree-sitter-c-sharp",
  "tree-sitter-json",
- "tree-sitter-squatter",
+ "tree-squatter",
 ]
 
 [[package]]

@@ -1,9 +1,9 @@
 //! Immutable, contiguous Tree-sitter trees and streaming queries.
 //!
 //! ```no_run
-//! # fn example(tree: &tree_sitter::Tree) -> Result<(), tree_sitter_squatter::Error> {
-//! let grammar = tree_sitter_squatter::Grammar::new(&tree.language().to_owned())?;
-//! let packed = tree_sitter_squatter::Tree::pack(&grammar, tree)?;
+//! # fn example(tree: &tree_sitter::Tree) -> Result<(), tree_squatter::Error> {
+//! let grammar = tree_squatter::Grammar::new(&tree.language().to_owned())?;
+//! let packed = tree_squatter::Tree::pack(&grammar, tree)?;
 //! for node in packed.root_node().preorder() {
 //!     println!("{}: {:?}", node.kind(), node.byte_range());
 //! }
@@ -16,8 +16,8 @@
 //! ```no_run
 //! # fn query_example(language: &tree_sitter::Language, tree: &tree_sitter::Tree,
 //! # source: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
-//! use tree_sitter_squatter::{Tree, Query, QueryCursor};
-//! let grammar = tree_sitter_squatter::Grammar::new(&tree.language().to_owned())?;
+//! use tree_squatter::{Tree, Query, QueryCursor};
+//! let grammar = tree_squatter::Grammar::new(&tree.language().to_owned())?;
 //! let packed = Tree::pack(&grammar, tree)?;
 //! let query = Query::new(language, "(_) @node")?;
 //! let mut cursor = QueryCursor::new();
@@ -230,8 +230,8 @@ impl Drop for PackContext {
 /// borrow this descriptor, which in turn cannot outlive the supplied bytes.
 ///
 /// ```compile_fail
-/// use tree_sitter_squatter::{BorrowedTree, Tree};
-/// fn dangling(grammar: &tree_sitter_squatter::Grammar) -> BorrowedTree<'static> {
+/// use tree_squatter::{BorrowedTree, Tree};
+/// fn dangling(grammar: &tree_squatter::Grammar) -> BorrowedTree<'static> {
 ///     let bytes = vec![0u8; 128];
 ///     Tree::from_bytes_borrowed(grammar, &bytes).unwrap()
 /// }
@@ -263,8 +263,8 @@ pub unsafe trait StableSlab: Send + Sync + 'static {
 /// Nodes borrow this wrapper; the native descriptor is destroyed before storage.
 ///
 /// ```compile_fail
-/// use tree_sitter_squatter::{Node, StableSlab, Tree};
-/// fn dangling(grammar: &tree_sitter_squatter::Grammar, owner: impl StableSlab) -> Node<'static> {
+/// use tree_squatter::{Node, StableSlab, Tree};
+/// fn dangling(grammar: &tree_squatter::Grammar, owner: impl StableSlab) -> Node<'static> {
 ///     Tree::from_owned_slab(grammar, owner).unwrap().root_node()
 /// }
 /// ```

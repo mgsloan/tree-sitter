@@ -39,7 +39,7 @@ pub fn run(command: Command) -> Result<()> {
                     vec![
                         "test",
                         "-p",
-                        "tree-sitter-squatter",
+                        "tree-squatter",
                         "-p",
                         "tree-squatter-persistence",
                         "-p",

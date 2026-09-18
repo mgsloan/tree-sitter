@@ -2,7 +2,7 @@ use anyhow::{Result, ensure};
 use std::collections::HashMap;
 use tree_sitter::Language;
 use tree_sitter::Point;
-use tree_sitter_squatter::traits::{Attributes, CursorLike, NodeLike};
+use tree_squatter::traits::{Attributes, CursorLike, NodeLike};
 
 pub type Identities = HashMap<usize, usize>;
 
@@ -80,7 +80,7 @@ pub fn scan<'tree, N: NodeLike<'tree>, const ATTRIBUTES: bool>(
 }
 
 fn scan_iterator_once<const ATTRIBUTES: bool>(
-    root: tree_sitter_squatter::Node<'_>,
+    root: tree_squatter::Node<'_>,
 ) -> Result<usize> {
     let mut iterator = root.node_iterator()?;
     let mut nodes = 0;
@@ -96,7 +96,7 @@ fn scan_iterator_once<const ATTRIBUTES: bool>(
 }
 
 pub fn scan_iterator<const ATTRIBUTES: bool>(
-    root: tree_sitter_squatter::Node<'_>,
+    root: tree_squatter::Node<'_>,
     iterations: usize,
 ) -> Result<usize> {
     let mut nodes = 0;
@@ -131,7 +131,7 @@ pub fn walk<'tree, N: NodeLike<'tree>>(root: N, ids: &Identities) -> Result<Vec<
 
 /// Read the same constant-time snapshot as cursor walks. Counts and depth are not reconstructed.
 pub fn walk_iterator<'tree>(
-    root: tree_sitter_squatter::Node<'tree>,
+    root: tree_squatter::Node<'tree>,
     ids: &Identities,
 ) -> Result<Vec<Record<'tree>>> {
     let mut records = Vec::with_capacity(ids.len());

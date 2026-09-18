@@ -1,6 +1,6 @@
 use std::error::Error;
 use tree_sitter::StreamingIterator;
-use tree_sitter_squatter::{
+use tree_squatter::{
     KindSet, PackOptions, Tree,
     traits::{CursorLike, NodeIteratorLike, NodeLike},
 };
@@ -167,7 +167,7 @@ fn check_queries(
     ] {
         for modification in [0, 2] {
             let mut expected_query = tree_sitter::Query::new(language, source_query)?;
-            let mut actual_query = tree_sitter_squatter::Query::new(language, source_query)?;
+            let mut actual_query = tree_squatter::Query::new(language, source_query)?;
             if modification == 2 {
                 let name = actual_query.capture_names()[0].clone();
                 expected_query.disable_capture(&name);
@@ -207,7 +207,7 @@ fn check_queries(
                         append(result, None);
                     }
                 }
-                let mut actual_cursor = tree_sitter_squatter::QueryCursor::new();
+                let mut actual_cursor = tree_squatter::QueryCursor::new();
                 let mut execution =
                     actual_cursor.execute(&actual_query, packed.root_node(), source);
                 let mut actual = Vec::new();
@@ -256,8 +256,8 @@ fn check_cursor_reuse(
     language: &tree_sitter::Language,
     tree: &tree_sitter::Tree,
 ) -> Result<(), Box<dyn Error>> {
-    use tree_sitter_squatter::{Query, QueryCursor, QueryExecutionError};
-    let grammar = tree_sitter_squatter::Grammar::new(language)?;
+    use tree_squatter::{Query, QueryCursor, QueryExecutionError};
+    let grammar = tree_squatter::Grammar::new(language)?;
     let mut cursor = QueryCursor::new();
     cursor.set_timeout(Some(std::time::Duration::from_secs(1)));
     for _ in 0..3 {
@@ -318,7 +318,7 @@ const SOURCE: &str = "{\"a\": [1, true, null], \"b\": 2}";
 fn fixture() -> Result<(tree_sitter::Language, tree_sitter::Tree, Tree), Box<dyn Error>> {
     let language =
         unsafe { tree_sitter::Language::from_raw(tree_sitter_json::LANGUAGE.into_raw()().cast()) };
-    let grammar = tree_sitter_squatter::Grammar::new(&language)?;
+    let grammar = tree_squatter::Grammar::new(&language)?;
     let mut parser = tree_sitter::Parser::new();
     parser.set_language(&language)?;
     let native = parser.parse(SOURCE, None).ok_or("parse failed")?;
@@ -365,7 +365,7 @@ fn shared_navigation_and_iterator_lifetimes() -> Result<(), Box<dyn Error>> {
 #[test]
 fn group_boundaries_and_optional_columns() -> Result<(), Box<dyn Error>> {
     let (language, _, _) = fixture()?;
-    let grammar = tree_sitter_squatter::Grammar::new(&language)?;
+    let grammar = tree_squatter::Grammar::new(&language)?;
     let mut parser = tree_sitter::Parser::new();
     parser.set_language(&language)?;
     // Cross the presence-index threshold and several physical groups, retaining
@@ -400,7 +400,7 @@ fn streaming_queries_and_cursor_reuse() -> Result<(), Box<dyn Error>> {
 #[test]
 fn owned_and_borrowed_storage() -> Result<(), Box<dyn Error>> {
     let (language, native, packed) = fixture()?;
-    let grammar = tree_sitter_squatter::Grammar::new(&language)?;
+    let grammar = tree_squatter::Grammar::new(&language)?;
     let compact = packed.repack()?;
     let decoded = Tree::from_bytes(&grammar, compact.as_bytes())?;
     let borrowed = Tree::from_bytes_borrowed(&grammar, compact.as_bytes())?;
@@ -428,7 +428,7 @@ fn owned_and_borrowed_storage() -> Result<(), Box<dyn Error>> {
     );
     let mut corrupted = decoded.as_bytes().to_vec();
     corrupted[0] ^= 0x80;
-    let grammar = tree_sitter_squatter::Grammar::new(&language)?;
+    let grammar = tree_squatter::Grammar::new(&language)?;
     assert!(Tree::from_bytes(&grammar, &corrupted).is_err());
     Ok(())
 }

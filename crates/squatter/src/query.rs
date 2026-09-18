@@ -256,7 +256,7 @@ pub struct QueryCapture<'tree> {
 /// Copy individual nodes or collect captures to retain them while advancing.
 ///
 /// ```compile_fail
-/// use tree_sitter_squatter::QueryExecution;
+/// use tree_squatter::QueryExecution;
 /// fn invalid(execution: &mut QueryExecution<'_, '_, '_, '_>) {
 ///     let first = execution.next_match().unwrap();
 ///     execution.next_match();

@@ -5,7 +5,7 @@ maintenance and transfer APIs. Storage changes are specified below.
 
 See [client examples](cache-api-examples.md) for usage patterns and remaining gaps.
 
-Rename the exported `tree_sitter_squatter::PackContext` to `TreePacker`, retaining
+Rename the exported `tree_squatter::PackContext` to `TreePacker`, retaining
 its `new`, `pack`, `pack_with_options`, and `trim` methods.
 
 One shared project cache, one mutable loader per worker. `load` never parses.
@@ -38,7 +38,7 @@ pub struct CacheOptions {
     pub create_cache_if_absent: bool,
 }
 
-// Reuse tree_sitter_squatter::PackOptions:
+// Reuse tree_squatter::PackOptions:
 // initial_group_capacity: 0, repack: false, symbol_presence: true, points: true.
 // Only symbol_presence and points select the cached tree variant; capacity and
 // repack control fresh packing. Persisted trees are always compact.
@@ -58,7 +58,7 @@ impl Cache {
         &self,
         language: &tree_sitter::Language,
         fingerprint: GrammarFingerprint,
-    ) -> Result<Grammar, tree_sitter_squatter::Error>;
+    ) -> Result<Grammar, tree_squatter::Error>;
 }
 
 impl Loader {
@@ -127,7 +127,7 @@ pub struct CachedCandidate {
 
 impl CachedCandidate {
     // Enables speculative structural work; no source text is retained.
-    pub fn tree(&self) -> &tree_sitter_squatter::Tree;
+    pub fn tree(&self) -> &tree_squatter::Tree;
 
     // Uses the source's current preprocessing, never the cached preprocessing record.
     pub async fn verify<S: Source>(
@@ -165,16 +165,16 @@ impl CacheMiss {
 #[derive(Clone)]
 pub enum LoadedTree {
     // Tree owns its slab allocation; no database transaction is retained.
-    Owned(Arc<tree_sitter_squatter::Tree>),
+    Owned(Arc<tree_squatter::Tree>),
     // Tree reads LMDB bytes held alive by an owning read transaction.
-    Backed(Arc<tree_sitter_squatter::BackedTree>),
+    Backed(Arc<tree_squatter::BackedTree>),
 }
 
 impl LoadedTree {
-    pub fn tree(&self) -> &tree_sitter_squatter::Tree;
+    pub fn tree(&self) -> &tree_squatter::Tree;
     pub fn transaction_backed(&self) -> bool;
     // Copies transaction-backed storage; existing aliases keep their snapshots.
-    pub fn detach(&self) -> Result<Self, tree_sitter_squatter::Error>;
+    pub fn detach(&self) -> Result<Self, tree_squatter::Error>;
 }
 
 // None disables cancellation: is_cancelled returns false and cancel is a no-op.

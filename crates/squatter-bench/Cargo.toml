@@ -13,4 +13,4 @@ libc = "0.2.182"
 serde.workspace = true
 serde_json.workspace = true
 tree-sitter.workspace = true
-tree-sitter-squatter = { path = "../squatter", default-features = false }
+tree-squatter = { path = "../squatter", default-features = false }
