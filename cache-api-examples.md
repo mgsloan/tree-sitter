@@ -2,7 +2,8 @@
 
 Examples against [the proposal](persistence-api-proposal.md), not the current
 implementation. Snippets share the setup below unless stated otherwise. Helpers
-in this document are application code, not additions to the proposed API.
+such as `capture_file`, `lookup`, and `chunk_reader` are application code.
+`SourceFile`, `FileMetadata`, and `hash_source` are proposed library utilities.
 
 | Client pattern | Example |
 |---|---|
@@ -27,6 +28,7 @@ in this document are application code, not additions to the proposed API.
 | Query trees with source text | 19 |
 | Run explicit maintenance | 20 |
 | Verify a disk candidate without retaining source text | 21 |
+| Read metadata, contents, or a standalone fingerprint | 22 |
 
 ## 1. Setup and worker reuse
 
@@ -75,29 +77,15 @@ fn capture_file(
     preprocessing: TextPreprocessing,
     cancellation: Canceler<'_>,
 ) -> io::Result<Capture> {
-    let mut file = File::open(absolute_path)?;
-    let before = file.metadata()?;
-    let mtime = FileModificationTime::new(before.modified()?);
-    let mut bytes = Vec::new();
-    preprocessing.apply(
-        &mut file,
-        &mut bytes,
-        PreprocessingOptions { cancellation },
-    )?;
-    let after = file.metadata()?;
-    if before.len() != after.len()
-        || mtime != FileModificationTime::new(after.modified()?)
-    {
-        return Err(io::Error::new(
-            io::ErrorKind::WouldBlock,
-            "file changed during capture; retry the capture",
-        ));
-    }
-    Ok(Capture {
-        bytes: bytes.into(),
-        file_byte_len: before.len(),
-        mtime,
+    let contents = SourceFile::open(absolute_path)?.read(ReadOptions {
         preprocessing,
+        cancellation,
+    })?;
+    Ok(Capture {
+        bytes: contents.bytes.into(),
+        file_byte_len: contents.fingerprint.metadata.byte_len,
+        mtime: contents.fingerprint.metadata.mtime,
+        preprocessing: contents.fingerprint.preprocessing,
     })
 }
 
@@ -638,7 +626,7 @@ let worker = std::thread::spawn(move || -> ExampleResult<_> {
         LoadResult::Miss(miss) => miss.parse(
             &mut loader,
             &mut read,
-            ParseOptions { cancellation },
+            ParseOptions { cancellation, ..Default::default() },
             |write| writes.push(write),
         )?,
     };
@@ -650,8 +638,8 @@ let completion = worker.join().expect("worker panicked");
 // The operation may already have completed; cancellation is cooperative.
 ```
 
-The same token goes into `VerifyOptions { cancellation }` for candidate
-verification and `PublishOptions { cancellation }` for writes. Cancellation during
+The same token goes into `VerifyOptions { cancellation, ..Default::default() }` for candidate
+verification and `PublishOptions { cancellation, ..Default::default() }` for writes. Cancellation during
 transformation reports `io::ErrorKind::Interrupted`; load/parse and publication use
 their respective cancellation errors. Cancelled parsing does not invoke the write
 handler. Cancellation after publication commits cannot undo that publication.
@@ -663,7 +651,7 @@ let flag = AtomicBool::new(false);
 let cancellation = Canceler::new(&flag);
 cancellation.cancel();
 assert!(matches!(
-    write.publish(PublishOptions { cancellation }),
+    write.publish(PublishOptions { cancellation, ..Default::default() }),
     Err(CacheError::Cancelled)
 ));
 let outcome = write.publish(PublishOptions::default())?;
@@ -719,7 +707,7 @@ let loaded = loader.load(
             points: false,
             symbol_presence: false,
             repack: true,
-            initial_group_capacity: 0,
+            ..Default::default()
         },
         preprocessing: capture.preprocessing,
         ..Default::default()
@@ -833,12 +821,30 @@ unapproved `cache.prune(path)` method.
 
 ## 21. Verify without retaining source text
 
-The planned file utilities handle this flow; their public signatures are not
-settled yet. Start with a file handle's raw metadata and `loader.preview`, as in
-example 13. When a candidate exists and preprocessing streams, send processed
-chunks directly to an XXH3-128 sink instead of `capture_file`'s byte vector.
-Check metadata again, then verify the candidate using the processed identity.
-Keep the tree on confirmation without constructing a rope or source buffer.
+Use metadata to find a candidate, then verify directly from disk:
+
+```rust
+let metadata = SourceFile::open(root.join(path))?.metadata()?;
+let candidate = loader.preview(
+    path,
+    metadata.byte_len,
+    metadata.mtime,
+    &grammar,
+    LoadOptions::default(),
+)?;
+let confirmed = match candidate {
+    Some(candidate) => match candidate.verify_file(VerifyOptions::default())? {
+        Verification::Confirmed(tree) => Some(tree),
+        Verification::Changed(_) => None,
+    },
+    None => None,
+};
+```
+
+This cache-only example declines changed candidates, including alternative exact
+hits. A client willing to use those can handle `Changed(LoadResult::Loaded(tree))`.
+`verify_file` reopens the request path and checks the actual capture's metadata;
+streamable preprocessing feeds XXH3 directly without constructing a source buffer.
 
 If Zed decoding falls back, discard the partial hash and restart through the
 buffered decoder. If verification returns a miss, capture source for parsing;
@@ -851,6 +857,33 @@ The standalone preprocessing crate also supports explicit encodings and Zed's
 reload rules. The cache-facing opaque type currently has only `none()` and
 `zed()` constructors; examples for explicitly selected cache profiles await
 that API extension.
+
+## 22. Metadata, contents, and standalone hashing
+
+```rust
+let mut file = SourceFile::open(root.join(path))?;
+let observed = file.metadata()?;
+let flag = AtomicBool::new(false);
+let fingerprint = file.hash(ReadOptions {
+    cancellation: Canceler::new(&flag),
+    ..Default::default()
+})?;
+// Later reads start at byte zero and can observe newer file contents.
+let contents = file.read(ReadOptions::default())?;
+let recomputed = hash_source(
+    std::io::Cursor::new(&contents.bytes),
+    Canceler::default(),
+)?;
+assert_eq!(recomputed, contents.fingerprint.source);
+```
+
+`observed.byte_len` and `fingerprint.metadata.byte_len` describe raw bytes;
+`fingerprint.source.byte_len` describes preprocessed bytes. `hash_source` expects
+already-preprocessed input and never applies the default Zed conversion again.
+Use `ReadOptions { preprocessing: TextPreprocessing::none(), ..Default::default() }`
+for raw bytes. `hash` avoids output storage where preprocessing streams; `read`
+always returns owned bytes. Changes detected during either operation return
+`WouldBlock`; cancellation returns `Interrupted`.
 
 ## Decisions exposed by these examples
 

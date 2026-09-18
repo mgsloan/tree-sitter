@@ -119,9 +119,10 @@ struct LoadRequest {
 }
 
 // Identity of transformed parser input, separate from raw disk metadata.
-struct SourceIdentity {
-    hash: u128, // XXH3-128 of parser input after preprocessing
-    byte_len: u64,
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct SourceIdentity {
+    pub hash: u128, // XXH3-128 of parser input after preprocessing
+    pub byte_len: u64,
 }
 
 // A structurally validated tree whose correspondence to current source is unverified.
@@ -143,6 +144,9 @@ impl CachedCandidate {
         read: &mut F,
         options: VerifyOptions<'_>,
     ) -> Result<Verification, LoadError>;
+
+    // Opens the request's file and preprocesses/hashes it without retaining output.
+    pub fn verify_file(self, options: VerifyOptions<'_>) -> Result<Verification, LoadError>;
 }
 
 #[must_use]
@@ -347,6 +351,75 @@ suggests writing another encoding and does not describe byte-preserving mode wel
 
 ## File metadata and hashing utilities
 
+These synchronous utilities live alongside the persistence API. `SourceFile`
+owns an open handle; paths passed to `open` are filesystem paths, not cache-relative
+paths. Preprocessing defaults to `zed()` through `ReadOptions`.
+
+```rust
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FileMetadata {
+    pub byte_len: u64, // raw disk bytes
+    pub mtime: FileModificationTime,
+}
+
+impl FileMetadata {
+    pub fn from_metadata(metadata: &std::fs::Metadata) -> io::Result<Self>;
+}
+
+pub struct SourceFile {
+    file: std::fs::File,
+}
+
+#[derive(Default)]
+pub struct ReadOptions<'a> {
+    pub preprocessing: TextPreprocessing,
+    pub cancellation: Canceler<'a>,
+}
+
+pub struct FileContents {
+    pub bytes: Vec<u8>, // processed parser input
+    pub fingerprint: FileFingerprint,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FileFingerprint {
+    pub metadata: FileMetadata,
+    pub preprocessing: TextPreprocessing,
+    pub source: SourceIdentity,
+}
+
+impl SourceFile {
+    pub fn open(path: impl AsRef<Path>) -> io::Result<Self>;
+    pub fn metadata(&self) -> io::Result<FileMetadata>;
+
+    // Each operation starts at byte zero and checks metadata before/after reading.
+    pub fn read(&mut self, options: ReadOptions<'_>) -> io::Result<FileContents>;
+    pub fn hash(&mut self, options: ReadOptions<'_>) -> io::Result<FileFingerprint>;
+}
+
+// Already-preprocessed input: no decoding or normalization is performed here.
+pub fn hash_source(
+    input: impl io::Read,
+    cancellation: Canceler<'_>,
+) -> io::Result<SourceIdentity>;
+```
+
+`read` preprocesses, hashes, and collects the bytes in one pass where streaming
+is supported. `hash` uses the same pipeline without retaining processed output.
+It may still buffer for Zed's encoding-detection fallback. Both restart on the
+same handle when fallback needs another pass, resetting any provisional hash.
+`hash_source` handles bytes via `io::Cursor` and arbitrary readers with bounded
+scratch; cache callback hashing uses the same XXH3 accumulator and byte count.
+Returned fingerprints describe the completed read, not future contents or an
+immutable filesystem snapshot. Editing `FileContents::bytes` invalidates its
+fingerprint; cache APIs do not trust caller-supplied fingerprints as verification.
+
+Metadata changes during a read return `io::ErrorKind::WouldBlock`; cancellation
+returns `Interrupted`. Other I/O and decoding failures propagate as I/O errors.
+`SourceFile` operations may be retried, always from the beginning. Its metadata
+method reads current handle metadata without reading contents. For a path-only
+metadata lookup, use `FileMetadata::from_metadata(&std::fs::metadata(path)?)`.
+
 Provide shared utilities for opening a file, reading its raw length and
 `FileModificationTime`, preprocessing it, and hashing the resulting parser input.
 Use streaming **XXH3-128**, with a fixed seed of zero and canonical persisted byte
@@ -359,8 +432,12 @@ and runtime fingerprints are separate from this source hashing choice.
 Hash after all decoding, BOM handling, and newline normalization. Do not add a
 raw-byte hash. A hashing sink optionally forwards processed bytes into caller
 storage, allowing one preprocessing pass for capture and hashing. Internal
-verification consumes this computed identity without hashing it again; public
-utility/result names remain to be settled.
+verification consumes this computed identity without hashing it again.
+`CachedCandidate::verify_file` opens the stored cache root/request path, calls
+`SourceFile::hash` with the request's preprocessing and operation cancellation,
+and uses the resulting identity and actual metadata in the same verification
+logic as `verify`. Opening failures are errors, not cache misses. Reopening may
+observe a newer file than preview; it is that completed read which is verified.
 
 Read metadata before and after processing from the same open file handle;
 detect changed length/mtime and return a retryable failure. Check bytes read
@@ -532,7 +609,7 @@ let loaded = match candidate {
 // A Miss can be parsed as in the first example, using the same snapshot.
 ```
 
-A write worker calls `write.publish(PublishOptions { cancellation })` and may
+A write worker calls `write.publish(PublishOptions { cancellation, ..Default::default() })` and may
 retry busy work. Passing `drop` as the parse handler explicitly discards writes.
 The required callback makes the decision explicit; `#[must_use]` is advisory
 and cannot enforce eventual publication.
