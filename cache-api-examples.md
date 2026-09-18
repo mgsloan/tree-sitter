@@ -1,262 +1,162 @@
 # Cache API client examples
 
 Examples against [the proposal](persistence-api-proposal.md), not the current
-implementation. Snippets share the setup below unless stated otherwise. Helpers
-such as `capture_file`, `lookup`, and `chunk_reader` are application code.
-`SourceFile`, `FileMetadata`, and `hash_source` are proposed library utilities.
+implementation. Async snippets run inside application async functions returning
+`ExampleResult<_>`. Parsing, publication, and maintenance run on application workers;
+no particular executor or worker-pool API is assumed. Examples are alternatives,
+not a single program sharing consumed values.
 
 | Client pattern | Example |
 |---|---|
-| Open a cache, prepare grammars, reuse a worker | 1 |
-| Load disk bytes, with or without preprocessing | 2 |
-| Use existing contiguous input | 3 |
-| Inspect the cache without parsing | 4 |
-| Parse a miss and publish immediately | 5 |
-| Parse without writing | 6 |
-| Queue writes and retry contention | 7 |
-| Move parsing work and its source to another thread | 8 |
-| Transfer writes to another process | 9 |
-| Parse when the cache is unavailable; avoid cache creation | 10 |
-| Use an existing rope without flattening | 11 |
-| Transform streamed input directly into a rope | 12 |
-| Start structural work before reading the source | 13 |
-| Share a cache across workers; drop packing scratch | 14 |
-| Cancel loading, transformation, parsing, verification, or publication | 15 |
-| Use transaction-backed trees and detach them | 16 |
-| Select packing variants | 17 |
-| Handle edits between lookup and parsing | 18 |
-| Query trees with source text | 19 |
-| Run explicit maintenance | 20 |
-| Verify a disk candidate without retaining source text | 21 |
-| Read metadata, contents, or a standalone fingerprint | 22 |
+| Open a cache and reuse a loader | 1 |
+| Read disk contents with default or no preprocessing | 2 |
+| Use already-preprocessed contiguous input | 3 |
+| Cache-only lookup | 4 |
+| Parse and publish immediately | 5 |
+| Parse and discard writes | 6 |
+| Queue writes and retry | 7 |
+| Parse a miss on another worker | 8 |
+| Transfer publication to another process | 9 |
+| Avoid cache creation; continue without a store | 10 |
+| Use a rope without flattening | 11 |
+| Preprocess directly into rope storage | 12 |
+| Speculative structural work during verification | 13 |
+| Share the cache and drop packing scratch | 14 |
+| Cancellation | 15 |
+| Transaction-backed trees and detachment | 16 |
+| Packing variants | 17 |
+| Source changes and unsaved buffers | 18 |
+| Queries needing source text | 19 |
+| Explicit maintenance | 20 |
+| Verify without retaining source text | 21 |
+| Metadata, reading, and hashing utilities | 22 |
+| Different preprocessing choices with identical output | 23 |
 
-## 1. Setup and worker reuse
+## 1. Setup and loader reuse
 
-The grammar provider supplies `language` and its implementation `fingerprint`.
-`root` is a project directory; `path` is relative to it. Later snippets execute
-inside functions returning `ExampleResult<_>` unless a different return is shown.
+The grammar provider supplies `language` and `fingerprint`. The client chooses
+`root` and a consistent project-relative `path`. Plain paths are accepted without
+validation, normalization, or canonicalization. Symlink components remain in the
+logical identity even when their targets are outside the project. Retain the
+grammar and loader across jobs using the appropriate cache for each source.
 
 ```rust
-use std::{
-    fs::File,
-    io::{self, Write},
-    path::Path,
-    sync::{Arc, atomic::AtomicBool},
-};
+use std::{io, path::Path, sync::{Arc, atomic::AtomicBool}};
 use tree_sitter::Point;
 use tree_sitter_squatter::PackOptions;
 use tree_squatter_persistence::*;
 
 type ExampleResult<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
+let mut file = SourceFile::open(root, path).await?;
 let cache = Cache::open(root, CacheOptions::default())?;
 let grammar = cache.grammar(&language, fingerprint)?;
 let mut loader = cache.loader();
 ```
 
-Retain `grammar` and `loader` across jobs. Other grammars can use the same loader;
-each job supplies its grammar explicitly. `Cache` itself is not cloned: its
-returned `Arc` is cloned when sharing it with another owner.
-
-## 2. Capture disk input, optionally transforming it
-
-The application owns the bytes. This helper detects ordinary concurrent changes
-by comparing metadata before and after reading the same file handle. That is not
-proof of unchanged contents; metadata-only cache results remain speculative.
+## 2. Read disk contents
 
 ```rust
-struct Capture {
-    bytes: Arc<[u8]>,
-    file_byte_len: u64,
-    mtime: FileModificationTime,
-    preprocessing: TextPreprocessing,
-}
-
-fn capture_file(
-    absolute_path: &Path,
-    preprocessing: TextPreprocessing,
-    cancellation: Canceler<'_>,
-) -> io::Result<Capture> {
-    let contents = SourceFile::open(absolute_path)?.read(ReadOptions {
-        preprocessing,
-        cancellation,
-    })?;
-    Ok(Capture {
-        bytes: contents.bytes.into(),
-        file_byte_len: contents.fingerprint.metadata.byte_len,
-        mtime: contents.fingerprint.metadata.mtime,
-        preprocessing: contents.fingerprint.preprocessing,
-    })
-}
-
-fn bytes_reader(bytes: &[u8]) -> impl FnMut(usize, Point) -> &[u8] {
-    move |offset, _| bytes.get(offset..).unwrap_or_default()
-}
-
-fn lookup(
-    loader: &Loader,
-    path: &Path,
-    grammar: &Grammar,
-    capture: &Capture,
-    cancellation: Canceler<'_>,
-) -> Result<LoadResult, LoadError> {
-    loader.load(
-        path,
-        capture.file_byte_len,
-        capture.mtime,
-        grammar,
-        &mut bytes_reader(&capture.bytes),
-        LoadOptions {
-            preprocessing: capture.preprocessing,
-            cancellation,
-            ..Default::default()
-        },
-    )
-}
+let mut contents = file.read(ReadOptions::default()).await?;
+let loaded = loader.load(&mut contents, &grammar, LoadOptions::default()).await?;
 ```
 
-Choose unchanged bytes or Zed-compatible decoding and newline handling:
-
-`TextPreprocessing::default()` is `zed()`, including in `LoadOptions::default()`.
-Use `none()` explicitly for unchanged bytes.
+`SourceFile` defaults to `TextPreprocessing::zed()`. `read` returns an immutable
+capture of processed bytes, raw metadata, and descriptive preprocessing information.
+`FileContents` implements `Source` without decoding again. It can reuse its computed
+fingerprint because its bytes are immutable. To retain unchanged bytes instead:
 
 ```rust
-let raw = capture_file(
-    &root.join(path),
-    TextPreprocessing::none(),
-    Canceler::default(),
-)?;
-
-let capture = capture_file(
-    &root.join(path),
-    TextPreprocessing::zed(),
-    Canceler::default(),
-)?;
+let mut file = SourceFile::open(root, path).await?
+    .with_preprocessing(TextPreprocessing::none());
+let contents = file.read(ReadOptions::default()).await?;
 ```
 
-`file_byte_len` is the raw file length, not `capture.bytes.len()`. Tree coordinates
-refer to the transformed bytes. An interrupted transform's partial output is
-discarded by this helper. `none()` also supports arbitrary bytes; `zed()` detects
-and decodes text encodings before normalizing line endings.
+Raw byte length and processed byte length can differ. Cancellation or detected
+metadata changes invalidate the capture, including partial hashes.
 
-## 3. Load already available contiguous input
+## 3. Already-preprocessed contiguous input
 
-`capture` can come from the helper or the application's existing file loader.
-The source must represent the disk capture described by its metadata.
+The caller supplies the project-relative path and raw metadata from the matching
+capture, plus its preprocessing description. `bytes` must be the unchanged
+processed snapshot. Keeping the path consistent is the client's responsibility.
 
 ```rust
-let mut read = bytes_reader(&capture.bytes);
-let loaded = loader.load(
-    path,
-    capture.file_byte_len,
-    capture.mtime,
-    &grammar,
-    &mut read,
-    LoadOptions {
-        preprocessing: capture.preprocessing,
-        ..Default::default()
-    },
-)?;
+let mut contents = FileContents::from_preprocessed(path.to_path_buf(), bytes, metadata, preprocessing_info);
+let loaded = loader.load(&mut contents, &grammar, LoadOptions::default()).await?;
+let mut input = contents.prepare(ReadOptions::default()).await?;
+let suffix = input.read(0, Point::new(0, 0));
 ```
 
-This also handles empty files: the first read returns an empty slice. EOF comes
-from the callback, not from the raw file length. Input is hashed but never parsed
-by `load`.
+The prepared view borrows storage; the initial read can return the whole buffer.
+Subsequent calls may revisit offsets. Construction computes the processed identity;
+it does not trust a caller-supplied digest or preprocess bytes again.
 
-## 4. Cache-only access
-
-The application decides what a miss means. No write callback is needed until it
-chooses to parse.
+## 4. Cache-only lookup
 
 ```rust
-let cached_tree = match lookup(&loader, path, &grammar, &capture, Canceler::default())? {
+let tree = match loader.load(&mut source, &grammar, LoadOptions::default()).await? {
     LoadResult::Loaded(tree) => Some(tree),
-    LoadResult::Miss(miss) => {
-        drop(miss); // no parsing, publication, or source ownership to clean up
-        None
-    }
+    LoadResult::Miss(_) => None,
 };
 ```
 
-Examples 5–9 show alternative policies for a `CacheMiss` obtained from this match.
-They are alternatives, not sequential uses of the same consumed miss.
+No preparation or parsing is needed. A file source can hash without retaining its
+text where its preprocessing supports streaming.
 
 ## 5. Parse and publish immediately
 
-Publication has its own outcome. A full/unavailable cache or publication error
-does not turn a successfully parsed tree into a parse failure.
+Prepare asynchronously, then run the synchronous parse on a worker. Here the
+source is owned by that worker or the application uses scoped work for the borrow.
 
 ```rust
+let mut input = source.prepare(ReadOptions::default()).await?;
 let mut publication = None;
 let mut retry_writes = Vec::new();
-let tree = match lookup(&loader, path, &grammar, &capture, Canceler::default())? {
-    LoadResult::Loaded(tree) => tree,
-    LoadResult::Miss(miss) => miss.parse(
-        &mut loader,
-        &mut bytes_reader(&capture.bytes),
-        ParseOptions::default(),
-        |write| {
-            let outcome = write.publish(PublishOptions::default());
-            if matches!(&outcome, Ok(WriteOutcome::Busy)) {
-                retry_writes.push(write);
-            }
-            publication = Some(outcome);
-        },
-    )?,
-};
-
+let tree = miss.parse(&mut loader, &mut input, ParseOptions::default(), |write| {
+    let outcome = write.publish(PublishOptions::default());
+    if matches!(&outcome, Ok(WriteOutcome::Busy)) {
+        retry_writes.push(write);
+    }
+    publication = Some(outcome);
+})?;
 if let Some(Err(error)) = publication {
     eprintln!("cache publication failed: {error}");
 }
-// `tree` is usable regardless of the publication outcome.
 ```
 
-No callback invocation means there was no eligible publication work, such as on
-a hit or for an ineligible path. The callback returns `()`: use captured state to
-report a publication error to the caller rather than using `?` inside it.
+Publication errors do not invalidate the tree. The handler returns `()` and runs
+once for an eligible successful parse; cache hits produce no write work.
 
-## 6. Parse and deliberately discard writes
+## 6. Parse without publishing
 
 ```rust
-let tree = miss.parse(
-    &mut loader,
-    &mut bytes_reader(&capture.bytes),
-    ParseOptions::default(),
-    drop,
-)?;
+let mut input = source.prepare(ReadOptions::default()).await?;
+let tree = miss.parse(&mut loader, &mut input, ParseOptions::default(), drop)?;
 ```
 
-This suppresses publication, not preparation of `PendingWrite`. Under the current
-proposal, preparing work may still allocate a source copy. A future API could
-avoid that cost if discard is a common path.
+This discards publication work explicitly. Preparing `PendingWrite` can still copy
+source bytes under the current source-storing schema.
 
-## 7. Queue writes and retry without holding a transaction
+## 7. Queue publication and retry contention
 
 ```rust
 let mut writes = Vec::new();
-let tree = miss.parse(
-    &mut loader,
-    &mut bytes_reader(&capture.bytes),
-    ParseOptions::default(),
-    |write| writes.push(write),
-)?;
-drop(capture); // queued writes retain what publication needs
-
+let tree = miss.parse(&mut loader, &mut input, ParseOptions::default(), |write| {
+    writes.push(write);
+})?;
 let mut retry_later = Vec::new();
 for write in writes {
     match write.publish(PublishOptions::default()) {
         Ok(WriteOutcome::Published | WriteOutcome::AlreadyPresent) => {}
         Ok(WriteOutcome::Busy) => retry_later.push(write),
-        Err(error) => {
-            eprintln!("cache publication failed: {error}");
-            // This client chooses to discard errors rather than retry them.
-        }
+        Err(error) => eprintln!("cache publication failed: {error}"),
     }
 }
 ```
 
-A scheduler can retry `retry_later` later; this is deliberately not a busy loop.
-For a background writer, pass the same owned values through a channel:
+Keep `retry_later` in application state and schedule another attempt. For a
+background writer, move owned work through a channel:
 
 ```rust
 let (sender, receiver) = std::sync::mpsc::channel::<PendingWrite>();
@@ -271,96 +171,74 @@ let writer = std::thread::spawn(move || {
     }
     retry_later
 });
-
 let mut unsent = None;
-let tree = miss.parse(
-    &mut loader,
-    &mut bytes_reader(&capture.bytes),
-    ParseOptions::default(),
-    |write| {
-        if let Err(error) = sender.send(write) {
-            unsent = Some(error.0);
-        }
-    },
-)?;
+let tree = miss.parse(&mut loader, &mut input, ParseOptions::default(), |write| {
+    if let Err(error) = sender.send(write) {
+        unsent = Some(error.0);
+    }
+})?;
 drop(sender);
 let mut retry_later = writer.join().expect("writer panicked");
 retry_later.extend(unsent);
 ```
 
-Moving work to another process is different: it needs serialization, not an `Arc`.
+Joining here is illustrative synchronous coordination, not an executor scheduling
+recommendation. A production async client awaits its worker pool's completion.
 
-## 8. Queue a cache miss for parsing elsewhere
+## 8. Parse a miss on another worker
 
-The miss does not own the source. Move an immutable snapshot alongside it, and
-construct the callback inside the worker. An edited live buffer is not a substitute.
+Prepare outside the parser worker. This scoped-thread example permits an input
+borrowing its source; the prepared input, miss, and loader must be `Send`.
 
 ```rust
-let worker_cache = Arc::clone(&cache);
-let source = Arc::clone(&capture.bytes);
-let worker = std::thread::spawn(move || -> ExampleResult<_> {
-    let mut loader = worker_cache.loader();
-    let mut writes = Vec::new();
-    let tree = miss.parse(
-        &mut loader,
-        &mut bytes_reader(&source),
-        ParseOptions::default(),
-        |write| writes.push(write),
-    )?;
-    Ok((tree, writes))
-});
-let (tree, writes) = worker.join().expect("parser worker panicked")?;
+let mut input = contents.prepare(ReadOptions::default()).await?;
+let mut worker_loader = cache.loader();
+let (tree, writes) = std::thread::scope(|scope| {
+    scope.spawn(move || -> ExampleResult<_> {
+        let mut writes = Vec::new();
+        let tree = miss.parse(
+            &mut worker_loader,
+            &mut input,
+            ParseOptions::default(),
+            |write| writes.push(write),
+        )?;
+        Ok((tree, writes))
+    }).join().expect("parser worker panicked")
+})?;
 ```
 
-Another worker might publish during the delay. `CacheMiss::parse` still parses:
-there is no cache recheck or cooperative waiting in this version. Publication
-can subsequently return `AlreadyPresent`.
+The scope itself waits synchronously. Use it from an application worker, not an
+async executor thread that must remain responsive. Long-lived queued jobs should
+own their immutable source snapshot and prepare the view within its lifetime.
+A miss never rechecks the cache or waits for another writer; publication may return
+`AlreadyPresent` if another worker has published meanwhile.
 
 ## 9. Transfer publication to another process
 
-The proposal retains `PendingWrite::write_transfer`, `transfer_len`, and
-`Cache::read_transfer` from the existing transfer API. The wire format must be
-updated to carry the proposed raw metadata and transform profile. Producer and
-consumer use the same build and matching grammar identity.
-
-Producer: leave cache creation to the receiver. Here `stream` is a caller-owned
-IPC writer; writing happens synchronously inside the callback.
+The retained transfer API carries raw metadata, processed bytes, and descriptive
+preprocessing information. Update its frame format for the new schema. Both
+processes use matching grammar/runtime identities.
 
 ```rust
-let producer = Cache::open(
-    root,
-    CacheOptions { create_cache_if_absent: false, ..Default::default() },
-)?;
-let mut loader = producer.loader();
 let mut transfer_error = None;
-let tree = match lookup(&loader, path, &grammar, &capture, Canceler::default())? {
-    LoadResult::Loaded(tree) => tree,
-    LoadResult::Miss(miss) => miss.parse(
-        &mut loader,
-        &mut bytes_reader(&capture.bytes),
-        ParseOptions::default(),
-        |write| {
-            transfer_error = write.write_transfer(&mut stream).err();
-        },
-    )?,
-};
-// Handle transfer_error independently; the parsed tree remains usable.
+let tree = miss.parse(&mut loader, &mut input, ParseOptions::default(), |write| {
+    transfer_error = write.write_transfer(&mut stream).err();
+})?;
+// Report transfer_error independently of successful parsing.
 ```
 
-Receiver: `stream` supplies the frame, and `maximum_frame_bytes` is the caller's
-limit. Receiving does not reparse or replace the captured source with today's disk bytes.
+The receiving process uses its own shared cache:
 
 ```rust
 let consumer = Cache::open(root, CacheOptions::default())?;
 let write = consumer.read_transfer(&mut stream, &grammar, maximum_frame_bytes)?;
 let outcome = write.publish(PublishOptions::default())?;
-// Retain write for retry if outcome is Busy.
 ```
 
-A producer that no longer exists is fine once the frame has been transferred.
-Partial transport failures require the application's framing/reconnect policy.
+`transfer_len` remains available for framing. A busy write can be retained and
+retried; transport retry/framing policy belongs to the caller.
 
-## 10. No cache creation, or an unavailable cache
+## 10. Avoid cache creation or continue without a store
 
 ```rust
 let cache = Cache::open(
@@ -368,98 +246,51 @@ let cache = Cache::open(
     CacheOptions { create_cache_if_absent: false, ..Default::default() },
 )?;
 let mut loader = cache.loader();
-let tree = match lookup(&loader, path, &grammar, &capture, Canceler::default())? {
-    LoadResult::Loaded(tree) => tree,
-    LoadResult::Miss(miss) => miss.parse(
-        &mut loader,
-        &mut bytes_reader(&capture.bytes),
-        ParseOptions::default(),
-        drop,
-    )?,
-};
+let loaded = loader.load(&mut source, &grammar, LoadOptions::default()).await?;
 ```
 
-A missing or unavailable store allows parsing. A bad project root still causes
-`Cache::open` to fail. `create_cache_if_absent: false` does not make an existing
-cache read-only. A persistable parse without a store still supplies transferable
-work; attempting local publication reports an error.
-If this handle starts without a store, it stays that way for its lifetime,
-even if another process creates the cache. Reusing it through the registry does
-not upgrade it.
+A handle that starts without a store remains without one. Parsing still works;
+write work can be transferred, but local publication errors. Existing caches are
+still writable. An invalid project root can fail `open`.
 
-## 11. Existing rope snapshot, without flattening
+## 11. Existing rope without flattening
 
-This adapter builds an index of borrowed chunks and caches the current chunk.
-It copies no source bytes, supports arbitrary byte offsets, and needs no `dyn`.
-A production integration can use its rope's native seek cursor instead of this
-temporary index. The returned slices borrow the caller's immutable snapshot.
+`ChunkSource` indexes borrowed preprocessed chunks without copying their bytes.
+`metadata` and `preprocessing_info` describe the disk capture represented by the
+unchanged rope, not an edited live buffer.
 
 ```rust
-fn chunk_reader<'a>(
-    chunks: impl IntoIterator<Item = &'a [u8]>,
-) -> impl FnMut(usize, Point) -> &'a [u8] {
-    let mut length = 0;
-    let chunks: Vec<_> = chunks.into_iter().filter(|chunk| !chunk.is_empty())
-        .map(|chunk| {
-            let start = length;
-            length += chunk.len();
-            (start, chunk)
-        })
-        .collect();
-    let mut current = 0;
-    move |offset, _| {
-        if offset >= length {
-            return &[];
-        }
-        let (start, chunk) = chunks[current];
-        if offset < start || offset >= start + chunk.len() {
-            current = chunks.partition_point(|(start, _)| *start <= offset) - 1;
-        }
-        let (start, chunk) = chunks[current];
-        &chunk[offset - start..]
-    }
-}
-
-let mut read = chunk_reader(snapshot.chunks().map(str::as_bytes));
-let preprocessing = TextPreprocessing::zed();
-let tree = match loader.load(
-    path,
-    raw_file_byte_len,
-    raw_file_mtime,
-    &grammar,
-    &mut read,
-    LoadOptions { preprocessing, ..Default::default() },
-)? {
+let mut source = ChunkSource::from_preprocessed(
+    path.to_path_buf(),
+    snapshot.chunks().map(str::as_bytes),
+    metadata,
+    preprocessing_info,
+);
+let loaded = loader.load(&mut source, &grammar, LoadOptions::default()).await?;
+let mut input = source.prepare(ReadOptions::default()).await?;
+let tree = match loaded {
     LoadResult::Loaded(tree) => tree,
     LoadResult::Miss(miss) => miss.parse(
-        &mut loader,
-        &mut read,
-        ParseOptions::default(),
-        |write| writes.push(write),
+        &mut loader, &mut input, ParseOptions::default(), |write| writes.push(write),
     )?,
 };
 ```
 
-Zed's [`Rope::chunks`](https://github.com/zed-industries/zed/blob/main/crates/rope/src/rope.rs)
-supplies string chunks for this adapter. `snapshot` must be the unchanged loaded
-UTF-8 snapshot with Zed preprocessing already applied. The mode describes its
-profile; they do not transform it again. Snapshot length is not raw disk length.
-The parser/hash path does not flatten it, but the current deferred-write schema
-still requires an owned source copy when constructing `PendingWrite`.
+A native rope adapter can implement `Source` and `ParserInput` using its own cursor
+instead of this chunk index. Reads may revisit offsets; empty slices signal EOF.
+Source hashing traverses chunks in order. Publication may still copy source bytes.
 
-## 12. Transform streamed bytes directly into rope storage
+## 12. Preprocess directly into a rope
 
-`TextPreprocessing::apply` accepts `io::Write`. A small application writer can
-collect UTF-8 bytes into rope chunks without making one full-file string. For
-example, this writer retains only an incomplete trailing UTF-8 sequence:
+On a blocking worker, the low-level synchronous utility can feed an application
+`io::Write` adapter that appends validated UTF-8 into rope storage:
 
 ```rust
 struct RopeWriter<'a> {
     rope: &'a mut rope::Rope,
     pending: Vec<u8>,
 }
-
-impl Write for RopeWriter<'_> {
+impl io::Write for RopeWriter<'_> {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
         self.pending.extend_from_slice(bytes);
         let valid = match std::str::from_utf8(&self.pending) {
@@ -473,182 +304,98 @@ impl Write for RopeWriter<'_> {
         }
         Ok(bytes.len())
     }
-
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
-    }
+    fn flush(&mut self) -> io::Result<()> { Ok(()) }
 }
-
 let mut snapshot = rope::Rope::new();
 let mut output = RopeWriter { rope: &mut snapshot, pending: Vec::new() };
-preprocessing.apply(&mut file, &mut output, PreprocessingOptions::default())?;
+TextPreprocessing::zed().apply(&mut file, &mut output, PreprocessingOptions::default())?;
 if !output.pending.is_empty() {
     return Err(io::Error::new(io::ErrorKind::InvalidData, "incomplete UTF-8 input").into());
 }
 drop(output);
-// Use snapshot with the chunk_reader from example 11.
 ```
 
-On an error or cancellation, discard the partial rope. This writer rejects
-invalid UTF-8; clients preserving arbitrary bytes use byte storage instead.
-`zed()` includes automatic decoding of non-UTF-8 files. Its fallback may buffer
-input before writing to this adapter; streaming output does not imply bounded
-memory for every encoding-detection path.
+Discard the partial rope on error. `apply` may buffer before emitting when encoding
+selection is uncertain. An async rope source performs this work through its I/O
+backend and prepares the rope before synchronous parser access. The standalone
+preprocessing crate must expose observed preprocessing information to that adapter;
+`apply`'s unit-returning convenience API alone does not report it.
 
-## 13. Analyze a candidate while the file loads
+## 13. Structural analysis while the file loads
 
-This example runs a simple source-independent analysis concurrently with capture.
-It keeps that work only if verification confirms the candidate. A preview miss,
-changed candidate with another exact hit, and changed candidate requiring parsing
-all join the same final flow. `options` uses the intended transform profile.
+Move the candidate to an analysis worker while the source independently loads.
+The worker returns the candidate and owned results through a runtime-independent
+oneshot; verification then uses the immutable capture's computed fingerprint.
 
 ```rust
-let observed = std::fs::metadata(root.join(path))?;
-let candidate = loader.preview(
-    path,
-    observed.len(),
-    FileModificationTime::new(observed.modified()?),
-    &grammar,
-    LoadOptions { preprocessing, ..Default::default() },
-)?;
-
-let absolute_path = root.join(path);
-let (candidate, speculative_count, capture) = std::thread::scope(|scope| {
-    let capture = scope.spawn(|| {
-        capture_file(&absolute_path, preprocessing, Canceler::default())
+let candidate = loader.preview(&mut file, &grammar, LoadOptions::default()).await?;
+if let Some(candidate) = candidate {
+    let (sender, receiver) = futures_channel::oneshot::channel();
+    std::thread::spawn(move || {
+        let count = candidate.tree().root_node().preorder().count();
+        let _ = sender.send((candidate, count));
     });
-    let analysis = scope.spawn(move || {
-        let count = candidate.as_ref().map(|candidate| {
-            candidate.tree().root_node().preorder().count()
-        });
-        (candidate, count)
-    });
-    let (candidate, count) = analysis.join().expect("analysis panicked");
-    let capture = capture.join().expect("capture panicked")?;
-    Ok::<_, io::Error>((candidate, count, capture))
-})?;
-
-let mut read = bytes_reader(&capture.bytes);
-let (loaded, confirmed_count) = match candidate {
-    Some(candidate) => match candidate.verify(
-        capture.file_byte_len,
-        capture.mtime,
-        &mut read,
-        VerifyOptions::default(),
-    )? {
-        Verification::Confirmed(tree) => (LoadResult::Loaded(tree), speculative_count),
-        Verification::Changed(loaded) => (loaded, None),
-    },
-    None => (
-        lookup(&loader, path, &grammar, &capture, Canceler::default())?,
-        None,
-    ),
-};
-let tree = match loaded {
-    LoadResult::Loaded(tree) => tree,
-    LoadResult::Miss(miss) => miss.parse(
-        &mut loader,
-        &mut read,
-        ParseOptions::default(),
-        |write| writes.push(write),
-    )?,
-};
-let count = confirmed_count.unwrap_or_else(|| tree.tree().root_node().preorder().count());
+    let mut contents = file.read(ReadOptions::default()).await?;
+    let (candidate, speculative_count) = receiver.await?;
+    match candidate.verify(&mut contents, VerifyOptions::default()).await? {
+        Verification::Confirmed(tree) => {
+            // Keep speculative_count and the confirmed tree.
+        }
+        Verification::Changed(loaded) => {
+            // Discard speculative_count; loaded is a new exact hit or a miss.
+        }
+    }
+}
 ```
 
-Use metadata from the actual capture in `verify`, even if it differs from preview.
-Hash verification can confirm equivalent transformed contents despite changed
-raw metadata. If reading or verification fails, speculative work is discarded;
-it is never promoted to a verified result. Confirmation applies to the captured
-snapshot, not to future edits or later disk contents.
+`file` is a `SourceFile`; `CachedCandidate` must be `Send`. The application may
+reuse an analysis pool instead of starting a thread per job. Source-dependent
+queries require matching text and cannot run speculatively against another capture.
 
-## 14. Shared cache, independent workers, reusable scratch
-
-This is a one-job worker; a real worker repeats its loop using the same loader.
-The source and relative path move with the job.
+## 14. Shared cache and scratch lifetime
 
 ```rust
 let mut worker_loader = cache.loader();
-let worker_grammar = grammar.clone();
-let job_path = path.to_path_buf();
-let worker = std::thread::spawn(move || -> ExampleResult<_> {
-    let tree = match lookup(
-        &worker_loader, &job_path, &worker_grammar, &capture, Canceler::default(),
-    )? {
-        LoadResult::Loaded(tree) => tree,
-        LoadResult::Miss(miss) => miss.parse(
-            &mut worker_loader,
-            &mut bytes_reader(&capture.bytes),
-            ParseOptions::default(),
-            drop,
-        )?,
-    };
-    worker_loader.drop_packer(); // use during idle periods or after a large job
-    // Later parsing recreates packing scratch; the parser is retained.
-    Ok(tree)
-});
-drop(cache); // worker_loader owns its own Arc<Cache>
-let tree = worker.join().expect("worker panicked")?;
+let shared_cache = Arc::clone(&cache);
+drop(cache);
+worker_loader.drop_packer();
 ```
 
-Each worker needs its own loader. Do not put one shared parser behind a mutex
-merely to share the cache. Repeated `Cache::open` calls with conflicting options
-remain an unresolved policy; reuse the same returned `Arc` for this pattern.
+Each loader owns an `Arc<Cache>` and may outlive its creator. Use one loader per
+parser worker. `drop_packer` sets the optional packer to `None`; the next parse
+recreates it. `shared_cache` can create other independent loaders.
 
-## 15. Cancellation across phases and threads
-
-Use one flag for a job, or separate flags to cancel parsing and writing
-independently. Default cancellation is disabled.
-
-```rust
-let disabled = Canceler::default();
-assert!(!disabled.can_cancel());
-disabled.cancel();
-assert!(!disabled.is_cancelled());
-
-let flag = Arc::new(AtomicBool::new(false));
-let worker_flag = Arc::clone(&flag);
-let worker = std::thread::spawn(move || -> ExampleResult<_> {
-    let cancellation = Canceler::new(&worker_flag);
-    let capture = capture_file(&absolute_path, preprocessing, cancellation)?;
-    let mut read = bytes_reader(&capture.bytes);
-    let loaded = loader.load(
-        &relative_path,
-        capture.file_byte_len,
-        capture.mtime,
-        &grammar,
-        &mut read,
-        LoadOptions { preprocessing, cancellation, ..Default::default() },
-    )?;
-    let mut writes = Vec::new();
-    let tree = match loaded {
-        LoadResult::Loaded(tree) => tree,
-        LoadResult::Miss(miss) => miss.parse(
-            &mut loader,
-            &mut read,
-            ParseOptions { cancellation, ..Default::default() },
-            |write| writes.push(write),
-        )?,
-    };
-    Ok((tree, writes))
-});
-
-Canceler::new(&flag).cancel(); // normally triggered by a user action
-let completion = worker.join().expect("worker panicked");
-// The operation may already have completed; cancellation is cooperative.
-```
-
-The same token goes into `VerifyOptions { cancellation, ..Default::default() }` for candidate
-verification and `PublishOptions { cancellation, ..Default::default() }` for writes. Cancellation during
-transformation reports `io::ErrorKind::Interrupted`; load/parse and publication use
-their respective cancellation errors. Cancelled parsing does not invoke the write
-handler. Cancellation after publication commits cannot undo that publication.
-
-A cancelled write can be explicitly retried with a fresh token:
+## 15. Cancellation
 
 ```rust
 let flag = AtomicBool::new(false);
 let cancellation = Canceler::new(&flag);
+let loaded = loader.load(&mut source,
+    &grammar,
+    LoadOptions { cancellation, ..Default::default() },
+).await?;
+if let LoadResult::Miss(miss) = loaded {
+    let mut input = source.prepare(ReadOptions {
+        cancellation,
+        ..Default::default()
+    }).await?;
+    let tree = miss.parse(
+        &mut loader,
+        &mut input,
+        ParseOptions { cancellation, ..Default::default() },
+        drop,
+    )?;
+}
+```
+
+A controller sharing the flag can call `cancel()` during work. Options borrow it;
+`..Default::default()` requires no explicit lifetime. Defaults disable cancellation.
+Use the same pattern for verification, preprocessing, and publication. Cancelling
+an in-progress async read must be handled by the adapter; merely setting the flag
+does not wake an arbitrary I/O backend. Dropping a preparation future must leave
+no valid partial capture and allow a later operation to restart.
+
+```rust
 cancellation.cancel();
 assert!(matches!(
     write.publish(PublishOptions { cancellation, ..Default::default() }),
@@ -657,51 +404,33 @@ assert!(matches!(
 let outcome = write.publish(PublishOptions::default())?;
 ```
 
-## 16. Transaction-backed reads and explicit detachment
+Cancellation after a commit does not undo publication. Parse cancellation produces
+no publication callback.
 
-Choose the policy when opening this cache. Prefer a single configuration per
-project while the repeated-open policy remains undecided.
+## 16. Transaction-backed trees
 
 ```rust
 let cache = Cache::open(
     root,
     CacheOptions { read: ReadPolicy::PreferTransactionBacked, ..Default::default() },
 )?;
-let mut loader = cache.loader();
-let tree = match lookup(&loader, path, &grammar, &capture, Canceler::default())? {
-    LoadResult::Loaded(tree) => tree,
-    LoadResult::Miss(miss) => miss.parse(
-        &mut loader,
-        &mut bytes_reader(&capture.bytes),
-        ParseOptions::default(),
-        drop,
-    )?,
-};
-
 if tree.transaction_backed() {
     let alias = tree.clone();
     let detached = tree.detach()?;
     assert!(!detached.transaction_backed());
     drop(tree);
-    // alias still pins the original snapshot, including across cache updates.
     drop(alias);
-    // detached owns its slab and does not pin the LMDB snapshot.
 }
 ```
 
-This policy is a preference: alignment or reader-admission limits can cause an
-owned fallback. Freshly parsed trees are owned. A live backed tree or candidate
-remains valid across publication and cleanup, but can delay reuse of LMDB pages.
+`detached` owns its slab. Other aliases keep the original transaction pinned until
+dropped. Backed reads can fall back to owned storage; fresh parses are owned.
 
-## 17. Packing variants and byte-oriented clients
+## 17. Packing variants
 
 ```rust
-let loaded = loader.load(
-    path,
-    capture.file_byte_len,
-    capture.mtime,
+let loaded = loader.load(&mut source,
     &grammar,
-    &mut bytes_reader(&capture.bytes),
     LoadOptions {
         pack: PackOptions {
             points: false,
@@ -709,131 +438,86 @@ let loaded = loader.load(
             repack: true,
             ..Default::default()
         },
-        preprocessing: capture.preprocessing,
         ..Default::default()
     },
-)?;
+).await?;
 ```
 
-With `points: false`, point APIs expose byte offsets as columns on row zero.
-Disabling symbol presence omits that query index. These two settings identify
-distinct cached variants; `repack` and initial capacity only affect fresh packing.
-They do not force a cache hit to be repacked or given spare capacity. A miss retains
-the selected settings for `parse`.
+Points and symbol presence select cache variants. Repacking and initial capacity
+only control fresh packing. Without points, point APIs expose byte columns on row
+zero. Preprocessing is chosen by the source, not load options or cached settings.
 
-## 18. Source changes and unsaved buffers
+## 18. Changed files and unsaved buffers
 
-For disk edits after lookup, keep the original immutable snapshot with the miss:
+An immutable `FileContents` or rope snapshot remains usable with its miss after
+the live file changes. A disk source reread may produce different bytes; parsing
+then fails the miss's identity check instead of publishing under the old hash.
+Repeat lookup for the new capture. Metadata and preprocessing descriptions on a
+write come from the actual prepared snapshot that passed validation.
 
-```rust
-let original = Arc::clone(&capture.bytes);
-// The editor or disk may now advance to another version.
-let tree = miss.parse(
-    &mut loader,
-    &mut bytes_reader(&original),
-    ParseOptions::default(),
-    |write| writes.push(write),
-)?;
-// tree and any resulting write describe original, not the newer contents.
-```
-
-If the original snapshot was discarded, perform a new capture and lookup. Passing
-different contents to the old miss must report an identity mismatch. The proposal
-has not yet named that error variant.
-
-Unsaved or arbitrary buffers are not supported by the current disk-associated
-lookup contract. Passing `drop` as the write handler does not make false disk
-metadata valid. The immediate fallback is ordinary Tree-sitter parsing and packing:
+Unsaved buffers cannot invent raw disk metadata. They remain outside the current
+persistence contract; use direct parsing and packing with prepared editor input:
 
 ```rust
 let mut parser = tree_sitter::Parser::new();
 parser.set_language(&language)?;
-let mut read = chunk_reader(edited_snapshot.chunks().map(str::as_bytes));
+let mut read = |offset, point| input.read(offset, point);
 let native = parser.parse_with_options(&mut read, None, None)
     .ok_or_else(|| io::Error::other("parse did not complete"))?;
-let prepared = tree_sitter_squatter::Grammar::new(&language)?;
+let grammar = tree_sitter_squatter::Grammar::new(&language)?;
 let mut packer = tree_sitter_squatter::TreePacker::new()?;
-let tree = packer.pack(&prepared, &native)?;
+let tree = packer.pack(&grammar, &native)?;
 ```
 
-Here `TreePacker` is the proposed rename of `PackContext`. Incremental editing,
-non-UTF-8 decoding profiles, and cache reuse for non-disk buffers need separate
-API decisions; these examples do not pretend those operations exist.
-
-## 19. Queries that need source text
-
-Structural navigation works directly on a loaded tree. Text predicates also need
-the exact transformed source. With contiguous bytes, the current Squatter query
-API can use the caller's capture:
+## 19. Queries using source text
 
 ```rust
 let query = tree_sitter_squatter::Query::new(&language, "(_) @node")?;
 let mut cursor = tree_sitter_squatter::QueryCursor::new();
-let mut execution = cursor.execute(&query, tree.tree().root_node(), &capture.bytes);
+let mut execution = cursor.execute(&query, tree.tree().root_node(), contents.bytes());
 while let Some((matched, index)) = execution.next_capture() {
     let node = matched.captures[index].node;
-    let text = &capture.bytes[node.byte_range()];
-    // Consume node/text here; capture storage is borrowed from the cursor.
+    let text = &contents.bytes()[node.byte_range()];
 }
 if let Some(error) = execution.error() {
     return Err(error.into());
 }
 ```
 
-Do not use this with an unverified preview or a newer edited snapshot. The current
-query API takes a flat byte slice, so parsing a rope without flattening does not
-yet imply rope-aware text predicates. That query interface is a separate gap.
+The bytes must match the confirmed tree. The current query API requires contiguous
+text; a rope-aware query text provider remains separate work.
 
-## 20. Explicit maintenance
-
-These entry points are retained from the existing maintenance API, with `Cache`
-owning the shared state. The caller controls scheduling and work budgets.
+## 20. Maintenance
 
 ```rust
 let mut pending_sweeps = Vec::new();
 if let Some(mut sweep) = cache.sweep_missing() {
     let progress = sweep.step(64, None)?;
-    if progress.state == MaintenanceState::More || progress.state == MaintenanceState::Busy {
+    if matches!(progress.state, MaintenanceState::More | MaintenanceState::Busy) {
         pending_sweeps.push(sweep);
     }
 }
-
 let mut pending_cleanups = Vec::new();
 if let Some(mut cleanup) = cache.maintenance_missing(deleted_path)? {
     let progress = cleanup.step(64, None)?;
-    if progress.state == MaintenanceState::More || progress.state == MaintenanceState::Busy {
+    if matches!(progress.state, MaintenanceState::More | MaintenanceState::Busy) {
         pending_cleanups.push(cleanup);
     }
 }
 let reclaimed = cache.check_stale_readers()?;
 ```
 
-Keep these queues in application state and schedule later steps for their items.
-Dropping a work object stops it; it does not finish cleanup automatically.
-Existing maintenance still accepts its old cancellation argument—the proposal
-only introduced `Canceler` for the new options structs. Unifying maintenance's
-options is not specified yet.
+Retain queues and schedule further steps. Dropping work stops it. Existing
+maintenance cancellation still uses `Option<&AtomicBool>`; migrating those options
+and replacing live-file generation cleanup remain unspecified.
 
-Removing `LoadedFile::maintenance()` also removed the documented client path for
-pruning older generations of a still-existing file. A replacement such as
-cache-level pruning is undecided. No example calls the previously discussed but
-unapproved `cache.prune(path)` method.
-
-## 21. Verify without retaining source text
-
-Use metadata to find a candidate, then verify directly from disk:
+## 21. Verification without retaining source
 
 ```rust
-let metadata = SourceFile::open(root.join(path))?.metadata()?;
-let candidate = loader.preview(
-    path,
-    metadata.byte_len,
-    metadata.mtime,
-    &grammar,
-    LoadOptions::default(),
-)?;
+let mut source = SourceFile::open(root, path).await?;
+let candidate = loader.preview(&mut source, &grammar, LoadOptions::default()).await?;
 let confirmed = match candidate {
-    Some(candidate) => match candidate.verify_file(VerifyOptions::default())? {
+    Some(candidate) => match candidate.verify(&mut source, VerifyOptions::default()).await? {
         Verification::Confirmed(tree) => Some(tree),
         Verification::Changed(_) => None,
     },
@@ -841,58 +525,54 @@ let confirmed = match candidate {
 };
 ```
 
-This cache-only example declines changed candidates, including alternative exact
-hits. A client willing to use those can handle `Changed(LoadResult::Loaded(tree))`.
-`verify_file` reopens the request path and checks the actual capture's metadata;
-streamable preprocessing feeds XXH3 directly without constructing a source buffer.
+This cache-only client declines mismatches, including alternative exact hits.
+`SourceFile::hash` streams preprocessed bytes into XXH3 where possible; no parser
+input or rope is prepared. On decoding fallback it resets the partial hash and
+uses the copied buffered decoder. `verify_file` is unnecessary because both file
+and memory sources implement the same trait.
 
-If Zed decoding falls back, discard the partial hash and restart through the
-buffered decoder. If verification returns a miss, capture source for parsing;
-the discarded stream must be read again and match the miss's identity. Use
-example 13 when source text is needed anyway. Both paths hash after preprocessing,
-so they produce the same source identity. Metadata equality is only a preview
-hint, never a substitute for hashing.
-
-The standalone preprocessing crate also supports explicit encodings and Zed's
-reload rules. The cache-facing opaque type currently has only `none()` and
-`zed()` constructors; examples for explicitly selected cache profiles await
-that API extension.
-
-## 22. Metadata, contents, and standalone hashing
+## 22. Metadata, contents, and hashing
 
 ```rust
-let mut file = SourceFile::open(root.join(path))?;
-let observed = file.metadata()?;
+let mut file = SourceFile::open(root, path).await?;
+let observed = file.metadata().await?;
 let flag = AtomicBool::new(false);
 let fingerprint = file.hash(ReadOptions {
     cancellation: Canceler::new(&flag),
     ..Default::default()
-})?;
-// Later reads start at byte zero and can observe newer file contents.
-let contents = file.read(ReadOptions::default())?;
-let recomputed = hash_source(
-    std::io::Cursor::new(&contents.bytes),
-    Canceler::default(),
-)?;
-assert_eq!(recomputed, contents.fingerprint.source);
+}).await?;
+let mut contents = file.read(ReadOptions::default()).await?;
+let reader = contents.reader(ReadOptions::default()).await?;
+let recomputed = hash_source(reader, Canceler::default()).await?;
+assert_eq!(recomputed, contents.fingerprint().source);
 ```
 
-`observed.byte_len` and `fingerprint.metadata.byte_len` describe raw bytes;
-`fingerprint.source.byte_len` describes preprocessed bytes. `hash_source` expects
-already-preprocessed input and never applies the default Zed conversion again.
-Use `ReadOptions { preprocessing: TextPreprocessing::none(), ..Default::default() }`
-for raw bytes. `hash` avoids output storage where preprocessing streams; `read`
-always returns owned bytes. Changes detected during either operation return
-`WouldBlock`; cancellation returns `Interrupted`.
+`observed.byte_len` and `fingerprint.metadata.byte_len` are raw lengths;
+`fingerprint.source.byte_len` is processed length. Independent file operations can
+observe different versions. In-memory operations use the recorded capture.
+`hash_source` reads already-preprocessed bytes; it never consults cached settings.
 
-## Decisions exposed by these examples
+## 23. Different preprocessing choices
 
-- Source validation between `load` and `CacheMiss::parse` currently requires
-  another hash, or a future verified-snapshot abstraction.
-- Always preparing `PendingWrite` can copy source even when its handler is `drop`.
-- Transfer framing must include preprocessing and raw metadata; it is not unchanged
-  merely because the method names stay the same.
-- `CachedCandidate` must be `Send` for speculative work on a worker thread.
-  Threaded examples likewise require `CacheMiss` and `PendingWrite` to be `Send`.
-- Query text providers, live-file generation cleanup, and unsaved-buffer reuse
-  remain outside the currently specified API.
+An automatic detector and an explicitly configured encoding may produce identical
+UTF-8 bytes. Their preprocessing descriptions differ, but their source identities
+match and they can reuse the same tree when other key fields agree.
+
+```rust
+let automatic = automatic_source.hash(ReadOptions::default()).await?;
+let explicit = explicit_source.hash(ReadOptions::default()).await?;
+let same_parser_input = automatic.source == explicit.source;
+```
+
+Here the two sources are caller-configured adapters; the standalone decoder
+supports explicit encodings even though `TextPreprocessing` currently exposes only
+`none()` and `zed()`. Stored preprocessing describes the published capture. It does
+not influence decoding, filter candidates, or establish the current file's encoding.
+
+## Remaining integration choices
+
+- Select a disk I/O adapter and settle `Send` guarantees for source futures.
+- Report observed decoding metadata through the standalone decoder's public API.
+- Avoid repeated hashing when parsing an already-verified immutable snapshot.
+- Avoid preparing source copies when write work will immediately be discarded.
+- Add rope-aware query text and live-file generation cleanup interfaces.

@@ -9,7 +9,8 @@ Rename the exported `tree_sitter_squatter::PackContext` to `TreePacker`, retaini
 its `new`, `pack`, `pack_with_options`, and `trim` methods.
 
 One shared project cache, one mutable loader per worker. `load` never parses.
-The caller retains an immutable source snapshot and supplies chunks on demand.
+An asynchronous `Source` supplies metadata, preprocessed streams, and prepared
+input. `ParserInput::read` supplies synchronous chunks from that prepared snapshot.
 `preview` permits speculative tree access using raw file metadata; `verify`
 confirms correspondence to the source once it is available.
 Each loader owns an `Arc<Cache>` and can move independently between threads.
@@ -61,23 +62,18 @@ impl Cache {
 }
 
 impl Loader {
-    // Hashes the supplied parser input, then checks the cache. Never parses.
-    pub fn load<T: AsRef<[u8]>, F: FnMut(usize, Point) -> T>(
+    // Asynchronously hashes preprocessed source, then checks the cache. Never parses.
+    pub async fn load<S: Source>(
         &self,
-        path: &Path,
-        file_byte_len: u64,
-        mtime: FileModificationTime,
+        source: &mut S,
         grammar: &Grammar,
-        read: &mut F,
         options: LoadOptions<'_>,
     ) -> Result<LoadResult, LoadError>;
 
-    // Uses supplied metadata only; reads the cached tree without reading source bytes.
-    pub fn preview(
+    // Metadata-only source access; cached-tree decoding remains synchronous.
+    pub async fn preview<S: Source>(
         &self,
-        path: &Path,
-        file_byte_len: u64,
-        mtime: FileModificationTime,
+        source: &mut S,
         grammar: &Grammar,
         options: LoadOptions<'_>,
     ) -> Result<Option<CachedCandidate>, LoadError>;
@@ -109,13 +105,10 @@ pub enum LoadResult {
 // Internal request state shared by lookup, verification, parsing, and publication.
 struct LoadRequest {
     cache: Arc<Cache>,
-    path: PathBuf, // normalized project-relative path
-    file_byte_len: u64, // raw disk capture, before preprocessing
-    mtime: FileModificationTime,
+    path: PathBuf, // client-supplied project-relative identity
+    metadata: FileMetadata, // raw disk capture, before preprocessing
     grammar: Grammar,
     pack: PackOptions,
-    preprocessing: TextPreprocessing,
-    persistable: bool,
 }
 
 // Identity of transformed parser input, separate from raw disk metadata.
@@ -136,17 +129,12 @@ impl CachedCandidate {
     // Enables speculative structural work; no source text is retained.
     pub fn tree(&self) -> &tree_sitter_squatter::Tree;
 
-    // Metadata here describes the actual disk capture, which may differ from preview.
-    pub fn verify<T: AsRef<[u8]>, F: FnMut(usize, Point) -> T>(
+    // Uses the source's current preprocessing, never the cached preprocessing record.
+    pub async fn verify<S: Source>(
         self,
-        file_byte_len: u64,
-        mtime: FileModificationTime,
-        read: &mut F,
+        source: &mut S,
         options: VerifyOptions<'_>,
     ) -> Result<Verification, LoadError>;
-
-    // Opens the request's file and preprocesses/hashes it without retaining output.
-    pub fn verify_file(self, options: VerifyOptions<'_>) -> Result<Verification, LoadError>;
 }
 
 #[must_use]
@@ -155,7 +143,7 @@ pub enum Verification {
     Changed(LoadResult),
 }
 
-// Owns source identity, grammar, originating cache, and packing/transform settings.
+// Owns source identity, grammar, originating cache, and packing settings.
 // Retains no parser borrow, database transaction, or work lock.
 #[must_use]
 pub struct CacheMiss {
@@ -165,10 +153,10 @@ pub struct CacheMiss {
 
 impl CacheMiss {
     // Parses the supplied snapshot without rechecking the cache or waiting for other work.
-    pub fn parse<T: AsRef<[u8]>, F: FnMut(usize, Point) -> T>(
+    pub fn parse<I: ParserInput>(
         self,
         loader: &mut Loader,
-        read: &mut F,
+        input: &mut I,
         options: ParseOptions<'_>,
         handle_write: impl FnOnce(PendingWrite),
     ) -> Result<LoadedTree, LoadError>;
@@ -247,7 +235,6 @@ pub struct PreprocessingOptions<'a> {
 #[derive(Default)]
 pub struct LoadOptions<'a> {
     pub pack: PackOptions,
-    pub preprocessing: TextPreprocessing,
     pub cancellation: Canceler<'a>,
 }
 
@@ -270,6 +257,7 @@ pub struct PublishOptions<'a> {
 pub struct PendingWrite {
     request: LoadRequest,
     source_identity: SourceIdentity,
+    preprocessing: PreprocessingInfo, // descriptive record from the parsed capture
     tree: LoadedTree,
     source: Arc<[u8]>, // retained only for publication under the current source-storing schema
 }
@@ -283,23 +271,84 @@ impl PendingWrite {
 
 ## Source and transformation contract
 
-Callbacks use Tree-sitter's exact signature: `&mut F`, where
-`F: FnMut(usize, Point) -> T` and `T: AsRef<[u8]>`. They return a chunk starting
-at the requested byte offset and row/column position; an empty chunk signals EOF.
-Borrowed slices and owned buffers are supported. The callback may cache rope
-traversal state, but must expose an immutable snapshot and support arbitrary
-reads. Hashing traverses chunks, tracks points, and derives parser-input length.
-There is no separate parser-input-length argument.
+`Source` owns the file path, preprocessing choices, raw metadata, and byte access. Its
+asynchronous methods permit I/O without imposing an executor. `futures_io::AsyncRead`
+is the stream interface; disk adapters supply their own I/O backend or blocking
+pool. In-memory sources complete immediately. Async syntax alone does not make
+blocking filesystem calls or CPU-heavy decoding nonblocking.
 
-All callbacks supply **already transformed parser input**. `load`, `verify`, and
-`parse` never transform it again. `LoadOptions::preprocessing` identifies the profile
-used to produce that input. Every tree byte offset and point uses its coordinates.
+```rust
+pub trait Source {
+    type Reader<'a>: futures_io::AsyncRead + Unpin where Self: 'a;
+    type Input<'a>: ParserInput where Self: 'a;
+
+    fn path(&self) -> &Path; // client-supplied project-relative identity
+    fn preprocessing(&self) -> TextPreprocessing;
+    async fn metadata(&mut self) -> io::Result<FileMetadata>;
+
+    // Starts at processed byte zero. Never returns raw bytes needing decoding.
+    async fn reader(&mut self, options: ReadOptions<'_>) -> io::Result<Self::Reader<'_>>;
+
+    // Prepares an immutable snapshot; subsequent read calls require no I/O.
+    async fn prepare(&mut self, options: ReadOptions<'_>) -> io::Result<Self::Input<'_>>;
+
+    // Hashes a checked capture, without retaining text where preprocessing streams.
+    async fn hash(&mut self, options: ReadOptions<'_>) -> io::Result<FileFingerprint>;
+}
+
+pub trait ParserInput {
+    type Chunk: AsRef<[u8]>;
+
+    fn path(&self) -> &Path; // same logical identity as the source capture
+    fn metadata(&self) -> FileMetadata;
+    fn preprocessing_info(&self) -> &PreprocessingInfo;
+    fn read(&mut self, byte_offset: usize, position: Point) -> Self::Chunk;
+}
+
+// Describes the capture; never selects decoding during lookup or verification.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PreprocessingInfo {
+    pub mode: TextPreprocessing,
+    pub requested_encoding: Option<String>, // canonical name if explicitly selected
+    pub encoding: Option<String>, // effective encoding; None for unchanged bytes
+    pub had_bom: bool,
+    pub line_ending: Option<LineEnding>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LineEnding { Lf, CrLf }
+```
+
+`Source::hash` is a source-level operation so file adapters can restart speculative
+UTF-8 decoding and its hasher without publishing incorrect stream bytes. A generic
+`reader` cannot retract bytes: automatic detection may require buffering before
+returning a committed stream. The two methods must produce identical processed
+identities. Source implementations perform before/after metadata checks for both
+hashing and preparation. A failed or cancelled capture returns no usable result.
+
+`ParserInput::read` uses Tree-sitter's offset/point arguments and `AsRef<[u8]>`
+output contract. It may revisit offsets; empty chunks signal EOF. Mutable cursor
+state is allowed, but the exposed text must not change. A flat buffer can return
+its entire remaining suffix. An adapter passes `|offset, point| input.read(offset,
+point)` to Tree-sitter. `Chunk` has a fixed type, so borrowed chunks borrow the
+underlying source snapshot, not a scratch buffer overwritten by the next call.
+The associated lifetimes on `Source` permit such borrowing without `dyn` or boxing.
+
+Parsing is synchronous and should run on a CPU/blocking worker. Async preparation
+finishes before parsing starts. Read errors occur during preparation, not as fake
+EOF in the Tree-sitter callback. The traits use static dispatch; cross-thread
+futures require explicit `Send` guarantees from an adapter. The eventual public
+trait must specify those guarantees before stabilizing; bare `async fn` does not
+promise `Send`. Owned snapshots can move to workers; borrowed inputs need scoped
+work or a source owner moved alongside the job.
+
+All streams and parser inputs contain **already preprocessed bytes**. The cache
+never decodes them again. Every tree byte offset and point uses these coordinates.
 
 `TextPreprocessing::none()` preserves bytes. `zed()` reproduces Zed's initial
 file-loading behavior: binary admission checks, encoding detection/decoding,
 BOM removal, malformed-input replacement, and CRLF/lone-CR normalization.
-`TextPreprocessing::default()` and `LoadOptions::default().preprocessing` use
-`zed()`. Callers wanting unchanged bytes explicitly select `none()`.
+`TextPreprocessing::default()` uses `zed()`; disk sources default to that policy. Callers wanting unchanged bytes explicitly select `none()`.
 An existing preprocessed rope needs no conversion or flattening. Output errors
 or cancellation invalidate any partial output. Automatic detection can abandon
 its streaming attempt and restart with buffered decoding. Helpers with resettable
@@ -307,7 +356,7 @@ sinks discard partial output and hashes before restarting. `apply` accepts an
 arbitrary writer, so it must buffer uncertain output when it cannot retract it;
 it must never append fallback output after an abandoned decoded prefix.
 
-The supplied `file_byte_len` and `mtime` describe the **raw disk capture**, before
+`FileMetadata::byte_len` and `mtime` describe the **raw disk capture**, before
 preprocessing. Raw length need not equal parser-input length. A rope supplied through
 this API must represent that disk capture under the selected preprocessing; arbitrary
 edited buffers must not establish a disk-metadata association.
@@ -340,20 +389,62 @@ Keep editor state and cache storage outside the crate. Use `encoding_rs` and
 Initially the cache-facing `TextPreprocessing` exposes only `none()` and `zed()`
 constructors. Explicit encoding selection is supported by the standalone crate;
 exposing that selection through the opaque cache profile is a later API addition.
-Do not label explicitly decoded text as `zed()` if automatic detection would
-produce different text. Version the preprocessing policy in persisted identities,
-including changes to detection and decoder behavior.
+A custom `Source` may select an encoding independently of these constructors.
+Record that choice and its observed outcome in `PreprocessingInfo`. Version the
+stored description format for compatibility, but do not include it in tree identity.
 
 `TextPreprocessing` is the working name. Alternatives: `TextProcessing` (shorter,
 less specific), `TextPreparation` (describes preparing parser input), or
 `TextDecoding` (familiar, but understates newline normalization). `Reencoding`
 suggests writing another encoding and does not describe byte-preserving mode well.
 
+## Paths and cache-root selection
+
+Use plain `Path`/`PathBuf`; do not copy Zed's `RelPath` or introduce a path wrapper.
+`Source::path()` is the client-supplied logical identity relative to the selected
+project/cache root. Store it without lexical normalization, canonicalization, or
+path validation. Use native path bytes, without a Unicode-only restriction.
+
+Document these client responsibilities on source constructors and cache entry
+points: choose a consistent root and relative spelling, supply the same identity
+for a capture and its prepared input, and ensure the source represents the file
+intended by that identity. The library does not check absolute paths, `..`, empty
+paths, reserved directories, root containment, or source/input path agreement.
+Clients wanting canonical root identity can canonicalize the root themselves.
+Alternate spellings or aliases are not guaranteed to share a cache entry.
+
+Preserve symlink components in the logical identity. `project/link.rs` belongs to
+that project's cache even when opening it follows a target outside the project.
+`SourceFile` follows ordinary filesystem opening semantics; it does not resolve a
+target to choose another cache. Relative paths are identities, not containment
+proofs. Source-opening restrictions, if needed, belong to the client.
+Clients may choose another identity policy, such as following symlinks while
+retaining the last path under the project root. The cache does not implement or
+require any particular symlink-resolution policy.
+
+Read metadata and contents from the same open handle. Retargeting a symlink can
+make a metadata-only preview stale; processed-content verification determines
+whether its tree is reusable. If preparation reopens or rereads the source, the
+processed hash must still match before publication. This content validation is
+independent of the intentionally absent path validation.
+
+There is no `persistable` flag or path-based eligibility gate. Lack of a local
+store still allows transferable publication work. Cache storage continues to use
+encoded/hashed database keys; a source path is not a cache output-file location.
+The same client-owned path convention applies to transfer and maintenance APIs.
+
 ## File metadata and hashing utilities
 
-These synchronous utilities live alongside the persistence API. `SourceFile`
-owns an open handle; paths passed to `open` are filesystem paths, not cache-relative
-paths. Preprocessing defaults to `zed()` through `ReadOptions`.
+Metadata conversion remains synchronous and pure; file access and contents/hash
+utilities follow the asynchronous `Source` interface. `SourceFile` is the supplied
+disk adapter (backend selection remains an integration choice); `FileContents`
+is an immutable in-memory source.
+
+`SourceFile::open(root, path)` stores `path` as its logical identity and opens
+`root.join(path)`, without validation or normalization. Both arguments are supplied
+by the client. Snapshot constructors take that same project-relative identity;
+the loader copies it directly into `LoadRequest` rather than deriving it from an
+absolute filesystem path. Prepared input retains the capture's logical identity.
 
 ```rust
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -366,104 +457,101 @@ impl FileMetadata {
     pub fn from_metadata(metadata: &std::fs::Metadata) -> io::Result<Self>;
 }
 
-pub struct SourceFile {
-    file: std::fs::File,
-}
-
 #[derive(Default)]
 pub struct ReadOptions<'a> {
-    pub preprocessing: TextPreprocessing,
     pub cancellation: Canceler<'a>,
 }
 
-pub struct FileContents {
-    pub bytes: Vec<u8>, // processed parser input
-    pub fingerprint: FileFingerprint,
-}
+pub struct SourceFile { /* private backend, handle, policy, and prepared storage */ }
+pub struct FileContents { /* immutable path, bytes, metadata, and preprocessing record */ }
+pub struct ChunkSource<'a> { /* owned path, borrowed chunk index, metadata, preprocessing record */ }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FileFingerprint {
     pub metadata: FileMetadata,
-    pub preprocessing: TextPreprocessing,
+    pub preprocessing: PreprocessingInfo,
     pub source: SourceIdentity,
 }
 
 impl SourceFile {
-    pub fn open(path: impl AsRef<Path>) -> io::Result<Self>;
-    pub fn metadata(&self) -> io::Result<FileMetadata>;
-
-    // Each operation starts at byte zero and checks metadata before/after reading.
-    pub fn read(&mut self, options: ReadOptions<'_>) -> io::Result<FileContents>;
-    pub fn hash(&mut self, options: ReadOptions<'_>) -> io::Result<FileFingerprint>;
+    pub async fn open(
+        root: impl AsRef<Path>,
+        path: impl AsRef<Path>,
+    ) -> io::Result<Self>;
+    pub fn with_preprocessing(self, preprocessing: TextPreprocessing) -> Self;
+    pub async fn read(&mut self, options: ReadOptions<'_>) -> io::Result<FileContents>;
 }
 
-// Already-preprocessed input: no decoding or normalization is performed here.
-pub fn hash_source(
-    input: impl io::Read,
+impl FileContents {
+    // Bytes must already have the described preprocessing applied.
+    pub fn from_preprocessed(
+        path: PathBuf,
+        bytes: Arc<[u8]>,
+        metadata: FileMetadata,
+        preprocessing: PreprocessingInfo,
+    ) -> Self;
+    pub fn bytes(&self) -> &[u8];
+    pub fn fingerprint(&self) -> &FileFingerprint;
+}
+
+impl<'a> ChunkSource<'a> {
+    pub fn from_preprocessed(
+        path: PathBuf,
+        chunks: impl IntoIterator<Item = &'a [u8]>,
+        metadata: FileMetadata,
+        preprocessing: PreprocessingInfo,
+    ) -> Self;
+}
+
+// SourceFile, FileContents, and ChunkSource implement Source.
+// reader/prepare/hash are trait methods.
+// FileContents::prepare borrows its bytes, without another copy or transformation.
+
+// Already-preprocessed input; hashing performs no decoding or normalization.
+pub async fn hash_source(
+    input: impl futures_io::AsyncRead + Unpin,
     cancellation: Canceler<'_>,
 ) -> io::Result<SourceIdentity>;
 ```
 
-`read` preprocesses, hashes, and collects the bytes in one pass where streaming
-is supported. `hash` uses the same pipeline without retaining processed output.
-It may still buffer for Zed's encoding-detection fallback. Both restart on the
-same handle when fallback needs another pass, resetting any provisional hash.
-`hash_source` handles bytes via `io::Cursor` and arbitrary readers with bounded
-scratch; cache callback hashing uses the same XXH3 accumulator and byte count.
-Returned fingerprints describe the completed read, not future contents or an
-immutable filesystem snapshot. Editing `FileContents::bytes` invalidates its
-fingerprint; cache APIs do not trust caller-supplied fingerprints as verification.
+`SourceFile::read` preprocesses, hashes, and collects a checked capture.
+`prepare` retains a checked capture and returns a parser view; an unchanged
+prepared capture can be reused by the adapter. An explicit new read/hash may
+observe a newer capture. `FileContents` always represents the same snapshot.
+`metadata` on a file source observes its open handle; on an in-memory source it
+returns the recorded disk metadata. Repeated operations start at byte zero.
 
-Metadata changes during a read return `io::ErrorKind::WouldBlock`; cancellation
-returns `Interrupted`. Other I/O and decoding failures propagate as I/O errors.
-`SourceFile` operations may be retried, always from the beginning. Its metadata
-method reads current handle metadata without reading contents. For a path-only
-metadata lookup, use `FileMetadata::from_metadata(&std::fs::metadata(path)?)`.
-
-Provide shared utilities for opening a file, reading its raw length and
-`FileModificationTime`, preprocessing it, and hashing the resulting parser input.
-Use streaming **XXH3-128**, with a fixed seed of zero and canonical persisted byte
-order, for `SourceIdentity`; include the processed byte length. Flat, rope, and
-streamed input must produce identical identities regardless of chunk boundaries.
-The content-hash format change requires a cache schema/version change. Grammar
-and runtime fingerprints are separate from this source hashing choice.
+Use streaming **XXH3-128**, seed zero and a fixed persisted byte order, plus
+processed byte length. Flat, rope, and streamed input must hash identically,
+regardless of chunk boundaries. The content-hash format change requires a cache
+schema/version change. Grammar/runtime fingerprints are separate.
 [XXH3 reference](https://xxhash.com/).
 
-Hash after all decoding, BOM handling, and newline normalization. Do not add a
-raw-byte hash. A hashing sink optionally forwards processed bytes into caller
-storage, allowing one preprocessing pass for capture and hashing. Internal
-verification consumes this computed identity without hashing it again.
-`CachedCandidate::verify_file` opens the stored cache root/request path, calls
-`SourceFile::hash` with the request's preprocessing and operation cancellation,
-and uses the resulting identity and actual metadata in the same verification
-logic as `verify`. Opening failures are errors, not cache misses. Reopening may
-observe a newer file than preview; it is that completed read which is verified.
+Hash after decoding, BOM handling, and newline normalization; do not add a raw
+hash. `load` and `verify` use the completed source fingerprint without rehashing
+its stream. Source implementations must report the actual processed bytes and
+capture metadata; fingerprints are not proof against a dishonest implementation.
+`parse` independently validates prepared input against the miss's identity before
+publication, and takes metadata/preprocessing information from that prepared capture.
 
-Read metadata before and after processing from the same open file handle;
-detect changed length/mtime and return a retryable failure. Check bytes read
-against the observed raw length. These checks detect ordinary changes, not an
-atomic filesystem snapshot. Errors/cancellation discard partial hashes and output.
-Keep these synchronous utilities independent of an async runtime; applications
-can run them on blocking workers. Filesystem/cache adapters need not live in the
-standalone decoder crate.
+File adapters check raw length/mtime before and after capture on the same handle,
+including raw byte count. Changes return `WouldBlock`, cancellation returns
+`Interrupted`; other I/O/decoding failures propagate. These checks detect ordinary
+changes, not atomic filesystem snapshots. Async adapters must not perform hidden
+blocking file operations on executor threads; backend details stay outside the
+standalone decoder crate. The synchronous `TextPreprocessing::apply` remains a
+low-level utility for blocking workers, not an asynchronous I/O implementation.
 
-When `preview` finds matching raw mtime and length:
+When metadata matches a candidate, `verify(&mut source, ...)` calls `source.hash`.
+If preprocessing streams, retain only bounded scratch and the hash, not a rope.
+Zed's UTF-8 attempt may fall back: reset the hash and restart the copied buffered
+path on the same handle. Buffered BOM/UTF-16/legacy paths remain initially.
+Cached encoding information is never used to select or accelerate preprocessing.
 
-1. Begin speculative structural work with the candidate tree.
-2. If preprocessing can stream for this input, feed processed chunks directly
-   into XXH3, retaining only bounded scratch, not the full source or a rope.
-3. Confirm using the processed hash/length and matching preprocessing policy.
-   A mismatch performs the same exact lookup as `verify`, reusing that identity.
-4. If parsing is needed, capture source and validate it against the miss before
-   publication. A discarded streaming input requires rereading for this step.
-
-Streaming eligibility can depend on the input: `none()` always streams; Zed's
-ordinary BOM-less UTF-8 path streams but may fall back after invalid UTF-8 or an
-escape character. Reset its hasher on fallback and use the copied buffered path.
-Initially preserve Zed's buffered BOM/UTF-16/legacy-encoding behavior. Extending
-those paths to stream is separate from the verbatim extraction. Metadata equality
-alone never confirms the candidate. This helper is an alternative to the chunk
-callback `verify`, whose caller already has a replayable source snapshot.
+On a mismatch, exact lookup reuses the computed identity. A miss may require
+`source.prepare().await` to reread the input; parsing checks its identity before
+publication. Metadata equality alone never confirms a candidate. `verify_file`
+is removed: disk and memory verification both use `Source`.
 
 Check the extraction against Zed's fixtures plus chunk-boundary cases for BOMs,
 UTF-8 characters, CRLF, encoding fallback, malformed input, and explicit reload
@@ -480,13 +568,13 @@ Cancellation remains per operation and is not retained in the request.
 
 `load` hashes parser input and performs an exact lookup. `CacheMiss` retains its
 identity and settings, not source bytes or a callback. `parse` uses the supplied
-loader only for scratch and parses the same caller-owned snapshot. It validates
+loader only for scratch and parses the prepared snapshot corresponding to the hashed capture. It validates
 the digest before publication; a mismatch is an error, not publication under the
 old identity. It never rechecks the cache or waits for another worker. Avoiding
 a second hash may later use a separate verified snapshot handle.
 
 `preview` compares the supplied raw mtime and length with a stored metadata hint
-for the same path, grammar, preprocessing, and packing variant. It returns `None`
+for the same path, grammar, and packing variant; preprocessing is not a filter. It returns `None`
 when no usable candidate exists. It reads and structurally validates only the
 cached tree, using its recorded parser-input length for bounds checks. It does
 not read the source file or cached source bytes, and it does not hash source.
@@ -517,17 +605,25 @@ Keep two identities:
 
 | Record | Contents |
 |---|---|
-| Exact tree key | Path identity, parser-input hash and length, grammar/runtime/representation identity, versioned transform profile, and semantic packing flags |
+| Exact tree key | Path identity, parser-input hash and length, grammar/runtime/representation identity, and semantic packing flags |
 | Metadata hint | Path and variant, raw mtime and length, reference to an exact tree generation |
+| Capture description | Preprocessing choice and observed outcome for the capture that was published |
 
 Raw mtime/length are hints, not part of exact content identity. Allocation capacity
 and repacking preferences do not distinguish cached variants. Source records
-store parser-input bytes; raw and transformed sources must not share the old
-raw-byte record identity. `LoadRequest` retains the path, variant settings, and
+store parser-input bytes. Different preprocessing choices may share an exact
+tree when they produce identical bytes and other key fields match. `LoadRequest` retains the path, variant settings, and
 raw metadata; `SourceIdentity` retains the parser-input hash and length. Tree/source data
 and the corresponding hint are published atomically. Publishing an already cached
 tree may refresh its hint. Late publication can make a hint stale; verification
 still protects correctness. No timestamp ordering is assumed.
+
+Stored preprocessing is descriptive only. The source chooses how to read; cache
+lookup, hashing, verification, and parsing never consult cached encoding/BOM/line
+ending information. Different choices that produce different bytes mismatch;
+identical bytes can reuse the tree. An existing record describes its original
+capture, not necessarily the current source's choice or outcome. Do not expose
+that record as the current file's encoding merely because verification succeeded.
 
 Every successful, persistence-eligible parse invokes `handle_write` once before
 returning the tree. The client publishes, queues, transfers, or discards the owned
@@ -544,72 +640,35 @@ also need chunk-aware access to avoid flattening ropes outside parsing.
 
 ## Examples
 
-Apply preprocessing while reading disk, into caller-owned bytes (a rope writer can
-be used instead). Obtain raw metadata from the file capture, not the output:
-
 ```rust
-let preprocessing = TextPreprocessing::zed();
-let mut bytes = Vec::new();
-preprocessing.apply(&mut file, &mut bytes, PreprocessingOptions::default())?;
-let mut read = |offset: usize, _: Point| bytes.get(offset..).unwrap_or_default();
-let options = LoadOptions { preprocessing, ..Default::default() };
-let tree = match loader.load(path, file_byte_len, mtime, &grammar, &mut read, options)? {
+let mut source = SourceFile::open(root, path).await?;
+let loaded = loader.load(&mut source, &grammar, LoadOptions::default()).await?;
+let tree = match loaded {
     LoadResult::Loaded(tree) => tree,
-    LoadResult::Miss(miss) => miss.parse(
-        &mut loader,
-        &mut read,
-        ParseOptions::default(),
-        |write| write_queue.push(write),
-    )?,
+    LoadResult::Miss(miss) => {
+        let mut input = source.prepare(ReadOptions::default()).await?;
+        // Run this synchronous parse on an application worker.
+        miss.parse(&mut loader, &mut input, ParseOptions::default(), |write| {
+            write_queue.push(write);
+        })?
+    }
 };
 ```
 
-Start speculative work before the editor loads its rope snapshot:
-
 ```rust
-let candidate = loader.preview(
-    path,
-    observed_file_byte_len,
-    observed_mtime,
-    &grammar,
-    LoadOptions { preprocessing, ..Default::default() },
-)?;
-// If present, begin provisional structural work using candidate.tree().
-// The caller schedules source loading concurrently and retains its snapshot.
+let candidate = loader.preview(&mut source, &grammar, LoadOptions::default(),
+).await?;
+if let Some(candidate) = candidate {
+    // Begin provisional structural work using candidate.tree().
+    match candidate.verify(&mut source, VerifyOptions::default()).await? {
+        Verification::Confirmed(tree) => { /* keep speculative work */ }
+        Verification::Changed(loaded) => { /* discard it; handle the new hit/miss */ }
+    }
+}
 ```
 
-Once that snapshot is available, `read` is its Tree-sitter-compatible callback:
-
-```rust
-let loaded = match candidate {
-    Some(candidate) => match candidate.verify(
-        captured_file_byte_len,
-        captured_mtime,
-        &mut read,
-        VerifyOptions::default(),
-    )? {
-        Verification::Confirmed(tree) => {
-            // Keep work derived from this candidate.
-            LoadResult::Loaded(tree)
-        }
-        Verification::Changed(loaded) => {
-            // Discard work derived from the candidate.
-            loaded
-        }
-    },
-    None => loader.load(
-        path,
-        captured_file_byte_len,
-        captured_mtime,
-        &grammar,
-        &mut read,
-        LoadOptions { preprocessing, ..Default::default() },
-    )?,
-};
-// A Miss can be parsed as in the first example, using the same snapshot.
-```
-
-A write worker calls `write.publish(PublishOptions { cancellation, ..Default::default() })` and may
-retry busy work. Passing `drop` as the parse handler explicitly discards writes.
-The required callback makes the decision explicit; `#[must_use]` is advisory
-and cannot enforce eventual publication.
+A write worker calls `write.publish(PublishOptions { cancellation, ..Default::default() })`
+and may retry busy work. Passing `drop` as the parse handler explicitly discards
+writes. The required callback makes the decision explicit; `#[must_use]` is
+advisory and cannot enforce eventual publication. Publication, maintenance, cached
+tree decoding, and parsing remain synchronous; source I/O is asynchronous.
