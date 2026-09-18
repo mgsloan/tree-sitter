@@ -3,6 +3,8 @@
 Proposed API, not implemented. Signatures below omit method bodies and unchanged
 maintenance and transfer APIs. Storage changes are specified below.
 
+See [client examples](cache-api-examples.md) for usage patterns and remaining gaps.
+
 Rename the exported `tree_sitter_squatter::PackContext` to `TreePacker`, retaining
 its `new`, `pack`, `pack_with_options`, and `trim` methods.
 
@@ -18,6 +20,8 @@ The directory registry shares `Arc<Cache>` instead of `Arc<Store>`.
 Pending work, maintenance, and snapshot admission owners
 retain `Arc<Cache>`. The policy for repeated opens with conflicting
 `CacheOptions` remains to be decided.
+If a `Cache` starts without a store, it remains without one for its lifetime,
+even if another process creates the cache. Registry reuse does not upgrade it.
 
 ```rust
 pub struct Cache {
@@ -84,7 +88,9 @@ impl Loader {
     }
 }
 
-// Compare mtimes for equality only; they need not increase when a file changes.
+// Compare mtimes for equality only.
+//
+// See ["mtime comparison considered harmful" - apenwarr](https://apenwarr.ca/log/20181113)
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct FileModificationTime(SystemTime);
 
@@ -100,14 +106,28 @@ pub enum LoadResult {
     Miss(CacheMiss),
 }
 
+// Internal request state shared by lookup, verification, parsing, and publication.
+struct LoadRequest {
+    cache: Arc<Cache>,
+    path: PathBuf, // normalized project-relative path
+    file_byte_len: u64, // raw disk capture, before preprocessing
+    mtime: FileModificationTime,
+    grammar: Grammar,
+    pack: PackOptions,
+    preprocessing: TextPreprocessing,
+    persistable: bool,
+}
+
+// Identity of transformed parser input, separate from raw disk metadata.
+struct SourceIdentity {
+    hash: u128, // XXH3-128 of parser input after preprocessing
+    byte_len: u64,
+}
+
 // A structurally validated tree whose correspondence to current source is unverified.
 #[must_use]
 pub struct CachedCandidate {
-    cache: Arc<Cache>,
-    request: Arc<Request>,
-    grammar: Grammar,
-    pack: PackOptions,
-    transforms: SourceTransforms,
+    miss: CacheMiss, // contains the candidate's recorded source identity
     tree: LoadedTree,
 }
 
@@ -135,12 +155,8 @@ pub enum Verification {
 // Retains no parser borrow, database transaction, or work lock.
 #[must_use]
 pub struct CacheMiss {
-    cache: Arc<Cache>,
-    request: Arc<Request>,
-    grammar: Grammar,
-    pack: PackOptions,
-    transforms: SourceTransforms,
-    persistable: bool,
+    request: LoadRequest,
+    source_identity: SourceIdentity,
 }
 
 impl CacheMiss {
@@ -193,32 +209,41 @@ impl<'a> Canceler<'a> {
     }
 }
 
-// Defaults preserve the input bytes.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-pub struct SourceTransforms {
-    pub strip_utf8_bom: bool,
-    pub normalize_newlines: bool,
+// Opaque; private representation is intentionally unspecified.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct TextPreprocessing {
+    /* private fields */
 }
 
-impl SourceTransforms {
-    // Streaming conversion into caller-owned storage; cancellation returns Interrupted.
+impl Default for TextPreprocessing {
+    fn default() -> Self {
+        Self::zed()
+    }
+}
+
+impl TextPreprocessing {
+    pub fn none() -> Self;
+    pub fn zed() -> Self;
+
+    // Writes parser input to caller-owned storage; cancellation returns Interrupted.
+    // Streaming where supported; Zed's detection fallback may buffer the input.
     pub fn apply(
         &self,
         input: impl io::Read,
         output: impl io::Write,
-        options: TransformOptions<'_>,
+        options: PreprocessingOptions<'_>,
     ) -> io::Result<()>;
 }
 
 #[derive(Default)]
-pub struct TransformOptions<'a> {
+pub struct PreprocessingOptions<'a> {
     pub cancellation: Canceler<'a>,
 }
 
 #[derive(Default)]
 pub struct LoadOptions<'a> {
     pub pack: PackOptions,
-    pub transforms: SourceTransforms,
+    pub preprocessing: TextPreprocessing,
     pub cancellation: Canceler<'a>,
 }
 
@@ -239,9 +264,8 @@ pub struct PublishOptions<'a> {
 
 #[must_use = "publish, transfer, queue, or explicitly discard this write"]
 pub struct PendingWrite {
-    cache: Arc<Cache>,
-    request: Arc<Request>,
-    grammar: Grammar,
+    request: LoadRequest,
+    source_identity: SourceIdentity,
     tree: LoadedTree,
     source: Arc<[u8]>, // retained only for publication under the current source-storing schema
 }
@@ -264,28 +288,118 @@ reads. Hashing traverses chunks, tracks points, and derives parser-input length.
 There is no separate parser-input-length argument.
 
 All callbacks supply **already transformed parser input**. `load`, `verify`, and
-`parse` never transform it again. `LoadOptions::transforms` identifies the profile
+`parse` never transform it again. `LoadOptions::preprocessing` identifies the profile
 used to produce that input. Every tree byte offset and point uses its coordinates.
 
-`SourceTransforms::apply` strips one leading UTF-8 BOM, then replaces CRLF and lone
-CR with LF when enabled. It handles BOM and CRLF sequences split across reads,
-and a final lone CR. Other bytes are unchanged. Conversion uses bounded scratch
-and streams into caller-owned storage; an output error or cancellation may leave
-partial output, which must not be treated as a complete source snapshot.
-An existing normalized rope needs no conversion or flattening. The two flags
-cover UTF-8 BOM/newline handling; automatic decoding of other encodings requires
-a future explicit encoding profile.
+`TextPreprocessing::none()` preserves bytes. `zed()` reproduces Zed's initial
+file-loading behavior: binary admission checks, encoding detection/decoding,
+BOM removal, malformed-input replacement, and CRLF/lone-CR normalization.
+`TextPreprocessing::default()` and `LoadOptions::default().preprocessing` use
+`zed()`. Callers wanting unchanged bytes explicitly select `none()`.
+An existing preprocessed rope needs no conversion or flattening. Output errors
+or cancellation invalidate any partial output. Automatic detection can abandon
+its streaming attempt and restart with buffered decoding. Helpers with resettable
+sinks discard partial output and hashes before restarting. `apply` accepts an
+arbitrary writer, so it must buffer uncertain output when it cannot retract it;
+it must never append fallback output after an abandoned decoded prefix.
 
 The supplied `file_byte_len` and `mtime` describe the **raw disk capture**, before
-transforms. Raw length need not equal parser-input length. A rope supplied through
-this API must represent that disk capture under the selected transforms; arbitrary
+preprocessing. Raw length need not equal parser-input length. A rope supplied through
+this API must represent that disk capture under the selected preprocessing; arbitrary
 edited buffers must not establish a disk-metadata association.
 
 `FileModificationTime` follows [Zed's newtype](https://github.com/zed-industries/zed/blob/main/crates/fs/src/fs.rs):
 private `SystemTime`, equality and hashing, no ordering or arithmetic traits.
 Newline conversion matches [Zed's CRLF and lone-CR normalization](https://github.com/zed-industries/zed/blob/main/crates/worktree/src/worktree.rs).
 
+## Standalone preprocessing crate
+
+Create a crate with no Zed-crate dependencies, structured so Zed could adopt it
+directly. Copy the decoding/detection functions and tests verbatim from Zed
+revision `74646bf29c1a3d1cdb178930d810ecc5a8a6bece`, retaining attribution and
+license notices. Keep copied code identifiable; isolate the minimal adapters
+needed to replace Zed filesystem, rope, scheduling, and text-type dependencies.
+Do not rewrite the algorithms while extracting them.
+
+Sources: [file_content.rs](https://github.com/zed-industries/zed/blob/74646bf29c1a3d1cdb178930d810ecc5a8a6bece/crates/language/src/file_content.rs),
+[streaming loading](https://github.com/zed-industries/zed/blob/74646bf29c1a3d1cdb178930d810ecc5a8a6bece/crates/worktree/src/worktree.rs#L7273),
+[reload decoding](https://github.com/zed-industries/zed/blob/74646bf29c1a3d1cdb178930d810ecc5a8a6bece/crates/language/src/buffer.rs#L1651),
+and [newline normalization](https://github.com/zed-industries/zed/blob/74646bf29c1a3d1cdb178930d810ecc5a8a6bece/crates/text/src/text.rs#L3628).
+
+The crate supports automatic detection and explicitly selected encodings,
+including reload using the current encoding, BOM overrides, forced non-Unicode
+decoding without BOM handling, and replacement of malformed input. Report the
+effective encoding, BOM presence, and original line-ending style to the caller.
+Keep editor state and cache storage outside the crate. Use `encoding_rs` and
+`chardetng` as Zed does; caller adapters own output storage and scheduling.
+
+Initially the cache-facing `TextPreprocessing` exposes only `none()` and `zed()`
+constructors. Explicit encoding selection is supported by the standalone crate;
+exposing that selection through the opaque cache profile is a later API addition.
+Do not label explicitly decoded text as `zed()` if automatic detection would
+produce different text. Version the preprocessing policy in persisted identities,
+including changes to detection and decoder behavior.
+
+`TextPreprocessing` is the working name. Alternatives: `TextProcessing` (shorter,
+less specific), `TextPreparation` (describes preparing parser input), or
+`TextDecoding` (familiar, but understates newline normalization). `Reencoding`
+suggests writing another encoding and does not describe byte-preserving mode well.
+
+## File metadata and hashing utilities
+
+Provide shared utilities for opening a file, reading its raw length and
+`FileModificationTime`, preprocessing it, and hashing the resulting parser input.
+Use streaming **XXH3-128**, with a fixed seed of zero and canonical persisted byte
+order, for `SourceIdentity`; include the processed byte length. Flat, rope, and
+streamed input must produce identical identities regardless of chunk boundaries.
+The content-hash format change requires a cache schema/version change. Grammar
+and runtime fingerprints are separate from this source hashing choice.
+[XXH3 reference](https://xxhash.com/).
+
+Hash after all decoding, BOM handling, and newline normalization. Do not add a
+raw-byte hash. A hashing sink optionally forwards processed bytes into caller
+storage, allowing one preprocessing pass for capture and hashing. Internal
+verification consumes this computed identity without hashing it again; public
+utility/result names remain to be settled.
+
+Read metadata before and after processing from the same open file handle;
+detect changed length/mtime and return a retryable failure. Check bytes read
+against the observed raw length. These checks detect ordinary changes, not an
+atomic filesystem snapshot. Errors/cancellation discard partial hashes and output.
+Keep these synchronous utilities independent of an async runtime; applications
+can run them on blocking workers. Filesystem/cache adapters need not live in the
+standalone decoder crate.
+
+When `preview` finds matching raw mtime and length:
+
+1. Begin speculative structural work with the candidate tree.
+2. If preprocessing can stream for this input, feed processed chunks directly
+   into XXH3, retaining only bounded scratch, not the full source or a rope.
+3. Confirm using the processed hash/length and matching preprocessing policy.
+   A mismatch performs the same exact lookup as `verify`, reusing that identity.
+4. If parsing is needed, capture source and validate it against the miss before
+   publication. A discarded streaming input requires rereading for this step.
+
+Streaming eligibility can depend on the input: `none()` always streams; Zed's
+ordinary BOM-less UTF-8 path streams but may fall back after invalid UTF-8 or an
+escape character. Reset its hasher on fallback and use the copied buffered path.
+Initially preserve Zed's buffered BOM/UTF-16/legacy-encoding behavior. Extending
+those paths to stream is separate from the verbatim extraction. Metadata equality
+alone never confirms the candidate. This helper is an alternative to the chunk
+callback `verify`, whose caller already has a replayable source snapshot.
+
+Check the extraction against Zed's fixtures plus chunk-boundary cases for BOMs,
+UTF-8 characters, CRLF, encoding fallback, malformed input, and explicit reload
+encodings. Check that streaming and materialized hashing agree, including fallback
+after a prefix has already been hashed.
+
 ## Lookup and preview
+
+`LoadRequest` replaces the old internal `Request`; it is not caller-constructed
+or exported. It owns the common context and moves through the stages without an
+extra `Arc`. Encoded keys and headers are derived from it and `SourceIdentity`,
+including the grammar fingerprint and current runtime/representation identity.
+Cancellation remains per operation and is not retained in the request.
 
 `load` hashes parser input and performs an exact lookup. `CacheMiss` retains its
 identity and settings, not source bytes or a callback. `parse` uses the supplied
@@ -295,11 +409,14 @@ old identity. It never rechecks the cache or waits for another worker. Avoiding
 a second hash may later use a separate verified snapshot handle.
 
 `preview` compares the supplied raw mtime and length with a stored metadata hint
-for the same path, grammar, transforms, and packing variant. It returns `None`
+for the same path, grammar, preprocessing, and packing variant. It returns `None`
 when no usable candidate exists. It reads and structurally validates only the
 cached tree, using its recorded parser-input length for bounds checks. It does
 not read the source file or cached source bytes, and it does not hash source.
 The candidate retains its slab ownership independently of later cache changes.
+Its private `miss` holds the request and recorded identity for verification;
+it does not expose a parse path before verification. On a mismatch, verification
+replaces that identity with the computed one before the exact lookup.
 
 Matching metadata is speculative: files can change without changing length or
 mtime. Structural analysis may start through `CachedCandidate::tree`, but its
@@ -315,6 +432,7 @@ Verification uses the actual capture's raw metadata, which can differ from the
 preview metadata. Confirmation depends on parser-input identity, not metadata
 equality, and establishes correspondence to that snapshot rather than promising
 the disk has not changed since capture. `verify` never parses or publishes.
+Any resulting miss retains the actual capture's metadata in its `LoadRequest`.
 
 ## Storage and publication
 
@@ -328,7 +446,8 @@ Keep two identities:
 Raw mtime/length are hints, not part of exact content identity. Allocation capacity
 and repacking preferences do not distinguish cached variants. Source records
 store parser-input bytes; raw and transformed sources must not share the old
-raw-byte record identity. The request retains both identities. Tree/source data
+raw-byte record identity. `LoadRequest` retains the path, variant settings, and
+raw metadata; `SourceIdentity` retains the parser-input hash and length. Tree/source data
 and the corresponding hint are published atomically. Publishing an already cached
 tree may refresh its hint. Late publication can make a hint stale; verification
 still protects correctness. No timestamp ordering is assumed.
@@ -348,18 +467,15 @@ also need chunk-aware access to avoid flattening ropes outside parsing.
 
 ## Examples
 
-Apply transforms while reading disk, into caller-owned bytes (a rope writer can
+Apply preprocessing while reading disk, into caller-owned bytes (a rope writer can
 be used instead). Obtain raw metadata from the file capture, not the output:
 
 ```rust
-let transforms = SourceTransforms {
-    strip_utf8_bom: true,
-    normalize_newlines: true,
-};
+let preprocessing = TextPreprocessing::zed();
 let mut bytes = Vec::new();
-transforms.apply(&mut file, &mut bytes, TransformOptions::default())?;
+preprocessing.apply(&mut file, &mut bytes, PreprocessingOptions::default())?;
 let mut read = |offset: usize, _: Point| bytes.get(offset..).unwrap_or_default();
-let options = LoadOptions { transforms, ..Default::default() };
+let options = LoadOptions { preprocessing, ..Default::default() };
 let tree = match loader.load(path, file_byte_len, mtime, &grammar, &mut read, options)? {
     LoadResult::Loaded(tree) => tree,
     LoadResult::Miss(miss) => miss.parse(
@@ -379,7 +495,7 @@ let candidate = loader.preview(
     observed_file_byte_len,
     observed_mtime,
     &grammar,
-    LoadOptions { transforms, ..Default::default() },
+    LoadOptions { preprocessing, ..Default::default() },
 )?;
 // If present, begin provisional structural work using candidate.tree().
 // The caller schedules source loading concurrently and retains its snapshot.
@@ -410,7 +526,7 @@ let loaded = match candidate {
         captured_mtime,
         &grammar,
         &mut read,
-        LoadOptions { transforms, ..Default::default() },
+        LoadOptions { preprocessing, ..Default::default() },
     )?,
 };
 // A Miss can be parsed as in the first example, using the same snapshot.
