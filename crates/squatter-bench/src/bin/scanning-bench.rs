@@ -11,7 +11,7 @@ use std::{
     path::PathBuf,
     time::{Duration, Instant},
 };
-use tree_squatter::{Grammar, KindSet, Node, Tree, traits::NodeLike};
+use tree_squatter::{Grammar, IdSet, KindSet, Node, Tree, traits::NodeLike};
 
 #[derive(Parser, Serialize)]
 struct Arguments {
@@ -33,6 +33,12 @@ struct Arguments {
     /// Restrict timing to these workload names.
     #[arg(long)]
     workload: Vec<String>,
+    /// Reverse workload order before rotating it across samples.
+    #[arg(long)]
+    reverse_workloads: bool,
+    /// Number of frequent named kinds selected by multi_kind workloads.
+    #[arg(long, default_value_t = 4)]
+    kind_count: usize,
 }
 #[derive(Deserialize, Serialize)]
 struct Input {
@@ -52,6 +58,16 @@ struct Case {
     field: u16,
     field_matches: usize,
     range_matches: usize,
+    supertype: u16,
+    supertype_matches: usize,
+    flags_matches: usize,
+    combined_matches: usize,
+    frequent_kind_ids: [u16; 16],
+    sized_kind_sets: [KindSet; 5],
+    sized_kind_matches: [usize; 5],
+    frequent_field_ids: [u16; 4],
+    sized_field_sets: [IdSet; 3],
+    sized_field_matches: [usize; 3],
 }
 #[derive(Serialize)]
 struct ResultRow {
@@ -74,14 +90,158 @@ fn consume<T>(nodes: impl Iterator<Item = T>) -> usize {
     }
     count
 }
+fn consume_fold<T>(nodes: impl Iterator<Item = T>) -> usize {
+    nodes.fold(0, |count, node| {
+        black_box(node);
+        count + 1
+    })
+}
 fn overlaps(node: Node<'_>, range: &Range<usize>) -> bool {
     let start = node.start_byte();
     let end = node.end_byte();
     start < end && start < range.end && end > range.start
 }
 type Operation = fn(&Case) -> usize;
-fn workloads() -> Vec<(&'static str, Operation)> {
+fn fixed_kinds<const N: usize>(case: &Case) -> [u16; N] {
+    case.frequent_kind_ids[..N].try_into().unwrap()
+}
+fn sized_kind_workloads<const N: usize>(
+    names: [&'static str; 6],
+) -> Vec<(&'static str, Operation)> {
     vec![
+        (names[0], |case| {
+            consume(
+                case.tree
+                    .root_node()
+                    .all()
+                    .filter_kind_ids(fixed_kinds::<N>(case))
+                    .nodes(),
+            )
+        }),
+        (names[1], |case| {
+            case.tree
+                .root_node()
+                .all()
+                .filter_kind_ids(fixed_kinds::<N>(case))
+                .count()
+        }),
+        (names[2], |case| {
+            consume_fold(
+                case.tree
+                    .root_node()
+                    .all()
+                    .filter_kind_ids(fixed_kinds::<N>(case))
+                    .nodes(),
+            )
+        }),
+        (names[3], |case| {
+            consume(
+                case.tree
+                    .root_node()
+                    .all()
+                    .filter_kind_ids(&case.sized_kind_sets[N.ilog2() as usize])
+                    .nodes(),
+            )
+        }),
+        (names[4], |case| {
+            case.tree
+                .root_node()
+                .all()
+                .filter_kind_ids(&case.sized_kind_sets[N.ilog2() as usize])
+                .count()
+        }),
+        (names[5], |case| {
+            consume_fold(
+                case.tree
+                    .root_node()
+                    .all()
+                    .filter_kind_ids(&case.sized_kind_sets[N.ilog2() as usize])
+                    .nodes(),
+            )
+        }),
+    ]
+}
+fn workloads() -> Vec<(&'static str, Operation)> {
+    let mut workloads: Vec<(&'static str, Operation)> = vec![
+        ("preorder.fold", |case| {
+            consume_fold(case.tree.root_node().preorder().nodes())
+        }),
+        ("preorder.rfold", |case| {
+            case.tree
+                .root_node()
+                .preorder()
+                .nodes()
+                .rfold(0, |count, node| {
+                    black_box(node);
+                    count + 1
+                })
+        }),
+        ("preorder.groups.fold", |case| {
+            case.tree
+                .root_node()
+                .preorder()
+                .groups()
+                .map(|group| consume_fold(group.nodes()))
+                .sum()
+        }),
+        ("postorder.fold", |case| {
+            consume_fold(case.tree.root_node().postorder().nodes())
+        }),
+        ("postorder.rev.fold", |case| {
+            consume_fold(case.tree.root_node().postorder().rev().nodes())
+        }),
+        ("kind.fold", |case| {
+            consume_fold(
+                case.tree
+                    .root_node()
+                    .all()
+                    .filter_kind_ids(&case.kinds)
+                    .nodes(),
+            )
+        }),
+        ("multi_kind.fold", |case| {
+            consume_fold(
+                case.tree
+                    .root_node()
+                    .all()
+                    .filter_kind_ids(&case.multiple_kinds)
+                    .nodes(),
+            )
+        }),
+        ("supertype.nodes", |case| {
+            consume(
+                case.tree
+                    .root_node()
+                    .all()
+                    .filter_supertype_id(case.supertype)
+                    .nodes(),
+            )
+        }),
+        ("supertype.count", |case| {
+            case.tree
+                .root_node()
+                .all()
+                .filter_supertype_id(case.supertype)
+                .count()
+        }),
+        ("flags.count", |case| {
+            case.tree
+                .root_node()
+                .all()
+                .filter_extra(false)
+                .filter_missing(false)
+                .count()
+        }),
+        ("combined.count", |case| {
+            case.tree
+                .root_node()
+                .all()
+                .filter_kind_ids(&case.kinds)
+                .filter_field_id(case.field)
+                .filter_extra(false)
+                .filter_missing(false)
+                .count()
+        }),
         ("multi_kind.nodes", |case| {
             consume(
                 case.tree
@@ -257,6 +417,118 @@ fn workloads() -> Vec<(&'static str, Operation)> {
                     .filter(|&node| overlaps(node, &case.range)),
             )
         }),
+    ];
+    workloads.extend(sized_kind_workloads::<1>([
+        "fixed_1.nodes",
+        "fixed_1.count",
+        "fixed_1.fold",
+        "dynamic_1.nodes",
+        "dynamic_1.count",
+        "dynamic_1.fold",
+    ]));
+    workloads.extend(sized_kind_workloads::<2>([
+        "fixed_2.nodes",
+        "fixed_2.count",
+        "fixed_2.fold",
+        "dynamic_2.nodes",
+        "dynamic_2.count",
+        "dynamic_2.fold",
+    ]));
+    workloads.extend(sized_kind_workloads::<4>([
+        "fixed_4.nodes",
+        "fixed_4.count",
+        "fixed_4.fold",
+        "dynamic_4.nodes",
+        "dynamic_4.count",
+        "dynamic_4.fold",
+    ]));
+    workloads.extend(sized_kind_workloads::<8>([
+        "fixed_8.nodes",
+        "fixed_8.count",
+        "fixed_8.fold",
+        "dynamic_8.nodes",
+        "dynamic_8.count",
+        "dynamic_8.fold",
+    ]));
+    workloads.extend(sized_kind_workloads::<16>([
+        "fixed_16.nodes",
+        "fixed_16.count",
+        "fixed_16.fold",
+        "dynamic_16.nodes",
+        "dynamic_16.count",
+        "dynamic_16.fold",
+    ]));
+    workloads.extend(sized_field_workloads::<1>([
+        "fixed_field_1.nodes",
+        "fixed_field_1.count",
+        "dynamic_field_1.nodes",
+        "dynamic_field_1.count",
+        "scalar_field_1.nodes",
+    ]));
+    workloads.extend(sized_field_workloads::<2>([
+        "fixed_field_2.nodes",
+        "fixed_field_2.count",
+        "dynamic_field_2.nodes",
+        "dynamic_field_2.count",
+        "scalar_field_2.nodes",
+    ]));
+    workloads.extend(sized_field_workloads::<4>([
+        "fixed_field_4.nodes",
+        "fixed_field_4.count",
+        "dynamic_field_4.nodes",
+        "dynamic_field_4.count",
+        "scalar_field_4.nodes",
+    ]));
+    workloads
+}
+fn fixed_fields<const N: usize>(case: &Case) -> [u16; N] {
+    case.frequent_field_ids[..N].try_into().unwrap()
+}
+fn sized_field_workloads<const N: usize>(
+    names: [&'static str; 5],
+) -> Vec<(&'static str, Operation)> {
+    vec![
+        (names[0], |case| {
+            consume(
+                case.tree
+                    .root_node()
+                    .all()
+                    .filter_field_ids(fixed_fields::<N>(case))
+                    .nodes(),
+            )
+        }),
+        (names[1], |case| {
+            case.tree
+                .root_node()
+                .all()
+                .filter_field_ids(fixed_fields::<N>(case))
+                .count()
+        }),
+        (names[2], |case| {
+            consume(
+                case.tree
+                    .root_node()
+                    .all()
+                    .filter_field_ids(&case.sized_field_sets[N.ilog2() as usize])
+                    .nodes(),
+            )
+        }),
+        (names[3], |case| {
+            case.tree
+                .root_node()
+                .all()
+                .filter_field_ids(&case.sized_field_sets[N.ilog2() as usize])
+                .count()
+        }),
+        (names[4], |case| {
+            consume(
+                case.tree
+                    .root_node()
+                    .node_iterator()
+                    .unwrap()
+                    .filter(|node| fixed_fields::<N>(case).contains(&node.field_id())),
+            )
+        }),
     ]
 }
 fn run(operation: Operation, cases: &[Case], iterations: usize) -> usize {
@@ -341,6 +613,17 @@ fn validate(case: &Case) {
             .filter(|node| case.multiple_kinds.contains(node.kind_id()))
             .collect::<Vec<_>>()
     );
+    assert_eq!(
+        root.all()
+            .filter_supertype_id(case.supertype)
+            .nodes()
+            .collect::<Vec<_>>(),
+        preorder
+            .iter()
+            .copied()
+            .filter(|node| node.has_supertype(case.supertype))
+            .collect::<Vec<_>>()
+    );
 }
 fn pin(cpu: usize) -> Result<()> {
     ensure!(cpu < libc::CPU_SETSIZE as usize, "CPU out of range");
@@ -410,7 +693,23 @@ fn main() -> Result<()> {
         let kinds = KindSet::new([kind]);
         let mut ranked_kinds = frequencies.iter().collect::<Vec<_>>();
         ranked_kinds.sort_by_key(|&(&kind, &count)| (std::cmp::Reverse(count), kind));
-        let multiple_kinds = KindSet::new(ranked_kinds.into_iter().take(4).map(|(&kind, _)| kind));
+        let frequent_kind_ids =
+            std::array::from_fn(|index| ranked_kinds.get(index).map_or(kind, |&(&kind, _)| kind));
+        let sized_kind_sets = std::array::from_fn(|index| {
+            KindSet::new(frequent_kind_ids[..1 << index].iter().copied())
+        });
+        let mut sized_kind_matches = [0; 5];
+        for node in tree.root_node().node_iterator()? {
+            for (count, kinds) in sized_kind_matches.iter_mut().zip(&sized_kind_sets) {
+                *count += usize::from(kinds.contains(node.kind_id()));
+            }
+        }
+        let multiple_kinds = KindSet::new(
+            ranked_kinds
+                .into_iter()
+                .take(arguments.kind_count)
+                .map(|(&kind, _)| kind),
+        );
         let multiple_kind_matches = tree
             .root_node()
             .node_iterator()?
@@ -420,6 +719,20 @@ fn main() -> Result<()> {
             .iter()
             .max_by_key(|&(field, count)| (*count, std::cmp::Reverse(*field)))
             .map_or(0, |(&field, _)| field);
+        let mut ranked_fields = fields.iter().collect::<Vec<_>>();
+        ranked_fields.sort_by_key(|&(&field, &count)| (std::cmp::Reverse(count), field));
+        let frequent_field_ids = std::array::from_fn(|index| {
+            ranked_fields.get(index).map_or(field, |&(&field, _)| field)
+        });
+        let sized_field_sets = std::array::from_fn(|index| {
+            IdSet::new(frequent_field_ids[..1 << index].iter().copied())
+        });
+        let mut sized_field_matches = [0; 3];
+        for node in tree.root_node().node_iterator()? {
+            for (count, fields) in sized_field_matches.iter_mut().zip(&sized_field_sets) {
+                *count += usize::from(fields.contains(node.field_id()));
+            }
+        }
         let field_matches = tree
             .root_node()
             .node_iterator()?
@@ -437,6 +750,27 @@ fn main() -> Result<()> {
             .node_iterator()?
             .filter(|&node| overlaps(node, &range))
             .count();
+        let supertype = language.supertypes().first().copied().unwrap_or(u16::MAX);
+        let supertype_matches = tree
+            .root_node()
+            .node_iterator()?
+            .filter(|node| node.has_supertype(supertype))
+            .count();
+        let flags_matches = tree
+            .root_node()
+            .node_iterator()?
+            .filter(|node| !node.is_extra() && !node.is_missing())
+            .count();
+        let combined_matches = tree
+            .root_node()
+            .node_iterator()?
+            .filter(|node| {
+                kinds.contains(node.kind_id())
+                    && node.field_id() == field
+                    && !node.is_extra()
+                    && !node.is_missing()
+            })
+            .count();
         descriptions.push(serde_json::json!({
             "input": input, "source_bytes": source.len(), "slab_bytes": tree.as_bytes().len(),
             "nodes": nodes, "groups": tree.group_count(), "kind_id": kind,
@@ -444,6 +778,10 @@ fn main() -> Result<()> {
             "multiple_kind_matches": multiple_kind_matches,
             "field_id": field, "field_matches": field_matches,
             "range": [range.start, range.end], "range_matches": range_matches,
+            "supertype_id": supertype, "supertype_matches": supertype_matches,
+            "flags_matches": flags_matches, "combined_matches": combined_matches,
+            "frequent_kind_ids": frequent_kind_ids, "sized_kind_matches": sized_kind_matches,
+            "frequent_field_ids": frequent_field_ids, "sized_field_matches": sized_field_matches,
         }));
         let case = Case {
             tree,
@@ -457,6 +795,16 @@ fn main() -> Result<()> {
             field,
             field_matches,
             range_matches,
+            supertype,
+            supertype_matches,
+            flags_matches,
+            combined_matches,
+            frequent_kind_ids,
+            sized_kind_sets,
+            sized_kind_matches,
+            frequent_field_ids,
+            sized_field_sets,
+            sized_field_matches,
         };
         validate(&case);
         cases.push(case);
@@ -478,12 +826,28 @@ fn main() -> Result<()> {
     if !arguments.workload.is_empty() {
         workloads.retain(|(name, _)| arguments.workload.iter().any(|selected| selected == name));
     }
+    if arguments.reverse_workloads {
+        workloads.reverse();
+    }
     let mut results = Vec::new();
     for &(name, operation) in &workloads {
         let expected: usize = cases
             .iter()
             .map(|case| {
-                if name.starts_with("multi_kind.") {
+                if let Some(sized) = name
+                    .strip_prefix("fixed_field_")
+                    .or_else(|| name.strip_prefix("dynamic_field_"))
+                    .or_else(|| name.strip_prefix("scalar_field_"))
+                {
+                    let length = sized.split('.').next().unwrap().parse::<usize>().unwrap();
+                    case.sized_field_matches[length.ilog2() as usize]
+                } else if let Some(sized) = name
+                    .strip_prefix("fixed_")
+                    .or_else(|| name.strip_prefix("dynamic_"))
+                {
+                    let length = sized.split('.').next().unwrap().parse::<usize>().unwrap();
+                    case.sized_kind_matches[length.ilog2() as usize]
+                } else if name.starts_with("multi_kind.") {
                     case.multiple_kind_matches
                 } else if name.starts_with("kind.") || name.contains(".kind.") {
                     case.kind_matches
@@ -491,6 +855,12 @@ fn main() -> Result<()> {
                     case.field_matches
                 } else if name.starts_with("range.") {
                     case.range_matches
+                } else if name.starts_with("supertype.") {
+                    case.supertype_matches
+                } else if name == "flags.count" {
+                    case.flags_matches
+                } else if name == "combined.count" {
+                    case.combined_matches
                 } else {
                     case.nodes
                 }

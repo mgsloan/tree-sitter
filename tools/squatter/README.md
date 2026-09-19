@@ -103,11 +103,27 @@ enumerated node with `black_box`. Count workloads consume the aggregate only.
 Each timed iteration cycles through all input trees. A pilot chooses the iteration
 count targeting `--sample-ms`; workload order rotates across samples. CSV goes to
 stdout, while JSON retains individual timings and input/grammar metadata.
+Use `--reverse-workloads` to reverse the order for a repeat run.
 Filtered throughput uses all input nodes as its denominator, including nodes
 skipped by range/group operations; output nodes/s and match counts are also saved.
 The kind filter selects each file's most frequent named kind; `multi_kind` uses
-its four most frequent named kinds. The field filter
+its four most frequent named kinds, adjustable with `--kind-count N`. The field filter
 selects its most frequent nonzero field, or zero if none exists. The byte range
 covers the middle 1% of each source. Use repeated `--workload NAME` arguments to
 time selected operations. Results describe this selected corpus and
 cache behavior, not parsing performance.
+
+Fold/rfold and grouped-fold workloads also consume every node with `black_box`.
+`flags.count` excludes extra and missing nodes; `combined.count` additionally
+intersects the selected kind and field. Supertype workloads select the grammar's
+first supertype, or an invalid ID when the grammar has none. Their input-node
+denominator includes those grammars; per-file supertype IDs and match counts are
+recorded so this early-rejection effect is visible.
+
+`fixed_N.{nodes,count,fold}` and `dynamic_N.{nodes,count,fold}` compare arrays and
+reusable sets for N = 1, 2, 4, 8, 16 frequent named kinds. Field variants are
+`fixed_field_N`, `dynamic_field_N`, and `scalar_field_N`, for N = 1, 2, 4 frequent
+nonzero fields (or zero when none exists). If fewer distinct IDs are present,
+arrays repeat the most frequent ID; dynamic sets deduplicate the same selection.
+Per-file arrays and match counts are recorded. Both paths include scan/predicate
+preparation in timing; constructing reusable dynamic sets is setup work.
