@@ -2,16 +2,18 @@
 
 The public API has three namespaces: `tree_squatter_persistence` for caching,
 `source` for capturing input, and `text` for preprocessing. The root contains the
-normal load/parse/publish workflow; applications implementing their own input
+normal load/parse/apply workflow; applications implementing their own input
 adapter mainly work in `source`. Storage, keys, transactions, and request state
 remain private.
 
 This organizes the [proposal](persistence-api-proposal.md) and its
-[client examples](cache-api-examples.md) for a rewrite. Signatures omit bodies and
-private fields. The proposal does not settle grammar-fingerprint construction,
-detailed error variants, or the complete maintenance and transfer contracts;
-those remain open rather than implied by opaque declarations below. Maintenance
-and transfer can extend `Cache` and `PendingWrite` without new public modules.
+[client examples](cache-api-examples.md) for a rewrite. Signatures omit bodies;
+private fields show the planned ownership and representation. `Store` and
+`FileBackend` mark backend boundaries: the former owns the database environment
+and handles, the latter an open file and its I/O scheduling. Their internals,
+grammar-fingerprint derivation, and complete maintenance and transfer contracts
+remain open. Maintenance and transfer can extend `Cache` and `CacheWrite` without
+new public modules. The proposal and examples retain their original names.
 
 Detailed storage and decoder-extraction requirements remain in the proposal.
 The accompanying packing change is renaming `tree_sitter_squatter::PackContext`
@@ -23,7 +25,7 @@ capacity, no repacking, symbol presence enabled, and points enabled.
 
 Share one `Arc<Cache>` per project and keep one movable `Loader` per worker. The
 cache is `Send + Sync` through its fields; the loader owns a parser and lazy
-packing scratch. Misses, candidates, and pending writes can move between workers
+packing scratch. Misses, unchecked trees, and writes can move between workers
 and retain their originating cache without a parser borrow or work lock. Another
 loader may parse a miss without changing its destination cache.
 
@@ -34,17 +36,24 @@ and length. A mismatch fails without a write callback. It neither repeats lookup
 nor waits for another worker. Every successful parse returns an owned tree and
 calls the required handler once with publication work, even without local storage.
 That work retains processed source bytes for storage. Dropping it discards the
-write. Synchronous `publish` borrows the work, allowing retry after `Busy` or
-failure without invalidating the parsed tree. Cancellation after commit cannot
-undo publication; cancellation settings are never retained in owned work.
+write. Synchronous `CacheWrite::apply` borrows the work, allowing retry after
+`Busy` or failure without invalidating the parsed tree. Cancellation after commit
+cannot undo publication; cancellation settings are never retained in owned work.
 
-`preview` matches raw metadata and structurally validates a cached tree without
-reading source bytes. `verify` uses the source's current preprocessing and hashes
-once: matching content confirms the candidate; changed content performs an exact
-lookup with that hash. It never parses or publishes. Confirmation applies to the
-captured snapshot; a resulting miss retains that capture's metadata. Speculative
-work stays provisional until confirmation, and text-dependent queries need the
-matching source snapshot.
+`unchecked_load` matches raw metadata and structurally validates a cached tree
+without reading source bytes. `check_hash` uses the source's current preprocessing
+and hashes once: matching content returns the tree; changed content performs an
+exact lookup with that hash. It never parses or publishes. The result applies to
+the captured snapshot; a resulting miss retains that capture's metadata.
+`LoadResult::Loaded` may contain the original tree or another exact hit; it does
+not indicate whether speculative work can be reused. Text-dependent queries need
+the matching source snapshot.
+
+An `UncheckedTree` owns a `BackedTree`, retaining its read transaction during
+speculation and hash checking. A matching hash moves that backing into
+`LoadedTree::Backed`; callers can detach it afterward. `ReadPolicy` controls exact
+lookup. Unchecked loading always uses backed storage and returns `None` when no
+usable backed tree is available, even if an exact load could copy the entry.
 
 Exact identity comprises path, processed hash and length, grammar/runtime/
 representation identity, and the `points` and `symbol_presence` packing flags.
@@ -55,11 +64,11 @@ existing tree is allowed; delayed writes can leave stale hints.
 
 `CacheOptions` defaults to a 256 MiB map ceiling, owned reads, and creating missing
 caches. With `create_cache_if_absent: false`, a missing cache yields a storeless
-handle. A cache opened without storage stays that way: lookup misses, preview
-returns `None`, parsing works, and local publication errors. Repeated opens reuse
-the live `Arc<Cache>` for the same root. This design resolves conflicting options
-by rejecting them with `io::ErrorKind::InvalidInput`; reuse never upgrades a
-storeless handle. Roots are not canonicalized by the library.
+handle. A cache opened without storage stays that way: lookup misses,
+`unchecked_load` returns `None`, parsing works, and local publication errors.
+Repeated opens reuse the live `Arc<Cache>` for the same root. This design resolves
+conflicting options by rejecting them with `io::ErrorKind::InvalidInput`; reuse
+never upgrades a storeless handle. Roots are not canonicalized by the library.
 
 Owned trees retain their slab and grammar; backed trees also retain an owning read
 transaction. Preferred backed reads may fall back to owned storage. `detach`
@@ -68,17 +77,37 @@ callers distinguish cancellation, changed prepared input, unavailable storage,
 and malformed or incompatible cache data.
 
 ```rust
-use std::{io, path::Path, sync::Arc};
-use tree_sitter_squatter::{BackedTree, PackOptions, Tree};
+use std::{io, path::{Path, PathBuf}, sync::Arc};
+use tree_sitter_squatter::{BackedTree, PackOptions, Tree, TreePacker};
 
-use source::{ParserInput, Source};
+use source::{FileMetadata, ParserInput, Source, SourceIdentity};
+use store::Store;
+use text::PreprocessingInfo;
 
+mod store;
 pub mod source;
 pub use tree_squatter_text as text;
 pub use text::Canceler;
 
-pub struct Cache { /* private */ }
-pub struct Loader { /* private */ }
+pub struct Cache {
+    root: PathBuf,
+    store: Option<Box<Store>>,
+    options: CacheOptions,
+}
+
+pub struct Loader {
+    cache: Arc<Cache>,
+    parser: tree_sitter::Parser,
+    packer: Option<TreePacker>,
+}
+
+struct LoadRequest {
+    cache: Arc<Cache>,
+    path: PathBuf,
+    metadata: FileMetadata,
+    grammar: Grammar,
+    pack: PackOptions,
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CacheOptions {
@@ -97,11 +126,20 @@ pub enum ReadPolicy {
 
 // Provider-supplied identity must cover all behavior-affecting grammar inputs.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct GrammarFingerprint { /* construction contract remains open */ }
+pub struct GrammarFingerprint {
+    bytes: Arc<[u8]>,
+}
 
-// Owns the language, prepared packing grammar, and fingerprint.
+impl GrammarFingerprint {
+    pub fn from_bytes(bytes: impl Into<Arc<[u8]>>) -> Self;
+}
+
 #[derive(Clone)]
-pub struct Grammar { /* private */ }
+pub struct Grammar {
+    language: tree_sitter::Language,
+    packed: tree_sitter_squatter::Grammar,
+    fingerprint: GrammarFingerprint,
+}
 
 impl Cache {
     pub fn open(root: impl AsRef<Path>, options: CacheOptions) -> io::Result<Arc<Self>>;
@@ -121,12 +159,12 @@ impl Loader {
         options: LoadOptions<'_>,
     ) -> Result<LoadResult, LoadError>;
 
-    pub async fn preview<S: Source>(
+    pub async fn unchecked_load<S: Source>(
         &self,
         source: &mut S,
         grammar: &Grammar,
         options: LoadOptions<'_>,
-    ) -> Result<Option<CachedCandidate>, LoadError>;
+    ) -> Result<Option<UncheckedTree>, LoadError>;
 
     pub fn drop_packer(&mut self);
 }
@@ -144,30 +182,31 @@ pub enum LoadResult {
 }
 
 #[must_use]
-pub struct CachedCandidate { /* private */ }
+pub struct UncheckedTree {
+    request: LoadRequest,
+    source_identity: SourceIdentity,
+    tree: BackedTree,
+}
 
-impl CachedCandidate {
+impl UncheckedTree {
     pub fn tree(&self) -> &Tree;
-    pub async fn verify<S: Source>(
+    pub async fn check_hash<S: Source>(
         self,
         source: &mut S,
-        options: VerifyOptions<'_>,
-    ) -> Result<Verification, LoadError>;
+        options: CheckHashOptions<'_>,
+    ) -> Result<LoadResult, LoadError>;
 }
 
 #[derive(Default)]
-pub struct VerifyOptions<'a> {
+pub struct CheckHashOptions<'a> {
     pub cancellation: Canceler<'a>,
 }
 
 #[must_use]
-pub enum Verification {
-    Confirmed(LoadedTree),
-    Changed(LoadResult),
+pub struct CacheMiss {
+    request: LoadRequest,
+    source_identity: SourceIdentity,
 }
-
-#[must_use]
-pub struct CacheMiss { /* private */ }
 
 impl CacheMiss {
     pub fn parse<I: ParserInput>(
@@ -175,7 +214,7 @@ impl CacheMiss {
         loader: &mut Loader,
         input: &mut I,
         options: ParseOptions<'_>,
-        handle_write: impl FnOnce(PendingWrite),
+        handle_write: impl FnOnce(CacheWrite),
     ) -> Result<LoadedTree, LoadError>;
 }
 
@@ -196,15 +235,21 @@ impl LoadedTree {
     pub fn detach(&self) -> Result<Self, tree_sitter_squatter::Error>;
 }
 
-#[must_use = "publish, transfer, queue, or explicitly discard this write"]
-pub struct PendingWrite { /* private */ }
+#[must_use = "apply, transfer, queue, or explicitly discard this write"]
+pub struct CacheWrite {
+    request: LoadRequest,
+    source_identity: SourceIdentity,
+    preprocessing: PreprocessingInfo,
+    tree: Arc<Tree>,
+    source: Arc<[u8]>,
+}
 
-impl PendingWrite {
-    pub fn publish(&self, options: PublishOptions<'_>) -> Result<WriteOutcome, CacheError>;
+impl CacheWrite {
+    pub fn apply(&self, options: ApplyOptions<'_>) -> Result<WriteOutcome, CacheError>;
 }
 
 #[derive(Default)]
-pub struct PublishOptions<'a> {
+pub struct ApplyOptions<'a> {
     pub cancellation: Canceler<'a>,
 }
 
@@ -216,12 +261,34 @@ pub enum WriteOutcome {
 }
 
 #[derive(Debug)]
-pub struct LoadError { /* private */ }
+pub enum LoadError {
+    Io(io::Error),
+    Cache(CacheError),
+    Language(tree_sitter::LanguageError),
+    Packing(tree_sitter_squatter::Error),
+    Cancelled,
+    SourceChanged { expected: SourceIdentity, actual: SourceIdentity },
+    ParseFailed,
+}
+
 #[derive(Debug)]
-pub struct CacheError { /* private */ }
+pub enum CacheError {
+    Io(io::Error),
+    Storage(Box<dyn std::error::Error + Send + Sync>),
+    Unavailable,
+    Cancelled,
+    InvalidData,
+    Incompatible,
+}
 
 // Both errors implement Display and std::error::Error, preserving underlying causes.
 ```
+
+`load` and `check_hash` share `LoadResult`; the outer `Result<_, LoadError>`
+distinguishes an operational failure from a normal cache miss.
+An unchecked miss has no processed source identity, so it cannot construct the
+parse-ready `CacheMiss` shown above. Keep `Option<UncheckedTree>` unless that path
+needs a separate continuation for hashing or preparing the source.
 
 ## `source` — input capture
 
@@ -264,6 +331,9 @@ Hashing uses streaming XXH3-128, seed zero, and processed byte length, independe
 of chunk boundaries. `FileContents` computes and retains its fingerprint;
 `ChunkSource` indexes borrowed chunks without flattening them. Publication uses
 the metadata and preprocessing description from the validated prepared input.
+Empty chunks are omitted from the index so they cannot look like premature EOF;
+`chunk_offsets` contains each chunk's start and a final total-length boundary.
+Changing a file's preprocessing policy invalidates its prepared capture.
 
 ```rust
 use std::{
@@ -339,9 +409,25 @@ pub struct FileFingerprint {
     pub source: SourceIdentity,
 }
 
-pub struct SourceFile { /* private */ }
-pub struct FileContents { /* private */ }
-pub struct ChunkSource<'a> { /* private */ }
+pub struct SourceFile {
+    path: PathBuf,
+    file: FileBackend,
+    preprocessing: TextPreprocessing,
+    prepared: Option<FileContents>,
+}
+
+pub struct FileContents {
+    path: PathBuf,
+    bytes: Arc<[u8]>,
+    fingerprint: FileFingerprint,
+}
+
+pub struct ChunkSource<'a> {
+    path: PathBuf,
+    chunks: Vec<&'a [u8]>,
+    chunk_offsets: Vec<usize>,
+    fingerprint: FileFingerprint,
+}
 
 impl SourceFile {
     pub async fn open(root: impl AsRef<Path>, path: impl AsRef<Path>) -> io::Result<Self>;
@@ -424,7 +510,15 @@ impl<'a> Canceler<'a> {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct TextPreprocessing { /* private */ }
+pub struct TextPreprocessing {
+    mode: PreprocessingMode,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum PreprocessingMode {
+    None,
+    Zed,
+}
 
 impl Default for TextPreprocessing { /* zed() */ }
 
