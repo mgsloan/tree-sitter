@@ -1,4 +1,22 @@
-# Queue
+# MVP
+
+## Polish
+
+- [ ] Review and polish design.md
+
+- [ ] Library that uses tree-sitter instead of a fork
+
+- [ ] Document Send+Sync for scans
+
+- [ ] Write blog post
+
+- [ ] Separate viz branch for visualizer
+
+- [ ] Can query compilation code be similar to upstream with a minimized diff?
+
+- [ ] Port core to Rust.  Use the scan iterators to reduce code complexity
+
+## Performance
 
 - [ ] https://github.com/Dekker1/tree-feller
 
@@ -10,9 +28,37 @@
 
 ## Query
 
-- [ ] iteration api should have preorder(), postorder(), and all().  All just gives the one that's more efficient.
+- [ ] Range containment
+
+## Injections
+
+- [ ] Forests
+
+## Use in Zed
+
+- [ ] Review and polish the traits
+
+- [ ] Make hot loops generic over representation
+
+- [ ] Test that Zed file decode/transform code works.  How to make sure it doesn't diverge? Divergence does not cause incorrectness, but does cause hash mismatches
+
+## Misc
+
+
+
+
+# Post MVP
+
+## Correctness
+
+- [ ] Test for back compat. Store a bunch of persisted trees and check that they
+  decode.
+
+- [ ] Consider how to also check forwards compat efficiently.
 
 ## Persistence
+
+- [ ] Put on a separate branch
 
 - [ ] Dedicated heed thread(s)?
 
@@ -26,13 +72,6 @@
 
 - [ ] Persistence API for waiting on other writer for some amount of time?
 
-# Backburner
-
-- [ ] Review and polish design.md.
-
-- [ ] Once there's a release have a test for back compat. Store a bunch of
-  persisted trees and check that they decode. Consider how to also check forwards compat efficiently
-
 - [ ] Skip persisting when it's better to just reparse
 
       * Consider similar logic for the side caches
@@ -42,19 +81,30 @@
 
 - [ ] Skip caching when frequently edited? (reduce churn)
 
-- [ ] Consider what APIs could make it faster
+## Use in ast-grep / similar tools
 
-- [ ] Tuning:
+Parse only the needed info.
 
-      * threshold between scan and parent walk
+## Performance tuning
 
-      * symbol presence cache threshold
+- [ ] slot count and field widths
 
-      * scan window
+- [ ] threshold between scan and parent walk
 
-      * bit packing thresholds
+- [ ] symbol presence cache threshold
 
-- [ ] Rust impl for better LTO - or just have Rust-side implementations for small ops
+- [ ] scan window
+
+- [ ] Try pure Rust impl for better LTO - or just have Rust-side implementations for small ops
+
+
+# Backburner
+
+## Correctness
+
+- [ ] Shared comparison / property testing repo for tree-sitter, squatter, and feller.
+
+## Persistene
 
 - [ ] Update persistence cache properly for renames
 
@@ -64,11 +114,17 @@
 
       * Especially could be nice to have hierarchical symbol presence.  Maybe should just change symbol presence stride?  Tricky interaction with forests.
 
-- [ ] Could postorder be better for direct parse to packed?
-
 - [ ] Compression support for persistence?  Compress while compacting.  Use bitpacker crate? `fastlanes` crate (has cmp support)?
 
       * Could also decompress group bases on the fly.  Symbol / field / supertype search doesn't need em
+
+- [ ] Document choice to not cache for symlinks that point outside the root
+
+- [ ] Capacity estimates based on stale cache size
+
+## Performance
+
+- [ ] Radix table on monotonic bases
 
 - [ ] Consider using fastpfor style exceptions?  Probably not, avoid branches
 
@@ -76,14 +132,6 @@
 
 - [ ] Potentially relevant: vortex-array
 
-- [ ] Use blocking file reads during TS chunk reads to avoid full materialize? Skipping this for now, gnarly to block threads. Maybe better to
-
-- [ ] Test that Zed file decode/transform code works.  How to make sure it doesn't diverge? Divergence does not cause incorrectness, but does cause hash mismatches
-
-- [ ] Document choice to not cache for symlinks that point outside the root
-
-- [ ] Radix table on monotonic bases
+- [ ] Use blocking file reads during TS chunk reads to avoid full materialize? Skipping this for now, gnarly to block threads.
 
 - [ ] With feller parse, estimate capacity based on per-grammar stats
-
-- [ ] Capacity estimates based on stale cache size
