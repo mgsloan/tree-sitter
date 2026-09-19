@@ -1,7 +1,6 @@
 # Rust scanning API
 
-The group-based Rust scan API. The existing native `NodeIterator` remains a
-separate interface for stateful attribute access.
+The group-based Rust scan API. Read attributes from the returned node handles.
 
 The scan reads stored columns directly and retains a compact mask of matching
 slots for each group. There is no unpack cache: neither traversal, filters, nor

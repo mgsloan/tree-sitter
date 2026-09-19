@@ -25,9 +25,7 @@ const BENCHMARKS: &[&str] = &[
     "query-matches",
     "query-captures",
     "cursor-forward",
-    "iterator-forward",
     "scan-forward",
-    "scan-iterator",
     "seek-byte",
     "seek-point",
     "cold-parse",
@@ -420,9 +418,7 @@ fn observe<'tree, N: tree_squatter::traits::NodeLike<'tree>>(
     points: &[Point],
 ) -> Result<Observation<'tree>> {
     Ok(match benchmark {
-        "cursor-forward" | "iterator-forward" | "scan-forward" | "scan-iterator" => {
-            Observation::Walk(compare::walk(root, ids)?)
-        }
+        "cursor-forward" | "scan-forward" => Observation::Walk(compare::walk(root, ids)?),
         "seek-byte" => Observation::Seek(compare::seek_bytes(root, ids, bytes)),
         "seek-point" => Observation::Seek(compare::seek_points(root, ids, points)),
         _ => unreachable!(),
@@ -437,8 +433,8 @@ fn read_nodes<'tree, N: tree_squatter::traits::NodeLike<'tree>>(
     iterations: usize,
 ) -> Result<usize> {
     match benchmark {
-        "cursor-forward" | "iterator-forward" => compare::scan::<_, false>(root, iterations),
-        "scan-forward" | "scan-iterator" => compare::scan::<_, true>(root, iterations),
+        "cursor-forward" => compare::scan::<_, false>(root, iterations),
+        "scan-forward" => compare::scan::<_, true>(root, iterations),
         "seek-byte" => {
             for &byte in bytes {
                 std::hint::black_box(root.descendant_for_byte_range(byte, byte));
@@ -493,19 +489,13 @@ fn read_workload(
             iterations,
         )
     } else {
-        match benchmark {
-            "iterator-forward" => {
-                compare::scan_iterator::<false>(pair.squat.root_node(), iterations)
-            }
-            "scan-iterator" => compare::scan_iterator::<true>(pair.squat.root_node(), iterations),
-            _ => read_nodes(
-                pair.squat.root_node(),
-                benchmark,
-                &pair.seek_bytes,
-                &pair.seek_points,
-                iterations,
-            ),
-        }
+        read_nodes(
+            pair.squat.root_node(),
+            benchmark,
+            &pair.seek_bytes,
+            &pair.seek_points,
+            iterations,
+        )
     }
 }
 
@@ -543,8 +533,6 @@ fn validate_workload(
                 optimized,
             )
             .map(Observation::Query)
-    } else if matches!(benchmark, "iterator-forward" | "scan-iterator") {
-        compare::walk_iterator(pair.squat.root_node(), &pair.squat_ids).map(Observation::Walk)
     } else {
         observe(
             pair.squat.root_node(),
@@ -766,7 +754,6 @@ pub fn run(check_only: bool) -> Result<()> {
         "pressure": pressure_report(&pressure, &batches),
         "field_contract": "field API differences expected only when squat agrees with mainline visible-child fields; ERROR parents have no fields",
         "timing_contract": "v3: exact validation and snapshots outside timing; read kernels consume results with black_box; no identity lookups or result collections in timed reads",
-        "iterator_contract": "native preorder; mainline uses its forward cursor",
         "cursor_contract": "scan-forward reads O(1) bulk attributes; cursor-forward measures navigation",
         "workload_order": "rotate by batch and every two repeats, retaining both backend orders for each rotation",
         "query_engine": "slab NFA and structural plans adapted from ../main", "seek_contract": "strict",

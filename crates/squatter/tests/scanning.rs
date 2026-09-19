@@ -42,6 +42,23 @@ fn parse(
     (native, packed)
 }
 
+// Cursor navigation is independent of the group scans.
+fn reference_preorder(root: Node<'_>) -> Vec<Node<'_>> {
+    let mut cursor = root.walk().unwrap();
+    let mut nodes = Vec::new();
+    loop {
+        nodes.push(cursor.node());
+        if cursor.goto_first_child() {
+            continue;
+        }
+        while !cursor.goto_next_sibling() {
+            if !cursor.goto_parent() {
+                return nodes;
+            }
+        }
+    }
+}
+
 fn check_pipeline<'tree, S: GroupScan<'tree>>(
     make: impl Fn() -> Scan<'tree, S>,
     expected: &[Node<'tree>],
@@ -178,8 +195,8 @@ fn orders_subtrees_groups_and_both_ends() {
             .collect::<Vec<_>>(),
         postorder
     );
-    for root in tree.root_node().node_iterator().unwrap() {
-        let expected = root.node_iterator().unwrap().collect::<Vec<_>>();
+    for root in reference_preorder(tree.root_node()) {
+        let expected = reference_preorder(root);
         check_pipeline(|| root.preorder(), &expected);
         check_pipeline(|| root.all(), &expected);
         let mut cursor = root.walk().unwrap();
@@ -206,15 +223,11 @@ fn orders_subtrees_groups_and_both_ends() {
 
 #[allow(clippy::reversed_empty_ranges)] // Intentionally exercise reversed bounds.
 fn check_ranges(tree: &Tree, source_len: usize) {
-    let all = tree
-        .root_node()
-        .node_iterator()
-        .unwrap()
-        .collect::<Vec<_>>();
+    let all = reference_preorder(tree.root_node());
     let kinds = KindSet::new(all.iter().step_by(3).map(|node| node.kind_id()));
     let roots = all.iter().copied().step_by((all.len() / 15).max(1));
     for root in roots {
-        let preorder = root.node_iterator().unwrap().collect::<Vec<_>>();
+        let preorder = reference_preorder(root);
         let postorder = root.postorder().nodes().collect::<Vec<_>>();
         for range in [
             0..0,
@@ -352,16 +365,14 @@ fn empty_missing_and_error_nodes() {
     for source in ["", "{\"a\": }", "[1,", "{bad}", "[1 2]", "{\"a\" 1}"] {
         let (_, tree) = parse(&language, source, PackOptions::default());
         check_ranges(&tree, source.len());
-        for node in tree.root_node().node_iterator().unwrap() {
+        for node in reference_preorder(tree.root_node()) {
             has_empty |= node.start_byte() == node.end_byte();
             has_missing |= node.is_missing();
             has_error |= node.is_error();
         }
         let kinds = KindSet::new([u16::MAX]);
-        let expected = tree
-            .root_node()
-            .node_iterator()
-            .unwrap()
+        let expected = reference_preorder(tree.root_node())
+            .into_iter()
             .filter(|node| node.is_error())
             .collect::<Vec<_>>();
         check_pipeline(
@@ -389,7 +400,7 @@ fn dense_id_filters() {
     let language = json_language();
     let (_, tree) = parse(&language, &source, PackOptions::default());
     let root = tree.root_node();
-    let nodes = root.node_iterator().unwrap().collect::<Vec<_>>();
+    let nodes = reference_preorder(root);
     let kinds = nodes
         .iter()
         .map(|node| node.kind_id())
@@ -430,9 +441,8 @@ fn dense_id_filters() {
 }
 
 fn check_fixed_kinds<const N: usize>(root: Node<'_>, ids: [u16; N]) {
-    let expected = root
-        .node_iterator()
-        .unwrap()
+    let expected = reference_preorder(root)
+        .into_iter()
         .filter(|node| ids.contains(&node.kind_id()))
         .collect::<Vec<_>>();
     check_pipeline(|| root.preorder().filter_kind_ids(ids), &expected);
@@ -528,9 +538,8 @@ fn fixed_kind_sets() {
 }
 
 fn check_field_set<const N: usize>(root: Node<'_>, fields: [u16; N]) {
-    let expected = root
-        .node_iterator()
-        .unwrap()
+    let expected = reference_preorder(root)
+        .into_iter()
         .filter(|node| fields.contains(&node.field_id()))
         .collect::<Vec<_>>();
     check_pipeline(|| root.preorder().filter_field_ids(fields), &expected);
@@ -608,11 +617,7 @@ fn supertype_membership() {
     let mut exercised_dictionary = false;
     for (language, source) in languages {
         let (_, tree) = parse(&language, source, PackOptions::default());
-        let nodes = tree
-            .root_node()
-            .node_iterator()
-            .unwrap()
-            .collect::<Vec<_>>();
+        let nodes = reference_preorder(tree.root_node());
         let supertypes = (0..language.node_kind_count() as u16)
             .filter(|&id| language.node_kind_is_supertype(id))
             .collect::<Vec<_>>();
@@ -644,7 +649,7 @@ fn composition_and_reverse_preserve_membership() {
     let (_, tree) = parse(&language, source, PackOptions::default());
     check_ranges(&tree, source.len());
     let root = tree.root_node();
-    let preorder = root.node_iterator().unwrap().collect::<Vec<_>>();
+    let preorder = reference_preorder(root);
     let kinds = KindSet::new(preorder.iter().step_by(2).map(|node| node.kind_id()));
     let other_kinds = KindSet::new(preorder.iter().step_by(3).map(|node| node.kind_id()));
     let expected = root

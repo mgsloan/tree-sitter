@@ -96,6 +96,9 @@ fn consume_fold<T>(nodes: impl Iterator<Item = T>) -> usize {
         count + 1
     })
 }
+fn scalar_preorder(tree: &Tree) -> impl Iterator<Item = Node<'_>> {
+    std::iter::successors(Some(tree.root_node()), |node| node.next_preorder())
+}
 fn overlaps(node: Node<'_>, range: &Range<usize>) -> bool {
     let start = node.start_byte();
     let end = node.end_byte();
@@ -275,13 +278,7 @@ fn workloads() -> Vec<(&'static str, Operation)> {
                 .count()
         }),
         ("field.scalar", |case| {
-            consume(
-                case.tree
-                    .root_node()
-                    .node_iterator()
-                    .unwrap()
-                    .filter(|node| node.field_id() == case.field),
-            )
+            consume(scalar_preorder(&case.tree).filter(|node| node.field_id() == case.field))
         }),
         ("postorder.field.nodes", |case| {
             consume(
@@ -346,13 +343,8 @@ fn workloads() -> Vec<(&'static str, Operation)> {
         ("all.rev.nodes", |case| {
             consume(case.tree.root_node().all().rev().nodes())
         }),
-        ("native_iterator", |case| {
-            consume(case.tree.root_node().node_iterator().unwrap())
-        }),
         ("scalar_next_preorder", |case| {
-            consume(std::iter::successors(Some(case.tree.root_node()), |node| {
-                node.next_preorder()
-            }))
+            consume(scalar_preorder(&case.tree))
         }),
         ("mainline_cursor", |case| {
             consume(case.native.root_node().preorder())
@@ -384,13 +376,7 @@ fn workloads() -> Vec<(&'static str, Operation)> {
                 .count()
         }),
         ("kind.scalar", |case| {
-            consume(
-                case.tree
-                    .root_node()
-                    .node_iterator()
-                    .unwrap()
-                    .filter(|node| case.kinds.contains(node.kind_id())),
-            )
+            consume(scalar_preorder(&case.tree).filter(|node| case.kinds.contains(node.kind_id())))
         }),
         ("range.nodes", |case| {
             consume(
@@ -409,13 +395,7 @@ fn workloads() -> Vec<(&'static str, Operation)> {
                 .count()
         }),
         ("range.scalar", |case| {
-            consume(
-                case.tree
-                    .root_node()
-                    .node_iterator()
-                    .unwrap()
-                    .filter(|&node| overlaps(node, &case.range)),
-            )
+            consume(scalar_preorder(&case.tree).filter(|&node| overlaps(node, &case.range)))
         }),
     ];
     workloads.extend(sized_kind_workloads::<1>([
@@ -522,10 +502,7 @@ fn sized_field_workloads<const N: usize>(
         }),
         (names[4], |case| {
             consume(
-                case.tree
-                    .root_node()
-                    .node_iterator()
-                    .unwrap()
+                scalar_preorder(&case.tree)
                     .filter(|node| fixed_fields::<N>(case).contains(&node.field_id())),
             )
         }),
@@ -542,7 +519,7 @@ fn run(operation: Operation, cases: &[Case], iterations: usize) -> usize {
 }
 fn validate(case: &Case) {
     let root = case.tree.root_node();
-    let preorder: Vec<_> = root.node_iterator().unwrap().collect();
+    let preorder: Vec<_> = scalar_preorder(&case.tree).collect();
     assert_eq!(root.preorder().nodes().collect::<Vec<_>>(), preorder);
     assert_eq!(root.all().nodes().collect::<Vec<_>>(), preorder);
     assert_eq!(
@@ -676,7 +653,7 @@ fn main() -> Result<()> {
         let mut frequencies = BTreeMap::new();
         let mut fields = BTreeMap::new();
         let mut nodes = 0;
-        for node in tree.root_node().node_iterator()? {
+        for node in scalar_preorder(&tree) {
             nodes += 1;
             if node.field_id() != 0 {
                 *fields.entry(node.field_id()).or_insert(0usize) += 1;
@@ -699,7 +676,7 @@ fn main() -> Result<()> {
             KindSet::new(frequent_kind_ids[..1 << index].iter().copied())
         });
         let mut sized_kind_matches = [0; 5];
-        for node in tree.root_node().node_iterator()? {
+        for node in scalar_preorder(&tree) {
             for (count, kinds) in sized_kind_matches.iter_mut().zip(&sized_kind_sets) {
                 *count += usize::from(kinds.contains(node.kind_id()));
             }
@@ -710,9 +687,7 @@ fn main() -> Result<()> {
                 .take(arguments.kind_count)
                 .map(|(&kind, _)| kind),
         );
-        let multiple_kind_matches = tree
-            .root_node()
-            .node_iterator()?
+        let multiple_kind_matches = scalar_preorder(&tree)
             .filter(|node| multiple_kinds.contains(node.kind_id()))
             .count();
         let field = fields
@@ -728,42 +703,30 @@ fn main() -> Result<()> {
             IdSet::new(frequent_field_ids[..1 << index].iter().copied())
         });
         let mut sized_field_matches = [0; 3];
-        for node in tree.root_node().node_iterator()? {
+        for node in scalar_preorder(&tree) {
             for (count, fields) in sized_field_matches.iter_mut().zip(&sized_field_sets) {
                 *count += usize::from(fields.contains(node.field_id()));
             }
         }
-        let field_matches = tree
-            .root_node()
-            .node_iterator()?
+        let field_matches = scalar_preorder(&tree)
             .filter(|node| node.field_id() == field)
             .count();
         let range =
             source.len() / 2..(source.len() / 2 + (source.len() / 100).max(1)).min(source.len());
-        let kind_matches = tree
-            .root_node()
-            .node_iterator()?
+        let kind_matches = scalar_preorder(&tree)
             .filter(|node| kinds.contains(node.kind_id()))
             .count();
-        let range_matches = tree
-            .root_node()
-            .node_iterator()?
+        let range_matches = scalar_preorder(&tree)
             .filter(|&node| overlaps(node, &range))
             .count();
         let supertype = language.supertypes().first().copied().unwrap_or(u16::MAX);
-        let supertype_matches = tree
-            .root_node()
-            .node_iterator()?
+        let supertype_matches = scalar_preorder(&tree)
             .filter(|node| node.has_supertype(supertype))
             .count();
-        let flags_matches = tree
-            .root_node()
-            .node_iterator()?
+        let flags_matches = scalar_preorder(&tree)
             .filter(|node| !node.is_extra() && !node.is_missing())
             .count();
-        let combined_matches = tree
-            .root_node()
-            .node_iterator()?
+        let combined_matches = scalar_preorder(&tree)
             .filter(|node| {
                 kinds.contains(node.kind_id())
                     && node.field_id() == field

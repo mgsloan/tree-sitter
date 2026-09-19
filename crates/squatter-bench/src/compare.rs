@@ -79,33 +79,6 @@ pub fn scan<'tree, N: NodeLike<'tree>, const ATTRIBUTES: bool>(
     Ok(nodes)
 }
 
-fn scan_iterator_once<const ATTRIBUTES: bool>(
-    root: tree_squatter::Node<'_>,
-) -> Result<usize> {
-    let mut iterator = root.node_iterator()?;
-    let mut nodes = 0;
-    while let Some(node) = iterator.next() {
-        if ATTRIBUTES {
-            std::hint::black_box(iterator.attributes().unwrap());
-        } else {
-            std::hint::black_box(node);
-        }
-        nodes += 1;
-    }
-    Ok(nodes)
-}
-
-pub fn scan_iterator<const ATTRIBUTES: bool>(
-    root: tree_squatter::Node<'_>,
-    iterations: usize,
-) -> Result<usize> {
-    let mut nodes = 0;
-    for _ in 0..iterations {
-        nodes += std::hint::black_box(scan_iterator_once::<ATTRIBUTES>(root)?);
-    }
-    Ok(nodes)
-}
-
 pub fn walk<'tree, N: NodeLike<'tree>>(root: N, ids: &Identities) -> Result<Vec<Record<'tree>>> {
     let mut cursor = root.cursor()?;
     let mut records = Vec::with_capacity(ids.len());
@@ -127,22 +100,6 @@ pub fn walk<'tree, N: NodeLike<'tree>>(root: N, ids: &Identities) -> Result<Vec<
             }
         }
     }
-}
-
-/// Read the same constant-time snapshot as cursor walks. Counts and depth are not reconstructed.
-pub fn walk_iterator<'tree>(
-    root: tree_squatter::Node<'tree>,
-    ids: &Identities,
-) -> Result<Vec<Record<'tree>>> {
-    let mut records = Vec::with_capacity(ids.len());
-    let mut iterator = root.node_iterator()?;
-    while let Some(node) = iterator.next() {
-        records.push(Record {
-            ordinal: ids[&node.identity()],
-            attributes: iterator.attributes().unwrap(),
-        });
-    }
-    Ok(records)
 }
 
 pub fn seek_bytes<'tree, N: NodeLike<'tree>>(

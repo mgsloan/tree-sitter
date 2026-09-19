@@ -29,15 +29,15 @@ command and is not run automatically.
 
 ## Measurement contract
 
-Nine workloads remain:
+Seven workloads remain:
 
 - `query-matches`, `query-captures`
-- `cursor-forward`, `iterator-forward`
-- `scan-forward`, `scan-iterator` (full constant-time attributes)
+- `cursor-forward`
+- `scan-forward` (full constant-time attributes)
 - `seek-byte`, `seek-point`
 - `cold-parse` (mainline parse versus parse plus one-shot packing)
 
-Select workloads with repeated `--benchmark NAME`. Cursor/iterator construction
+Select workloads with repeated `--benchmark NAME`. Cursor construction
 is timed. Read kernels consume results with `black_box`, without benchmark result
 vectors, identity-map lookups, or checksums. Query engine allocations remain part
 of the workload. Exact traversal/attribute/seek comparisons and query snapshots
@@ -99,6 +99,11 @@ Paths are relative to `--corpus`; the registry uses the corpus-analysis format.
 The benchmark checks hashes and traversal/filter results before timing. It
 includes scan construction, excludes parsing and packing, and consumes each
 enumerated node with `black_box`. Count workloads consume the aggregate only.
+
+Scalar filter workloads use `next_preorder()` with per-node property checks.
+The scalar traversal and mainline cursor provide independent baselines; the
+removed C iterator is no longer benchmarked. Scalar-filter timings are not
+directly comparable with earlier results that used that iterator.
 
 Each timed iteration cycles through all input trees. A pilot chooses the iteration
 count targeting `--sample-ms`; workload order rotates across samples. CSV goes to

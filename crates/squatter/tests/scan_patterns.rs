@@ -292,8 +292,8 @@ mod patterns {
 fn assembly_patterns_match_examples() {
     let (language, tree) = fixture();
     let root = black_box(tree.root_node());
-    // The legacy iterator supplies an independent reference for the reductions.
-    let nodes = root.node_iterator().unwrap().collect::<Vec<_>>();
+    // Scalar navigation supplies an independent reference for the reductions.
+    let nodes = std::iter::successors(Some(root), |node| node.next_preorder()).collect::<Vec<_>>();
     assert_eq!(nodes.len(), 41);
     assert_eq!(patterns::all_count(root), 41);
     assert_eq!(patterns::preorder_count(root), 41);
