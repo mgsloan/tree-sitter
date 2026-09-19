@@ -432,3 +432,130 @@ fn owned_and_borrowed_storage() -> Result<(), Box<dyn Error>> {
     assert!(Tree::from_bytes(&grammar, &corrupted).is_err());
     Ok(())
 }
+
+fn c_language() -> tree_sitter::Language {
+    unsafe { tree_sitter::Language::from_raw(tree_sitter_c::LANGUAGE.into_raw()().cast()) }
+}
+
+#[test]
+fn direct_parser_matches_mainline_packing() -> Result<(), Box<dyn Error>> {
+    use tree_squatter::{Grammar, Parser};
+
+    let language = c_language();
+    let grammar = Grammar::new(&language)?;
+    let mut mainline = tree_sitter::Parser::new();
+    mainline.set_language(&language)?;
+    let mut direct_parser = Parser::new(&grammar)?;
+    let mut sources = vec![
+        String::new(),
+        "/* comment only */\n".into(),
+        "int x; /* trailing */".into(),
+        "int x = 1 + 2;".into(),
+        "/* π */ typedef struct { int member; } Item;\n\
+         int f(Item *item) { return item->member + 1; } /* end */"
+            .into(),
+        format!("char *text = \"{}\";\n", "x".repeat(700)),
+        format!(
+            "int f(void) {{ return {}1{}; }}",
+            "(".repeat(300),
+            ")".repeat(300)
+        ),
+    ];
+    sources.push(
+        (0..300)
+            .map(|index| format!("int value{index} = {index};\n"))
+            .collect(),
+    );
+    for source in sources {
+        let native = mainline.parse(&source, None).ok_or("parse failed")?;
+        assert!(!native.root_node().has_error());
+        for points in [false, true] {
+            for symbol_presence in [false, true] {
+                let options = PackOptions {
+                    initial_group_capacity: 1,
+                    repack: true,
+                    symbol_presence,
+                    points,
+                };
+                let direct = direct_parser.parse_with_options(&source, options)?;
+                let expected = Tree::pack_with_options(&grammar, &native, options)?;
+                assert_eq!(direct.as_bytes(), expected.as_bytes());
+                let loaded = Tree::from_bytes(&grammar, direct.as_bytes())?;
+                check_shared_navigation(loaded.root_node(), language.field_count() as u16)?;
+            }
+        }
+    }
+    let tree = Tree::parse_direct(&grammar, "int direct;")?;
+    assert_eq!(tree.root_node().byte_range(), 0..11);
+    Ok(())
+}
+
+#[test]
+fn direct_parser_reuses_after_failure_and_owns_grammar() -> Result<(), Box<dyn Error>> {
+    use tree_squatter::{Error as SquatError, Grammar, Parser};
+
+    let mut parser = {
+        let grammar = Grammar::new(&c_language())?;
+        Parser::new(&grammar)?
+    };
+    let first = parser.parse("int before;")?;
+    let failure = parser.parse("int x;\n@").unwrap_err();
+    assert_eq!(failure.code, SquatError::Parse);
+    assert_eq!(failure.byte, 7);
+    assert_eq!(failure.point, tree_sitter::Point::new(1, 0));
+    let syntax_failure = parser.parse("int broken = ;").unwrap_err();
+    assert_eq!(syntax_failure.code, SquatError::Parse);
+    let after = parser.parse("int after;")?;
+    assert_eq!(after.root_node().byte_range(), 0..10);
+    parser.trim();
+    let trimmed = parser.parse("int f(void) { return 1; }")?;
+    drop(parser);
+    assert_eq!(first.root_node().byte_range(), 0..11);
+    assert_eq!(
+        first.root_node().named_child(0).unwrap().kind(),
+        "declaration"
+    );
+    assert_eq!(
+        trimmed.root_node().named_child(0).unwrap().kind(),
+        "function_definition"
+    );
+    Ok(())
+}
+
+#[test]
+fn direct_parser_rejects_unsupported_grammar() -> Result<(), Box<dyn Error>> {
+    use tree_squatter::{Error as SquatError, Grammar};
+
+    // This dependency generates ABI 14, which remains usable by the conversion
+    // API but must never silently fall back to a mainline parser.
+    let language =
+        unsafe { tree_sitter::Language::from_raw(tree_sitter_json::LANGUAGE.into_raw()().cast()) };
+    let grammar = Grammar::new(&language)?;
+    let failure = tree_squatter::Parser::new(&grammar)
+        .err()
+        .ok_or("accepted ABI 14")?;
+    assert_eq!(failure.code, SquatError::Language);
+    assert_eq!(
+        Tree::parse_direct(&grammar, SOURCE).unwrap_err().code,
+        SquatError::Language
+    );
+    Ok(())
+}
+
+#[test]
+fn mainline_parse_keeps_error_recovery() -> Result<(), Box<dyn Error>> {
+    use tree_squatter::{Error as SquatError, Grammar};
+
+    let language = c_language();
+    let grammar = Grammar::new(&language)?;
+    let mut mainline = tree_sitter::Parser::new();
+    mainline.set_language(&language)?;
+    let source = "int broken = ;";
+    let recovered = Tree::parse(&grammar, &mut mainline, source)?;
+    assert!(recovered.root_node().has_error());
+    assert_eq!(
+        Tree::parse_direct(&grammar, source).unwrap_err().code,
+        SquatError::Parse
+    );
+    Ok(())
+}

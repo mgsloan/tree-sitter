@@ -67,7 +67,8 @@ def pressure_summary(results):
         baseline_manifest, baseline = baselines[mutated]
         if baseline.keys() != pressured.keys():
             raise SystemExit(f"pressure mode {mode} changed benchmark coverage")
-        for field in ("schema", "timing_contract", "registry", "grammar_sha256", "benchmarks"):
+        for field in ("schema", "timing_contract", "feller_contract", "summary_contract", "parse_order",
+                      "registry", "grammar_sha256", "benchmarks"):
             if baseline_manifest.get(field) != manifest.get(field):
                 raise SystemExit(f"pressure mode {mode} changed {field}")
         condition = []
@@ -85,16 +86,37 @@ def pressure_summary(results):
                           pressure=profile, pressure_mode=mode,
                           mainline_slowdown=mainline, squat_slowdown=squat,
                           relative_slowdown=squat / mainline)
+            first_feller, second_feller = before.get("feller"), after.get("feller")
+            if (first_feller or {}).get("status") != (second_feller or {}).get("status"):
+                raise SystemExit(f"pressure comparison changed feller coverage: {key}")
+            if second_feller:
+                record["feller_status"] = second_feller["status"]
+                if second_feller["status"] == "ok":
+                    feller = (second_feller["metrics"]["wall_ms"] /
+                              first_feller["metrics"]["wall_ms"])
+                    record.update(feller_slowdown=feller,
+                                  feller_relative_slowdown=feller / mainline,
+                                  feller_pack_relative_slowdown=feller / squat)
             records.append(record)
             condition.append(record)
         for benchmark in sorted({row["benchmark"] for row in condition}):
             selected = [row for row in condition if row["benchmark"] == benchmark]
+            direct = [row for row in selected if row.get("feller_status") == "ok"]
             summaries.append(dict(
                 mutated=mutated, pressure=profile, pressure_mode=mode,
                 benchmark=benchmark, files=len(selected),
                 mainline_slowdown=quantiles(row["mainline_slowdown"] for row in selected),
                 squat_slowdown=quantiles(row["squat_slowdown"] for row in selected),
                 relative_slowdown=quantiles(row["relative_slowdown"] for row in selected),
+                feller_successful=dict(
+                    files=len(direct),
+                    mainline_slowdown=quantiles(row["mainline_slowdown"] for row in direct),
+                    squat_slowdown=quantiles(row["squat_slowdown"] for row in direct),
+                    relative_slowdown=quantiles(row["relative_slowdown"] for row in direct),
+                    feller_slowdown=quantiles(row["feller_slowdown"] for row in direct),
+                    feller_relative_slowdown=quantiles(row["feller_relative_slowdown"] for row in direct),
+                    feller_pack_relative_slowdown=quantiles(row["feller_pack_relative_slowdown"] for row in direct),
+                ),
             ))
     return records, summaries
 
@@ -120,7 +142,7 @@ def main():
     benchmarks = benchmark_results(arguments.run)
     pressure_records, pressure_summaries = pressure_summary(benchmarks)
     result = dict(
-        schema=2,
+        schema=3,
         provenance={key: manifest.get(key) for key in
                     ("source_sha256", "matrix_sha256", "tool_sha", "image",
                      "code_corpora_sha", "grammars")},
@@ -129,7 +151,7 @@ def main():
                         for key, value in benchmarks.items()},
         pressure_summaries=pressure_summaries,
         pressure_records=pressure_records,
-        ratio_contract="pressure/isolated per-file medians; relative slowdown is Squatter slowdown divided by mainline slowdown",
+        ratio_contract="pressure/isolated per-file medians; relative slowdown divides by mainline slowdown; feller pack relative slowdown divides by Squatter slowdown; skipped feller inputs are excluded",
     )
     with arguments.output.open("x") as output:
         json.dump(result, output, indent=2)

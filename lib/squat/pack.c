@@ -1,4 +1,5 @@
 #include "internal.h"
+#include "reductions.h"
 #include "../src/tree.h"
 
 // Only the current group's absolute values are staged. Frame coordinates are
@@ -102,6 +103,8 @@ struct SQPackContext {
     uint64_t *masks;
     uint32_t position_capacity, mask_capacity;
   } scratch;
+  struct ReductionFrame *reduction_stack;
+  size_t reduction_stack_capacity;
   Frame *stack;
   size_t stack_capacity;
   uint8_t *presence;
@@ -395,33 +398,8 @@ static inline uint32_t encode_symbol(const Builder *builder, TSSymbol symbol) {
                                                  : symbol;
 }
 
-static bool emit(Builder *builder, const EmitNode *frame) {
-  Subtree subtree = *frame->subtree;
-  Length size;
-  TSSymbol grammar;
-  uint32_t error_cost;
-  bool extra, missing;
-  if (subtree.data.is_inline) {
-    size = (Length){subtree.data.size_bytes, {0, subtree.data.size_bytes}};
-    grammar = subtree.data.symbol;
-    error_cost = 0;
-    extra = subtree.data.extra;
-    missing = subtree.data.is_missing;
-  } else {
-    const SubtreeHeapData *data = subtree.ptr;
-    size = data->size;
-    grammar = data->symbol;
-    error_cost = data->error_cost;
-    extra = data->extra;
-    missing = data->is_missing;
-  }
-
-  // ts_subtree_error_cost reports a positive constant for a missing subtree
-  // regardless of the stored cost, so the recorded flag is the same predicate.
-  bool has_error = missing || error_cost > 0;
-  uint32_t start_byte = frame->position.bytes;
-  Length end = {0};
-  if (builder->points) end = length_add(frame->position, size);
+static bool emit_values(Builder *builder, const EmitNode *frame, PackPosition end,
+                        TSSymbol grammar, bool extra, bool missing, bool has_error) {
   uint16_t super;
   const uint64_t *mask = builder->words == 1 ? &frame->mask
                          : builder->words > 1 ? builder->masks + frame->mask_offset
@@ -447,8 +425,8 @@ static bool emit(Builder *builder, const EmitNode *frame) {
     }
 
     Pending *slot = &builder->pending[builder->count];
-    slot->values.start_byte = start_byte;
-    slot->values.end_byte = start_byte + size.bytes;
+    slot->values.start_byte = frame->position.bytes;
+    slot->values.end_byte = end.bytes;
     if (builder->points) {
       slot->values.start_row = frame->position.extent.row;
       slot->values.end_row = end.extent.row;
@@ -505,6 +483,32 @@ static bool emit(Builder *builder, const EmitNode *frame) {
       return false;
     }
   }
+}
+
+static bool emit(Builder *builder, const EmitNode *frame) {
+  Subtree subtree = *frame->subtree;
+  Length size;
+  TSSymbol grammar;
+  uint32_t error_cost;
+  bool extra, missing;
+  if (subtree.data.is_inline) {
+    size = (Length){subtree.data.size_bytes, {0, subtree.data.size_bytes}};
+    grammar = subtree.data.symbol;
+    error_cost = 0;
+    extra = subtree.data.extra;
+    missing = subtree.data.is_missing;
+  } else {
+    const SubtreeHeapData *data = subtree.ptr;
+    size = data->size;
+    grammar = data->symbol;
+    error_cost = data->error_cost;
+    extra = data->extra;
+    missing = data->is_missing;
+  }
+  PackPosition end = {.bytes = frame->position.bytes + size.bytes};
+  if (builder->points) end = length_add(frame->position, size);
+  // Missing subtrees report an error even when their stored cost is zero.
+  return emit_values(builder, frame, end, grammar, extra, missing, missing || error_cost > 0);
 }
 
 static bool init_frame(Builder *builder, Frame *frame, const Subtree *subtree_pointer,
@@ -658,6 +662,9 @@ static void descend_hidden(const Builder *builder, const TSLanguage *language, u
 
 void sq_pack_context_trim(SQPackContext *context) {
   if (!context) return;
+  free(context->reduction_stack);
+  context->reduction_stack = NULL;
+  context->reduction_stack_capacity = 0;
   free(context->stack);
   free(context->scratch.positions);
   free(context->scratch.masks);
@@ -824,6 +831,46 @@ SQPackContext *sq_pack_context_new(SQError *error) {
   return context;
 }
 
+static Builder init_builder(SQPackContext *context, SQTree *tree,
+                            SQPackOptions options, SQError *error) {
+  SQGrammar *grammar = tree->grammar;
+  return (Builder){
+      .tree = tree,
+      .words = (tree->supertype_count + 63) / 64,
+      .symbol_space = sq_symbols(tree),
+      .language = tree->language,
+      .symbol_count = tree->language->symbol_count + tree->language->alias_count,
+      .small_supertypes = tree->supertype_count <= 8,
+      .points = options.points,
+      .error = error,
+      .positions = context->scratch.positions,
+      .position_capacity = context->scratch.position_capacity,
+      .fields = grammar->direct_fields,
+      .production_fields = grammar->production_fields,
+      .masks = context->scratch.masks,
+      .mask_capacity = context->scratch.mask_capacity,
+      .supertype_indexes = grammar->supertype_indexes,
+      .public_index = grammar->public_index,
+  };
+}
+
+static bool finish_builder(Builder *builder, SQPackContext *context, SQPackOptions options) {
+  if (!close_group(builder)) return false;
+  uint64_t presence_bytes = options.symbol_presence ? sq_presence_size(builder->tree) : 0;
+  if (sq_header_get(builder->tree, group_count) <= 32) presence_bytes = 0;
+  if (presence_bytes > UINT32_MAX) {
+    sq_fail(builder->error, SQ_ERROR_OVERFLOW);
+    return false;
+  }
+  uint32_t capacity = options.repack ? sq_header_get(builder->tree, group_count)
+                                     : sq_header_get(builder->tree, group_capacity);
+  if (!sq_prepare_final(&builder->tree, capacity, (uint32_t)presence_bytes,
+                        builder->optional_flags, builder->error)) return false;
+  return !options.symbol_presence ||
+         sq_build_presence_cached(builder->tree, &context->presence,
+                                  &context->presence_capacity, builder->error);
+}
+
 static SQTree *pack_tree(SQPackContext *context, SQGrammar *grammar, const TSTree *tree,
                          SQPackOptions options, SQError *error) {
   sq_fail(error, SQ_OK);
@@ -849,24 +896,9 @@ static SQTree *pack_tree(SQPackContext *context, SQGrammar *grammar, const TSTre
     return NULL;
   }
 
-  Builder builder = {.tree = result,
-                     .words = (result->supertype_count + 63) / 64,
-                     .symbol_space = sq_symbols(result),
-                     .language = result->language,
-                     .symbol_count = result->language->symbol_count + result->language->alias_count,
-                     .small_supertypes = result->supertype_count <= 8,
-                     .points = options.points,
-                     .error = error};
+  Builder builder = init_builder(context, result, options, error);
   size_t depth = 0, stack_capacity = 32;
   Frame *stack = NULL;
-  builder.positions = context->scratch.positions;
-  builder.position_capacity = context->scratch.position_capacity;
-  builder.fields = grammar->direct_fields;
-  builder.production_fields = grammar->production_fields;
-  builder.masks = context->scratch.masks;
-  builder.mask_capacity = context->scratch.mask_capacity;
-  builder.supertype_indexes = grammar->supertype_indexes;
-  builder.public_index = grammar->public_index;
   stack = context->stack;
   if (stack) stack_capacity = context->stack_capacity;
   if (!stack) stack = malloc(stack_capacity * sizeof(Frame));
@@ -1002,30 +1034,7 @@ static SQTree *pack_tree(SQPackContext *context, SQGrammar *grammar, const TSTre
     }
   }
 
-  if (!close_group(&builder)) {
-    goto failure;
-  }
-
-  uint64_t presence_bytes = options.symbol_presence ? sq_presence_size(builder.tree) : 0;
-  if (sq_header_get(builder.tree, group_count) <= 32) presence_bytes = 0;
-  uint64_t trailing_bytes = presence_bytes;
-  if (trailing_bytes > UINT32_MAX) {
-    sq_fail(error, SQ_ERROR_OVERFLOW);
-    goto failure;
-  }
-
-  uint32_t final_capacity = options.repack ? sq_header_get(builder.tree, group_count)
-                                           : sq_header_get(builder.tree, group_capacity);
-  if (!sq_prepare_final(&builder.tree, final_capacity, (uint32_t)trailing_bytes,
-                         builder.optional_flags, error)) {
-    goto failure;
-  }
-
-  if (options.symbol_presence) {
-    bool ok = sq_build_presence_cached(builder.tree, &context->presence,
-                                       &context->presence_capacity, error);
-    if (!ok) goto failure;
-  }
+  if (!finish_builder(&builder, context, options)) goto failure;
 
   goto cleanup;
 failure:
@@ -1060,6 +1069,163 @@ SQTree *sq_pack_context_pack(SQPackContext *context, SQGrammar *grammar, const T
     return NULL;
   }
   return pack_tree(context, grammar, tree, options, error);
+}
+
+typedef struct ReductionFrame {
+  EmitNode node;
+  uint32_t index, next_child;
+  uint32_t mask_mark, child_mask_offset;
+  uint64_t child_mask;
+  bool visible, child_later;
+} ReductionFrame;
+
+static bool init_reduction_frame(Builder *builder, ReductionFrame *frame,
+                                 const SQReduction *nodes, uint32_t index,
+                                 TSSymbol alias, TSFieldId field, bool visible,
+                                 bool later, uint64_t mask, uint32_t mask_offset) {
+  const SQReduction *node = &nodes[index];
+  *frame = (ReductionFrame){
+      .node = {.position = {node->start_byte, node->start_point},
+               .boundary = distance(builder),
+               .mask = mask,
+               .mask_offset = mask_offset,
+               .alias = alias,
+               .field = field,
+               .later = later},
+      .index = index,
+      .next_child = node->first_child,
+      .mask_mark = builder->mask_count,
+      .child_mask_offset = SQ_NONE,
+      .visible = visible,
+  };
+  TSSymbol own = alias ? alias : node->symbol;
+  if (builder->words == 1) {
+    frame->child_mask = visible ? 0 : mask;
+    if (own < builder->symbol_count && builder->supertype_indexes[own]) {
+      frame->child_mask |= UINT64_C(1) << (builder->supertype_indexes[own] - 1);
+    }
+  } else if (builder->words > 1) {
+    if (!reserve_masks(builder, builder->words, &frame->child_mask_offset)) return false;
+    uint64_t *child_mask = builder->masks + frame->child_mask_offset;
+    if (visible) memset(child_mask, 0, builder->words * sizeof(uint64_t));
+    else memcpy(child_mask, builder->masks + mask_offset, builder->words * sizeof(uint64_t));
+    if (own < builder->symbol_count && builder->supertype_indexes[own]) {
+      uint32_t supertype = builder->supertype_indexes[own] - 1;
+      child_mask[supertype / 64] |= UINT64_C(1) << (supertype % 64);
+    }
+  }
+  return true;
+}
+
+static bool emit_reduction(Builder *builder, const EmitNode *frame,
+                           const SQReduction *node) {
+  PackPosition end = {node->end_byte, node->end_point};
+  return emit_values(builder, frame, end, node->symbol, node->extra, false, false);
+}
+
+SQTree *sq_pack_reductions(SQPackContext *context, SQGrammar *grammar,
+                           const SQReduction *nodes, uint32_t count,
+                           uint32_t root, SQPackOptions options, SQError *error) {
+  sq_fail(error, SQ_OK);
+  if (!context || !grammar || !nodes || root >= count) {
+    sq_fail(error, SQ_ERROR_ARGUMENT);
+    return NULL;
+  }
+  uint32_t capacity = options.initial_group_capacity;
+  if (!capacity) capacity = (nodes[root].visible_descendant_count + 1) / (SQ_GROUP_SIZE * 3 / 4) + 1;
+  SQTree *tree = sq_allocate(grammar, capacity, options.points, error);
+  if (!tree) return NULL;
+  Builder builder = init_builder(context, tree, options, error);
+  size_t depth = 0;
+  size_t stack_capacity = context->reduction_stack_capacity;
+  ReductionFrame *stack = context->reduction_stack;
+  if (!stack) {
+    stack_capacity = 32;
+    stack = malloc(stack_capacity * sizeof(*stack));
+    if (!stack) {
+      sq_fail(error, SQ_ERROR_ALLOCATION);
+      goto failure;
+    }
+  }
+  uint32_t zero_mask_offset = SQ_NONE;
+  if (builder.words > 1) {
+    if (!reserve_masks(&builder, builder.words, &zero_mask_offset)) goto failure;
+    memset(builder.masks + zero_mask_offset, 0, builder.words * sizeof(uint64_t));
+  }
+  if (!init_reduction_frame(&builder, &stack[0], nodes, root, 0, 0, true, false,
+                            0, zero_mask_offset)) goto failure;
+  depth = 1;
+  while (depth) {
+    ReductionFrame *frame = &stack[depth - 1];
+    if (frame->next_child == SQ_NONE) {
+      if (frame->visible && !emit_reduction(&builder, &frame->node, &nodes[frame->index])) goto failure;
+      builder.mask_count = frame->mask_mark;
+      depth--;
+      continue;
+    }
+    uint32_t index = frame->next_child;
+    const SQReduction *child = &nodes[index];
+    frame->next_child = child->next_sibling;
+    TSFieldId field = frame->visible || child->extra ? 0 : frame->node.field;
+    if (child->field) field = child->field;
+    bool later = frame->child_later || (!frame->visible && frame->node.later);
+    frame->child_later = true;
+    uint64_t mask = frame->child_mask;
+    uint32_t mask_offset = frame->child_mask_offset;
+    // Hidden unary nodes need no return frame. Their field, supertype mask,
+    // and sibling flag pass through to the only child with visible output.
+    if (builder.words <= 1) {
+      while (!child->visible && nodes[child->first_child].next_sibling == SQ_NONE) {
+        if (builder.words && builder.supertype_indexes[child->symbol]) {
+          mask |= UINT64_C(1) << (builder.supertype_indexes[child->symbol] - 1);
+        }
+        index = child->first_child;
+        child = &nodes[index];
+        if (child->extra) field = 0;
+        if (child->field) field = child->field;
+      }
+    }
+    TSSymbol alias = child->alias;
+    bool visible = child->visible;
+    if (child->first_child == SQ_NONE) {
+      EmitNode leaf = {.position = {child->start_byte, child->start_point},
+                       .boundary = distance(&builder),
+                       .alias = alias,
+                       .field = field,
+                       .later = later,
+                       .mask = mask,
+                       .mask_offset = mask_offset};
+      if (!emit_reduction(&builder, &leaf, child)) goto failure;
+      continue;
+    }
+    if (depth == stack_capacity) {
+      if (stack_capacity > SIZE_MAX / 2 / sizeof(*stack)) {
+        sq_fail(error, SQ_ERROR_OVERFLOW);
+        goto failure;
+      }
+      ReductionFrame *next = realloc(stack, stack_capacity * 2 * sizeof(*stack));
+      if (!next) {
+        sq_fail(error, SQ_ERROR_ALLOCATION);
+        goto failure;
+      }
+      stack = next;
+      stack_capacity *= 2;
+    }
+    if (!init_reduction_frame(&builder, &stack[depth], nodes, index, alias, field,
+                              visible, later, mask, mask_offset)) goto failure;
+    depth++;
+  }
+  if (!finish_builder(&builder, context, options)) goto failure;
+  goto cleanup;
+failure:
+  sq_tree_delete(builder.tree);
+  builder.tree = NULL;
+cleanup:
+  context->scratch.masks = builder.masks;
+  context->scratch.mask_capacity = builder.mask_capacity;
+  context->reduction_stack = stack;
+  context->reduction_stack_capacity = stack_capacity;
+  return builder.tree;
 }
 
 SQTree *sq_tree_parse(SQGrammar *grammar, TSParser *parser, const char *source, uint32_t length, SQPackOptions options,

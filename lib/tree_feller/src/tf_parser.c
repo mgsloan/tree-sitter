@@ -11,7 +11,7 @@
 
 typedef struct TFSpec TFSpec;
 
-typedef struct {
+struct TFParser {
   const TFLanguage *lang;
   TFLexer lexer;
   const TFSink *sink;
@@ -36,7 +36,7 @@ typedef struct {
   TFSpec *spec;
   // Set on a private replay, which stops at this split's fork; see tf_spec__capture.
   TFSpec *capture;
-} TFParser;
+};
 
 static bool tf_parser__grow(TFParser *self, uint32_t needed) {
   if (needed <= self->capacity) {
@@ -50,6 +50,8 @@ static bool tf_parser__grow(TFParser *self, uint32_t needed) {
   if (capacity > UINT32_MAX) {
     capacity = UINT32_MAX;
   }
+  if (capacity > SIZE_MAX / sizeof(TFNode) ||
+      capacity + 1 > SIZE_MAX / sizeof(TSStateId)) return false;
   TSStateId *states = realloc(self->states, (capacity + 1) * sizeof(TSStateId));
   TFNode *nodes = realloc(self->nodes, capacity * sizeof(TFNode));
   if (states) {
@@ -66,7 +68,7 @@ static bool tf_parser__grow(TFParser *self, uint32_t needed) {
 }
 
 static bool tf_parser__push(TFParser *self, TFNode node, TSStateId state) {
-  if (!tf_parser__grow(self, self->depth + 1)) {
+  if (self->depth == UINT32_MAX || !tf_parser__grow(self, self->depth + 1)) {
     return false;
   }
   self->nodes[self->depth++] = node;
@@ -140,7 +142,7 @@ static void tf_parser__describe_expected(const TFLanguage *lang, TSStateId state
 }
 
 static void tf_parser__fail_unexpected(TFParser *self, TSStateId state, const TFToken *token) {
-  char expected[TF_ERROR_MESSAGE_SIZE / 2];
+  char expected[TF_ERROR_MESSAGE_SIZE / 2] = {0};
   tf_parser__describe_expected(self->lang, state, expected, sizeof(expected));
   tf_parser__fail(self, token->start_byte, token->start_point, "expected one of {%s}, found %s",
                   expected, tf_parser__symbol_name(self->lang, token->symbol));
@@ -204,7 +206,7 @@ static bool tf_parser__reduce(TFParser *self, TSSymbol symbol, uint32_t child_co
   // Nothing checks the tables for that; accept asserts it held.
   if (lookahead && lookahead->symbol == 0 && base == self->leading &&
       self->lang->accepts_end[state]) {
-    if (!tf_parser__grow(self, self->depth + 1)) {
+    if (self->depth == UINT32_MAX || !tf_parser__grow(self, self->depth + 1)) {
       return false;
     }
 #ifndef NDEBUG
@@ -270,10 +272,14 @@ static bool tf_parser__demote_keyword(const TFLanguage *lang, TSStateId state, T
 #include "tf_parser_spec.h"
 
 static bool tf_parser__run(const TFLanguage *lang, const void *source, size_t size,
-                           const TFSink *sink, void **root, TFError *error, TFSpec *capture) {
+                           const TFSink *sink, void **root, TFError *error, TFSpec *capture,
+                           TFParser *storage) {
   static const TFSink no_sink = {0};
-  TFParser self = {
-      .lang = lang, .sink = sink ? sink : &no_sink, .error = error, .capture = capture};
+  TFParser self = storage ? *storage : (TFParser){0};
+  self.lang = lang;
+  self.sink = sink ? sink : &no_sink;
+  self.error = error;
+  self.capture = capture;
   if (error) {
     *error = (TFError){0};
   }
@@ -372,9 +378,16 @@ done:
       }
     }
   }
-  free(self.states);
-  free(self.nodes);
-  tf_spec__free(self.spec);
+  if (storage) {
+    // Retain allocations without pointers into this call's stack or source.
+    *storage = (TFParser){.states = self.states, .nodes = self.nodes,
+                          .capacity = self.capacity, .spec = self.spec};
+    if (self.spec) self.spec->owner = NULL;
+  } else {
+    free(self.states);
+    free(self.nodes);
+    tf_spec__free(self.spec);
+  }
   return ok;
 }
 
@@ -417,7 +430,7 @@ static bool tf_spec__materialize(TFSpec *s) {
     TFSink sink = {.payload = s, .on_shift = tf_capture__shift, .on_reduce = tf_capture__reduce};
     // The replay stops by failing once it has captured, so only `captured` counts.
     (void)tf_parser__run(s->owner->lang, s->owner->lexer.source, s->owner->lexer.size, &sink, NULL,
-                         NULL, s);
+                         NULL, s, NULL);
     if (!s->captured) {
       s->failed = true;
     }
@@ -427,7 +440,30 @@ static bool tf_spec__materialize(TFSpec *s) {
 
 bool tf_parse(const TFLanguage *lang, const void *source, size_t size, const TFSink *sink,
               void **root, TFError *error) {
-  return tf_parser__run(lang, source, size, sink, root, error, NULL);
+  return tf_parser__run(lang, source, size, sink, root, error, NULL, NULL);
+}
+
+TFParser *tf_parser_new(void) {
+  return calloc(1, sizeof(TFParser));
+}
+
+void tf_parser_trim(TFParser *self) {
+  if (!self) return;
+  free(self->states);
+  free(self->nodes);
+  tf_spec__free(self->spec);
+  *self = (TFParser){0};
+}
+
+void tf_parser_delete(TFParser *self) {
+  if (!self) return;
+  tf_parser_trim(self);
+  free(self);
+}
+
+bool tf_parser_parse(TFParser *self, const TFLanguage *lang, const void *source, size_t size,
+                     const TFSink *sink, void **root, TFError *error) {
+  return tf_parser__run(lang, source, size, sink, root, error, NULL, self);
 }
 
 #undef TF_SPEC_RESERVE

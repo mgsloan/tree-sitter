@@ -544,6 +544,8 @@ const char *sq_error_string(SQError error) {
     return "more than 65536 supertype masks";
   case SQ_ERROR_INVALID_SLAB:
     return "invalid or incompatible slab";
+  case SQ_ERROR_PARSE:
+    return "parse failed";
   case SQ_ERROR_LANGUAGE:
     return "unsupported language";
   default:

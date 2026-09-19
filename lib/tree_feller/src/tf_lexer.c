@@ -152,12 +152,22 @@ static void tf_lexer__finish(TFLexer *self) {
 
 bool tf_lexer_next(TFLexer *self, TSStateId state, TFToken *out) {
   const TSLanguage *ts = self->lang->ts;
+  uint32_t start_byte = self->byte;
+  TFPoint start_point = self->point;
 
   self->token_is_keyword = false;
   self->token_lex_state = state;
   tf_lexer__start(self);
   bool found = ts->lex_fn(&self->data, tf_lex_mode(self->lang, state).lex_state);
   tf_lexer__finish(self);
+  if (!found && state != 0) {
+    // Mainline caches tokens from the error-state lexer even for failed GLR
+    // branches. Surviving branches can reuse their different token boundaries.
+    tf_lexer_seek(self, start_byte, start_point);
+    tf_lexer__start(self);
+    found = ts->lex_fn(&self->data, tf_lex_mode(self->lang, 0).lex_state);
+    tf_lexer__finish(self);
+  }
   if (!found) {
     return false;
   }

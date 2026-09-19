@@ -10,7 +10,7 @@ cargo xtask squat bench --output build/squat-bench --repeat 5
 ```
 
 `quick` runs hermetic Rust and native C tests, including binding tests against the
-packaged JSON grammar. `corpus` stages one selection and builds grammars once,
+packaged JSON and C grammars. `corpus` stages one selection and builds grammars once,
 then runs the C internal checks and Rust public-API comparisons against it.
 `sanitize` uses the same staging path for C checks under ASan/UBSan. C query edge
 cases use their bounded synthetic fixtures; Rust checks use actual grammar/Zed
@@ -29,13 +29,40 @@ command and is not run automatically.
 
 ## Measurement contract
 
-Nine workloads remain:
+Ten workloads are available:
 
 - `query-matches`, `query-captures`
 - `cursor-forward`, `iterator-forward`
 - `scan-forward`, `scan-iterator` (full constant-time attributes)
 - `seek-byte`, `seek-point`
-- `cold-parse` (mainline parse versus parse plus one-shot packing)
+- `cold-parse` (fresh parsers and grammar preparation)
+- `warm-parse` (reused parsers, prepared grammars, and packing scratch)
+
+Both parsing workloads compare mainline parsing, mainline parsing plus packing,
+and tree-feller parsing directly into reverse preorder. Each warm parser gets
+one untimed parse per source before measurement; the two mainline paths use
+independent parsers. Parse workload and backend order rotate across repeats.
+Returned tree destruction and correctness checks are outside timing; cold parser
+construction, grammar preparation, and parser destruction are inside timing.
+
+`feller` records each file's status, optional metrics, and paired ratios against
+mainline (`ratios`) and mainline plus packing (`pack_ratios`). Ratios below one
+favor tree-feller. Unsupported grammars and inputs whose mainline tree contains
+errors have explicit skip reasons and null metrics. They contribute no direct
+parser timings or ratios. Direct rejection or different compact slab bytes on
+valid supported input fails the run. There is no recovery fallback.
+
+Per-file statuses and language, aggregate, and run coverage counts distinguish
+success, unsupported grammar, mainline syntax errors, and failure. Language and
+aggregate `statistics` compare mainline with conversion across all cases;
+`feller_successful` contains all three backends' statistics restricted to cases
+where direct parsing and compact slab validation succeeded on every repeat.
+Pressure summaries use the same split and reject changed eligibility.
+
+```sh
+cargo xtask squat bench --output build/parse-bench --repeat 7 \
+  --benchmark cold-parse --benchmark warm-parse
+```
 
 Select workloads with repeated `--benchmark NAME`. Cursor/iterator construction
 is timed. Read kernels consume results with `black_box`, without benchmark result
@@ -50,10 +77,9 @@ validation and before each timed operation. Byte/point seeks consume all sampled
 positions; queries consume the complete selected stream. Parse results are
 validated after their construction, outside the timer.
 
-Timing schema 3 replaces the earlier allocating-walk and digest workloads;
-its navigation, query, and seek timings are not directly comparable with old
-results. Without `cold-parse`, prerequisite parsing reuses a grammar pack context
-and is labeled `setup-parse`.
+Timing schema 4 adds the direct parser and warm parsing to schema 3's read
+workloads. Without either parsing workload, prerequisite parsing reuses a grammar
+pack context and is labeled `setup-parse`; it does not invoke tree-feller.
 
 ## Pressure and results
 
@@ -78,3 +104,35 @@ query matches compare exactly; capture checks require coverage of completed
 matches while permitting provisional events and different order. Descendant seeks
 compare exactly with mainline. Field differences are accepted only when Squatter
 agrees with mainline's visible-child field lookup.
+
+## Direct-parser checks
+
+`cargo test -p tree-squatter` compares tree-feller output with mainline-packed C
+trees, including aliases, fields, extras, empty input, deep trees, and packing
+options. It also checks parser reuse, ownership, unsupported grammars, and the
+separate mainline recovery path. `make -C lib/squat check` tests lexer fallback
+and injects allocation failures into parser construction and parsing.
+
+The standalone corpus runner compares complete reverse-preorder slabs with
+`repack=true`. On mismatches it compares topology, symbols, fields, positions,
+flags, and supertypes. It excludes mainline syntax errors and reports unsupported
+grammars separately. It requires a populated code-corpora checkout and a C compiler:
+
+```sh
+make -C lib/squat ../../build/squat/feller-corpus
+python3 tools/squatter/feller-corpus.py inventory --output build/feller-corpus
+python3 tools/squatter/feller-corpus.py compare --output build/feller-corpus
+python3 tools/squatter/feller-corpus.py retry --output build/feller-corpus
+```
+
+The inventory directory must be new. `--corpus` selects the checkout;
+`--executable` overrides the compiled harness. Results are in `summary.json`,
+per-grammar JSONL logs, `failures.jsonl`, and `retries.jsonl`. Process exit status
+alone does not assert parity. Resource failures are retained in the report.
+
+The port's targeted check compared 1,599 valid inputs across 46 grammars and found
+byte-identical slabs throughout. It reused the `../postorder` corpus inventory,
+taking the first 50 previously successful files under 512 KiB per grammar, plus
+all 201 valid Csound inputs (including its 16 previous position mismatches).
+This was a correctness sample, not a full corpus rerun or a timing measurement.
+The small Csound regression is `lib/squat/tests/fixtures/csound-header.orc`.

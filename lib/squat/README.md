@@ -36,6 +36,48 @@ sq_grammar_delete(grammar);
 Link the library before mainline Tree-sitter. Public declarations are in
 [`include/tree_sitter/squat.h`](include/tree_sitter/squat.h).
 
+## Direct parsing
+
+`SQParser` uses vendored tree-feller to parse UTF-8 directly into the existing
+reverse-preorder representation, without constructing a mainline `TSTree`.
+It retains its grammar and reuses parser, reduction, and packing scratch:
+
+```c
+SQParseError diagnostic;
+SQParser *parser = sq_parser_new(grammar, &diagnostic);
+if (!parser) return;
+SQTree *tree = sq_parser_parse(
+    parser, source, source_length, sq_pack_options_default(), &diagnostic);
+if (tree) sq_tree_delete(tree);
+sq_parser_delete(parser);
+```
+
+Rust exposes `Parser::new(&grammar)`, `parse(source)`,
+`parse_with_options(source, options)`, and `trim()`. One-shot parsing uses
+`Tree::parse_direct(&grammar, source)` or C's `sq_tree_parse_direct`.
+Returned trees retain their grammar and outlive the source and parser.
+Failed parses leave the parser reusable; `trim()` releases retained scratch.
+
+This path requires ABI 15 grammars without external scanners or nonterminal
+extras. Unsupported grammars return `SQ_ERROR_LANGUAGE` / `Error::Language`;
+syntax errors return `SQ_ERROR_PARSE` / `Error::Parse`. Diagnostics own their
+message and byte/point position. `Tree::parse`, `sq_tree_parse`, and the explicit
+packing APIs retain mainline parsing and error recovery. There is no automatic
+fallback between the two paths.
+
+Tokens are materialized during reductions, once aliases and direct fields are
+known. Reductions link children in reverse order and count visible descendants.
+The encoder then propagates inherited fields and hidden supertypes and writes
+the usual packed columns. Scratch scales with the raw parse, not just its depth.
+
+[Vendor provenance](../tree_feller/provenance.h) records the tree-feller revision
+and local changes. The lexer retries the error-state lexer when contextual lexing
+fails: even a discarded ambiguity branch can supply a cached token to a surviving
+branch. This preserves mainline token boundaries without recovering syntax errors.
+See [direct-parser checks](../../tools/squatter/README.md#direct-parser-checks).
+
+## Packed columns
+
 Symbol codes, field IDs, supertype
 masks/dictionary IDs, and group waste always use 16 bits. Field and supertype
 columns are retained even for grammars that do not use them. Coordinates and

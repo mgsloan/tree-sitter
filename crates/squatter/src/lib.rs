@@ -28,6 +28,20 @@
 //! if let Some(error) = execution.error() { return Err(error.into()); }
 //! # Ok(()) }
 //! ```
+//! Supported grammars can parse directly into reverse preorder:
+//!
+//! ```no_run
+//! # fn direct(language: &tree_sitter::Language, source: &[u8])
+//! # -> Result<(), Box<dyn std::error::Error>> {
+//! use tree_squatter::{Grammar, Parser};
+//! let grammar = Grammar::new(language)?;
+//! let mut parser = Parser::new(&grammar)?;
+//! let tree = parser.parse(source)?;
+//! # Ok(()) }
+//! ```
+//! [`Parser`] requires ABI 15 without external scanners or nonterminal extras.
+//! It returns syntax errors. [`Tree::parse`] uses the mainline parser with error
+//! recovery; both paths produce the same packed representation.
 use std::{
     ffi::{CStr, c_char, c_void},
     marker::PhantomData,
@@ -45,6 +59,9 @@ pub fn representation_id() -> u64 {
     unsafe { sq_representation_id() }
 }
 
+mod parser;
+pub use parser::{ParseError, Parser};
+
 pub mod query;
 pub use query::{
     Query, QueryCapture, QueryCursor, QueryError, QueryExecution, QueryExecutionError, QueryMatch,
@@ -59,6 +76,7 @@ pub enum Error {
     DictionaryFull = 4,
     InvalidSlab = 5,
     Language = 6,
+    Parse = 7,
 }
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -74,6 +92,7 @@ fn error(code: i32) -> Error {
         4 => Error::DictionaryFull,
         5 => Error::InvalidSlab,
         6 => Error::Language,
+        7 => Error::Parse,
         _ => Error::InvalidArgument,
     }
 }

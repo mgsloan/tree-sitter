@@ -40,7 +40,8 @@ typedef enum {
   SQ_ERROR_OVERFLOW,
   SQ_ERROR_DICTIONARY_FULL,
   SQ_ERROR_INVALID_SLAB,
-  SQ_ERROR_LANGUAGE
+  SQ_ERROR_LANGUAGE,
+  SQ_ERROR_PARSE
 } SQError;
 
 typedef struct {
@@ -83,6 +84,25 @@ SQTree *sq_pack_context_pack(SQPackContext *, SQGrammar *, const TSTree *, SQPac
 // Release high-water scratch. NULL is allowed.
 void sq_pack_context_trim(SQPackContext *);
 void sq_pack_context_delete(SQPackContext *);
+
+typedef struct SQParser SQParser;
+typedef struct {
+  SQError code;
+  uint32_t byte;
+  TSPoint point;
+  char message[512];
+} SQParseError;
+
+// Direct UTF-8 parsing into reverse preorder without a TSTree. Requires ABI 15
+// and no external scanner or non-terminal extras; syntax errors are not recovered.
+// The parser retains its grammar and scratch. Calls require exclusive access.
+// Reductions are buffered until packing; output trees outlive the source and parser.
+SQParser *sq_parser_new(SQGrammar *, SQParseError *);
+void sq_parser_delete(SQParser *);
+// Release high-water parser, reduction, and packing scratch. NULL is allowed.
+void sq_parser_trim(SQParser *);
+SQTree *sq_parser_parse(SQParser *, const char *, uint32_t, SQPackOptions, SQParseError *);
+SQTree *sq_tree_parse_direct(SQGrammar *, const char *, uint32_t, SQPackOptions, SQParseError *);
 
 // Parse without an old tree, pack, then release the mainline tree.
 SQTree *sq_tree_parse(SQGrammar *, TSParser *, const char *, uint32_t, SQPackOptions, SQError *);

@@ -15,3 +15,4 @@ cc.workspace = true
 
 [dev-dependencies]
 tree-sitter-json = "0.24"
+tree-sitter-c = "=0.24.2"
