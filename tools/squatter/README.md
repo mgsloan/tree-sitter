@@ -78,3 +78,36 @@ query matches compare exactly; capture checks require coverage of completed
 matches while permitting provisional events and different order. Descendant seeks
 compare exactly with mainline. Field differences are accepted only when Squatter
 agrees with mainline's visible-child field lookup.
+
+## Group-scan throughput
+
+`scanning-bench` measures the Rust scan prototype in nodes/s, including forward
+and reverse preorder/postorder, `all`, native traversal baselines, population
+counts, kind/field filters, and byte-range scans:
+
+```sh
+cargo run --release -p squatter-bench --bin scanning-bench -- \
+  --registry build/scanning-bench/registry.json \
+  --inputs build/scanning-bench/inputs.json \
+  --corpus ../main/build/squat-corpus-10k/corpus \
+  --cpu 2 --samples 7 --sample-ms 60 \
+  --output build/scanning-bench/results.json
+```
+
+The input manifest is a JSON array with `path`, `grammar`, and `sha256` fields.
+Paths are relative to `--corpus`; the registry uses the corpus-analysis format.
+The benchmark checks hashes and traversal/filter results before timing. It
+includes scan construction, excludes parsing and packing, and consumes each
+enumerated node with `black_box`. Count workloads consume the aggregate only.
+
+Each timed iteration cycles through all input trees. A pilot chooses the iteration
+count targeting `--sample-ms`; workload order rotates across samples. CSV goes to
+stdout, while JSON retains individual timings and input/grammar metadata.
+Filtered throughput uses all input nodes as its denominator, including nodes
+skipped by range/group operations; output nodes/s and match counts are also saved.
+The kind filter selects each file's most frequent named kind; `multi_kind` uses
+its four most frequent named kinds. The field filter
+selects its most frequent nonzero field, or zero if none exists. The byte range
+covers the middle 1% of each source. Use repeated `--workload NAME` arguments to
+time selected operations. Results describe this selected corpus and
+cache behavior, not parsing performance.
