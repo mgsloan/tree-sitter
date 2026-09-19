@@ -627,12 +627,13 @@ impl<'tree> Node<'tree> {
     }
 
     /// Scan this node and its descendants in preorder, matching public kind IDs.
-    /// The set is reusable across trees of the same language. Duplicate IDs yield
-    /// no duplicate nodes; an empty set yields no nodes.
-    pub fn descendants_matching_kinds<'kinds>(
+    /// Accepts fixed arrays or a borrowed `KindSet`, reusable across trees of the
+    /// same language. Duplicate IDs yield no duplicate nodes; an empty set yields
+    /// no nodes. Arrays specialize the scan for their compile-time length.
+    pub fn descendants_matching_kinds<K: scan::IdSelection>(
         self,
-        kinds: &'kinds KindSet,
-    ) -> KindMatches<'tree, 'kinds> {
+        kinds: K,
+    ) -> scan::Nodes<'tree, scan::Filtered<Preorder<'tree>, K::KindPredicate>> {
         self.preorder().filter_kind_ids(kinds).nodes()
     }
 
@@ -846,37 +847,40 @@ impl<'tree> Node<'tree> {
     }
 }
 
-/// A reusable set of public kind IDs, interpreted in the scanned tree's language.
+/// A reusable runtime-sized set of IDs, interpreted by the selected scan filter.
 #[derive(Clone, Debug, Default)]
-pub struct KindSet {
+pub struct IdSet {
     ids: Vec<u16>,
     words: Vec<u64>,
 }
-impl KindSet {
-    pub fn new(kinds: impl IntoIterator<Item = u16>) -> Self {
-        kinds.into_iter().collect()
+impl IdSet {
+    pub fn new(ids: impl IntoIterator<Item = u16>) -> Self {
+        ids.into_iter().collect()
     }
-    pub fn contains(&self, kind: u16) -> bool {
+    pub fn contains(&self, id: u16) -> bool {
         self.words
-            .get(kind as usize / 64)
-            .is_some_and(|word| word & (1u64 << (kind % 64)) != 0)
+            .get(id as usize / 64)
+            .is_some_and(|word| word & (1u64 << (id % 64)) != 0)
     }
     pub fn is_empty(&self) -> bool {
         self.ids.is_empty()
     }
 }
-impl FromIterator<u16> for KindSet {
-    fn from_iter<I: IntoIterator<Item = u16>>(kinds: I) -> Self {
-        let mut ids: Vec<_> = kinds.into_iter().collect();
+impl FromIterator<u16> for IdSet {
+    fn from_iter<I: IntoIterator<Item = u16>>(ids: I) -> Self {
+        let mut ids: Vec<_> = ids.into_iter().collect();
         ids.sort_unstable();
         ids.dedup();
         let mut words = vec![0; ids.last().map_or(0, |&kind| kind as usize / 64 + 1)];
-        for &kind in &ids {
-            words[kind as usize / 64] |= 1u64 << (kind % 64);
+        for &id in &ids {
+            words[id as usize / 64] |= 1u64 << (id % 64);
         }
         Self { ids, words }
     }
 }
+
+/// A reusable set of public kind IDs, interpreted in the scanned tree's language.
+pub type KindSet = IdSet;
 
 /// Preorder traversal filtered by public kind IDs.
 pub type KindMatches<'tree, 'kinds> =

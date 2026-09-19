@@ -185,6 +185,7 @@ impl<'tree> GroupRef<'tree> {
     pub fn first_slot(self) -> u32 {
         self.index << self.columns.raw.group_shift
     }
+    #[inline]
     pub fn valid_mask(self) -> Mask {
         Mask::lower(self.used())
     }
@@ -245,17 +246,75 @@ impl<'tree> GroupRef<'tree> {
         }
         candidates.intersection(Mask(matches))
     }
-    #[inline]
-    fn bitmap(self, offset: u32) -> Mask {
-        if offset == 0 {
+    #[inline(always)]
+    fn equal_id_set<const N: usize>(
+        &self,
+        offset: u32,
+        shift: u32,
+        targets: &[u16; N],
+        candidates: Mask,
+    ) -> Mask {
+        if N == 0 {
             return Mask::default();
+        }
+        if N == 1 {
+            return self.equal_ids(offset, shift, targets[0], candidates);
+        }
+        if N == 2 {
+            return Mask(
+                self.equal_ids(offset, shift, targets[0], candidates).0
+                    | self.equal_ids(offset, shift, targets[1], candidates).0,
+            );
+        }
+        if candidates.0.is_power_of_two() {
+            return candidates.retain(|slot| {
+                targets.contains(&(self.columns.short(offset, self.first_slot() + slot) >> shift))
+            });
+        }
+        #[cfg(target_arch = "x86_64")]
+        {
+            use std::arch::x86_64::*;
+            let start = offset as usize + self.first_slot() as usize * 2;
+            let bytes = &self.columns.data[start..start + self.columns.group_size() as usize * 2];
+            let mut matches = 0;
+            // SSE2 is baseline. Each checked chunk contains both vector loads;
+            // the const-sized target loop can unroll independently of group size.
+            unsafe {
+                let targets = targets.map(|target| _mm_set1_epi16(target as i16));
+                let shift = _mm_cvtsi32_si128(shift as i32);
+                for (index, bytes) in bytes.chunks_exact(32).enumerate() {
+                    let low = _mm_srl_epi16(_mm_loadu_si128(bytes.as_ptr().cast()), shift);
+                    let high = _mm_srl_epi16(_mm_loadu_si128(bytes.as_ptr().add(16).cast()), shift);
+                    let mut low_matches = _mm_setzero_si128();
+                    let mut high_matches = _mm_setzero_si128();
+                    for target in targets {
+                        low_matches = _mm_or_si128(low_matches, _mm_cmpeq_epi16(low, target));
+                        high_matches = _mm_or_si128(high_matches, _mm_cmpeq_epi16(high, target));
+                    }
+                    matches |= (_mm_movemask_epi8(_mm_packs_epi16(low_matches, high_matches))
+                        as u64)
+                        << (index * 16);
+                }
+            }
+            candidates.intersection(Mask(matches))
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        candidates.retain(|slot| {
+            targets.contains(&(self.columns.short(offset, self.first_slot() + slot) >> shift))
+        })
+    }
+    #[inline]
+    fn bitmap(self, offset: u32) -> u64 {
+        if offset == 0 {
+            return 0;
         }
         let mut bits = 0;
         for byte in 0..self.columns.group_size() / 8 {
             bits |=
                 u64::from(self.columns.byte(offset, self.first_slot() / 8 + byte)) << (byte * 8);
         }
-        Mask(bits).intersection(self.valid_mask())
+        // Predicates intersect these bits with an already-valid candidate mask.
+        bits
     }
 }
 
@@ -273,6 +332,7 @@ impl<'tree> GroupMatches<'tree> {
     pub fn matches(self) -> Mask {
         self.matches
     }
+    #[inline]
     pub fn nodes(self) -> GroupNodes<'tree> {
         GroupNodes {
             base: self.group.columns.node(self.group.first_slot()),
@@ -299,6 +359,17 @@ impl<'tree> GroupNodes<'tree> {
 }
 impl<'tree> Iterator for GroupNodes<'tree> {
     type Item = Node<'tree>;
+    #[inline]
+    fn fold<B, F>(mut self, mut accumulator: B, mut fold: F) -> B
+    where
+        F: FnMut(B, Self::Item) -> B,
+    {
+        while let Some(node) = self.pop(false) {
+            accumulator = fold(accumulator, node);
+        }
+        accumulator
+    }
+    #[inline]
     fn next(&mut self) -> Option<Self::Item> {
         self.pop(false)
     }
@@ -310,6 +381,17 @@ impl<'tree> Iterator for GroupNodes<'tree> {
     }
 }
 impl DoubleEndedIterator for GroupNodes<'_> {
+    #[inline]
+    fn rfold<B, F>(mut self, mut accumulator: B, mut fold: F) -> B
+    where
+        F: FnMut(B, Self::Item) -> B,
+    {
+        while let Some(node) = self.pop(true) {
+            accumulator = fold(accumulator, node);
+        }
+        accumulator
+    }
+    #[inline]
     fn next_back(&mut self) -> Option<Self::Item> {
         self.pop(true)
     }
@@ -324,10 +406,20 @@ impl FusedIterator for GroupNodes<'_> {}
 mod sealed {
     pub trait Source {}
     pub trait Predicate {}
+    pub trait IdSelection {}
 }
 
 /// Internal protocol exposed for generic scan consumers. Implementations are sealed.
 pub trait GroupScan<'tree>: sealed::Source {
+    #[inline(always)]
+    fn count(self) -> usize
+    where
+        Self: Sized,
+    {
+        self.count_matches(Identity)
+    }
+    /// Metadata for preparing predicates without consuming a group.
+    fn root_group(&self) -> GroupRef<'tree>;
     fn next_group(&mut self) -> Option<GroupMatches<'tree>>;
     /// Returns the last fragment in reverse extraction order.
     fn next_back_group(&mut self) -> Option<GroupMatches<'tree>>;
@@ -373,25 +465,38 @@ impl<'tree, S: GroupScan<'tree>> Scan<'tree, S> {
     pub fn groups(self) -> Groups<'tree, S> {
         Groups(self.source, PhantomData)
     }
-    /// Count matching nodes with population counts, without constructing handles.
+    /// Count matching nodes without constructing handles.
     pub fn count(self) -> usize {
-        self.source.count_matches(Identity)
+        self.source.count()
     }
     pub fn rev(self) -> Scan<'tree, Reverse<S>> {
         Scan::new(Reverse(self.source))
     }
-    pub fn filter_kind_ids<'kinds>(
+    /// Match public kind IDs. Arrays preserve their length for kernel specialization;
+    /// borrowed `KindSet`s support dynamically sized sets.
+    pub fn filter_kind_ids<K: IdSelection>(
         self,
-        kinds: &'kinds KindSet,
-    ) -> Scan<'tree, Filtered<S, KindIds<'kinds>>> {
-        self.filtered(KindIds(kinds))
+        kinds: K,
+    ) -> Scan<'tree, Filtered<S, K::KindPredicate>> {
+        self.filtered(kinds.into_kind_predicate())
     }
     /// Zero matches nodes with no field, including the tree root.
     pub fn filter_field_id(self, field: u16) -> Scan<'tree, Filtered<S, FieldId>> {
         self.filtered(FieldId(field))
     }
+    /// Match any selected field ID. Zero includes nodes with no field; an empty
+    /// selection matches nothing. Arrays specialize the kernel for their length.
+    pub fn filter_field_ids<F: IdSelection>(
+        self,
+        fields: F,
+    ) -> Scan<'tree, Filtered<S, F::FieldPredicate>> {
+        self.filtered(fields.into_field_predicate())
+    }
     pub fn filter_supertype_id(self, supertype: u16) -> Scan<'tree, Filtered<S, SupertypeId>> {
-        self.filtered(SupertypeId(supertype))
+        self.filtered(SupertypeId {
+            symbol: supertype,
+            index: None,
+        })
     }
     pub fn filter_extra(self, value: bool) -> Scan<'tree, Filtered<S, Extra>> {
         self.filtered(Extra(value))
@@ -399,7 +504,8 @@ impl<'tree, S: GroupScan<'tree>> Scan<'tree, S> {
     pub fn filter_missing(self, value: bool) -> Scan<'tree, Filtered<S, Missing>> {
         self.filtered(Missing(value))
     }
-    fn filtered<P>(self, predicate: P) -> Scan<'tree, Filtered<S, P>> {
+    fn filtered<P: Predicate>(self, mut predicate: P) -> Scan<'tree, Filtered<S, P>> {
+        predicate.prepare(&self.source.root_group());
         Scan::new(Filtered {
             source: self.source,
             predicate,
@@ -430,11 +536,30 @@ impl<'tree, S: GroupScan<'tree>> FusedIterator for Groups<'tree, S> {}
 
 pub struct Nodes<'tree, S> {
     source: S,
+    // Each pending group keeps the extraction order of the end that acquired it.
     front: Option<GroupNodes<'tree>>,
     back: Option<GroupNodes<'tree>>,
 }
 impl<'tree, S: GroupScan<'tree>> Iterator for Nodes<'tree, S> {
     type Item = Node<'tree>;
+    #[inline]
+    fn fold<B, F>(mut self, mut accumulator: B, mut fold: F) -> B
+    where
+        F: FnMut(B, Self::Item) -> B,
+    {
+        if let Some(front) = self.front {
+            accumulator = front.fold(accumulator, &mut fold);
+        }
+        while let Some(group) = self.source.next_group() {
+            accumulator = group.nodes().fold(accumulator, &mut fold);
+        }
+        if let Some(back) = self.back {
+            accumulator = back.rfold(accumulator, fold);
+        }
+        accumulator
+    }
+    // Inlining lets consumers discard unused pending state and extraction directions.
+    #[inline(always)]
     fn next(&mut self) -> Option<Self::Item> {
         loop {
             if let Some(node) = self.front.as_mut().and_then(|group| group.pop(false)) {
@@ -456,6 +581,23 @@ impl<'tree, S: GroupScan<'tree>> Iterator for Nodes<'tree, S> {
     }
 }
 impl<'tree, S: GroupScan<'tree>> DoubleEndedIterator for Nodes<'tree, S> {
+    #[inline]
+    fn rfold<B, F>(mut self, mut accumulator: B, mut fold: F) -> B
+    where
+        F: FnMut(B, Self::Item) -> B,
+    {
+        if let Some(back) = self.back {
+            accumulator = back.fold(accumulator, &mut fold);
+        }
+        while let Some(group) = self.source.next_back_group() {
+            accumulator = group.nodes().fold(accumulator, &mut fold);
+        }
+        if let Some(front) = self.front {
+            accumulator = front.rfold(accumulator, fold);
+        }
+        accumulator
+    }
+    #[inline(always)]
     fn next_back(&mut self) -> Option<Self::Item> {
         loop {
             if let Some(node) = self.back.as_mut().and_then(|group| group.pop(false)) {
@@ -504,6 +646,22 @@ impl<'tree> Preorder<'tree> {
 }
 impl sealed::Source for Preorder<'_> {}
 impl<'tree> GroupScan<'tree> for Preorder<'tree> {
+    #[inline]
+    fn count(self) -> usize {
+        self.groups
+            .map(|index| {
+                let group = self.columns.group(index);
+                let first = self.slots.start.saturating_sub(group.first_slot());
+                let end = (self.slots.end - group.first_slot()).min(group.used());
+                end.saturating_sub(first) as usize
+            })
+            .sum()
+    }
+    #[inline]
+    fn root_group(&self) -> GroupRef<'tree> {
+        self.columns
+            .group(self.columns.root.slot() >> self.columns.raw.group_shift)
+    }
     #[inline]
     fn next_group(&mut self) -> Option<GroupMatches<'tree>> {
         loop {
@@ -636,6 +794,19 @@ impl<'tree> Postorder<'tree> {
 impl sealed::Source for Postorder<'_> {}
 impl<'tree> GroupScan<'tree> for Postorder<'tree> {
     #[inline]
+    fn count(self) -> usize {
+        if !self.front.started && !self.back.started {
+            Preorder::new(self.columns).count()
+        } else {
+            count_groups(self, Identity)
+        }
+    }
+    #[inline]
+    fn root_group(&self) -> GroupRef<'tree> {
+        self.columns
+            .group(self.columns.root.slot() >> self.columns.raw.group_shift)
+    }
+    #[inline]
     fn count_matches<P: Predicate>(self, predicate: P) -> usize {
         // Pure predicates and a scalar count do not observe traversal order.
         // A partially consumed scan must retain its remaining topology instead.
@@ -659,6 +830,14 @@ impl<'tree> GroupScan<'tree> for Postorder<'tree> {
 pub struct Reverse<S>(S);
 impl<S: sealed::Source> sealed::Source for Reverse<S> {}
 impl<'tree, S: GroupScan<'tree>> GroupScan<'tree> for Reverse<S> {
+    #[inline]
+    fn count(self) -> usize {
+        self.0.count()
+    }
+    #[inline]
+    fn root_group(&self) -> GroupRef<'tree> {
+        self.0.root_group()
+    }
     #[inline]
     fn count_matches<P: Predicate>(self, predicate: P) -> usize {
         self.0.count_matches(predicate)
@@ -743,6 +922,17 @@ fn overlapping_matches(group: &GroupRef<'_>, candidates: Mask, range: &Range<usi
 
 impl<'tree, S: GroupScan<'tree>> GroupScan<'tree> for OverlappingBytes<S> {
     #[inline]
+    fn count(self) -> usize {
+        if self.range.is_empty() {
+            return 0;
+        }
+        self.source.count_matches(ByteRange(self.range))
+    }
+    #[inline]
+    fn root_group(&self) -> GroupRef<'tree> {
+        self.source.root_group()
+    }
+    #[inline]
     fn count_matches<P: Predicate>(self, predicate: P) -> usize {
         if self.range.is_empty() {
             return 0;
@@ -780,6 +970,8 @@ impl<'tree, S: GroupScan<'tree>> GroupScan<'tree> for OverlappingBytes<S> {
 }
 
 pub trait Predicate: sealed::Predicate {
+    /// Called once when the predicate is attached to a scan.
+    fn prepare(&mut self, _group: &GroupRef<'_>) {}
     fn retain_matches(&self, group: &GroupRef<'_>, candidates: Mask) -> Mask;
 }
 struct Identity;
@@ -818,6 +1010,10 @@ pub struct Filtered<S, P> {
 impl<S: sealed::Source, P: Predicate> sealed::Source for Filtered<S, P> {}
 impl<'tree, S: GroupScan<'tree>, P: Predicate> GroupScan<'tree> for Filtered<S, P> {
     #[inline]
+    fn root_group(&self) -> GroupRef<'tree> {
+        self.source.root_group()
+    }
+    #[inline]
     fn count_matches<Q: Predicate>(self, predicate: Q) -> usize {
         self.source.count_matches(And(self.predicate, predicate))
     }
@@ -844,27 +1040,173 @@ impl<'tree, S: GroupScan<'tree>, P: Predicate> GroupScan<'tree> for Filtered<S, 
     }
 }
 
-pub struct KindIds<'kinds>(&'kinds KindSet);
+/// ID selections accepted by scans: fixed arrays or a borrowed `IdSet`.
+/// Array lengths specialize the scan even when their IDs are runtime values.
+pub trait IdSelection: sealed::IdSelection {
+    type KindPredicate: Predicate;
+    type FieldPredicate: Predicate;
+    fn into_kind_predicate(self) -> Self::KindPredicate;
+    fn into_field_predicate(self) -> Self::FieldPredicate;
+    fn contains_id(&self, id: u16) -> bool;
+    fn is_empty(&self) -> bool;
+}
+impl sealed::IdSelection for &crate::IdSet {}
+impl<'ids> IdSelection for &'ids crate::IdSet {
+    type KindPredicate = KindIds<'ids>;
+    type FieldPredicate = FieldIds<'ids>;
+    #[inline]
+    fn into_kind_predicate(self) -> Self::KindPredicate {
+        KindIds(KindStrategy::Multiple(self))
+    }
+    #[inline]
+    fn into_field_predicate(self) -> Self::FieldPredicate {
+        FieldIds(self)
+    }
+    #[inline]
+    fn contains_id(&self, id: u16) -> bool {
+        crate::IdSet::contains(self, id)
+    }
+    #[inline]
+    fn is_empty(&self) -> bool {
+        crate::IdSet::is_empty(self)
+    }
+}
+impl<const N: usize> sealed::IdSelection for [u16; N] {}
+impl<const N: usize> IdSelection for [u16; N] {
+    type KindPredicate = FixedKindIds<N>;
+    type FieldPredicate = FixedFieldIds<N>;
+    #[inline]
+    fn into_kind_predicate(self) -> Self::KindPredicate {
+        FixedKindIds {
+            ids: self,
+            empty: N == 0,
+        }
+    }
+    #[inline]
+    fn into_field_predicate(self) -> Self::FieldPredicate {
+        FixedFieldIds(self)
+    }
+    #[inline]
+    fn contains_id(&self, id: u16) -> bool {
+        self.as_slice().contains(&id)
+    }
+    #[inline]
+    fn is_empty(&self) -> bool {
+        N == 0
+    }
+}
+impl<const N: usize> sealed::IdSelection for &[u16; N] {}
+impl<const N: usize> IdSelection for &[u16; N] {
+    type KindPredicate = FixedKindIds<N>;
+    type FieldPredicate = FixedFieldIds<N>;
+    #[inline]
+    fn into_kind_predicate(self) -> Self::KindPredicate {
+        (*self).into_kind_predicate()
+    }
+    #[inline]
+    fn into_field_predicate(self) -> Self::FieldPredicate {
+        (*self).into_field_predicate()
+    }
+    #[inline]
+    fn contains_id(&self, id: u16) -> bool {
+        self.as_slice().contains(&id)
+    }
+    #[inline]
+    fn is_empty(&self) -> bool {
+        N == 0
+    }
+}
+
+pub struct FixedKindIds<const N: usize> {
+    ids: [u16; N],
+    empty: bool,
+}
+impl<const N: usize> sealed::Predicate for FixedKindIds<N> {}
+impl<const N: usize> Predicate for FixedKindIds<N> {
+    #[inline]
+    fn prepare(&mut self, group: &GroupRef<'_>) {
+        let raw = group.columns.raw;
+        let encode = |kind| match kind {
+            u16::MAX => Some((raw.symbol_count - 2) as u16),
+            value if value == u16::MAX - 1 => Some((raw.symbol_count - 1) as u16),
+            value if u32::from(value) < raw.symbol_count - 2 => Some(value),
+            _ => None,
+        };
+        let Some(first) = self.ids.iter().copied().find_map(encode) else {
+            self.empty = true;
+            return;
+        };
+        // Repeating a valid target preserves membership and a fixed comparison
+        // count, without needing an impossible u16 sentinel for invalid IDs.
+        self.ids = self.ids.map(|kind| encode(kind).unwrap_or(first));
+    }
+    #[inline(always)]
+    fn retain_matches(&self, group: &GroupRef<'_>, candidates: Mask) -> Mask {
+        if self.empty {
+            return Mask::default();
+        }
+        let raw = group.columns.raw;
+        group.equal_id_set(raw.symbol, raw.symbol_shift, &self.ids, candidates)
+    }
+}
+
+pub struct KindIds<'kinds>(KindStrategy<'kinds>);
+enum KindStrategy<'kinds> {
+    Empty,
+    Single(u16),
+    Multiple(&'kinds KindSet),
+}
 impl sealed::Predicate for KindIds<'_> {}
 impl Predicate for KindIds<'_> {
+    #[inline]
+    fn prepare(&mut self, group: &GroupRef<'_>) {
+        let KindStrategy::Multiple(kinds) = self.0 else {
+            return;
+        };
+        let raw = group.columns.raw;
+        self.0 = match kinds.ids.as_slice() {
+            [] => KindStrategy::Empty,
+            &[kind] => match kind {
+                u16::MAX => KindStrategy::Single((raw.symbol_count - 2) as u16),
+                value if value == u16::MAX - 1 => {
+                    KindStrategy::Single((raw.symbol_count - 1) as u16)
+                }
+                value if u32::from(value) < raw.symbol_count - 2 => KindStrategy::Single(value),
+                _ => KindStrategy::Empty,
+            },
+            _ => KindStrategy::Multiple(kinds),
+        };
+    }
     // Inlining lets node consumers discard unused group metadata.
     #[inline(always)]
     fn retain_matches(&self, group: &GroupRef<'_>, candidates: Mask) -> Mask {
-        if self.0.is_empty() {
-            return Mask::default();
-        }
-        if let [kind] = self.0.ids.as_slice() {
+        let kinds = match self.0 {
+            KindStrategy::Empty => return Mask::default(),
+            KindStrategy::Single(target) => {
+                let raw = group.columns.raw;
+                return group.equal_ids(raw.symbol, raw.symbol_shift, target, candidates);
+            }
+            KindStrategy::Multiple(kinds) => kinds,
+        };
+        #[cfg(target_arch = "x86_64")]
+        if kinds.ids.len() <= 4 && !candidates.0.is_power_of_two() {
             let raw = group.columns.raw;
-            let target = match *kind {
-                u16::MAX => (raw.symbol_count - 2) as u16,
-                value if value == u16::MAX - 1 => (raw.symbol_count - 1) as u16,
-                value if u32::from(value) < raw.symbol_count - 2 => value,
-                _ => return Mask::default(),
-            };
-            return group.equal_ids(raw.symbol, raw.symbol_shift, target, candidates);
+            let mut matches = Mask::default();
+            for &kind in &kinds.ids {
+                let target = match kind {
+                    u16::MAX => (raw.symbol_count - 2) as u16,
+                    value if value == u16::MAX - 1 => (raw.symbol_count - 1) as u16,
+                    value if u32::from(value) < raw.symbol_count - 2 => value,
+                    _ => continue,
+                };
+                matches.0 |= group
+                    .equal_ids(raw.symbol, raw.symbol_shift, target, candidates)
+                    .0;
+            }
+            return matches;
         }
         if candidates.0.is_power_of_two() {
-            return candidates.retain(|slot| self.0.contains(group.kind(slot)));
+            return candidates.retain(|slot| kinds.contains(group.kind(slot)));
         }
         let raw = group.columns.raw;
         let start = raw.symbol as usize + group.first_slot() as usize * 2;
@@ -879,9 +1221,38 @@ impl Predicate for KindIds<'_> {
             } else {
                 symbol as u16
             };
-            matches |= u64::from(self.0.contains(kind)) << slot;
+            matches |= u64::from(kinds.contains(kind)) << slot;
         }
         candidates.intersection(Mask(matches))
+    }
+}
+pub struct FixedFieldIds<const N: usize>([u16; N]);
+impl<const N: usize> sealed::Predicate for FixedFieldIds<N> {}
+impl<const N: usize> Predicate for FixedFieldIds<N> {
+    #[inline(always)]
+    fn retain_matches(&self, group: &GroupRef<'_>, candidates: Mask) -> Mask {
+        group.equal_id_set(group.columns.raw.field, 0, &self.0, candidates)
+    }
+}
+pub struct FieldIds<'ids>(&'ids crate::IdSet);
+impl sealed::Predicate for FieldIds<'_> {}
+impl Predicate for FieldIds<'_> {
+    #[inline]
+    fn retain_matches(&self, group: &GroupRef<'_>, candidates: Mask) -> Mask {
+        let offset = group.columns.raw.field;
+        match self.0.ids.as_slice() {
+            [] => Mask::default(),
+            &[field] => group.equal_ids(offset, 0, field, candidates),
+            fields if fields.len() <= 4 => {
+                fields.iter().fold(Mask::default(), |matches, &field| {
+                    Mask(matches.0 | group.equal_ids(offset, 0, field, candidates).0)
+                })
+            }
+            _ => candidates.retain(|slot| {
+                self.0
+                    .contains(group.columns.short(offset, group.first_slot() + slot))
+            }),
+        }
     }
 }
 pub struct FieldId(u16);
@@ -897,7 +1268,7 @@ impl sealed::Predicate for Extra {}
 impl Predicate for Extra {
     #[inline]
     fn retain_matches(&self, group: &GroupRef<'_>, candidates: Mask) -> Mask {
-        let flags = group.bitmap(group.columns.raw.extra).0;
+        let flags = group.bitmap(group.columns.raw.extra);
         Mask(candidates.0 & if self.0 { flags } else { !flags })
     }
 }
@@ -906,25 +1277,34 @@ impl sealed::Predicate for Missing {}
 impl Predicate for Missing {
     #[inline]
     fn retain_matches(&self, group: &GroupRef<'_>, candidates: Mask) -> Mask {
-        let flags = group.bitmap(group.columns.raw.missing).0;
+        let flags = group.bitmap(group.columns.raw.missing);
         Mask(candidates.0 & if self.0 { flags } else { !flags })
     }
 }
-pub struct SupertypeId(u16);
+pub struct SupertypeId {
+    symbol: u16,
+    index: Option<usize>,
+}
 impl sealed::Predicate for SupertypeId {}
 impl Predicate for SupertypeId {
     #[inline]
-    fn retain_matches(&self, group: &GroupRef<'_>, candidates: Mask) -> Mask {
+    fn prepare(&mut self, group: &GroupRef<'_>) {
         let raw = group.columns.raw;
         if raw.supertype_count == 0 {
-            return Mask::default();
+            self.index = None;
+            return;
         }
-        // Native grammar arrays are immutable and live as long as columns.root.
+        // Native grammar arrays are immutable and retained by the tree.
         let supertypes =
             unsafe { std::slice::from_raw_parts(raw.supertypes, raw.supertype_count as usize) };
-        let Ok(index) = supertypes.binary_search(&self.0) else {
+        self.index = supertypes.binary_search(&self.symbol).ok();
+    }
+    #[inline]
+    fn retain_matches(&self, group: &GroupRef<'_>, candidates: Mask) -> Mask {
+        let Some(index) = self.index else {
             return Mask::default();
         };
+        let raw = group.columns.raw;
         let words = (raw.supertype_count as usize).div_ceil(64);
         let masks = if raw.supertype_count > 8 {
             unsafe {

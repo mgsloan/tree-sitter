@@ -11,7 +11,7 @@
 //! }
 //! ```
 //! For stateful attribute reads, use `node_iterator` and `NodeIteratorLike`.
-use crate::{Cursor, Error, KindSet, Node, NodeIterator, Tree};
+use crate::{Cursor, Error, Node, NodeIterator, Tree, scan::IdSelection};
 use std::ops::Range;
 use tree_sitter::Point;
 
@@ -69,7 +69,7 @@ pub trait NodeLike<'tree>: Copy + Eq {
     /// Stateful preorder reads.
     fn node_iterator(self) -> Result<impl NodeIteratorLike<'tree, Node = Self>, Error>;
     /// Public kind IDs, in preorder including this node. Never leaves its subtree.
-    fn descendants_matching_kinds(self, kinds: &KindSet) -> impl Iterator<Item = Self>;
+    fn descendants_matching_kinds<K: IdSelection>(self, kinds: K) -> impl Iterator<Item = Self>;
     /// Structural children, including empty nodes, without requiring a count.
     fn children(self) -> impl Iterator<Item = Self>;
     fn named_children(self) -> impl Iterator<Item = Self> {
@@ -262,10 +262,11 @@ impl<'tree> NodeLike<'tree> for tree_sitter::Node<'tree> {
     fn node_iterator(self) -> Result<impl NodeIteratorLike<'tree, Node = Self>, Error> {
         Ok(NativePreorder::new(self))
     }
-    fn descendants_matching_kinds(self, kinds: &KindSet) -> impl Iterator<Item = Self> {
+    fn descendants_matching_kinds<K: IdSelection>(self, kinds: K) -> impl Iterator<Item = Self> {
+        let empty = kinds.is_empty();
         NativePreorder::new(self)
-            .take_while(move |_| !kinds.is_empty())
-            .filter(move |node| kinds.contains(node.kind_id()))
+            .take_while(move |_| !empty)
+            .filter(move |node| kinds.contains_id(node.kind_id()))
     }
     fn children(self) -> impl Iterator<Item = Self> {
         NativeChildren::new(self, None)
@@ -308,7 +309,7 @@ impl<'tree> NodeLike<'tree> for Node<'tree> {
     fn node_iterator(self) -> Result<impl NodeIteratorLike<'tree, Node = Self>, Error> {
         Node::node_iterator(self)
     }
-    fn descendants_matching_kinds(self, kinds: &KindSet) -> impl Iterator<Item = Self> {
+    fn descendants_matching_kinds<K: IdSelection>(self, kinds: K) -> impl Iterator<Item = Self> {
         Node::descendants_matching_kinds(self, kinds)
     }
     fn children(self) -> impl Iterator<Item = Self> {

@@ -13,8 +13,8 @@ registers while evaluating a group.
 ```rust
 let scan = node.preorder()
     .overlapping_bytes(from..to)
-    .filter_kind_ids(&kinds)
-    .filter_field_id(field);
+    .filter_kind_ids([identifier, call_expression])
+    .filter_field_ids([name_field, value_field]);
 
 for node in scan.nodes() {
     // ordinary Node access
@@ -37,17 +37,25 @@ Reverse either explicit order with `.rev()`, for example
 The scan is a typed pipeline with three terminal operations:
 
 - `nodes()` returns an ordinary iterator of `Node` handles.
-- `count()` sums population counts without constructing nodes.
+- `count()` counts matching slots without constructing nodes.
 - `groups()` returns an iterator of group references and matching masks.
 
 Scans remain inside the root's subtree, preserve the selected order, and yield
 each matching node once. IDs belong to the tree's language. Public kind IDs are
 the default; grammar IDs, if supported, use a separate method.
 
-Kind sets use OR; successive filters use AND. An empty kind set matches nothing.
+Kind and field sets use OR; successive filters use AND. An empty set matches nothing.
 Field matching tests the child's field relative to its parent, without implying
 a parent-kind constraint. Field ID zero matches nodes without a field. Supertypes
 test actual node membership rather than a global expansion into concrete kinds.
+
+Both set filters accept `[u16; N]`, `&[u16; N]`, or `&IdSet`. Arrays preserve `N`
+through the typed pipeline, specializing kernels while IDs remain runtime values.
+The array is copied into the predicate; duplicates yield no duplicate nodes.
+`N` counts supplied entries, including duplicates and invalid IDs. `IdSet` is the
+reusable dynamic alternative; `KindSet` remains an alias for compatibility.
+`Node::descendants_matching_kinds` and the shared `NodeLike` method accept the
+same selections. The singular field/supertype filters remain available.
 
 Ordinary mapping follows `nodes()`. Specialized consumers can process groups
 directly. There is no `map_cached` operation or type-level column-cache machinery.
@@ -183,10 +191,18 @@ Filters read stored columns directly:
   lookup. Such a grammar lookup is not a per-group unpack cache.
 - Predicates over packed values decode only what their kernel needs.
 
+Predicates prepare grammar-dependent state when attached to a scan: fixed-array
+and dynamic single-kind IDs map to stored representations; supertype IDs resolve to
+membership indices. This uses existing column metadata without another C call.
+
 `retain_matches` permits both dense group evaluation and scalar evaluation of
 surviving slots. Single-kind and field equality use SSE2 on x86_64, with a scalar
-fallback elsewhere. A singleton candidate uses one scalar comparison. Multiple
-kinds use the kind-set lookup; expensive predicates visit selected slots.
+fallback elsewhere. Fixed arrays specialize equality by cardinality: one target
+uses single equality, two combine equality masks, and larger arrays share column
+loads across comparisons. Dynamic sets of two to four IDs combine equality masks;
+larger dynamic sets use membership lookup. Singleton candidates and expensive
+predicates use scalar checks. Flags intersect already-valid candidate masks, so
+they need not reread group waste.
 
 Filter order is initially call order. Empty masks short-circuit subsequent
 filters. Choosing dense versus sparse evaluation stays inside the predicate,
@@ -196,11 +212,15 @@ where column costs are known; consumers need not make that choice.
 
 `nodes()` retains a base node, mask, and extraction direction at each end,
 avoiding copies of column metadata per node. Each `next()` removes one matching
-bit and creates its node handle. Exhaustion is permanent.
+bit and creates its node handle. Exhaustion is permanent. Inlined advancement
+lets consumers discard unused iterator state. Specialized `fold`/`rfold` consume
+groups directly, including pending masks in the correct order after either end
+has advanced.
 
-`count()` sums `Mask::count_ones()`. Override the node iterator's `count()` as
-well, including both partially consumed masks, so `scan.nodes().count()` avoids
-constructing nodes. Hardware population count depends on the compilation target.
+Unfiltered `count()` sums clipped live-slot spans; filtered counts sum
+`Mask::count_ones()`. The node iterator's `count()` includes both partially consumed
+masks, so `scan.nodes().count()` also avoids constructing nodes. Hardware population
+count depends on the compilation target.
 
 Counts do not observe traversal order. An unconsumed postorder source counts
 physical groups through preorder instead, composing the same pure predicates.

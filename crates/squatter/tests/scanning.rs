@@ -1,6 +1,6 @@
 use std::collections::{HashSet, VecDeque};
 use tree_squatter::{
-    Grammar, KindSet, Node, PackOptions, Tree,
+    Grammar, IdSet, KindSet, Node, PackOptions, Tree,
     scan::{GroupScan, Scan},
 };
 
@@ -118,6 +118,32 @@ fn check_pipeline<'tree, S: GroupScan<'tree>>(
             }
         }
         assert_eq!(nodes.count(), remaining.len());
+
+        for reverse in [false, true] {
+            let mut nodes = make().nodes();
+            let mut remaining: VecDeque<_> = expected.iter().copied().collect();
+            for index in 0..consumed {
+                if index % 2 == 0 {
+                    assert_eq!(nodes.next(), remaining.pop_front());
+                } else {
+                    assert_eq!(nodes.next_back(), remaining.pop_back());
+                }
+            }
+            let append = |mut result: Vec<_>, node| {
+                result.push(node);
+                result
+            };
+            let actual = if reverse {
+                nodes.rfold(Vec::new(), append)
+            } else {
+                nodes.fold(Vec::new(), append)
+            };
+            let mut expected = remaining.into_iter().collect::<Vec<_>>();
+            if reverse {
+                expected.reverse();
+            }
+            assert_eq!(actual, expected);
+        }
     }
 }
 
@@ -355,12 +381,13 @@ fn empty_missing_and_error_nodes() {
 }
 
 #[test]
-fn dense_single_id_filters() {
+fn dense_id_filters() {
     let source = format!(
         "{{\"items\": [{}null], \"bad\": invalid}}",
         "[1,true],".repeat(40)
     );
-    let (_, tree) = parse(&json_language(), &source, PackOptions::default());
+    let language = json_language();
+    let (_, tree) = parse(&language, &source, PackOptions::default());
     let root = tree.root_node();
     let nodes = root.node_iterator().unwrap().collect::<Vec<_>>();
     let kinds = nodes
@@ -383,6 +410,187 @@ fn dense_single_id_filters() {
             .filter(|node| node.field_id() == field)
             .collect::<Vec<_>>();
         check_pipeline(|| root.preorder().filter_field_id(field), &expected);
+    }
+    let number = language.id_for_node_kind("number", true);
+    for ids in [
+        vec![number, u16::MAX],
+        vec![number, u16::MAX, u16::MAX - 1],
+        vec![number, u16::MAX, language.node_kind_count() as u16, 32768],
+        vec![number, u16::MAX, u16::MAX - 1, 32768, 32769],
+        vec![32768, 32769],
+    ] {
+        let kinds = KindSet::new(ids);
+        let expected = nodes
+            .iter()
+            .copied()
+            .filter(|node| kinds.contains(node.kind_id()))
+            .collect::<Vec<_>>();
+        check_pipeline(|| root.preorder().filter_kind_ids(&kinds), &expected);
+    }
+}
+
+fn check_fixed_kinds<const N: usize>(root: Node<'_>, ids: [u16; N]) {
+    let expected = root
+        .node_iterator()
+        .unwrap()
+        .filter(|node| ids.contains(&node.kind_id()))
+        .collect::<Vec<_>>();
+    check_pipeline(|| root.preorder().filter_kind_ids(ids), &expected);
+    check_pipeline(|| root.preorder().filter_kind_ids(&ids), &expected);
+    assert_eq!(
+        root.descendants_matching_kinds(ids).collect::<Vec<_>>(),
+        expected
+    );
+    let dynamic = KindSet::new(ids);
+    let postorder = root
+        .postorder()
+        .filter_kind_ids(&dynamic)
+        .nodes()
+        .collect::<Vec<_>>();
+    check_pipeline(|| root.postorder().filter_kind_ids(ids), &postorder);
+    let range = root.start_byte() + 1..root.end_byte().saturating_sub(1);
+    let filtered = root
+        .preorder()
+        .overlapping_bytes(range.clone())
+        .filter_kind_ids(&dynamic)
+        .filter_field_id(0)
+        .nodes()
+        .collect::<Vec<_>>();
+    check_pipeline(
+        || {
+            root.preorder()
+                .overlapping_bytes(range.clone())
+                .filter_kind_ids(ids)
+                .filter_field_id(0)
+        },
+        &filtered,
+    );
+}
+
+#[test]
+fn fixed_kind_sets() {
+    let language = json_language();
+    let source = format!(
+        "{{\"items\": [{}null], \"bad\": invalid}}",
+        "[1,true],".repeat(40)
+    );
+    let (_, tree) = parse(&language, &source, PackOptions::default());
+    let root = tree.root_node();
+    let number = language.id_for_node_kind("number", true);
+    let array = language.id_for_node_kind("array", true);
+    let roots = [
+        root,
+        root.preorder()
+            .filter_kind_ids([array])
+            .nodes()
+            .next()
+            .unwrap(),
+    ];
+    for root in roots {
+        check_fixed_kinds(root, []);
+        check_fixed_kinds(root, [number]);
+        check_fixed_kinds(root, [32768]);
+        check_fixed_kinds(root, [u16::MAX]);
+        check_fixed_kinds(root, [u16::MAX - 1]);
+        check_fixed_kinds(root, [32768, number]);
+        check_fixed_kinds(root, [number, array, 32768]);
+        check_fixed_kinds(root, [number, array, number, u16::MAX]);
+        check_fixed_kinds(
+            root,
+            [
+                number,
+                array,
+                u16::MAX,
+                u16::MAX - 1,
+                32768,
+                32769,
+                number,
+                array,
+            ],
+        );
+        check_fixed_kinds(root, [number; 16]);
+        check_fixed_kinds(root, [32768; 16]);
+    }
+    use tree_squatter::traits::NodeLike;
+    let (native, tree) = parse(&language, &source, PackOptions::default());
+    let kinds = [number, array];
+    let native_matches = NodeLike::descendants_matching_kinds(native.root_node(), kinds)
+        .map(|node| (node.kind_id(), node.start_byte(), node.end_byte()))
+        .collect::<Vec<_>>();
+    let packed_matches = NodeLike::descendants_matching_kinds(tree.root_node(), &kinds)
+        .map(describe)
+        .collect::<Vec<_>>();
+    assert_eq!(native_matches, packed_matches);
+    assert_eq!(
+        NodeLike::descendants_matching_kinds(native.root_node(), []).count(),
+        0
+    );
+}
+
+fn check_field_set<const N: usize>(root: Node<'_>, fields: [u16; N]) {
+    let expected = root
+        .node_iterator()
+        .unwrap()
+        .filter(|node| fields.contains(&node.field_id()))
+        .collect::<Vec<_>>();
+    check_pipeline(|| root.preorder().filter_field_ids(fields), &expected);
+    check_pipeline(|| root.preorder().filter_field_ids(&fields), &expected);
+    let dynamic = IdSet::new(fields);
+    check_pipeline(|| root.preorder().filter_field_ids(&dynamic), &expected);
+    let postorder = root
+        .postorder()
+        .nodes()
+        .filter(|node| fields.contains(&node.field_id()))
+        .collect::<Vec<_>>();
+    check_pipeline(|| root.postorder().filter_field_ids(fields), &postorder);
+    check_pipeline(|| root.postorder().filter_field_ids(&dynamic), &postorder);
+    let kinds = [
+        root.kind_id(),
+        expected.first().map_or(0, |node| node.kind_id()),
+    ];
+    let range = root.start_byte()..root.end_byte();
+    let combined = expected
+        .iter()
+        .copied()
+        .filter(|node| kinds.contains(&node.kind_id()) && node.start_byte() < node.end_byte())
+        .collect::<Vec<_>>();
+    check_pipeline(
+        || {
+            root.preorder()
+                .overlapping_bytes(range.clone())
+                .filter_kind_ids(kinds)
+                .filter_field_ids(fields)
+        },
+        &combined,
+    );
+}
+
+#[test]
+fn field_sets() {
+    let language = json_language();
+    let source = format!(
+        "{{\"items\": [{}null], \"other\": 42}}",
+        "{\"value\": [1,true]},".repeat(40)
+    );
+    let (_, tree) = parse(&language, &source, PackOptions::default());
+    let root = tree.root_node();
+    let key = language.field_id_for_name("key").unwrap().get();
+    let value = language.field_id_for_name("value").unwrap().get();
+    let subtree = root
+        .preorder()
+        .filter_kind_ids([language.id_for_node_kind("array", true)])
+        .nodes()
+        .next()
+        .unwrap();
+    for root in [root, subtree] {
+        check_field_set(root, []);
+        check_field_set(root, [0]);
+        check_field_set(root, [key]);
+        check_field_set(root, [key, value]);
+        check_field_set(root, [0, key, value]);
+        check_field_set(root, [key, value, key, 32768]);
+        check_field_set(root, [0, key, value, 32768, u16::MAX]);
+        check_field_set(root, [u16::MAX; 8]);
     }
 }
 
