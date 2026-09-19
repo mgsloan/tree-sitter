@@ -77,14 +77,15 @@ has started.
 The internal group protocol is schematically:
 
 ```rust
-struct GroupMatches<'tree> {
-    group: GroupRef<'tree>,
-    matches: Mask,
-}
-
 trait GroupScan<'tree> {
-    fn next_group(&mut self) -> Option<GroupMatches<'tree>>;
-    fn next_back_group(&mut self) -> Option<GroupMatches<'tree>>;
+    type Reversed: GroupScan<'tree, Reversed = Self>;
+    type Slots: Iterator<Item = u32> + ExactSizeIterator;
+    const DESCENDING: bool;
+    fn slots(matches: Mask) -> Self::Slots;
+    fn reverse(self) -> Self::Reversed;
+    fn group(&self) -> &GroupRef<'tree>;
+    fn next_mask(&mut self) -> Option<Mask>;
+    fn next_slots(&mut self) -> Option<Self::Slots>;
 }
 
 trait Predicate {
@@ -92,10 +93,18 @@ trait Predicate {
 }
 ```
 
-A filtered source obtains a group from its inner source, refines its mask, and
-continues if the result is empty. Predicates must return a subset of their input
-mask. Built-in predicates are pure; custom callbacks with observable side effects
-are outside the initial interface.
+A source retains its column metadata and current group index. Advancing returns
+only a nonempty mask. Filters borrow the current group to refine that mask and
+continue when it becomes empty. This avoids copying column metadata through
+adapters, including postorder's singleton fragments. `groups()` copies metadata
+into public results so they can outlive the iterator.
+
+Unfiltered preorder node consumers request slot ranges directly. Filters and
+group consumers still use masks; `next_slots()` converts those masks to sparse
+slot iterators with a static extraction direction.
+
+Predicates must return a subset of their input mask. Built-in predicates are
+pure; custom callbacks with observable side effects are outside the interface.
 
 Generic composition permits inlining and specialization without dynamic dispatch
 or allocations for adapters. It does not guarantee SIMD. The hot column reads
@@ -113,9 +122,9 @@ Bit positions identify physical slots within the group. Waste slots, slots
 outside the selected subtree, and unused high bits are always zero. Group
 references provide the physical-slot mapping and tree lifetime.
 
-Physical storage is reverse preorder. Group iteration and set-bit extraction
-must follow the selected traversal. A group match carries its extraction
-direction. Keep that mapping in group/node iteration helpers.
+Physical storage is reverse preorder. The source type determines group iteration
+and set-bit extraction order. Public group matches retain an extraction direction
+so each fragment can be consumed independently.
 
 Postorder is not reverse preorder: reversing preorder also reverses sibling
 order. Postorder can revisit a physical group with disjoint masks, since nodes
@@ -140,17 +149,19 @@ population counts. It can appear before or after filters. It does not change
 preorder into postorder. `all().rev()` reverses whichever order `all()` chose,
 without making that choice part of the public contract.
 
-`nodes()` implements `DoubleEndedIterator`, so `scan.nodes().rev()` is also
-available. Interleaving `next()` and `next_back()` yields each node at most once.
-Both partially consumed end masks contribute to `count()`. `groups()` is also
-double ended; its `next_back()` returns a fragment with reversed extraction
-order, so flattening `scan.groups().rev()` preserves reversed node order.
+Choose direction before calling `nodes()` or `groups()`. `.rev()` changes the
+source type, including through filters and range restrictions; reversing twice
+restores the original type. Forward and reverse postorder retain only their own
+traversal state. Node and group iterators advance in one direction, with no
+`next_back()` or checks for opposite ends meeting. An individual group's node
+iterator can still consume its single mask from either end.
 
-Preorder needs only group bounds and two boundary masks. Forward postorder walks
-descending slots, delaying ancestors until their subtree ends, with O(depth)
-stack space. Reverse postorder keeps pending child slots and may use O(nodes)
-space on a wide tree. Neither retains decoded columns or buffers matching node
-handles. The two ends stop when they meet.
+Preorder needs group and subtree bounds. Forward postorder walks descending
+slots, delaying ancestors until their subtree ends, with O(depth) stack space.
+Reverse postorder keeps pending earlier siblings and may use O(nodes) space on a
+wide tree. It expands a node only after yielding it and returns the last child
+directly, so unary paths need no pending allocation. Neither traversal retains
+decoded columns or buffers matching node handles.
 
 ## Byte-range traversal
 
@@ -209,21 +220,20 @@ where column costs are known; consumers need not make that choice.
 
 ## Terminal operations
 
-`nodes()` retains a base node, mask, and extraction direction at each end,
-avoiding copies of column metadata per node. Each `next()` removes one matching
-bit and creates its node handle. Exhaustion is permanent. Inlined advancement
-lets consumers discard unused iterator state. Specialized `fold`/`rfold` consume
-groups directly, including pending masks in the correct order after either end
-has advanced.
+`nodes()` retains a base slot and the current fragment's slot iterator. Unfiltered
+preorder uses a range, avoiding per-node bit scans and mask updates; filtered
+scans retain a mask. Extraction direction is constant for the source type.
+Exhaustion is permanent. Specialized `fold` consumes each fragment in a local
+loop, including a partially consumed fragment, before acquiring the next.
 
 Unfiltered `count()` sums clipped live-slot spans; filtered counts sum
-`Mask::count_ones()`. The node iterator's `count()` includes both partially consumed
-masks, so `scan.nodes().count()` also avoids constructing nodes. Hardware population
+`Mask::count_ones()`. The node iterator's `count()` includes its partially consumed
+fragment, so `scan.nodes().count()` also avoids constructing nodes. Hardware population
 count depends on the compilation target.
 
 Counts do not observe traversal order. An unconsumed postorder source counts
 physical groups through preorder instead, composing the same pure predicates.
-Once either end has advanced, counting preserves the remaining topology. Predicate
+Once traversal has advanced, counting preserves the remaining topology. Predicate
 composition keeps call order and short-circuits empty masks in both paths.
 
 `groups()` exposes only nonempty groups, retaining subtree and range constraints.
@@ -233,8 +243,10 @@ not mutable iterator state.
 
 ## Prototype scope
 
-Column metadata crosses the C boundary once per scan; Rust kernels read borrowed
-little-endian storage directly. Single-kind and field equality use dense SIMD
+Column metadata crosses the C boundary once per scan. Raw pointers become borrowed
+slices there: bytes for the little-endian slab and native integers for grammar
+tables. Scans and returned groups inherit `Send + Sync` from these immutable
+borrows and their tree handle. Single-kind and field equality use dense SIMD
 where available; extra and missing filters intersect stored flag bits. Supertype
 filters read the stored membership mask or prepared grammar dictionary. There is
 no unpack cache.

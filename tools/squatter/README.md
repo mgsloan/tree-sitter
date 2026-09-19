@@ -118,7 +118,7 @@ covers the middle 1% of each source. Use repeated `--workload NAME` arguments to
 time selected operations. Results describe this selected corpus and
 cache behavior, not parsing performance.
 
-Fold/rfold and grouped-fold workloads also consume every node with `black_box`.
+Forward/reverse fold and grouped-fold workloads also consume every node with `black_box`.
 `flags.count` excludes extra and missing nodes; `combined.count` additionally
 intersects the selected kind and field. Supertype workloads select the grammar's
 first supertype, or an invalid ID when the grammar has none. Their input-node

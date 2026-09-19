@@ -169,12 +169,13 @@ fn workloads() -> Vec<(&'static str, Operation)> {
         ("preorder.fold", |case| {
             consume_fold(case.tree.root_node().preorder().nodes())
         }),
-        ("preorder.rfold", |case| {
+        ("preorder.rev.fold", |case| {
             case.tree
                 .root_node()
                 .preorder()
+                .rev()
                 .nodes()
-                .rfold(0, |count, node| {
+                .fold(0, |count, node| {
                     black_box(node);
                     count + 1
                 })
@@ -321,9 +322,6 @@ fn workloads() -> Vec<(&'static str, Operation)> {
                     .filter_kind_ids(&case.kinds)
                     .nodes(),
             )
-        }),
-        ("preorder.nodes.rev", |case| {
-            consume(case.tree.root_node().preorder().nodes().rev())
         }),
         ("preorder.nodes", |case| {
             consume(case.tree.root_node().preorder().nodes())
@@ -602,6 +600,7 @@ fn validate(case: &Case) {
             .collect::<Vec<_>>()
     );
 }
+#[cfg(target_os = "linux")]
 fn pin(cpu: usize) -> Result<()> {
     ensure!(cpu < libc::CPU_SETSIZE as usize, "CPU out of range");
     unsafe {
@@ -614,6 +613,10 @@ fn pin(cpu: usize) -> Result<()> {
         );
     }
     Ok(())
+}
+#[cfg(not(target_os = "linux"))]
+fn pin(cpu: usize) -> Result<()> {
+    anyhow::bail!("CPU affinity {cpu} is only supported on Linux")
 }
 fn main() -> Result<()> {
     let arguments = Arguments::parse();

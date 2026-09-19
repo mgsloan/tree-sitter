@@ -362,3 +362,191 @@ the final comparison and aggregation. Final reports are
 `const-final/confirm-{a,b}-{tuning,holdout}.json`; older-API controls are in
 `count-inline/const-final-{a,b}-{tuning,holdout}.json`.
 The instance was restored to its initial `TERMINATED` state after measurement.
+
+## One-direction scans and postorder (2026-09-19)
+
+This candidate was rejected because it regressed preorder. The replacement is
+described in the following section.
+
+`Scan::rev()` now changes the source type before consumption. Forward and reverse
+postorder keep only their own topology state; node iterators retain one mask.
+Use `.rev().nodes()` or `.rev().groups()`; the resulting iterators no longer
+support `next_back()`. An individual group's iterator still uses one mask and
+supports both ends.
+
+Rust retains borrowed slices for slab bytes and native grammar tables. Raw
+pointers are confined to the C bridge; scans and groups inherit `Send + Sync`.
+On x86_64, preorder node iterators shrink from 208 to 176 bytes, and both postorder
+directions shrink from 288 to 200 bytes.
+
+The internal group protocol returns a mask and borrows metadata retained by the
+source. Only public group results copy the descriptor. Inlining postorder's
+separate traversal methods removes per-node traversal calls from the slot-sum
+probes. Reverse traversal defers child expansion until the following call and
+returns the last child directly, queuing only earlier siblings. Unary paths need
+no pending allocation. A Rust allocation probe yields the document and array
+roots without allocating for arrays of 16, 10,000, and 100,000 elements.
+Reverse traversal still needs O(nodes) pending space on wide trees.
+
+Compared with branch head `75a9c43c9` on the Core Ultra 7 165U, pinned CPU 2,
+Rust 1.95.0, portable release settings, 16-slot groups. The existing disjoint
+32-file corpora contain 747,560 and 503,590 nodes across 11 languages. Each result
+pools ten samples from two processes, targeting 40 ms/sample. Binary order and
+workload order reverse for the second pair. No builds run during confirmation.
+Rates are **million input nodes/s**, before → after:
+
+| Operation | Tuning corpus | Second corpus |
+| --- | ---: | ---: |
+| Postorder nodes | 119.7 → 235.0 | 106.1 → 177.7 |
+| Reverse postorder nodes | 100.7 → 192.7 | 97.1 → 152.5 |
+| Postorder fold | 129.7 → 234.7 | 113.1 → 179.4 |
+| Reverse postorder fold | 118.5 → 192.2 | 104.0 → 152.6 |
+| Postorder + kind, nodes | 106.7 → 168.0 | 93.6 → 136.3 |
+| Reverse postorder + kind, nodes | 99.3 → 161.0 | 86.3 → 130.3 |
+| Postorder + field, nodes | 112.9 → 185.6 | 97.5 → 146.9 |
+| Preorder nodes | 764.5 → 684.6 | 765.3 → 687.3 |
+| Reverse preorder nodes | 1,743.9 → 1,459.9 | 1,679.4 → 1,385.3 |
+| Preorder + kind, nodes | 1,210.6 → 1,568.0 | 1,137.5 → 1,360.2 |
+| Byte range, nodes | 7,735.3 → 7,728.8 | 9,068.8 → 8,981.3 |
+
+Plain preorder regresses about 10% forward and 16–18% reverse. In the reverse
+consumer, assembly spills the tree pointer and counter in the per-node loop,
+while the baseline keeps them in registers. Inlining and register allocation
+remain consumer-dependent; these measurements do not isolate a single cause.
+Unfiltered counts stay within 2.3% and the scalar traversal control within 0.2%.
+
+Experiments with an empty mask as the exhaustion sentinel, alternative bit
+clearing, and a pending `GroupNodes` did not justify retention. Empty-filter
+short-circuiting remains deferred; no additional exhaustion check was added for
+that case. Fragment batching was not revisited.
+
+Validation passes for library/persistence tests, scanning tests at group sizes
+16/32/64, strict library/test Clippy, and benchmark compilation. Tests cover
+partial consumption in each direction, deep and wide trees, and moving scans
+between threads. The benchmark affinity function is now platform-gated.
+
+Artifacts are in `build/postorder-optimization/`: `confirmation.json` contains
+pooled results, compiler/CPU metadata, and binary hashes; `confirm.py` records
+commands and aggregation. Baseline/candidate binaries and source snapshots,
+individual reports, disassembly, and the allocation probe are retained there.
+
+## Preorder recovery (2026-09-19)
+
+The shared node-iterator rewrite changed inlining and register allocation for
+preorder. The first candidate's reverse loop spills its tree pointer and count,
+where the original consumer keeps them in registers. Its forward fold also
+regresses substantially. Slab reads already used checked byte slices before the
+rewrite; these were not newly introduced bounds checks. Smaller iterator state
+alone did not produce better machine code.
+
+Unfiltered preorder now produces contiguous slot ranges directly, with no mask
+construction or per-node bit scan. The source type selects forward or reversed
+range iteration. Predicates still use the original mask-producing loop, and
+postorder uses sparse fragments. `fold()` drains each fragment locally rather
+than updating shared pending state for every node. The iterator stores a base
+slot instead of another tree pointer. The single-ID SIMD kernel handles its first
+16 slots directly, avoiding loop-carried mask and offset work for a 16-slot group.
+
+The same CPU, compiler, corpora, and sampling procedure as above were used for
+22 workloads. Each comparison pools ten samples from two processes, reversing
+binary and workload order; no builds ran during measurement. Baseline is the
+original branch head, not the rejected candidate. Rates are **million input
+nodes/s**, baseline → retained:
+
+| Operation | Tuning corpus | Second corpus |
+| --- | ---: | ---: |
+| Preorder nodes | 772.6 → 1,970.4 | 779.8 → 1,936.8 |
+| Reverse preorder nodes | 1,805.0 → 2,007.3 | 1,747.9 → 1,953.8 |
+| Preorder fold | 1,230.8 → 3,180.3 | 1,201.0 → 3,041.8 |
+| Reverse preorder fold | 1,238.0 → 3,312.1 | 1,199.6 → 3,130.5 |
+| Preorder + kind, nodes | 1,254.6 → 1,501.8 | 1,176.5 → 1,353.3 |
+| Preorder + kind, count | 3,830.3 → 4,025.5 | 3,713.7 → 3,824.3 |
+| Preorder + field, nodes | 2,764.5 → 2,900.5 | 2,088.5 → 2,156.2 |
+| Byte range, nodes | 7,967.2 → 7,729.8 | 9,351.5 → 9,031.3 |
+| Byte range, count | 7,996.4 → 8,535.6 | 9,318.1 → 9,915.7 |
+| Postorder nodes | 123.7 → 244.0 | 108.6 → 187.4 |
+| Reverse postorder nodes | 115.8 → 200.7 | 100.0 → 161.1 |
+
+Plain preorder is 2.48–2.55× faster forward and 11–12% faster reverse. Group folds
+and unfiltered counts remain within 1%. Byte-range enumeration retains a 3–3.4%
+regression; range counts improve 6–7%. Outlining its matching pipeline made that
+regression worse and was discarded. The unchanged scalar traversal control rose
+about 5%; results describe these binaries and consumers, not portable guarantees.
+
+The squatter and persistence suites pass. The final scan and example tests pass
+at group sizes 16/32/64, including partial folds/counts and subtree boundaries;
+strict Clippy and release benchmark compilation pass. Borrowed slices and
+automatic `Send + Sync` are preserved.
+
+Artifacts are in `build/preorder-recovery/`: `confirmation.json` records all 22
+workloads and binary hashes, `confirm.py` reproduces the comparison, and
+`extract-assembly.py` identifies consumers through the workload table. Original,
+rejected, and retained binaries and source snapshots are saved alongside trials.
+
+## Register allocation and byte-range recovery (2026-09-19)
+
+The retained release binary confirms that both preorder `fold()` consumers keep
+their accumulator, tree pointer, and slot iteration state in registers inside
+the per-node loop. The two stack stores materialize the `Node` passed to
+`black_box`; they are not spills. There are no calls or direction checks in these
+loops. Group transitions still load spilled metadata and check slice bounds.
+The separate forward/reverse slot-summing probes vectorize four slots at a time,
+with register-only scalar tails and no per-node `Node` materialization.
+
+Ordinary `next()` consumers still have spills: forward increments a stack-resident
+benchmark counter; reverse also reloads the tree pointer for each node. This
+does not apply to the fold loops. The new byte-range slot-summing probe calls the
+predicate pipeline once per group, then drains matches with the mask, base, and
+accumulator in registers. The predicate pipeline itself still has metadata
+spills and bounds checks; the entire scan is not spill-free.
+
+Register allocation does not explain all timing changes. A discarded byte-range
+arithmetic experiment left the entire forward preorder consumer's instructions
+and registers unchanged after normalizing addresses, yet reduced throughput
+from roughly 1,900 to 1,225–1,420 million input nodes/s. Its inner loop moved from
+`0x7ab00` to `0x7aa70`, crossing a 64-byte boundary. Compiler alignment-only
+experiments also changed timings substantially. This supports code-placement
+sensitivity, without isolating a particular hardware mechanism. No alignment
+flags are retained. The final forward/reverse preorder node and fold consumers
+also match the previous version after address normalization.
+
+The retained production change is limited to predicate-mask iteration:
+`remaining &= remaining - 1` replaces clearing the bit through its slot index.
+The pending mask update compiles to `lea`/`and`, replacing `mov -2`/`rol`/`and`
+and removing its dependency on the bit-scan result. Constructing the output mask
+still needs the slot-dependent shift. Original range arithmetic, relative slot
+indices, borrowed slices, and automatic `Send + Sync` are preserved. A trial
+using absolute slot ranges hurt forward folds by about 28% and was discarded.
+
+The confirmation compares the original branch head (`75a9c43c9`), the previous
+retained version, and this change on CPU 2 of an Intel Core Ultra 7 165U with
+rustc 1.95.0. As above, each result pools ten samples from two processes with
+binary and workload order reversed; no builds ran during measurement. Rates are
+**million input nodes/s**, previous → retained:
+
+| Operation | Tuning corpus | Second corpus |
+| --- | ---: | ---: |
+| Preorder nodes | 1,937.0 → 1,935.6 | 1,863.8 → 1,868.3 |
+| Reverse preorder nodes | 1,952.4 → 1,973.6 | 1,934.9 → 1,872.0 |
+| Preorder fold | 3,142.9 → 3,122.2 | 3,005.7 → 2,967.8 |
+| Reverse preorder fold | 3,225.6 → 3,197.7 | 3,042.9 → 3,035.8 |
+| Byte range, nodes | 7,503.0 → 7,741.2 | 8,779.4 → 9,105.2 |
+| Byte range, count | 8,260.2 → 8,829.0 | 9,530.6 → 10,295.9 |
+| Postorder nodes | 237.3 → 236.6 | 182.4 → 182.1 |
+| Reverse postorder nodes | 195.5 → 195.1 | 156.6 → 156.5 |
+
+Byte-range enumeration improves 3.2–3.7%, bringing it within 0.7% of the original
+branch; range counts are now 14% faster than that baseline. Plain preorder
+remains 2.44–2.49× faster forward and 11–12% faster reverse, with folds
+2.48–2.56× faster. Reverse enumeration drops 3.3% against the previous version on
+the second corpus despite unchanged instructions; the unchanged scalar control
+drops 4–5% on both corpora. These are measurements of particular binaries, not
+portable guarantees. The supertype workload also benefits (51–60% against the
+previous version); all 22 workloads are recorded in the report.
+
+Scanning and example tests pass at group sizes 16/32/64, including the new range
+reduction probe checked against scalar navigation. Strict library/test Clippy
+and normal release compilation pass. Artifacts in `build/range-optimization/`
+include `confirmation.json`, the reproduction script `confirm.py`, all three
+binaries and their hashes, extracted consumers, source snapshots, and
+`final-scan-patterns.s`.

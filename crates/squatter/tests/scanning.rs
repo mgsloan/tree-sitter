@@ -1,4 +1,4 @@
-use std::collections::{HashSet, VecDeque};
+use std::collections::HashSet;
 use tree_squatter::{
     Grammar, IdSet, KindSet, Node, PackOptions, Tree,
     scan::{GroupScan, Scan},
@@ -59,6 +59,36 @@ fn reference_preorder(root: Node<'_>) -> Vec<Node<'_>> {
     }
 }
 
+fn check_consumption<'tree, I: Iterator<Item = Node<'tree>>>(
+    make: impl Fn() -> I,
+    expected: &[Node<'tree>],
+) {
+    for consumed in [0, 1, 2, 7, 16, 33, expected.len() + 1] {
+        let mut nodes = make();
+        for index in 0..consumed {
+            assert_eq!(nodes.next(), expected.get(index).copied());
+        }
+        let remaining = &expected[consumed.min(expected.len())..];
+        assert_eq!(nodes.count(), remaining.len());
+
+        let mut nodes = make();
+        for _ in 0..consumed {
+            nodes.next();
+        }
+        let actual = nodes.fold(Vec::new(), |mut result, node| {
+            result.push(node);
+            result
+        });
+        assert_eq!(actual, remaining);
+    }
+    let mut nodes = make();
+    for &node in expected {
+        assert_eq!(nodes.next(), Some(node));
+    }
+    assert_eq!(nodes.next(), None);
+    assert_eq!(nodes.next(), None);
+}
+
 fn check_pipeline<'tree, S: GroupScan<'tree>>(
     make: impl Fn() -> Scan<'tree, S>,
     expected: &[Node<'tree>],
@@ -67,14 +97,8 @@ fn check_pipeline<'tree, S: GroupScan<'tree>>(
     assert_eq!(make().count(), expected.len());
     assert_eq!(make().rev().count(), expected.len());
     assert_eq!(make().nodes().count(), expected.len());
-    assert_eq!(
-        make().rev().nodes().collect::<Vec<_>>(),
-        expected.iter().rev().copied().collect::<Vec<_>>()
-    );
-    assert_eq!(
-        make().nodes().rev().collect::<Vec<_>>(),
-        expected.iter().rev().copied().collect::<Vec<_>>()
-    );
+    let reversed = expected.iter().rev().copied().collect::<Vec<_>>();
+    assert_eq!(make().rev().nodes().collect::<Vec<_>>(), reversed);
     assert_eq!(make().rev().rev().nodes().collect::<Vec<_>>(), expected);
     assert_eq!(
         make()
@@ -85,11 +109,11 @@ fn check_pipeline<'tree, S: GroupScan<'tree>>(
     );
     assert_eq!(
         make()
-            .groups()
             .rev()
+            .groups()
             .flat_map(|group| group.nodes())
             .collect::<Vec<_>>(),
-        expected.iter().rev().copied().collect::<Vec<_>>()
+        reversed
     );
 
     let mut seen = HashSet::new();
@@ -107,65 +131,12 @@ fn check_pipeline<'tree, S: GroupScan<'tree>>(
         assert_eq!(group.node(u32::MAX), None);
     }
     assert_eq!(count, expected.len());
-    for period in [2, 3, 5] {
-        let mut nodes = make().nodes();
-        let mut remaining: VecDeque<_> = expected.iter().copied().collect();
-        let mut index = 0;
-        while !remaining.is_empty() {
-            if index % period == 0 {
-                assert_eq!(nodes.next_back(), remaining.pop_back());
-            } else {
-                assert_eq!(nodes.next(), remaining.pop_front());
-            }
-            index += 1;
-        }
-        for _ in 0..2 {
-            assert_eq!(nodes.next(), None);
-            assert_eq!(nodes.next_back(), None);
-        }
-    }
-    for consumed in [0, 1, 2, 7, 16, 33] {
-        let mut nodes = make().nodes();
-        let mut remaining: VecDeque<_> = expected.iter().copied().collect();
-        for index in 0..consumed {
-            if index % 2 == 0 {
-                assert_eq!(nodes.next(), remaining.pop_front());
-            } else {
-                assert_eq!(nodes.next_back(), remaining.pop_back());
-            }
-        }
-        assert_eq!(nodes.count(), remaining.len());
-
-        for reverse in [false, true] {
-            let mut nodes = make().nodes();
-            let mut remaining: VecDeque<_> = expected.iter().copied().collect();
-            for index in 0..consumed {
-                if index % 2 == 0 {
-                    assert_eq!(nodes.next(), remaining.pop_front());
-                } else {
-                    assert_eq!(nodes.next_back(), remaining.pop_back());
-                }
-            }
-            let append = |mut result: Vec<_>, node| {
-                result.push(node);
-                result
-            };
-            let actual = if reverse {
-                nodes.rfold(Vec::new(), append)
-            } else {
-                nodes.fold(Vec::new(), append)
-            };
-            let mut expected = remaining.into_iter().collect::<Vec<_>>();
-            if reverse {
-                expected.reverse();
-            }
-            assert_eq!(actual, expected);
-        }
-    }
+    check_consumption(|| make().nodes(), expected);
+    check_consumption(|| make().rev().nodes(), &reversed);
 }
 
 #[test]
-fn orders_subtrees_groups_and_both_ends() {
+fn orders_subtrees_groups_and_directions() {
     let source = format!(
         "{{\"a\": [1, {{\"b\": true}}, null], \"wide\": [{}0]}}",
         "[1,2],".repeat(90)
@@ -681,4 +652,56 @@ fn composition_and_reverse_preserve_membership() {
         &expected.iter().rev().copied().collect::<Vec<_>>(),
     );
     assert!(preorder.iter().any(|node| node.is_extra()));
+}
+
+#[test]
+fn scans_and_groups_are_send_sync() {
+    fn require_send_sync(_: impl Send + Sync) {}
+    let (_, tree) = parse(&json_language(), "[1,2,3]", PackOptions::default());
+    let root = tree.root_node();
+    let kinds = KindSet::new([root.kind_id()]);
+    require_send_sync(root.preorder());
+    require_send_sync(root.preorder().rev().nodes());
+    require_send_sync(root.postorder().nodes());
+    require_send_sync(root.postorder().rev().filter_kind_ids(&kinds).groups());
+    let group = root.all().groups().next().unwrap();
+    require_send_sync(group);
+    require_send_sync(group.group());
+    require_send_sync(group.nodes());
+    std::thread::scope(|scope| {
+        let mut nodes = root.postorder().rev().nodes();
+        assert_eq!(nodes.next(), Some(root));
+        let task = scope.spawn(move || nodes.count());
+        assert_eq!(task.join().unwrap(), root.all().count() - 1);
+    });
+}
+
+#[test]
+fn deep_and_wide_postorder() {
+    for source in [
+        format!("{}0{}", "[".repeat(512), "]".repeat(512)),
+        format!("[{}0]", "[0,1],".repeat(2048)),
+    ] {
+        let (native, tree) = parse(&json_language(), &source, PackOptions::default());
+        let (_, expected) = native_orders(native.root_node());
+        let root = tree.root_node();
+        assert_eq!(
+            root.postorder().nodes().map(describe).collect::<Vec<_>>(),
+            expected
+        );
+        assert_eq!(
+            root.postorder()
+                .rev()
+                .nodes()
+                .map(describe)
+                .collect::<Vec<_>>(),
+            expected.into_iter().rev().collect::<Vec<_>>()
+        );
+        let nodes = root.postorder().nodes().collect::<Vec<_>>();
+        check_consumption(|| root.postorder().nodes(), &nodes);
+        check_consumption(
+            || root.postorder().rev().nodes(),
+            &nodes.into_iter().rev().collect::<Vec<_>>(),
+        );
+    }
 }

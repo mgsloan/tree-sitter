@@ -72,8 +72,8 @@ fn scan_patterns() {
         texts(
             root.postorder()
                 .filter_kind_ids(&containers_and_numbers)
-                .nodes()
                 .rev()
+                .nodes()
         ),
         postorder.into_iter().rev().collect::<Vec<_>>()
     );
@@ -137,10 +137,10 @@ fn scan_patterns() {
         ["1", "2"]
     );
 
-    let mut both_ends = root.postorder().filter_kind_ids(&numbers).nodes();
-    assert_eq!(texts(both_ends.next()), ["1"]);
-    assert_eq!(texts(both_ends.next_back()), ["4"]);
-    assert_eq!(both_ends.count(), 2);
+    let mut backwards = root.postorder().filter_kind_ids(&numbers).rev().nodes();
+    assert_eq!(texts(backwards.next()), ["4"]);
+    assert_eq!(texts(backwards.next()), ["3"]);
+    assert_eq!(backwards.count(), 2);
 
     let grouped_numbers = root.preorder().filter_kind_ids(&numbers).groups();
     let mut matching_slots = 0;
@@ -208,6 +208,14 @@ mod patterns {
     #[inline(never)]
     pub fn range_count(root: Node<'_>, range: Range<usize>) -> usize {
         root.all().overlapping_bytes(range).count()
+    }
+    #[inline(never)]
+    pub fn range_slots(root: Node<'_>, range: Range<usize>) -> u64 {
+        root.all()
+            .overlapping_bytes(range)
+            .nodes()
+            .map(|node| u64::from(node.slot()))
+            .sum()
     }
     #[inline(never)]
     pub fn combined_count(
@@ -373,6 +381,24 @@ fn assembly_patterns_match_examples() {
         6
     );
     assert_eq!(patterns::range_count(root, black_box(0..0)), 0);
+    for range in [
+        0..0,
+        0..SOURCE.len(),
+        third_number..third_number + 1,
+        0..usize::MAX,
+    ] {
+        let expected = nodes
+            .iter()
+            .filter(|node| {
+                !range.is_empty()
+                    && node.start_byte() < node.end_byte()
+                    && node.start_byte() < range.end
+                    && node.end_byte() > range.start
+            })
+            .map(|node| u64::from(node.slot()))
+            .sum::<u64>();
+        assert_eq!(patterns::range_slots(root, black_box(range)), expected);
+    }
     assert_eq!(
         patterns::combined_count(
             root,
