@@ -1,5 +1,21 @@
 # Queue
 
+- [ ] https://github.com/Dekker1/tree-feller
+
+      >   codex resume 01a0b257-8b8e-7123-bdd6-c5deddc08fb7
+
+      * [ ] Relatedly, also have a postorder representation?!
+
+- [ ] Try adding sibling / parent jump columns
+
+## Query
+
+- [ ] iteration api should have preorder(), postorder(), and all().  All just gives the one that's more efficient.
+
+## Persistence
+
+- [ ] Dedicated heed thread(s)?
+
 - [ ] Dig into how grammars are identified in persistence.  And what can be done to increase forward/back compat - key-design.md
 
      * Do sources specify their grammar?
@@ -9,16 +25,6 @@
 - [ ] Persistence API for re-checking a CacheMiss
 
 - [ ] Persistence API for waiting on other writer for some amount of time?
-
-- [ ] https://github.com/Dekker1/tree-feller
-
-      >   codex resume 01a0b257-8b8e-7123-bdd6-c5deddc08fb7
-
-      * [ ] Relatedly, also have a postorder representation?!
-
-- [ ] iteration api should have preorder(), postorder(), and all().  All just gives the one that's more efficient.
-
-- [ ] Something akin to Zed RelPath?
 
 # Backburner
 
@@ -75,3 +81,9 @@
 - [ ] Test that Zed file decode/transform code works.  How to make sure it doesn't diverge? Divergence does not cause incorrectness, but does cause hash mismatches
 
 - [ ] Document choice to not cache for symlinks that point outside the root
+
+- [ ] Radix table on monotonic bases
+
+- [ ] With feller parse, estimate capacity based on per-grammar stats
+
+- [ ] Capacity estimates based on stale cache size
