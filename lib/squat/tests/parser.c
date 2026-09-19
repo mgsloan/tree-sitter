@@ -1,6 +1,7 @@
 #include "../internal.h"
 #include "../../tree_feller/src/tf_lexer.h"
 #include <assert.h>
+#include <pthread.h>
 #include <stdio.h>
 
 static size_t fail_at, allocations;
@@ -63,6 +64,57 @@ static void equal(const SQTree *first, const SQTree *second) {
   assert(first_size == second_size && !memcmp(first_bytes, second_bytes, first_size));
 }
 
+typedef struct {
+  SQGrammar *grammar;
+  const SQTree *expected;
+  SQPackOptions options;
+  atomic_uint *ready;
+  atomic_bool *start;
+  const TFLanguage *prepared;
+} ThreadArgument;
+
+static void *parse_thread(void *argument) {
+  ThreadArgument *thread = argument;
+  atomic_fetch_add(thread->ready, 1);
+  while (!atomic_load(thread->start)) {}
+  SQParseError error;
+  for (unsigned repeat = 0; repeat < 4; repeat++) {
+    SQParser *parser = sq_parser_new(thread->grammar, &error);
+    assert(parser);
+    const TFLanguage *prepared = atomic_load(&thread->grammar->direct_language);
+    assert(prepared && (!thread->prepared || thread->prepared == prepared));
+    thread->prepared = prepared;
+    SQTree *tree = sq_parser_parse(parser, "\nx", 2, thread->options, &error);
+    sq_parser_delete(parser);
+    equal(tree, thread->expected);
+    sq_tree_delete(tree);
+  }
+  return NULL;
+}
+
+static void concurrent_preparation(const SQTree *expected, SQPackOptions options) {
+  SQError error;
+  SQGrammar *grammar = sq_grammar_new(&language, &error);
+  assert(grammar && !atomic_load(&grammar->direct_language));
+  atomic_uint ready = 0;
+  atomic_bool start = false;
+  pthread_t threads[4];
+  ThreadArgument arguments[4];
+  for (unsigned index = 0; index < 4; index++) {
+    arguments[index] = (ThreadArgument){.grammar = sq_grammar_copy(grammar),
+        .expected = expected, .options = options, .ready = &ready, .start = &start};
+    assert(!pthread_create(&threads[index], NULL, parse_thread, &arguments[index]));
+  }
+  while (atomic_load(&ready) != 4) {}
+  sq_grammar_delete(grammar);
+  atomic_store(&start, true);
+  for (unsigned index = 0; index < 4; index++) {
+    assert(!pthread_join(threads[index], NULL));
+    assert(arguments[index].prepared == arguments[0].prepared);
+    sq_grammar_delete(arguments[index].grammar);
+  }
+}
+
 int main(void) {
   SQError error;
   SQParseError diagnostic;
@@ -77,6 +129,7 @@ int main(void) {
   assert(native && !ts_node_has_error(ts_tree_root_node(native)));
   SQTree *expected = sq_tree_pack(grammar, native, options, &error);
   assert(expected && sq_node_start_byte(sq_tree_root_node(expected)) == 0);
+  assert(!atomic_load(&grammar->direct_language));
 
   // Fallback must restart at the original position and retain the parse state
   // used for keyword handling and speculative token-cache reuse.
@@ -94,16 +147,28 @@ int main(void) {
 
   for (size_t attempt = 1;; attempt++) {
     assert(attempt < 128);
+    SQGrammar *fresh = sq_grammar_new(&language, &error);
+    assert(fresh);
     allocations = 0;
     fail_at = attempt;
-    SQParser *parser = sq_parser_new(grammar, &diagnostic);
+    SQParser *parser = sq_parser_new(fresh, &diagnostic);
     fail_at = 0;
-    if (parser) { sq_parser_delete(parser); break; }
+    if (parser) {
+      sq_parser_delete(parser);
+      sq_grammar_delete(fresh);
+      break;
+    }
     assert(diagnostic.code == SQ_ERROR_ALLOCATION && diagnostic.message[0]);
+    parser = sq_parser_new(fresh, &diagnostic);
+    assert(parser);
+    sq_grammar_delete(fresh);
+    sq_parser_delete(parser);
   }
 
   SQParser *parser = sq_parser_new(grammar, &diagnostic);
   assert(parser && diagnostic.code == SQ_OK);
+  const TFLanguage *prepared = atomic_load(&grammar->direct_language);
+  assert(prepared && !prepared->field_at && !prepared->aliasable);
   for (size_t attempt = 1;; attempt++) {
     assert(attempt < 128);
     sq_parser_trim(parser);
@@ -132,7 +197,9 @@ int main(void) {
   SQTree *retained = sq_parser_parse(parser, "\nx", 2, options, NULL);
   sq_parser_trim(parser);
   sq_parser_delete(parser);
+  assert(atomic_load(&grammar->direct_language) == prepared);
   SQTree *one_shot = sq_tree_parse_direct(grammar, "\nx", 2, options, &diagnostic);
+  assert(atomic_load(&grammar->direct_language) == prepared);
   equal(one_shot, expected);
   sq_tree_delete(one_shot);
   assert(!sq_parser_new(NULL, &diagnostic) && diagnostic.code == SQ_ERROR_ARGUMENT);
@@ -156,11 +223,12 @@ int main(void) {
     sq_grammar_delete(other);
   }
 
+  concurrent_preparation(expected, options);
   sq_grammar_delete(grammar);
   equal(retained, expected);
   sq_tree_delete(retained);
   sq_tree_delete(expected);
   ts_tree_delete(native);
   ts_parser_delete(mainline);
-  puts("ok: direct parsing, lexer fallback, allocation failures, reuse, ownership, unsupported grammars");
+  puts("ok: direct parsing, lexer fallback, allocation failures, reuse, shared grammar, unsupported grammars");
 }

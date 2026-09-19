@@ -35,7 +35,7 @@ static uint32_t tf_language__action_table_extent(const TSLanguage *ts, const TFL
   return extent;
 }
 
-TFLanguage *tf_language_load(const TSLanguage *ts, const char **error) {
+TFLanguage *tf_language_load_parser(const TSLanguage *ts, const char **error) {
   const char *ignored = NULL;
   if (!error) {
     error = &ignored;
@@ -119,63 +119,6 @@ TFLanguage *tf_language_load(const TSLanguage *ts, const char **error) {
     }
   }
 
-  // Flatten the field maps. `tf_field_map` hands back a list per production, and
-  // resolving one child means scanning it; on a data file that is once per value
-  // parsed. A production has at most `max_alias_sequence_length` structural
-  // children, so the whole thing fits in a rectangle -- 492 bytes for DataZinc.
-  uint32_t width = ts->max_alias_sequence_length;
-  {
-    const TSFieldMapEntry *entry, *end;
-    for (uint32_t production = 0; production < ts->production_id_count; production++) {
-      tf_field_map(self, production, &entry, &end);
-      for (; entry != end; entry++) {
-        if (!entry->inherited && entry->child_index + 1U > width) {
-          width = entry->child_index + 1U;
-        }
-      }
-    }
-  }
-  self->field_at_width = width;
-  if (width > 0) {
-    TSFieldId *field_at = calloc((size_t)ts->production_id_count * width, sizeof(TSFieldId));
-    if (!field_at) {
-      goto oom;
-    }
-    self->field_at = field_at;
-    const TSFieldMapEntry *entry, *end;
-    for (uint32_t production = 0; production < ts->production_id_count; production++) {
-      tf_field_map(self, production, &entry, &end);
-      for (; entry != end; entry++) {
-        // First match wins, as the scan it replaces returned the first hit.
-        TSFieldId *slot = &field_at[(size_t)production * width + entry->child_index];
-        if (!entry->inherited && *slot == 0) {
-          *slot = entry->field_id;
-        }
-      }
-    }
-  }
-
-  // language.h:240-261. `alias_map` is a run of {symbol, count, aliases...},
-  // ordered by symbol and terminated by a 0 symbol. A symbol listed there can be
-  // renamed by its parent's production, so it cannot be treated as reliably
-  // hidden.
-  uint8_t *aliasable = calloc(ts->symbol_count, sizeof(uint8_t));
-  if (!aliasable) {
-    goto oom;
-  }
-  self->aliasable = aliasable;
-  for (unsigned idx = 0;;) {
-    TSSymbol symbol = ts->alias_map[idx++];
-    if (symbol == 0) {
-      break;
-    }
-    uint16_t count = ts->alias_map[idx++];
-    if (symbol < ts->symbol_count) {
-      aliasable[symbol] = 1;
-    }
-    idx += count;
-  }
-
   uint32_t extent = tf_language__action_table_extent(ts, self);
   uint8_t *counts = calloc(extent, sizeof(uint8_t));
   if (!counts) {
@@ -236,6 +179,75 @@ TFLanguage *tf_language_load(const TSLanguage *ts, const char **error) {
 oom:
   *error = "out of memory";
 fail:
+  tf_language_free(self);
+  return NULL;
+}
+
+TFLanguage *tf_language_load(const TSLanguage *ts, const char **error) {
+  TFLanguage *self = tf_language_load_parser(ts, error);
+  if (!self) return NULL;
+
+  // Flatten the field maps. `tf_field_map` hands back a list per production, and
+  // resolving one child means scanning it; on a data file that is once per value
+  // parsed. A production has at most `max_alias_sequence_length` structural
+  // children, so the whole thing fits in a rectangle -- 492 bytes for DataZinc.
+  uint32_t width = ts->max_alias_sequence_length;
+  {
+    const TSFieldMapEntry *entry, *end;
+    for (uint32_t production = 0; production < ts->production_id_count; production++) {
+      tf_field_map(self, production, &entry, &end);
+      for (; entry != end; entry++) {
+        if (!entry->inherited && entry->child_index + 1U > width) {
+          width = entry->child_index + 1U;
+        }
+      }
+    }
+  }
+  self->field_at_width = width;
+  if (width > 0) {
+    TSFieldId *field_at = calloc((size_t)ts->production_id_count * width, sizeof(TSFieldId));
+    if (!field_at) {
+      goto oom;
+    }
+    self->field_at = field_at;
+    const TSFieldMapEntry *entry, *end;
+    for (uint32_t production = 0; production < ts->production_id_count; production++) {
+      tf_field_map(self, production, &entry, &end);
+      for (; entry != end; entry++) {
+        // First match wins, as the scan it replaces returned the first hit.
+        TSFieldId *slot = &field_at[(size_t)production * width + entry->child_index];
+        if (!entry->inherited && *slot == 0) {
+          *slot = entry->field_id;
+        }
+      }
+    }
+  }
+
+  // language.h:240-261. `alias_map` is a run of {symbol, count, aliases...},
+  // ordered by symbol and terminated by a 0 symbol. A symbol listed there can be
+  // renamed by its parent's production, so it cannot be treated as reliably
+  // hidden.
+  uint8_t *aliasable = calloc(ts->symbol_count, sizeof(uint8_t));
+  if (!aliasable) {
+    goto oom;
+  }
+  self->aliasable = aliasable;
+  for (unsigned idx = 0;;) {
+    TSSymbol symbol = ts->alias_map[idx++];
+    if (symbol == 0) {
+      break;
+    }
+    uint16_t count = ts->alias_map[idx++];
+    if (symbol < ts->symbol_count) {
+      aliasable[symbol] = 1;
+    }
+    idx += count;
+  }
+
+  return self;
+
+oom:
+  if (error) *error = "out of memory";
   tf_language_free(self);
   return NULL;
 }

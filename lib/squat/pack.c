@@ -1,6 +1,7 @@
 #include "internal.h"
 #include "reductions.h"
 #include "../src/tree.h"
+#include <tree_feller.h>
 
 // Only the current group's absolute values are staged. Frame coordinates are
 // Point positions are computed once left-to-right, then consumed right-to-left
@@ -695,8 +696,9 @@ static SQGrammar *grammar_new(const TSLanguage *language, const void *grammar_ca
     return NULL;
   }
   SQGrammar *grammar = calloc(1, sizeof(SQGrammar));
-  if (grammar) atomic_init(&grammar->references, 1);
   if (!grammar) goto allocation;
+  atomic_init(&grammar->references, 1);
+  atomic_init(&grammar->direct_language, NULL);
   grammar->language = ts_language_copy(language);
   if (!sq_symbol_table_init(language, &grammar->symbols, error)) {
     sq_grammar_delete(grammar);
@@ -797,6 +799,7 @@ SQGrammar *sq_grammar_copy(SQGrammar *grammar) {
 void sq_grammar_delete(SQGrammar *grammar) {
   if (!grammar || atomic_fetch_sub_explicit(&grammar->references, 1, memory_order_acq_rel) != 1)
     return;
+  tf_language_free(atomic_load_explicit(&grammar->direct_language, memory_order_relaxed));
   sq_supertype_grammar_delete(grammar->supertype_grammar);
   ts_language_delete(grammar->language);
   sq_symbol_table_delete(&grammar->symbols);

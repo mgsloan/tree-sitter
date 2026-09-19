@@ -64,6 +64,7 @@ SQPackOptions sq_pack_options_default(void);
 // return. Other tables are derived from the language. More than 65536 dictionary
 // masks fails with SQ_ERROR_DICTIONARY_FULL. Grammars reject symbol
 // or field IDs exceeding 16 bits with SQ_ERROR_OVERFLOW. No global registry is used.
+// Direct-parser tables are prepared lazily and shared by parsers using this handle.
 SQGrammar *sq_grammar_new(const TSLanguage *, SQError *);
 SQGrammar *sq_grammar_new_with_cache(const TSLanguage *, const void *, size_t, SQError *);
 SQGrammar *sq_grammar_copy(SQGrammar *);
@@ -95,7 +96,8 @@ typedef struct {
 
 // Direct UTF-8 parsing into reverse preorder without a TSTree. Requires ABI 15
 // and no external scanner or non-terminal extras; syntax errors are not recovered.
-// The parser retains its grammar and scratch. Calls require exclusive access.
+// The parser retains its grammar and scratch. Separate parsers share prepared
+// grammar tables; calls on one parser require exclusive access.
 // Reductions are buffered until packing; output trees outlive the source and parser.
 SQParser *sq_parser_new(SQGrammar *, SQParseError *);
 void sq_parser_delete(SQParser *);

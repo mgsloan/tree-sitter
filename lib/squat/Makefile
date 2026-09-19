@@ -18,7 +18,7 @@ $(BUILD)/%.o: %.c internal.h reductions.h attributes.h include/tree_sitter/squat
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) -c $< -o $@
 
 $(BUILD)/query.o: query_plan.c query_internal.h include/tree_sitter/squat_query.h
-$(BUILD)/parser.o: $(FELLER_HEADERS)
+$(BUILD)/pack.o $(BUILD)/parser.o: $(FELLER_HEADERS)
 
 $(BUILD)/feller_%.o: ../tree_feller/src/%.c $(FELLER_HEADERS) | $(BUILD)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) -c $< -o $@
@@ -50,7 +50,7 @@ $(BUILD)/supertype-check: tests/supertypes.c tests/supertype_fixture.h pack.c $(
 
 $(BUILD)/parser-check: tests/parser.c $(FELLER_HEADERS) $(BUILD)/libtree-sitter-squat.a $(BUILD)/runtime.o
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) $(filter %.c %.a %.o,$^) \
-	  -Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc -o $@
+	  -pthread -Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc -o $@
 
 check: $(BUILD)/unit $(BUILD)/supertype-check $(BUILD)/parser-check
 	$(BUILD)/unit

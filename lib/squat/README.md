@@ -56,6 +56,9 @@ Rust exposes `Parser::new(&grammar)`, `parse(source)`,
 `parse_with_options(source, options)`, and `trim()`. One-shot parsing uses
 `Tree::parse_direct(&grammar, source)` or C's `sq_tree_parse_direct`.
 Returned trees retain their grammar and outlive the source and parser.
+Parser tables are prepared lazily on `SQGrammar` and shared across its parsers,
+including one-shot calls. Direct fields use the same tables as mainline packing;
+feller's separate field and visibility tables are not built for this path.
 Failed parses leave the parser reusable; `trim()` releases retained scratch.
 
 This path requires ABI 15 grammars without external scanners or nonterminal

@@ -123,8 +123,9 @@ pub struct Tree(NonNull<c_void>);
 
 /// Prepared immutable grammar tables. Clones share metadata; contexts and trees
 /// retain it independently. Native grammar libraries must outlive every handle.
+/// Direct-parser tables are prepared lazily and shared across parser instances.
 pub struct Grammar(NonNull<c_void>);
-// Metadata is immutable after construction; native ownership uses atomic references.
+// Tables are immutable once published; native publication and ownership are atomic.
 unsafe impl Send for Grammar {}
 unsafe impl Sync for Grammar {}
 impl Grammar {

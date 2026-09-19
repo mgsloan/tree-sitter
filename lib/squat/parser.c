@@ -8,7 +8,7 @@
 
 struct SQParser {
   SQGrammar *grammar;
-  TFLanguage *language;
+  const TFLanguage *language;
   TFParser *feller;
   SQPackContext *pack;
   SQReduction *reductions;
@@ -151,15 +151,27 @@ SQParser *sq_parser_new(SQGrammar *grammar, SQParseError *error) {
     return NULL;
   }
   parser->grammar = sq_grammar_copy(grammar);
-  const char *message = NULL;
-  parser->language = tf_language_load(sq_grammar_language(grammar), &message);
+  parser->language = atomic_load_explicit(&grammar->direct_language, memory_order_acquire);
   if (!parser->language) {
-    // The pinned upstream API has diagnostic strings, not numeric error codes.
-    SQError code = message && strcmp(message, "out of memory") == 0
-      ? SQ_ERROR_ALLOCATION : SQ_ERROR_LANGUAGE;
-    parse_error(error, code, 0, (TSPoint){0}, message);
-    sq_parser_delete(parser);
-    return NULL;
+    const char *message = NULL;
+    TFLanguage *prepared = tf_language_load_parser(grammar->language, &message);
+    if (!prepared) {
+      SQError code = message && strcmp(message, "out of memory") == 0
+        ? SQ_ERROR_ALLOCATION : SQ_ERROR_LANGUAGE;
+      parse_error(error, code, 0, (TSPoint){0}, message);
+      sq_parser_delete(parser);
+      return NULL;
+    }
+    // First users may prepare concurrently; retain only the published tables.
+    // Allocation failures leave the cache empty so another attempt can retry.
+    TFLanguage *existing = NULL;
+    if (atomic_compare_exchange_strong_explicit(&grammar->direct_language, &existing, prepared,
+                                                memory_order_acq_rel, memory_order_acquire)) {
+      parser->language = prepared;
+    } else {
+      tf_language_free(prepared);
+      parser->language = existing;
+    }
   }
   parser->feller = tf_parser_new();
   if (!parser->feller) {
@@ -192,7 +204,6 @@ void sq_parser_delete(SQParser *parser) {
   sq_parser_trim(parser);
   sq_pack_context_delete(parser->pack);
   tf_parser_delete(parser->feller);
-  tf_language_free(parser->language);
   sq_grammar_delete(parser->grammar);
   free(parser);
 }

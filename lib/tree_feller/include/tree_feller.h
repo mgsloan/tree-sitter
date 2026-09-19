@@ -31,8 +31,11 @@ typedef struct TFLanguage TFLanguage;
 
 // Loads generated grammar tables. Returns NULL for a non-ABI-15 grammar or one
 // with an external scanner. `error` may be NULL. `ts` must outlive the result.
-// Loading is not thread-safe; a loaded language is immutable and shareable.
+// A loaded language is immutable and shareable.
 TFLanguage *tf_language_load(const TSLanguage *ts, const char **error);
+// Driver tables only, for sinks that resolve fields and visibility themselves.
+// The result supports tf_parse and tf_parser_parse, but not tf_parse_visible.
+TFLanguage *tf_language_load_parser(const TSLanguage *ts, const char **error);
 // Safe to call with NULL, like free().
 void tf_language_free(TFLanguage *self);
 

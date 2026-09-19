@@ -117,6 +117,7 @@ uint32_t sq_symbol_code(const SQGrammar *, uint32_t display, uint32_t original);
 
 struct SQGrammar {
   atomic_size_t references;
+  _Atomic(struct TFLanguage *) direct_language;
   const TSLanguage *language;
   TSSymbol *supertypes;
   uint32_t supertype_count;

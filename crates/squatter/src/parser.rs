@@ -72,6 +72,7 @@ pub struct Parser(NonNull<c_void>);
 unsafe impl Send for Parser {}
 
 impl Parser {
+    /// Reuses the grammar's shared direct-parser tables, preparing them on first use.
     pub fn new(grammar: &Grammar) -> Result<Self, ParseError> {
         let mut status = RawParseError::new();
         let raw = unsafe { ffi::sq_parser_new(grammar.0.as_ptr(), &mut status) };
