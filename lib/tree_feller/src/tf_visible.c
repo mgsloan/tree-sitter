@@ -1,0 +1,386 @@
+// The visible-node filter: a raw sink that applies tree-sitter's visibility,
+// alias and field rules and forwards what survives.
+//
+// Three rules do the work, all of them tree-sitter's:
+//   * a child is visible iff its own symbol is visible or the parent's production
+//     aliases it (node.c:/ts_node__is_relevant/);
+//   * a hidden child contributes its own visible children in its place, so
+//     `_expression` and `aux_sym_*_repeat1` disappear and their contents are
+//     inlined into the nearest visible ancestor;
+//   * aliases and fields are indexed by `structural_index`, which counts only
+//     non-extra children (subtree.c:437).
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "tf_language.h"
+
+// What the filter has to remember about a stack cell, beyond what the driver's
+// own TFNode already carries (symbol, extra, byte and point spans): how many
+// settled entries it owns at the top of the arena, and which production built
+// it. Both fit in the pointer the driver stores on our behalf, so there is
+// nothing to allocate -- on a data file that is four allocations per value
+// parsed which simply do not happen.
+//
+typedef struct {
+  uint32_t children;
+  uint16_t production;
+} TFVisibleCell;
+
+#if UINTPTR_MAX >= UINT64_MAX && !defined(TF_VISIBLE_FORCE_CELL_ARENA)
+#define TF_USE_PACKED_CELLS 1
+#else
+#define TF_USE_PACKED_CELLS 0
+#endif
+
+typedef struct {
+  const TFLanguage *lang;
+  const TFVisibleSink *sink;
+
+  // Settled visible children, as a stack: a cell's entries are always the run
+  // immediately below the top, in source order.
+  TFVisibleChild *arena;
+  uint32_t arena_len, arena_capacity;
+  TFVisibleChild *scratch;
+  uint32_t scratch_capacity;
+
+#if !TF_USE_PACKED_CELLS
+  // Parser values are stable, non-zero, one-based indices into this arena.
+  // They remain valid when realloc moves the allocation.
+  TFVisibleCell *cells;
+  uint32_t cells_len, cells_capacity;
+#endif
+
+  // Symbols whose runs the consumer has already refused to fold. Offering a run
+  // means handing over every child in it, and a repetition's run grows by one
+  // each time it reduces -- so re-offering a symbol that was declined once costs
+  // O(n^2) over the list for an answer that has not changed. One byte per
+  // symbol, allocated only if a fold is declined at all.
+  uint8_t *declined;
+
+  bool failed;
+} TFFilter;
+
+static TFVisibleCell tf_filter__cell(const TFFilter *self, const void *value) {
+#if TF_USE_PACKED_CELLS
+  (void)self;
+  uintptr_t packed = (uintptr_t)value;
+  return (TFVisibleCell){.children = (uint32_t)(packed >> 17),
+                         .production = (uint16_t)((packed >> 1) & 0xFFFFU)};
+#else
+  uintptr_t index = (uintptr_t)value;
+  if (index == 0 || index > self->cells_len) {
+    return (TFVisibleCell){0};
+  }
+  return self->cells[index - 1];
+#endif
+}
+
+static void *tf_filter__store_cell(TFFilter *self, uint32_t children, uint16_t production) {
+#if TF_USE_PACKED_CELLS
+  (void)self;
+  // The pointer is the storage, not a pointer to it. The tag bit keeps it
+  // non-NULL, which the driver treats as "no value".
+  // NOLINTNEXTLINE(performance-no-int-to-ptr)
+  return (void *)(((uintptr_t)children << 17) | ((uintptr_t)production << 1) | 1U);
+#else
+  if (self->cells_len == UINT32_MAX) {
+    self->failed = true;
+    return NULL;
+  }
+  if (self->cells_len == self->cells_capacity) {
+    uint32_t next = self->cells_capacity ? self->cells_capacity * 2 : 64;
+    if (next < self->cells_capacity) {
+      next = UINT32_MAX;
+    }
+    if ((size_t)next > SIZE_MAX / sizeof(TFVisibleCell)) {
+      self->failed = true;
+      return NULL;
+    }
+    TFVisibleCell *grown = realloc(self->cells, (size_t)next * sizeof(TFVisibleCell));
+    if (!grown) {
+      self->failed = true;
+      return NULL;
+    }
+    self->cells = grown;
+    self->cells_capacity = next;
+  }
+  self->cells[self->cells_len++] = (TFVisibleCell){.children = children, .production = production};
+  // The integer is a stable, one-based arena handle, not an object pointer.
+  // NOLINTNEXTLINE(performance-no-int-to-ptr)
+  return (void *)(uintptr_t)self->cells_len;
+#endif
+}
+
+// The run of settled entries at `position`, as the sink sees it. The arena can
+// still be null here (`&arena[0]` would be UB), and an empty run is non-null
+// because consumers may memcpy from it and Rust's `from_raw_parts` requires it.
+static const TFVisibleChild tf_filter__no_children;
+
+static const TFVisibleChild *tf_filter__run(const TFFilter *self, uint32_t position) {
+  return self->arena ? &self->arena[position] : &tf_filter__no_children;
+}
+
+// The node for a reduction itself, over the run it owns from `base`.
+static TFVisibleNode tf_filter__parent(const TFFilter *self, const TFReduction *reduction,
+                                       bool named, uint32_t base) {
+  return (TFVisibleNode){
+      .symbol = tf_public_symbol(self->lang, reduction->symbol),
+      .production_id = reduction->production_id,
+      .named = named,
+      .start_byte = reduction->start_byte,
+      .end_byte = reduction->end_byte,
+      .start_point = reduction->start_point,
+      .end_point = reduction->end_point,
+      .child_count = self->arena_len - base,
+      .children = tf_filter__run(self, base),
+  };
+}
+
+static bool tf_filter__reserve(TFVisibleChild **array, uint32_t *capacity, uint32_t needed) {
+  if (needed <= *capacity) {
+    return true;
+  }
+  // 64-bit, so doubling past 2^31 cannot wrap to 0 and loop forever.
+  uint64_t next = *capacity ? *capacity : 64;
+  while (next < needed) {
+    next *= 2;
+  }
+  if (next > UINT32_MAX) {
+    next = UINT32_MAX;
+  }
+  TFVisibleChild *grown = realloc(*array, next * sizeof(TFVisibleChild));
+  if (!grown) {
+    return false;
+  }
+  *array = grown;
+  *capacity = (uint32_t)next;
+  return true;
+}
+
+static void *tf_filter__on_shift(void *payload, const TFToken *token, bool extra) {
+  TFFilter *self = payload;
+  (void)token;
+  (void)extra;
+  // A token owns no settled entries and was built by no production.
+  return tf_filter__store_cell(self, 0, 0);
+}
+
+static void *tf_filter__on_reduce(void *payload, const TFReduction *reduction) {
+  TFFilter *self = payload;
+  if (self->failed) {
+    return NULL;
+  }
+  const TFLanguage *lang = self->lang;
+  const TSLanguage *ts = lang->ts;
+  uint16_t production_id = reduction->production_id;
+
+  // The alias and field rows for this production, resolved once. The sink's
+  // callbacks are opaque, so every `lang->...` load inside the loops below is
+  // otherwise repeated after each one -- five chained loads per child.
+  const TSSymbol *alias_row = tf_alias_sequence(lang, production_id);
+  uint32_t field_width = lang->field_at_width;
+  const TSFieldId *field_row =
+      field_width ? &lang->field_at[(size_t)production_id * field_width] : NULL;
+
+  uint32_t total = 0;
+  for (uint32_t i = 0; i < reduction->node_count; i++) {
+    total += tf_filter__cell(self, reduction->children[i].value).children;
+  }
+  uint32_t base = self->arena_len - total;
+  uint32_t position = base;
+
+  // A leading run of hidden children keeps its entries exactly where they are.
+  // This is what stops a left-recursive repetition from being O(n^2): every
+  // `repeat1 -> repeat1 x` reduction copies one entry, not the whole run.
+  uint32_t index = 0, structural = 0;
+  for (; index < reduction->node_count; index++) {
+    const TFNode *child = &reduction->children[index];
+    uint32_t owns = tf_filter__cell(self, child->value).children;
+    TSSymbol alias = (alias_row && !child->extra) ? alias_row[structural] : 0;
+    if (alias || tf_symbol_metadata(lang, child->symbol).visible) {
+      break;
+    }
+    TSFieldId field =
+        (field_row && !child->extra && structural < field_width) ? field_row[structural] : 0;
+    if (field) {
+      for (uint32_t i = 0; i < owns; i++) {
+        TFVisibleChild *entry = &self->arena[position + i];
+        if (!entry->extra && !entry->field_id) {
+          entry->field_id = field;
+        }
+      }
+    }
+    position += owns;
+    if (!child->extra) {
+      structural++;
+    }
+  }
+  uint32_t settled = position;
+
+  // From the first visible child on, entries move, so build into scratch and
+  // copy back over the region that has been read.
+  uint32_t produced = 0;
+  for (; index < reduction->node_count; index++) {
+    const TFNode *child = &reduction->children[index];
+    TFVisibleCell cell = tf_filter__cell(self, child->value);
+    uint32_t owns = cell.children;
+    TSSymbol alias = (alias_row && !child->extra) ? alias_row[structural] : 0;
+    TSSymbolMetadata metadata = tf_symbol_metadata(lang, child->symbol);
+    TSFieldId field =
+        (field_row && !child->extra && structural < field_width) ? field_row[structural] : 0;
+
+    if (alias || metadata.visible) {
+      bool named = alias ? tf_symbol_metadata(lang, alias).named : metadata.named;
+      // Punctuation the consumer said it does not want. Leaves only: a node with
+      // children would take them with it.
+      if (self->sink->named_only && !named && !field && owns == 0) {
+        if (!child->extra) {
+          structural++;
+        }
+        continue;
+      }
+      TFVisibleNode node = {
+          .symbol = tf_public_symbol(lang, alias ? alias : child->symbol),
+          .production_id = cell.production,
+          .named = named,
+          .extra = child->extra,
+          .start_byte = child->start_byte,
+          .end_byte = child->end_byte,
+          .start_point = child->start_point,
+          .end_point = child->end_point,
+          .child_count = owns,
+          .children = tf_filter__run(self, position),
+      };
+      if (!tf_filter__reserve(&self->scratch, &self->scratch_capacity, produced + 1)) {
+        self->failed = true;
+        return NULL;
+      }
+      self->scratch[produced++] = (TFVisibleChild){
+          .symbol = node.symbol,
+          .field_id = field,
+          .extra = child->extra,
+          .value = self->sink->on_node ? self->sink->on_node(self->sink->payload, &node) : NULL,
+      };
+    } else {
+      if (!tf_filter__reserve(&self->scratch, &self->scratch_capacity, produced + owns)) {
+        self->failed = true;
+        return NULL;
+      }
+      // tree_cursor.c:672 stops the walk at an extra, so an extra never picks
+      // up a field from a hidden ancestor -- and with no field to apply there is
+      // nothing to inspect, so the run moves as a block.
+      if (field) {
+        for (uint32_t i = 0; i < owns; i++) {
+          TFVisibleChild entry = self->arena[position + i];
+          if (!entry.extra && !entry.field_id) {
+            entry.field_id = field;
+          }
+          self->scratch[produced++] = entry;
+        }
+      } else if (owns > 0) {
+        memcpy(&self->scratch[produced], &self->arena[position], owns * sizeof(TFVisibleChild));
+        produced += owns;
+      }
+    }
+
+    position += owns;
+    if (!child->extra) {
+      structural++;
+    }
+  }
+
+  // Most reductions produce nothing new -- their children are all hidden and
+  // already sit where they belong -- so neither the growth check nor the copy is
+  // worth paying for at one per reduction.
+  if (produced > 0) {
+    if (!tf_filter__reserve(&self->arena, &self->arena_capacity, settled + produced)) {
+      self->failed = true;
+      return NULL;
+    }
+    // One entry is the overwhelmingly common case -- a node with children takes
+    // their place -- and it is a 16-byte store, not a call into memmove.
+    if (produced == 1) {
+      self->arena[settled] = self->scratch[0];
+    } else {
+      memcpy(&self->arena[settled], self->scratch, produced * sizeof(TFVisibleChild));
+    }
+  }
+  self->arena_len = settled + produced;
+
+  // Offer a hidden run to the consumer to fold. Only worth it above one entry,
+  // which also keeps supertypes out of it: those always wrap exactly one child,
+  // so there is nothing to collapse.
+  uint32_t owned = self->arena_len - base;
+  if (owned > 1 && self->sink->on_hidden && tf_foldable(lang, reduction->symbol) &&
+      !(self->declined && self->declined[reduction->symbol])) {
+    TFVisibleNode node = tf_filter__parent(self, reduction, false, base);
+    void *folded = self->sink->on_hidden(self->sink->payload, &node);
+    if (folded) {
+      self->arena[base] = (TFVisibleChild){.symbol = node.symbol, .value = folded};
+      self->arena_len = base + 1;
+    } else {
+      // Declined. Take that as the answer for this symbol and stop asking.
+      if (!self->declined) {
+        self->declined = calloc(ts->symbol_count, sizeof(uint8_t));
+      }
+      if (self->declined) {
+        self->declined[reduction->symbol] = 1;
+      }
+    }
+  }
+
+  // The root has no parent to judge it, so it is emitted on its own terms. It is
+  // the one reduction whose last child is the end token (tf_parser__reduce), and
+  // what it returns is the value tf_parse hands back.
+  if (reduction->node_count > 0 &&
+      reduction->children[reduction->node_count - 1].symbol == ts_builtin_sym_end) {
+    TSSymbolMetadata metadata = tf_symbol_metadata(lang, reduction->symbol);
+    if (!metadata.visible || !self->sink->on_node) {
+      return NULL;
+    }
+    TFVisibleNode node = tf_filter__parent(self, reduction, metadata.named, base);
+    return self->sink->on_node(self->sink->payload, &node);
+  }
+
+  return tf_filter__store_cell(self, self->arena_len - base, production_id);
+}
+
+bool tf_parse_visible(const TFLanguage *lang, const void *source, size_t size,
+                      const TFVisibleSink *sink, void **root, TFError *error) {
+  static const TFVisibleSink no_sink = {0};
+  TFFilter self = {.lang = lang, .sink = sink ? sink : &no_sink};
+  TFSink raw = {
+      .payload = &self, .on_shift = tf_filter__on_shift, .on_reduce = tf_filter__on_reduce};
+
+  void *raw_root = NULL;
+  bool ok = tf_parse(lang, source, size, &raw, &raw_root, error);
+
+  if (ok && self.failed) {
+    ok = false;
+    if (error) {
+      snprintf(error->message, TF_ERROR_MESSAGE_SIZE, "out of memory");
+    }
+  }
+
+  if (root) {
+    *root = ok ? raw_root : NULL;
+  }
+
+  // Same as the driver: on failure the consumer never sees a root, so hand back
+  // everything still sitting in the arena.
+  if (!ok && self.sink->on_discard) {
+    for (uint32_t i = 0; i < self.arena_len; i++) {
+      if (self.arena[i].value) {
+        self.sink->on_discard(self.sink->payload, self.arena[i].value);
+      }
+    }
+  }
+  free(self.arena);
+  free(self.scratch);
+  free(self.declined);
+#if !TF_USE_PACKED_CELLS
+  free(self.cells);
+#endif
+  return ok;
+}
