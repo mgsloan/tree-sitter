@@ -169,7 +169,7 @@ fn mutated_slabs_are_rejected_or_support_bounded_traversal() {
         let Ok(tree) = Tree::from_bytes_safety_checked(&grammar, &bytes) else {
             continue;
         };
-        for (count, node) in tree.root_node().preorder().enumerate() {
+        for (count, node) in tree.root_node().preorder().nodes().enumerate() {
             assert!(count < tree.slot_count() as usize);
             let _ = (node.kind(), node.grammar_name(), node.field_name());
             let _ = (node.parent(), node.next_sibling(), node.prev_sibling());

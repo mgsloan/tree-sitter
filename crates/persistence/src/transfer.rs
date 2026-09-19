@@ -114,6 +114,7 @@ impl Persistence {
             || tree
                 .root_node()
                 .preorder()
+                .nodes()
                 .any(|node| node.end_byte() > source.len())
         {
             return Err(invalid().into());

@@ -2536,16 +2536,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tree-squatter"
-version = "0.1.0"
-dependencies = [
- "cc",
- "regex",
- "tree-sitter",
- "tree-sitter-json",
-]
-
-[[package]]
 name = "tree-sitter-tags"
 version = "0.28.0"
 dependencies = [
@@ -2563,6 +2553,17 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
+]
+
+[[package]]
+name = "tree-squatter"
+version = "0.1.0"
+dependencies = [
+ "cc",
+ "regex",
+ "tree-sitter",
+ "tree-sitter-c-sharp",
+ "tree-sitter-json",
 ]
 
 [[package]]

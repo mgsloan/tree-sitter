@@ -45,6 +45,9 @@ pub fn representation_id() -> u64 {
     unsafe { sq_representation_id() }
 }
 
+pub mod scan;
+pub use scan::{Postorder, Preorder, Scan};
+
 pub mod query;
 pub use query::{
     Query, QueryCapture, QueryCursor, QueryError, QueryExecution, QueryExecutionError, QueryMatch,
@@ -595,11 +598,19 @@ impl<'tree> Node<'tree> {
     pub fn utf8_text(self, source: &[u8]) -> Result<&str, std::str::Utf8Error> {
         std::str::from_utf8(&source[self.byte_range()])
     }
-    pub fn preorder(self) -> Preorder<'tree> {
-        Preorder {
-            next: Some(self),
-            first_slot: unsafe { ffi::sq_node_first_slot(self.raw) },
-        }
+    /// This node and its descendants, parents before children, left to right.
+    pub fn preorder(self) -> Scan<'tree, Preorder<'tree>> {
+        Preorder::scan(self)
+    }
+
+    /// This node and its descendants, children left to right before their parent.
+    pub fn postorder(self) -> Scan<'tree, Postorder<'tree>> {
+        Postorder::scan(self)
+    }
+
+    /// Choose the cheaper traversal. Order is unspecified across representations.
+    pub fn all(self) -> Scan<'tree, Preorder<'tree>> {
+        self.preorder()
     }
 
     /// Native preorder iterator.
@@ -622,10 +633,7 @@ impl<'tree> Node<'tree> {
         self,
         kinds: &'kinds KindSet,
     ) -> KindMatches<'tree, 'kinds> {
-        KindMatches {
-            kinds,
-            scan: self.preorder(),
-        }
+        self.preorder().filter_kind_ids(kinds).nodes()
     }
 
     /// Test for a child without counting siblings.
@@ -871,36 +879,9 @@ impl FromIterator<u16> for KindSet {
 }
 
 /// Preorder traversal filtered by public kind IDs.
-pub struct KindMatches<'tree, 'kinds> {
-    kinds: &'kinds KindSet,
-    scan: Preorder<'tree>,
-}
-impl<'tree> Iterator for KindMatches<'tree, '_> {
-    type Item = Node<'tree>;
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.kinds.is_empty() {
-            return None;
-        }
-        self.scan.find(|node| self.kinds.contains(node.kind_id()))
-    }
-}
-impl std::iter::FusedIterator for KindMatches<'_, '_> {}
+pub type KindMatches<'tree, 'kinds> =
+    scan::Nodes<'tree, scan::Filtered<Preorder<'tree>, scan::KindIds<'kinds>>>;
 
-pub struct Preorder<'tree> {
-    next: Option<Node<'tree>>,
-    first_slot: u32,
-}
-impl<'tree> Iterator for Preorder<'tree> {
-    type Item = Node<'tree>;
-    fn next(&mut self) -> Option<Self::Item> {
-        let node = self.next?;
-        self.next = node
-            .next_preorder()
-            .filter(|next| next.slot() >= self.first_slot);
-        Some(node)
-    }
-}
-impl std::iter::FusedIterator for Preorder<'_> {}
 pub struct Children<'tree> {
     next: Option<Node<'tree>>,
 }
@@ -1198,7 +1179,6 @@ mod ffi {
         pub fn sq_node_is_error(node: RawNode) -> bool;
         pub fn sq_node_has_error(node: RawNode) -> bool;
         pub fn sq_node_has_changes(node: RawNode) -> bool;
-        pub fn sq_node_first_slot(node: RawNode) -> u32;
         pub fn sq_node_descendant_count(node: RawNode) -> u32;
         pub fn sq_node_child_count(node: RawNode) -> u32;
         pub fn sq_node_named_child_count(node: RawNode) -> u32;

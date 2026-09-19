@@ -303,7 +303,7 @@ impl<'tree> NodeLike<'tree> for Node<'tree> {
     type Cursor = Cursor<'tree>;
     node_attributes!(Node<'tree>);
     fn preorder(self) -> impl Iterator<Item = Self> {
-        Node::preorder(self)
+        Node::preorder(self).nodes()
     }
     fn node_iterator(self) -> Result<impl NodeIteratorLike<'tree, Node = Self>, Error> {
         Node::node_iterator(self)

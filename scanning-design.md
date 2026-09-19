@@ -1,7 +1,7 @@
 # Rust scanning API
 
-Initial proposal. This describes a new group-based scan API, not the existing
-`Preorder` or `NodeIterator` implementation.
+The group-based Rust scan API. The existing native `NodeIterator` remains a
+separate interface for stateful attribute access.
 
 The scan reads stored columns directly and retains a compact mask of matching
 slots for each group. There is no unpack cache: neither traversal, filters, nor
@@ -21,20 +21,33 @@ for node in scan.nodes() {
 }
 ```
 
+Choose a traversal before applying range restrictions or filters:
+
+- `preorder()` visits parents before children, with siblings left to right.
+- `postorder()` visits children left to right before their parent.
+- `all()` selects the more efficient traversal for the representation. Its order
+  is unspecified; the current reverse-preorder storage selects preorder.
+
+All three include the root. `all()` does not promise a stable choice across
+representations or releases. Use an explicit order when order matters.
+
+Reverse either explicit order with `.rev()`, for example
+`node.postorder().rev().filter_kind_ids(&kinds).nodes()`.
+
 The scan is a typed pipeline with three terminal operations:
 
 - `nodes()` returns an ordinary iterator of `Node` handles.
 - `count()` sums population counts without constructing nodes.
 - `groups()` returns an iterator of group references and matching masks.
 
-Scans include the root, remain inside its subtree, preserve preorder, and yield
+Scans remain inside the root's subtree, preserve the selected order, and yield
 each matching node once. IDs belong to the tree's language. Public kind IDs are
 the default; grammar IDs, if supported, use a separate method.
 
 Kind sets use OR; successive filters use AND. An empty kind set matches nothing.
 Field matching tests the child's field relative to its parent, without implying
-a parent-kind constraint. Supertypes test actual node membership rather than a
-global expansion into concrete kinds.
+a parent-kind constraint. Field ID zero matches nodes without a field. Supertypes
+test actual node membership rather than a global expansion into concrete kinds.
 
 Ordinary mapping follows `nodes()`. Specialized consumers can process groups
 directly. There is no `map_cached` operation or type-level column-cache machinery.
@@ -44,8 +57,9 @@ directly. There is no `map_cached` operation or type-level column-cache machiner
 `overlapping_bytes` changes traversal rather than appending a predicate:
 
 ```rust
-Preorder<'tree>
-PreorderOverlappingBytes<'tree>
+Scan<'tree, Preorder<'tree>>
+Scan<'tree, Postorder<'tree>>
+Scan<'tree, PreorderOverlappingBytes<'tree>>
 Filtered<Source, Predicate>
 ```
 
@@ -63,10 +77,11 @@ struct GroupMatches<'tree> {
 
 trait GroupScan<'tree> {
     fn next_group(&mut self) -> Option<GroupMatches<'tree>>;
+    fn next_back_group(&mut self) -> Option<GroupMatches<'tree>>;
 }
 
 trait Predicate {
-    fn retain_matches(&self, group: GroupRef<'_>, candidates: Mask) -> Mask;
+    fn retain_matches(&self, group: &GroupRef<'_>, candidates: Mask) -> Mask;
 }
 ```
 
@@ -82,17 +97,25 @@ would limit optimization.
 
 ## Masks and group identity
 
-Use a compact integer bitmap behind a `Mask` newtype. A `u64` is sufficient while
-groups have at most 64 slots; the current 16-slot groups do not require widening
-the storage format. Mask width is independent of SIMD register width.
+Use a `u64` bitmap behind `Mask` for all supported 16/32/64-slot groups. The
+width is chosen for traversal throughput; smaller masks did not improve the
+measured workloads consistently (see `iteration-optimization-findings.md`). Mask
+width is independent of SIMD register width and does not change the storage format.
 
 Bit positions identify physical slots within the group. Waste slots, slots
 outside the selected subtree, and unused high bits are always zero. Group
 references provide the physical-slot mapping and tree lifetime.
 
 Physical storage is reverse preorder. Group iteration and set-bit extraction
-must follow logical preorder, rather than assuming lowest-bit-first iteration.
-Keep that mapping in group/node iteration helpers.
+must follow the selected traversal. A group match carries its extraction
+direction. Keep that mapping in group/node iteration helpers.
+
+Postorder is not reverse preorder: reversing preorder also reverses sibling
+order. Postorder can revisit a physical group with disjoint masks, since nodes
+from another group may intervene. A group result represents an ordered fragment,
+not necessarily every match in that physical group. Flattening fragments must
+produce exactly the selected node order. The prototype emits singleton fragments
+for postorder; batching compatible runs is deferred.
 
 `Mask` supports intersection, emptiness, population count, and extraction of the
 next matching slot in traversal order. SIMD kernels may use native vector masks
@@ -102,6 +125,25 @@ over different column widths and existing flag bitmaps to compose directly.
 Packing a vector comparison into a bitmap has a target-dependent cost. A future
 combined kernel may intersect compatible vector results before packing once.
 The group interface does not require exposing native SIMD mask types.
+
+## Reverse iteration
+
+`scan.rev()` reverses the selected order while preserving group filtering and
+population counts. It can appear before or after filters. It does not change
+preorder into postorder. `all().rev()` reverses whichever order `all()` chose,
+without making that choice part of the public contract.
+
+`nodes()` implements `DoubleEndedIterator`, so `scan.nodes().rev()` is also
+available. Interleaving `next()` and `next_back()` yields each node at most once.
+Both partially consumed end masks contribute to `count()`. `groups()` is also
+double ended; its `next_back()` returns a fragment with reversed extraction
+order, so flattening `scan.groups().rev()` preserves reversed node order.
+
+Preorder needs only group bounds and two boundary masks. Forward postorder walks
+descending slots, delaying ancestors until their subtree ends, with O(depth)
+stack space. Reverse postorder keeps pending child slots and may use O(nodes)
+space on a wide tree. Neither retains decoded columns or buffers matching node
+handles. The two ends stop when they meet.
 
 ## Byte-range traversal
 
@@ -122,8 +164,8 @@ representable interval before narrowing. Do not unpack coordinates into a cache.
 
 For nonempty node and scan ranges, overlap means
 `node.start < range.end && node.end > range.start`. Empty scan ranges match
-nothing. The treatment of zero-width nodes needs a separate decision before
-implementation; point selection should not be inferred from an empty range.
+nothing. Zero-width nodes do not overlap a byte range, even when their position
+lies strictly inside it. Point selection requires a separate operation.
 
 Node ends are not monotonic in preorder. An early ancestor may extend across the
 requested range, and a later node can end earlier than a previous node. Seeking,
@@ -142,9 +184,9 @@ Filters read stored columns directly:
 - Predicates over packed values decode only what their kernel needs.
 
 `retain_matches` permits both dense group evaluation and scalar evaluation of
-surviving slots. Start with dense kernels for cheap comparisons and selected-slot
-evaluation for expensive predicates. Dense kernels can initially use scalar Rust
-and gain explicit SIMD where measurement justifies it.
+surviving slots. Single-kind and field equality use SSE2 on x86_64, with a scalar
+fallback elsewhere. A singleton candidate uses one scalar comparison. Multiple
+kinds use the kind-set lookup; expensive predicates visit selected slots.
 
 Filter order is initially call order. Empty masks short-circuit subsequent
 filters. Choosing dense versus sparse evaluation stays inside the predicate,
@@ -152,20 +194,42 @@ where column costs are known; consumers need not make that choice.
 
 ## Terminal operations
 
-`nodes()` retains the current group and remaining mask. Each `next()` removes
-one matching bit and creates its node handle. Exhaustion is permanent.
+`nodes()` retains a base node, mask, and extraction direction at each end,
+avoiding copies of column metadata per node. Each `next()` removes one matching
+bit and creates its node handle. Exhaustion is permanent.
 
 `count()` sums `Mask::count_ones()`. Override the node iterator's `count()` as
-well, including its partially consumed mask, so `scan.nodes().count()` avoids
+well, including both partially consumed masks, so `scan.nodes().count()` avoids
 constructing nodes. Hardware population count depends on the compilation target.
 
+Counts do not observe traversal order. An unconsumed postorder source counts
+physical groups through preorder instead, composing the same pure predicates.
+Once either end has advanced, counting preserves the remaining topology. Predicate
+composition keeps call order and short-circuits empty masks in both paths.
+
 `groups()` exposes only nonempty groups, retaining subtree and range constraints.
-Its standard iterator `count()` counts groups, not nodes; `scan.count()` counts
+Its standard iterator `count()` counts fragments, not nodes; `scan.count()` counts
 nodes. Returned masks are values, and group references borrow the immutable tree,
 not mutable iterator state.
 
+## Prototype scope
+
+Column metadata crosses the C boundary once per scan; Rust kernels read borrowed
+little-endian storage directly. Single-kind and field equality use dense SIMD
+where available; extra and missing filters intersect stored flag bits. Supertype
+filters read the stored membership mask or prepared grammar dictionary. There is
+no unpack cache.
+
+Preorder byte traversal uses conservative group bounds to skip groups and avoid
+unnecessary comparisons. It preserves ancestors whose ends cross the requested
+range. Postorder currently checks its singleton fragments with the same overlap
+semantics. Ordered scans require `.nodes()` for ordinary iterator adapters;
+`for node in scan` remains available through `IntoIterator`.
+
 ## Deferred work
 
+- Reduce reverse postorder's pending topology storage. Greedy fragment batching
+  did not improve the measured workloads enough to retain.
 - Measure dense versus sparse thresholds per predicate.
 - Combine cheap predicates before empty-mask checks where that improves throughput.
 - Add point-range traversal and define behavior for trees without stored points.

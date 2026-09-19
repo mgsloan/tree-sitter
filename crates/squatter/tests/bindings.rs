@@ -285,6 +285,7 @@ fn check_cursor_reuse(
             packed
                 .root_node()
                 .preorder()
+                .nodes()
                 .filter(|node| node.is_named() && !node.is_error())
                 .count()
         );
@@ -338,8 +339,8 @@ fn shared_navigation_and_iterator_lifetimes() -> Result<(), Box<dyn Error>> {
     let (language, native, packed) = fixture()?;
     check_shared_navigation(native.root_node(), language.field_count() as u16)?;
     check_shared_navigation(packed.root_node(), language.field_count() as u16)?;
-    for root in packed.root_node().preorder() {
-        let expected: Vec<_> = root.preorder().collect();
+    for root in packed.root_node().preorder().nodes() {
+        let expected: Vec<_> = root.preorder().nodes().collect();
         let mut iterator = root.node_iterator()?;
         assert!(iterator.field_id().is_none());
         let mut nodes = Vec::new();
@@ -410,6 +411,7 @@ fn owned_and_borrowed_storage() -> Result<(), Box<dyn Error>> {
     let expected: Vec<_> = compact
         .root_node()
         .preorder()
+        .nodes()
         .map(|node| (node.kind().to_owned(), node.byte_range()))
         .collect();
     assert_eq!(compact.group_count(), compact.group_capacity());
@@ -422,6 +424,7 @@ fn owned_and_borrowed_storage() -> Result<(), Box<dyn Error>> {
         decoded
             .root_node()
             .preorder()
+            .nodes()
             .map(|node| (node.kind().to_owned(), node.byte_range()))
             .collect::<Vec<_>>(),
         expected
