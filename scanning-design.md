@@ -1,6 +1,8 @@
 # Rust scanning API
 
 The group-based Rust scan API. Read attributes from the returned node handles.
+Range and position selection below describes the planned API; implementation
+status is recorded under Prototype scope.
 
 The scan reads stored columns directly and retains a compact mask of matching
 slots for each group. There is no unpack cache: neither traversal, filters, nor
@@ -61,7 +63,8 @@ directly. There is no `map_cached` operation or type-level column-cache machiner
 
 ## Typed composition
 
-`overlapping_bytes` changes traversal rather than appending a predicate:
+Range restrictions combine traversal pruning with group predicates. Current scan
+types include:
 
 ```rust
 Scan<'tree, Preorder<'tree>>
@@ -70,9 +73,10 @@ Scan<'tree, PreorderOverlappingBytes<'tree>>
 Filtered<Source, Predicate>
 ```
 
-Each type stores only its own arguments and inner source. The initial API
-requires range restriction before filters. Bounds cannot change after scanning
-has started.
+Each type stores only its own arguments and inner source. Planned restrictions
+select the coordinate system and relation through types, allowing specialized
+kernels without a per-node relation switch. Apply range or position restrictions
+before other filters. Bounds cannot change after scanning has started.
 
 The internal group protocol is schematically:
 
@@ -163,27 +167,80 @@ wide tree. It expands a node only after yielding it and returns the last child
 directly, so unary paths need no pending allocation. Neither traversal retains
 decoded columns or buffers matching node handles.
 
-## Byte-range traversal
+## Range and position selection
 
-`PreorderOverlappingBytes` locates the earliest group that might contain an
-overlapping node, preserving overlapping ancestors. For each group it starts
-with the valid subtree-slot mask.
+Byte range methods accept `Range<usize>`; point range methods accept `Range<Point>`. Points
+compare by row, then column, using the same coordinates as `start_position()` and
+`end_position()`. A point range is a continuous source interval, not a rectangle.
 
-- While candidates may end before or at the range start, intersect with an
-  end-position comparison mask.
-- When candidates may start at or beyond the range end, intersect with a
-  start-position comparison mask.
-- Skip a comparison when group bounds prove every candidate passes it.
-- Stop when ordering bounds prove that no later group can overlap.
+For a nonempty node `start..end` and nonempty query `from..to`:
 
+| Byte filter | Point filter | Matches when |
+| --- | --- | --- |
+| `overlapping_bytes` | `overlapping_points` | `start < to && from < end` |
+| `within_bytes` | `within_points` | `from <= start && end <= to` |
+| `containing_bytes` | `containing_points` | `start <= from && to <= end` |
+| `starting_in_bytes` | `starting_in_points` | `from <= start && start < to` |
+| `ending_in_bytes` | `ending_in_points` | `from <= end && end < to` |
+
+Empty or reversed query ranges match nothing for every relation. Containment
+includes equality: a node with the query's exact span qualifies for both
+`within_*` and `containing_*`. All matching nodes are returned, including nested
+nodes; `within_*` does not select only the outermost qualifying nodes.
+
+Zero-width nodes at `position` follow these rules:
+
+- `overlapping_*`, `starting_in_*`, and `ending_in_*` match when
+  `from <= position && position < to`.
+- `within_*` matches when `from <= position && position <= to`, including both
+  boundaries under endpoint containment.
+- `containing_*` cannot match a nonempty query.
+
+`ending_in_*` selects the exclusive end coordinate itself, not the last occupied
+byte or character. A node ending at `to` is excluded, and one ending at `from`
+is included. This applies equally to byte and point coordinates.
+
+Overlap selects syntax touching a region; containment selects syntax wholly
+inside it or enclosing it. Start/end membership selects position-anchored records
+or assigns each node to one of adjacent windows without duplicates. For example,
+a node spanning `80..120` overlaps both `0..100` and `100..200`, lies within
+neither, starts in the first, and ends in the second.
+
+Single-position queries are separate from empty ranges:
+
+| Byte position | Point position | Matches when |
+| --- | --- | --- |
+| `containing_byte` | `containing_point` | `start <= position && position < end` |
+| `starting_at_byte` | `starting_at_point` | `start == position` |
+| `ending_at_byte` | `ending_at_point` | `end == position` |
+
+Single-position containment excludes zero-width nodes; exact start/end matching
+includes them. No single-position overlap or within variants are planned.
+
+Point filters read the stored point columns directly, without source text or
+conversion to byte offsets. When the tree has no stored points, use the existing
+node-position convention `(0, byte_offset)` for the same comparisons.
+
+## Range traversal
+
+Pruning depends on the relation and coordinate system. Start/end membership
+needs only its corresponding endpoint column; overlap and containment need both.
 Use group bases and packed deltas directly. Where possible, translate an absolute
-range bound into a comparison against stored deltas, handling bounds outside the
+bound into a comparison against stored deltas, handling bounds outside the
 representable interval before narrowing. Do not unpack coordinates into a cache.
 
-For nonempty node and scan ranges, overlap means
-`node.start < range.end && node.end > range.start`. Empty scan ranges match
-nothing. Zero-width nodes do not overlap a byte range, even when their position
-lies strictly inside it. Point selection requires a separate operation.
+The current preorder overlap adapter uses a binary search over group start minima
+to remove groups wholly beyond the query end, preserving overlapping ancestors.
+It refines valid subtree-slot masks with conservative group bounds and endpoint
+comparisons. Further seeking and early termination require ordering guarantees;
+the other relations must use their own bounds.
+
+Zero-width overlap changes boundary rejection. A group whose maximum end equals
+the query start may contain matching zero-width nodes, so only a maximum end
+strictly before the query start proves rejection. Likewise, a nonempty parent
+ending at the query start does not overlap, but its zero-width descendants at
+that boundary may overlap. Do not prune such a subtree solely because its parent
+fails the overlap predicate.
 
 Node ends are not monotonic in preorder. An early ancestor may extend across the
 requested range, and a later node can end earlier than a previous node. Seeking,
@@ -251,24 +308,32 @@ where available; extra and missing filters intersect stored flag bits. Supertype
 filters read the stored membership mask or prepared grammar dictionary. There is
 no unpack cache.
 
+Only `overlapping_bytes` is implemented among the planned range and position
+methods. It currently excludes zero-width nodes; the overlap predicate and group
+boundary rejection still need the semantics above. Empty queries already match
+nothing.
+
 Preorder byte traversal uses conservative group bounds to skip groups and avoid
 unnecessary comparisons. It preserves ancestors whose ends cross the requested
-range. Postorder currently checks its singleton fragments with the same overlap
-semantics. Ordered scans require `.nodes()` for ordinary iterator adapters;
-`for node in scan` remains available through `IntoIterator`.
+range. Postorder checks its singleton fragments with the same predicate, without
+range-based traversal pruning. Ordered scans require `.nodes()` for ordinary
+iterator adapters; `for node in scan` remains available through `IntoIterator`.
 
 ## Deferred work
 
+- Implement the range and single-position API above, including zero-width
+  overlap, point columns, and the existing fallback for trees without points.
 - Reduce reverse postorder's pending topology storage. Greedy fragment batching
   did not improve the measured workloads enough to retain.
 - Measure dense versus sparse thresholds per predicate.
 - Combine cheap predicates before empty-mask checks where that improves throughput.
-- Add point-range traversal and define behavior for trees without stored points.
 - Add grammar-ID and parent-kind predicates if there are concrete use cases.
 - Consider specialized value projection without adding an unpack cache.
 
-Initial correctness checks should cover overlapping ancestors, group waste,
-partial subtree groups, range boundaries, filter composition, and agreement
-between node enumeration and population counts. Performance experiments should
-compare complete group kernels, including mask packing, against scalar scans at
-different selectivities.
+Correctness checks should cover every relation in both coordinate systems,
+zero-width nodes at either boundary and inside the range, empty/reversed queries,
+equal spans, multiline points, and trees without stored points. Also cover
+overlapping ancestors, group waste, partial subtree groups, filter composition,
+both traversal directions, and agreement between node enumeration and population
+counts. Performance experiments should compare complete group kernels, including
+mask packing, against scalar scans at different selectivities.
