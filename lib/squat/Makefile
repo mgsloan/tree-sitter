@@ -3,7 +3,7 @@ CC ?= cc
 CFLAGS ?= -O2 -g
 CPPFLAGS += -I$(ROOT)/lib/include -I$(ROOT)/lib/src -Iinclude
 WARNINGS := -std=c11 -Wall -Wextra -Werror
-SOURCES := symbols.c supertypes.c slab.c pack.c node.c cursor.c iterator.c index.c scan.c query.c
+SOURCES := symbols.c supertypes.c slab.c pack.c node.c cursor.c index.c scan.c query.c
 BUILD ?= $(ROOT)/build/squat
 
 .PHONY: all clean test
@@ -18,6 +18,7 @@ $(BUILD)/%.o: %.c internal.h attributes.h include/tree_sitter/squat.h | $(BUILD)
 $(BUILD)/query.o: query_plan.c query_internal.h include/tree_sitter/squat_query.h
 
 $(BUILD)/libtree-sitter-squat.a: $(SOURCES:%.c=$(BUILD)/%.o)
+	rm -f $@
 	$(AR) rcs $@ $^
 
 $(BUILD)/runtime.o: $(ROOT)/lib/src/lib.c | $(BUILD)
