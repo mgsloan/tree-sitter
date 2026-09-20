@@ -2594,6 +2594,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "tree-squatter-rust"
+version = "0.1.0"
+dependencies = [
+ "cc",
+ "regex",
+ "tree-sitter",
+ "tree-sitter-c",
+ "tree-sitter-c-sharp",
+ "tree-sitter-json",
+ "tree-squatter",
+]
+
+[[package]]
 name = "typenum"
 version = "1.20.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

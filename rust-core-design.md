@@ -1,7 +1,8 @@
 # Rust core
 
 Proposal based on `main` at `0c3f79ab5`, which merges `iteration` through
-`8810c4828`. No Rust-core implementation changes have been made.
+`8810c4828`. Implementation is in progress in `crates/squatter-rust`; the reference
+remains unchanged.
 
 [rust-core-interfaces.md](rust-core-interfaces.md) specifies the planned private
 interfaces and ownership contracts. Preserve the existing public Rust API.
@@ -143,14 +144,10 @@ Its handle borrows the original `TSTree`; a Rust guard enforces that lifetime.
 The adapter resolves hidden wrappers, aliases, inherited fields, extras, and
 exact supertype membership. It emits visible topology only.
 
-The exact event protocol remains an implementation-time question. A starting
-point is three operations:
-
-| Event | Meaning |
-|---|---|
-| Enter | Begin a visible node before traversing its children |
-| Leaf | Emit a visible node with no visible children |
-| Leave | Finish the most recent unmatched Enter |
+The implementation emits one record per visible node in reverse preorder, with
+its visible depth. This avoids separate Enter and Leave records. Native traversal
+retains the private frames needed to resolve hidden nodes; Rust needs only a
+stack of physical write boundaries indexed by visible depth.
 
 Node records carry byte and optional point coordinates, display and grammar IDs,
 field ID, last-visible-child status, extra/missing/subtree-error flags, and the
@@ -158,12 +155,13 @@ prepared supertype code. A code is a direct mask for small supertype sets or an
 index into the prepared dictionary. Hidden-node effects must be fully represented
 before they are omitted. No raw subtree pointer crosses into Rust.
 
-Visit children from last to first and emit their parent on Leave. This preserves
-the current reverse-preorder encoding. On Enter, Rust saves its current physical
-write boundary. On Leave, the difference from that boundary includes any waste
-introduced while encoding descendants. A node count alone cannot supply this
-span. Rust owns group-fit decisions, bases, optional columns, growth, final
-compaction, and presence-index construction.
+Visit children from last to first and emit their parent after them. Before
+encoding a record at depth `d`, extend the Rust boundary stack through `d` using
+the current write position for newly encountered ancestors. Encode the node
+relative to boundary `d`, then truncate the stack to `d`. Existing ancestor
+boundaries survive descendant emission and include any introduced group waste.
+Rust owns group-fit decisions, bases, optional columns, growth, final compaction,
+and presence-index construction.
 
 The traversal retains state across batch boundaries, which may occur at any
 depth. Scratch remains proportional to traversal depth, sibling-position scratch,
@@ -173,11 +171,10 @@ discards the incomplete slab and leaves reusable contexts resettable.
 
 The fill function reports initialized event count and a distinct completion or
 error status. Only the initialized prefix is readable. Records belong to the
-caller; no adapter pointer may survive a refill. Resolve attribute placement on
-Enter versus Leave, batch size, Leaf handling, initial node-count estimates, and
-division of traversal scratch while implementing the packer. Compare allocation,
-peak scratch, and packing time before fixing the interface; these are not
-prerequisites for starting implementation. A batch callback is a fallback if
+caller; no adapter pointer may survive a refill. Batch size and scratch sizing
+remain subject to allocation, peak-scratch, and packing-time comparisons.
+Native traversal exposes the existing node-count estimate for initial capacity.
+A batch callback is a fallback if
 pull-state overhead is measurable; neither design requires callbacks for
 individual attributes.
 
