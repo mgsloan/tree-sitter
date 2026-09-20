@@ -1800,3 +1800,85 @@ No scan implementation changes were made during this recheck. Artifacts in
 binaries, manifests, 48 raw benchmark reports, isolated profiles, annotated
 assembly, normalization diffs, and verification scripts. The remote directory
 has the same name under `/home/mgsloan/scanning-iteration-20260919/`.
+
+## Direct filtered-count dispatch (2026-09-20)
+
+Retain `f90b9af92`: `Filtered::count` forwards its predicate directly to
+`source.count_matches`. This avoids the identity conjunction that hid the
+standalone symbol-count specializations. Composed filters still run in call order.
+The implementation change is five lines; it changes no stored data or group size.
+
+Build and measure on the same Broadwell GCP instance with Rust 1.95.0, GCC 13.3.0,
+default x86_64 target features, and 16 slots. Compare against the preceding current
+binary (`9fc350ea9`, production code unchanged through `dae674ea2`) and rerun the
+older cursor baseline (`46828abdd`) as a reference. The source snapshot includes
+the dispatch change; its production source hashes match the retained commit.
+
+The 23-workload matrix covers common and sparse symbols, fixed arrays and dynamic
+sets, counts and enumeration, ranges, fields, flags, and two-filter intersections.
+It adds two-ID counts and field/flag controls to the previous screen. Each variant
+runs on both 32-file corpora, with four process rounds in alternating order and
+three 50 ms samples per round. The 64 distinct files cover Bash, C, C++, CSS, Go,
+HTML, JSON, Python, TSX, TypeScript, and YAML. All 48 reports pass scalar-result,
+input, storage, binary/source hash, and reconstructed-rate checks.
+
+Changes below are direct-dispatch / preceding-current throughput, tuning / holdout:
+
+| Query | Common symbols | Sparse symbols |
+| --- | ---: | ---: |
+| Array, 1 ID, count | +22.6% / +18.7% | +1.7% / +4.0% |
+| Set, 1 ID, count | +16.6% / +11.9% | +2.1% / −1.3% |
+| Array, 2 IDs, count | +9.6% / +8.6% | +1.0% / +1.1% |
+| Set, 2 IDs, count | +18.6% / +16.7% | −0.1% / +0.6% |
+| Array, 4 IDs, count | +5.7% / +4.7% | −2.3% / −0.5% |
+| Set, 4 IDs, count | +2.9% / +1.7% | +16.6% / +16.4% |
+| Overlap → eight-ID set, count | −6.0% / −4.9% | +13.2% / +12.9% |
+| Field → eight-ID set, count | +6.9% / +5.1% | −7.0% / −4.8% |
+| Overlap → field → eight-ID set, count | +16.3% / +11.0% | −1.7% / −0.3% |
+| Two eight-ID sets, count | −2.2% / −3.6% | −1.9% / −1.7% |
+
+Every paired common-symbol round improves singleton and two-ID counts. Sparse
+four-ID set counts gain 14–19% in every paired round. Field-only counts stay within
+1% overall. The flag-only chain (`filter_extra(false).filter_missing(false)`)
+loses 13.5–16.8% across the four selection/corpus cells, with losses in every paired
+round; symbol selection does not affect this workload. The combined symbol,
+field, and flag workload loses 2.0–6.4% overall. Node enumeration also shifts despite
+its unchanged dispatch, reinforcing the earlier evidence of binary-layout effects.
+
+This recovers only part of the earlier regressions. Against the older cursor
+baseline, common four-ID array counts remain 7.2–8.6% slower, and sparse
+overlap/field/eight-ID counts remain 10.7–11.9% slower. Common overlap/field/eight-ID
+counts now exceed that baseline by 4.3–8.2%.
+
+### Assembly and isolated profiles
+
+The dynamic symbol-count wrapper now selects among the singleton, two-ID,
+four-ID, and fallback kernels before entering the group loop. Its singleton
+branch calls the same kernel as the fixed singleton. That kernel has 197
+disassembled instructions and reserves 56 stack bytes, versus 539 instructions
+and 280 bytes in the previous generic dynamic kernel. Fixed singleton counts
+previously used a separate 222-instruction kernel. These are whole-function
+instruction counts, not executed instructions per group.
+
+Four CPU-clock profiles isolate common singleton and flag-only counts in both
+binaries. Sampling covers the middle three of five 750 ms rounds, excluding
+parsing, packing, and scalar validation. The singleton profile spends about 98%
+in the count kernel and measures 1,404 M input nodes/s versus 1,304 M before.
+
+Flag counts spend over 99% in `Preorder::count_flat`, measuring 1,230 M input
+nodes/s versus 1,438 M before. Unlike the identical-loop cases in the preceding
+recheck, their normalized assembly differs: 187 instructions and 72 stack bytes
+versus 180 instructions and 56 bytes. The new loop shuffles registers around the
+first flag-bitmap read, reloads its flag mask and metadata from the stack, and
+adds a redundant zero-mask test. These provide a concrete code-generation lead;
+the profile does not establish how much each change costs. Hardware performance
+counters remain unavailable, so instruction-fetch and branch effects cannot be
+separated from this added work. The dispatch fix is retained for its symbol-count
+gains; the flag-loop regression remains open.
+
+The five library tests and 18 scanning integration tests pass on GCP. Artifacts
+in `build/count-dispatch/count-dispatch-20260920/` retain the exact source snapshot,
+patch, commit/source mapping, binaries, manifests, all raw reports, profiles,
+compressed full disassembly, selected kernels, comparisons, and scripts.
+`verify.py . confirm` verifies the downloaded matrix. The temporary build
+filesystem and external access configuration are removed, and the VM is stopped.
