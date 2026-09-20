@@ -87,6 +87,8 @@ Parse only the needed info.
 
 ## Performance tuning
 
+- [ ] try eliminating / reducing the conversion arena by storing post-order? Or modifying tree-feller?
+
 - [ ] slot count and field widths
 
 - [ ] threshold between scan and parent walk
