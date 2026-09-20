@@ -33,6 +33,37 @@ pub(crate) struct GrammarView {
 }
 
 impl GrammarView {
+    pub fn symbol_code(&self, display: u16, original: u16) -> Option<u16> {
+        unsafe {
+            if *self.public_symbols.add(original as usize) == display {
+                return Some(*self.default_codes.add(original as usize));
+            }
+            if self.separate != 0 {
+                return Some(display);
+            }
+            if self.encoding == 2 {
+                return Some((display << 8) | original);
+            }
+            let count = *self.counts.add(display as usize);
+            if self.encoding == 1 {
+                let variant = if count == 1 {
+                    0
+                } else {
+                    *self.grammar_codes.add(original as usize)
+                };
+                if variant == 0 && (count != 1 || *self.defaults.add(display as usize) != original)
+                {
+                    return None;
+                }
+                return Some((display << self.symbol_shift) | variant);
+            }
+            let start = display << self.symbol_shift;
+            (0..count)
+                .find(|variant| *self.grammar_ids.add((start + variant) as usize) == original)
+                .map(|variant| start + variant)
+        }
+    }
+
     #[inline]
     pub fn encode_id(&self, symbol: u16) -> u32 {
         match symbol {
@@ -41,6 +72,7 @@ impl GrammarView {
             _ => symbol as u32,
         }
     }
+
     #[inline]
     pub fn decode_id(&self, index: u32) -> u16 {
         if index == self.symbol_count {
@@ -51,6 +83,7 @@ impl GrammarView {
             index as u16
         }
     }
+
     pub fn symbol_name(&self, symbol: u16) -> &str {
         match symbol {
             u16::MAX => "ERROR",
@@ -62,6 +95,7 @@ impl GrammarView {
             },
         }
     }
+
     pub fn field_name(&self, field: u16) -> Option<&str> {
         if field == 0 || field as u32 > self.field_count {
             return None;
@@ -72,6 +106,7 @@ impl GrammarView {
                 .unwrap()
         })
     }
+
     #[inline]
     pub fn named(&self, symbol: u16) -> bool {
         unsafe { *self.symbol_flags.add(self.encode_id(symbol) as usize) & 1 != 0 }
@@ -97,6 +132,7 @@ impl Clone for Grammar {
         }
     }
 }
+
 impl Drop for Grammar {
     fn drop(&mut self) {
         unsafe {
@@ -104,13 +140,16 @@ impl Drop for Grammar {
         }
     }
 }
+
 impl Grammar {
     pub fn new(language: &Language) -> Result<Self, Error> {
         Self::create(language, None)
     }
+
     pub fn from_cache(language: &Language, bytes: &[u8]) -> Result<Self, Error> {
         Self::create(language, Some(bytes))
     }
+
     fn create(language: &Language, bytes: Option<&[u8]>) -> Result<Self, Error> {
         let language = language.clone().into_raw();
         let mut error = 0;
@@ -131,15 +170,18 @@ impl Grammar {
             unsafe { NonNull::new_unchecked(sq_native_grammar_view(raw.as_ptr()).cast_mut()) };
         Ok(Self { raw, view })
     }
+
     pub(crate) fn tables(&self) -> &GrammarView {
         unsafe { self.view.as_ref() }
     }
+
     pub fn language(&self) -> Language {
         let borrowed = std::mem::ManuallyDrop::new(unsafe {
             Language::from_raw(self.tables().language.cast())
         });
         Language::clone(&borrowed)
     }
+
     pub fn cache(&self) -> Result<Vec<u8>, Error> {
         let length = unsafe { sq_native_grammar_cache_size(self.raw.as_ptr()) } as usize;
         let mut bytes = Vec::<u8>::with_capacity(length);
@@ -178,17 +220,20 @@ impl<T> NativeSlice<T> {
         }
     }
 }
+
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Range {
     pub offset: u32,
     pub length: u32,
 }
+
 impl Range {
     pub fn end(self) -> usize {
         self.offset as usize + self.length as usize
     }
 }
+
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Step {
@@ -204,12 +249,14 @@ pub(crate) struct Step {
 pub(crate) mod flags {
     include!(concat!(env!("OUT_DIR"), "/query_flags.rs"));
 }
+
 impl Step {
     #[inline]
     pub fn has(self, flag: u16) -> bool {
         self.flags & flag != 0
     }
 }
+
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct PatternEntry {
@@ -218,6 +265,7 @@ pub(crate) struct PatternEntry {
     pub presence_requirement: u16,
     pub flags: u16,
 }
+
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Pattern {
@@ -227,23 +275,27 @@ pub(crate) struct Pattern {
     pub end_byte: u32,
     pub flags: u16,
 }
+
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub(crate) struct PredicateStep {
     pub kind: u32,
     pub value_id: u32,
 }
+
 #[repr(C)]
 pub(crate) struct StringTable {
     pub bytes: NativeSlice<u8>,
     pub entries: NativeSlice<Range>,
 }
+
 impl StringTable {
     pub unsafe fn get(&self, index: usize) -> &[u8] {
         let entry = unsafe { self.entries.as_slice()[index] };
         &(unsafe { self.bytes.as_slice() })[entry.offset as usize..entry.end()]
     }
 }
+
 #[repr(C)]
 pub(crate) struct QueryView {
     pub language: *const c_void,
@@ -268,9 +320,12 @@ const _: () = {
 };
 
 pub(crate) struct CompiledQuery {
+    // The view borrows this allocation. Mutation requires exclusive access and
+    // refreshes the view because native arrays may move.
     raw: NonNull<c_void>,
     pub view: QueryView,
 }
+
 unsafe impl Send for CompiledQuery {}
 unsafe impl Sync for CompiledQuery {}
 impl Drop for CompiledQuery {
@@ -280,6 +335,7 @@ impl Drop for CompiledQuery {
         }
     }
 }
+
 impl CompiledQuery {
     pub fn new(language: &Language, source: &str) -> Result<Self, QueryError> {
         let length = u32::try_from(source.len()).map_err(|_| QueryError {
@@ -323,16 +379,22 @@ impl CompiledQuery {
         result.validate();
         Ok(result)
     }
+
     pub fn steps(&self) -> &[Step] {
         unsafe { self.view.steps.as_slice() }
     }
+
     pub fn entries(&self) -> &[PatternEntry] {
         unsafe { self.view.pattern_entries.as_slice() }
     }
+
     pub fn patterns(&self) -> &[Pattern] {
         unsafe { self.view.patterns.as_slice() }
     }
+
     pub fn steps_mut(&mut self) -> &mut [Step] {
+        // These records remain C-owned, but no native code accesses them while
+        // Rust holds this exclusive borrow. Drop still uses the C allocator.
         if self.view.steps.length == 0 {
             &mut []
         } else {
@@ -344,6 +406,7 @@ impl CompiledQuery {
             }
         }
     }
+
     pub fn entries_mut(&mut self) -> &mut [PatternEntry] {
         if self.view.pattern_entries.length == 0 {
             &mut []
@@ -356,12 +419,14 @@ impl CompiledQuery {
             }
         }
     }
+
     pub fn disable_pattern(&mut self, pattern: u32) {
         unsafe {
             sq_native_query_disable_pattern(self.raw.as_ptr(), pattern);
             self.refresh();
         }
     }
+
     pub fn disable_capture(&mut self, name: &str) {
         let Ok(length) = u32::try_from(name.len()) else {
             return;
@@ -371,6 +436,7 @@ impl CompiledQuery {
             self.refresh();
         }
     }
+
     unsafe fn refresh(&mut self) {
         unsafe {
             sq_native_query_view(self.raw.as_ptr(), &mut self.view);
@@ -378,6 +444,7 @@ impl CompiledQuery {
         #[cfg(debug_assertions)]
         self.validate();
     }
+
     #[cfg(debug_assertions)]
     fn validate(&self) {
         let steps = self.steps();
@@ -470,6 +537,7 @@ pub(crate) struct Point {
     pub row: u32,
     pub column: u32,
 }
+
 #[repr(C)]
 #[derive(Clone, Copy, Default, Debug)]
 pub(crate) struct Event {
@@ -497,8 +565,10 @@ impl Drop for Traversal {
 }
 pub(crate) struct Events<'input> {
     traversal: &'input mut Traversal,
+    // Native frames borrow tree/reduction storage between refills.
     input: std::marker::PhantomData<&'input ()>,
 }
+
 impl Drop for Events<'_> {
     fn drop(&mut self) {
         unsafe {
@@ -506,17 +576,20 @@ impl Drop for Events<'_> {
         }
     }
 }
+
 impl Traversal {
     pub fn new() -> Result<Self, Error> {
         NonNull::new(unsafe { sq_native_traversal_new() })
             .map(Self)
             .ok_or(Error::Allocation)
     }
+
     pub fn trim(&mut self) {
         unsafe {
             sq_native_traversal_trim(self.0.as_ptr());
         }
     }
+
     pub fn tree<'input>(
         &'input mut self,
         grammar: &'input Grammar,
@@ -541,10 +614,12 @@ impl Traversal {
         })
     }
 }
+
 impl Events<'_> {
     pub fn expected_nodes(&self) -> u32 {
         unsafe { sq_native_traversal_node_count(self.traversal.0.as_ptr()) }
     }
+
     pub fn fill<'buffer>(
         &mut self,
         buffer: &'buffer mut [MaybeUninit<Event>],
@@ -592,6 +667,150 @@ unsafe extern "C" {
         capacity: u32,
         written: *mut u32,
         done: *mut bool,
+        error: *mut i32,
+    ) -> bool;
+}
+
+#[repr(C)]
+struct ParseStatus {
+    code: i32,
+    byte: u32,
+    point: Point,
+    message: [u8; 512],
+}
+
+impl ParseStatus {
+    fn new() -> Self {
+        Self {
+            code: 0,
+            byte: 0,
+            point: Point::default(),
+            message: [0; 512],
+        }
+    }
+
+    fn into_error(self) -> crate::ParseError {
+        let length = self
+            .message
+            .iter()
+            .position(|byte| *byte == 0)
+            .unwrap_or(512);
+        crate::ParseError {
+            code: Error::from_code(self.code),
+            byte: self.byte,
+            point: tree_sitter::Point::new(self.point.row as usize, self.point.column as usize),
+            message: String::from_utf8_lossy(&self.message[..length]).into_owned(),
+        }
+    }
+}
+
+pub(crate) struct NativeParser {
+    raw: NonNull<c_void>,
+    grammar: Grammar,
+}
+
+unsafe impl Send for NativeParser {}
+
+impl Drop for NativeParser {
+    fn drop(&mut self) {
+        unsafe {
+            sq_native_parser_delete(self.raw.as_ptr());
+        }
+    }
+}
+
+impl NativeParser {
+    pub fn new(grammar: &Grammar) -> Result<Self, crate::ParseError> {
+        let mut status = ParseStatus::new();
+        let raw = unsafe { sq_native_parser_new(grammar.raw.as_ptr(), &mut status) };
+        let raw = NonNull::new(raw).ok_or_else(|| status.into_error())?;
+
+        Ok(Self {
+            raw,
+            grammar: grammar.clone(),
+        })
+    }
+
+    pub fn parse(&mut self, source: &[u8]) -> Result<Reductions<'_>, crate::ParseError> {
+        let length = u32::try_from(source.len()).map_err(|_| crate::ParseError {
+            code: Error::Overflow,
+            byte: 0,
+            point: tree_sitter::Point::default(),
+            message: "source exceeds the 32-bit byte limit".into(),
+        })?;
+        let mut status = ParseStatus::new();
+        if !unsafe {
+            sq_native_parser_parse(self.raw.as_ptr(), source.as_ptr(), length, &mut status)
+        } {
+            return Err(status.into_error());
+        }
+
+        Ok(Reductions(self))
+    }
+
+    pub fn trim(&mut self) {
+        unsafe {
+            sq_native_parser_trim(self.raw.as_ptr());
+        }
+    }
+}
+
+pub(crate) struct Reductions<'parse>(&'parse mut NativeParser);
+
+impl Drop for Reductions<'_> {
+    fn drop(&mut self) {
+        // Clear logical state even if encoding fails or unwinds; capacity stays
+        // reusable. Events borrow this guard and must end before it is dropped.
+        unsafe {
+            sq_native_parser_clear(self.0.raw.as_ptr());
+        }
+    }
+}
+
+impl Reductions<'_> {
+    pub fn grammar(&self) -> &Grammar {
+        &self.0.grammar
+    }
+
+    pub fn events<'input>(
+        &'input self,
+        traversal: &'input mut Traversal,
+        points: bool,
+    ) -> Result<Events<'input>, Error> {
+        let mut error = 0;
+        if !unsafe {
+            sq_native_parser_begin(
+                self.0.raw.as_ptr(),
+                traversal.0.as_ptr(),
+                points,
+                &mut error,
+            )
+        } {
+            return Err(Error::from_code(error));
+        }
+
+        Ok(Events {
+            traversal,
+            input: std::marker::PhantomData,
+        })
+    }
+}
+
+unsafe extern "C" {
+    fn sq_native_parser_new(grammar: *mut c_void, error: *mut ParseStatus) -> *mut c_void;
+    fn sq_native_parser_delete(parser: *mut c_void);
+    fn sq_native_parser_trim(parser: *mut c_void);
+    fn sq_native_parser_clear(parser: *mut c_void);
+    fn sq_native_parser_parse(
+        parser: *mut c_void,
+        source: *const u8,
+        length: u32,
+        error: *mut ParseStatus,
+    ) -> bool;
+    fn sq_native_parser_begin(
+        parser: *mut c_void,
+        traversal: *mut c_void,
+        points: bool,
         error: *mut i32,
     ) -> bool;
 }

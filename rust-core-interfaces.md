@@ -270,25 +270,25 @@ public `Parser` owns native parser state, a traversal context, and Rust packing
 scratch; its finished trees borrow none of these. `PackContext` owns the mainline
 traversal context and Rust packing scratch and can be reused across grammars.
 
-### Deferred event representation
+### Event representation
 
-`SQNativeEvent`/`NativeEvent` is deliberately not assigned a final layout here.
-The candidate protocol is Enter/Leaf/Leave, visiting children last-to-first and
-emitting parents on Leave. Its semantic data is:
+The initial implementation emits one 40-byte record per visible node, in reverse
+preorder: children last-to-first, then their parent. Each record carries its
+visible depth. Rust retains a physical subtree boundary for each open depth;
+this includes waste introduced when a group closes during encoding.
 
 | Data | Contract |
 |---|---|
-| Visible topology | Balanced nesting, including a root; hidden nodes are resolved before emission. |
+| Visible topology | Visible depth, including a root at depth zero; hidden nodes are resolved before emission. |
 | Node identity | Display symbol, original grammar symbol, and inherited field ID as fixed-width integers. |
 | Position | Start/end bytes and optional start/end points; disabling points avoids coordinate work. |
 | Flags | Explicit last-visible-child, extra, missing, and subtree-error bits. |
 | Supertype code | Direct mask for small sets or index into the retained grammar dictionary. |
 
-Attribute placement on Enter/Leave, a separate Leaf record, batch size, initial
-node-count hints, and scratch division are implementation-time decisions. A
-count hint is an estimate, never a replacement for spans including group waste.
-The guard and initialized-prefix contracts apply to whichever representation
-wins the packing comparison. No event contains a borrowed private subtree pointer.
+The initial batch holds 128 records. Native traversal supplies a visible-node
+count estimate for the encoder's first allocation; it never substitutes for
+physical spans. Batch size remains a benchmark parameter. No event contains a
+borrowed private subtree pointer.
 
 ## Compiled-query interface
 

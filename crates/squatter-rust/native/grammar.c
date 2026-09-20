@@ -2,12 +2,13 @@
 #include <tree_feller.h>
 
 bool sq_native_language_compatible(const TSLanguage *language) {
- return language && language->abi_version >= TREE_SITTER_MIN_COMPATIBLE_LANGUAGE_VERSION &&
- language->abi_version <= TREE_SITTER_LANGUAGE_VERSION &&
- (uint64_t)language->symbol_count + language->alias_count <= ts_builtin_sym_error_repeat;
+  return language && language->abi_version >= TREE_SITTER_MIN_COMPATIBLE_LANGUAGE_VERSION &&
+         language->abi_version <= TREE_SITTER_LANGUAGE_VERSION &&
+         (uint64_t)language->symbol_count + language->alias_count <= ts_builtin_sym_error_repeat;
 }
+
 static SQGrammar *grammar_new(const TSLanguage *language, const void *grammar_cache,
-                               size_t grammar_cache_length, SQError *error) {
+                              size_t grammar_cache_length, SQError *error) {
   sq_native_fail(error, SQ_OK);
   if (language && ((uint64_t)language->symbol_count + language->alias_count + 1 > UINT16_MAX ||
                    language->field_count > UINT16_MAX)) {
@@ -42,14 +43,16 @@ static SQGrammar *grammar_new(const TSLanguage *language, const void *grammar_ca
       grammar->supertype_indexes[symbol] = (uint16_t)grammar->supertype_count;
     }
     TSSymbol public = ts_language_public_symbol(language, (TSSymbol)symbol);
-    grammar->public_index[symbol] = public == ts_builtin_sym_error ? symbols
-        : public == ts_builtin_sym_error_repeat ? symbols + 1 : public;
+    grammar->public_index[symbol] = public == ts_builtin_sym_error          ? symbols
+                                    : public == ts_builtin_sym_error_repeat ? symbols + 1
+                                                                            : public;
   }
   if (grammar->supertype_count > 8) {
-    grammar->supertype_grammar = grammar_cache
-        ? sq_native_supertype_grammar_new_cached(language, grammar->supertype_count, grammar_cache,
-                                          grammar_cache_length, error)
-        : sq_native_supertype_grammar_new(language, grammar->supertype_count, error);
+    grammar->supertype_grammar =
+        grammar_cache
+            ? sq_native_supertype_grammar_new_cached(language, grammar->supertype_count,
+                                                     grammar_cache, grammar_cache_length, error)
+            : sq_native_supertype_grammar_new(language, grammar->supertype_count, error);
     if (!grammar->supertype_grammar) {
       sq_native_grammar_delete(grammar);
       return NULL;
@@ -75,8 +78,7 @@ static SQGrammar *grammar_new(const TSLanguage *language, const void *grammar_ca
       }
       grammar->production_fields[id] = (DirectFieldSlice){(uint32_t)total, length};
       total += length;
-      if (total > UINT32_MAX || total > SIZE_MAX / sizeof(TSFieldId))
-        goto grammar_allocation;
+      if (total > UINT32_MAX || total > SIZE_MAX / sizeof(TSFieldId)) goto grammar_allocation;
     }
     if (total) {
       grammar->direct_fields = calloc((size_t)total, sizeof(TSFieldId));
@@ -95,26 +97,36 @@ static SQGrammar *grammar_new(const TSLanguage *language, const void *grammar_ca
   grammar->symbol_flags = calloc(space, 1);
   if (!grammar->symbol_flags) goto grammar_allocation;
   for (uint32_t symbol = 0; symbol < space; symbol++) {
-    TSSymbol actual = symbol == symbols ? ts_builtin_sym_error
-      : symbol == symbols + 1 ? ts_builtin_sym_error_repeat : (TSSymbol)symbol;
+    TSSymbol actual = symbol == symbols       ? ts_builtin_sym_error
+                      : symbol == symbols + 1 ? ts_builtin_sym_error_repeat
+                                              : (TSSymbol)symbol;
     TSSymbolMetadata metadata = ts_language_symbol_metadata(language, actual);
-    grammar->symbol_flags[symbol] = metadata.named | (metadata.visible << 1) | (metadata.supertype << 2);
+    grammar->symbol_flags[symbol] =
+        metadata.named | (metadata.visible << 1) | (metadata.supertype << 2);
   }
   grammar->view = (SQGrammarView){
-    .language = grammar->language,
-    .symbol_names = language->symbol_names, .field_names = language->field_names,
-    .symbol_flags = grammar->symbol_flags, .public_symbols = grammar->public_index,
-    .supertypes = grammar->supertypes, .supertype_indexes = grammar->supertype_indexes,
-    .supertype_masks = grammar->supertype_grammar ? grammar->supertype_grammar->masks : NULL,
-    .grammar_ids = grammar->symbols.grammar_ids, .default_codes = grammar->symbols.default_codes,
-    .counts = grammar->symbols.counts, .defaults = grammar->symbols.defaults,
-    .grammar_codes = grammar->symbols.grammar_codes,
-    .symbol_count = symbols, .field_count = language->field_count,
-    .supertype_count = grammar->supertype_count,
-    .dictionary_count = grammar->supertype_grammar ? grammar->supertype_grammar->count : 0,
-    .dictionary_words = grammar->supertype_grammar ? grammar->supertype_grammar->words : 0,
-    .encoding = grammar->symbols.encoding, .dictionary_length = grammar->symbols.length,
-    .symbol_shift = grammar->symbols.shift, .separate = grammar->symbols.separate,
+      .language = grammar->language,
+      .symbol_names = language->symbol_names,
+      .field_names = language->field_names,
+      .symbol_flags = grammar->symbol_flags,
+      .public_symbols = grammar->public_index,
+      .supertypes = grammar->supertypes,
+      .supertype_indexes = grammar->supertype_indexes,
+      .supertype_masks = grammar->supertype_grammar ? grammar->supertype_grammar->masks : NULL,
+      .grammar_ids = grammar->symbols.grammar_ids,
+      .default_codes = grammar->symbols.default_codes,
+      .counts = grammar->symbols.counts,
+      .defaults = grammar->symbols.defaults,
+      .grammar_codes = grammar->symbols.grammar_codes,
+      .symbol_count = symbols,
+      .field_count = language->field_count,
+      .supertype_count = grammar->supertype_count,
+      .dictionary_count = grammar->supertype_grammar ? grammar->supertype_grammar->count : 0,
+      .dictionary_words = grammar->supertype_grammar ? grammar->supertype_grammar->words : 0,
+      .encoding = grammar->symbols.encoding,
+      .dictionary_length = grammar->symbols.length,
+      .symbol_shift = grammar->symbols.shift,
+      .separate = grammar->symbols.separate,
   };
   return grammar;
 grammar_allocation:
@@ -129,7 +141,7 @@ SQGrammar *sq_native_grammar_new(const TSLanguage *language, SQError *error) {
 }
 
 SQGrammar *sq_native_grammar_new_with_cache(const TSLanguage *language, const void *bytes,
-                                    size_t length, SQError *error) {
+                                            size_t length, SQError *error) {
   if (!bytes) {
     sq_native_fail(error, SQ_ERROR_INVALID_SLAB);
     return NULL;
@@ -138,7 +150,8 @@ SQGrammar *sq_native_grammar_new_with_cache(const TSLanguage *language, const vo
 }
 
 SQGrammar *sq_native_grammar_copy(SQGrammar *grammar) {
-  if (grammar && atomic_fetch_add_explicit(&grammar->references, 1, memory_order_relaxed) >= SIZE_MAX / 2)
+  if (grammar &&
+      atomic_fetch_add_explicit(&grammar->references, 1, memory_order_relaxed) >= SIZE_MAX / 2)
     abort();
   return grammar;
 }
@@ -170,13 +183,14 @@ uint32_t sq_native_grammar_cache_size(const SQGrammar *grammar) {
   return size <= UINT32_MAX ? (uint32_t)size : 0;
 }
 
-bool sq_native_grammar_copy_cache(const SQGrammar *grammar, void *destination,
-                           size_t length, SQError *error) {
+bool sq_native_grammar_copy_cache(const SQGrammar *grammar, void *destination, size_t length,
+                                  SQError *error) {
   if (!grammar) {
     sq_native_fail(error, SQ_ERROR_ARGUMENT);
     return false;
   }
-  return sq_native_supertype_grammar_copy_cache(grammar->supertype_grammar, destination, length, error);
+  return sq_native_supertype_grammar_copy_cache(grammar->supertype_grammar, destination, length,
+                                                error);
 }
 
 const char *sq_native_error_string(SQError error) {

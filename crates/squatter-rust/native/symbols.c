@@ -5,8 +5,13 @@ static int compare_pair(const void *left, const void *right) {
   return (first > second) - (first < second);
 }
 
-typedef struct { uint32_t from, symbol, next; } SymbolPredecessor;
-typedef struct { uint32_t state, count, production; } AliasReduction;
+typedef struct {
+  uint32_t from, symbol, next;
+} SymbolPredecessor;
+
+typedef struct {
+  uint32_t state, count, production;
+} AliasReduction;
 
 static bool append(void **data, size_t *length, size_t *capacity, size_t size, const void *value) {
   if (*length == *capacity) {
@@ -23,8 +28,8 @@ static bool append(void **data, size_t *length, size_t *capacity, size_t size, c
 
 // The runtime alias map omits terminals. Walk structural transitions backwards
 // from aliased reductions; merged LR states can add pairs but cannot omit them.
-static bool terminal_alias_pairs(const TSLanguage *language, uint32_t **pairs,
-                                  size_t *length, size_t *capacity) {
+static bool terminal_alias_pairs(const TSLanguage *language, uint32_t **pairs, size_t *length,
+                                 size_t *capacity) {
   if (!language->max_alias_sequence_length) return true;
   uint32_t states = language->state_count;
   uint32_t *heads = malloc((size_t)states * sizeof(uint32_t));
@@ -42,7 +47,8 @@ static bool terminal_alias_pairs(const TSLanguage *language, uint32_t **pairs,
     LookaheadIterator iterator = ts_language_lookaheads(language, state);
     size_t first_reduction = reduction_count;
     while (ts_lookahead_iterator__next(&iterator)) {
-      for (uint32_t index = 0; index < (iterator.action_count ? iterator.action_count : 1u); index++) {
+      for (uint32_t index = 0; index < (iterator.action_count ? iterator.action_count : 1u);
+           index++) {
         uint32_t target = iterator.next_state;
         if (iterator.action_count) {
           const TSParseAction *action = &iterator.actions[index];
@@ -50,26 +56,32 @@ static bool terminal_alias_pairs(const TSLanguage *language, uint32_t **pairs,
             uint32_t production = action->reduce.production_id;
             uint32_t count = action->reduce.child_count;
             bool aliased = false, duplicate = false;
-            for (uint32_t position = 0; position < count && position < language->max_alias_sequence_length; position++) {
+            for (uint32_t position = 0;
+                 position < count && position < language->max_alias_sequence_length; position++) {
               aliased |= ts_language_alias_at(language, production, position) != 0;
             }
             for (size_t previous = first_reduction; previous < reduction_count; previous++) {
-              duplicate |= reductions[previous].production == production && reductions[previous].count == count;
+              duplicate |= reductions[previous].production == production &&
+                           reductions[previous].count == count;
             }
             AliasReduction reduction = {state, count, production};
             if (aliased && !duplicate &&
                 !append((void **)&reductions, &reduction_count, &reduction_capacity,
-                        sizeof(reduction), &reduction)) goto done;
+                        sizeof(reduction), &reduction))
+              goto done;
             continue;
           }
-          if (action->type != TSParseActionTypeShift || action->shift.extra || action->shift.repetition) continue;
+          if (action->type != TSParseActionTypeShift || action->shift.extra ||
+              action->shift.repetition)
+            continue;
           target = action->shift.state;
         }
         if (!target) continue;
         if (target >= states || predecessor_count >= UINT32_MAX) goto done;
         SymbolPredecessor predecessor = {state, iterator.symbol, heads[target]};
         if (!append((void **)&predecessors, &predecessor_count, &predecessor_capacity,
-                    sizeof(predecessor), &predecessor)) goto done;
+                    sizeof(predecessor), &predecessor))
+          goto done;
         heads[target] = (uint32_t)predecessor_count - 1;
       }
     }
@@ -82,12 +94,14 @@ static bool terminal_alias_pairs(const TSLanguage *language, uint32_t **pairs,
       uint32_t back_count = 0;
       memset(seen, 0, states);
       TSSymbol alias = position < language->max_alias_sequence_length
-          ? ts_language_alias_at(language, reduction.production, position) : 0;
+                           ? ts_language_alias_at(language, reduction.production, position)
+                           : 0;
       for (uint32_t item = 0; item < front_count; item++) {
         for (uint32_t edge = heads[front[item]]; edge != SQ_NONE; edge = predecessors[edge].next) {
           SymbolPredecessor predecessor = predecessors[edge];
           if (alias && predecessor.symbol < language->token_count) {
-            uint32_t pair = ((uint32_t)language->public_symbol_map[alias] << 16) | predecessor.symbol;
+            uint32_t pair =
+                ((uint32_t)language->public_symbol_map[alias] << 16) | predecessor.symbol;
             if (!append((void **)pairs, length, capacity, sizeof(pair), &pair)) goto done;
           }
           if (!seen[predecessor.from]) {
@@ -96,7 +110,9 @@ static bool terminal_alias_pairs(const TSLanguage *language, uint32_t **pairs,
           }
         }
       }
-      uint32_t *swap = front; front = back; back = swap;
+      uint32_t *swap = front;
+      front = back;
+      back = swap;
       front_count = back_count;
     }
   }
@@ -168,8 +184,8 @@ bool sq_native_symbol_table_init(const TSLanguage *language, SQSymbolTable *tabl
   table->default_codes = malloc((size_t)symbols * sizeof(uint16_t));
   if (!table->default_codes) goto failure;
   for (uint32_t original = 0; original < symbols; original++) {
-    table->default_codes[original] = original < symbols - 2
-        ? language->public_symbol_map[original] : original;
+    table->default_codes[original] =
+        original < symbols - 2 ? language->public_symbol_map[original] : original;
   }
   if (!table->separate) {
     table->length = symbols << shift;
@@ -210,9 +226,10 @@ bool sq_native_symbol_table_init(const TSLanguage *language, SQSymbolTable *tabl
       }
       for (uint32_t original = 0; original < symbols; original++) {
         if (codes[original]) dictionary[codes[original]] = original;
-        uint32_t display = original < symbols - 2 ? language->public_symbol_map[original] : original;
-        table->default_codes[original] = (display << global_shift) |
-            (table->counts[display] == 1 ? 0 : codes[original]);
+        uint32_t display =
+            original < symbols - 2 ? language->public_symbol_map[original] : original;
+        table->default_codes[original] =
+            (display << global_shift) | (table->counts[display] == 1 ? 0 : codes[original]);
       }
       free(table->grammar_ids);
       table->grammar_ids = dictionary;
@@ -252,7 +269,8 @@ uint32_t sq_native_symbol_code(const SQGrammar *grammar, uint32_t display, uint3
   if (table->encoding == SQ_SYMBOL_GLOBAL) {
     uint32_t variant = table->counts[display] == 1 ? 0 : table->grammar_codes[original];
     if ((!variant && table->counts[display] != 1) ||
-        (!variant && table->defaults[display] != original)) return SQ_NONE;
+        (!variant && table->defaults[display] != original))
+      return SQ_NONE;
     return (display << table->shift) | variant;
   }
   uint32_t start = display << table->shift;

@@ -31,7 +31,11 @@ typedef struct {
 // CaptureQuantifiers - a data structure holding the quantifiers of pattern captures.
 typedef Array(uint8_t) CaptureQuantifiers;
 
-typedef struct { uint32_t byte_offset; uint16_t step_index; } StepOffset;
+typedef struct {
+  uint32_t byte_offset;
+  uint16_t step_index;
+} StepOffset;
+
 // AnalysisState - The state needed for walking the parse table when analyzing
 // a query pattern, to determine at which steps the pattern might fail to match.
 typedef struct {
@@ -88,24 +92,26 @@ typedef struct {
 } StatePredecessorMap;
 
 struct SQQuery {
- SymbolTable captures, predicate_values;
- Array(CaptureQuantifiers) capture_quantifiers;
- Array(NativeView) quantifier_views;
- Array(QueryStep) steps;
- Array(PatternEntry) pattern_map;
- Array(QueryPredicateStep) predicate_steps;
- Array(QueryPattern) patterns;
- Array(StepOffset) step_offsets;
- Array(TSFieldId) negated_fields;
- Array(char) string_buffer;
- Array(TSSymbol) repeat_symbols_with_rootless_patterns;
- const TSLanguage *language;
- uint16_t wildcard_root_pattern_count;
+  SymbolTable captures, predicate_values;
+  Array(CaptureQuantifiers) capture_quantifiers;
+  Array(NativeView) quantifier_views;
+  Array(QueryStep) steps;
+  Array(PatternEntry) pattern_map;
+  Array(QueryPredicateStep) predicate_steps;
+  Array(QueryPattern) patterns;
+  Array(StepOffset) step_offsets;
+  Array(TSFieldId) negated_fields;
+  Array(char) string_buffer;
+  Array(TSSymbol) repeat_symbols_with_rootless_patterns;
+  const TSLanguage *language;
+  uint16_t wildcard_root_pattern_count;
 };
+
 static const TSQueryError PARENT_DONE = -1;
 static const uint16_t PATTERN_DONE_MARKER = UINT16_MAX;
 static const uint16_t NONE = UINT16_MAX;
 static const TSSymbol WILDCARD_SYMBOL = 0;
+
 static bool stream_advance(Stream *self) {
   self->input += self->next_size;
   if (self->input < self->end) {
@@ -762,7 +768,7 @@ static inline int analysis_subgraph_node__compare(const AnalysisSubgraphNode *se
 // If the symbol is not present `*result` is set to the index where the
 // symbol should be inserted.
 static inline bool sq_native_query__pattern_map_search(const SQQuery *self, TSSymbol needle,
-                                                uint32_t *result) {
+                                                       uint32_t *result) {
   uint32_t base_index = self->wildcard_root_pattern_count;
   uint32_t size = self->pattern_map.size - base_index;
   if (size == 0) {
@@ -800,7 +806,7 @@ static inline bool sq_native_query__pattern_map_search(const SQQuery *self, TSSy
 // Insert a new pattern's start index into the pattern map, maintaining
 // the pattern map's ordering invariant.
 static inline void sq_native_query__pattern_map_insert(SQQuery *self, TSSymbol symbol,
-                                                PatternEntry new_entry) {
+                                                       PatternEntry new_entry) {
   uint32_t index;
   sq_native_query__pattern_map_search(self, symbol, &index);
 
@@ -824,7 +830,7 @@ static inline void sq_native_query__pattern_map_insert(SQQuery *self, TSSymbol s
 // Walk the subgraph for this non-terminal, tracking all of the possible
 // sequences of progress within the pattern.
 static void sq_native_query__perform_analysis(SQQuery *self, const AnalysisSubgraphArray *subgraphs,
-                                       QueryAnalysis *analysis) {
+                                              QueryAnalysis *analysis) {
   unsigned recursion_depth_limit = 0;
   unsigned prev_final_step_count = 0;
   array_clear(&analysis->final_step_indices);
@@ -1006,7 +1012,8 @@ static void sq_native_query__perform_analysis(SQQuery *self, const AnalysisSubgr
           } else if (visible_symbol) {
             does_match = true;
             if (step->symbol == WILDCARD_SYMBOL) {
-              if (((step->flags & SQ_STEP_IS_NAMED) != 0) && !self->language->symbol_metadata[visible_symbol].named) {
+              if (((step->flags & SQ_STEP_IS_NAMED) != 0) &&
+                  !self->language->symbol_metadata[visible_symbol].named) {
                 does_match = false;
               }
             } else if (step->symbol != visible_symbol) {
@@ -1221,14 +1228,17 @@ static bool sq_native_query__analyze_patterns(SQQuery *self, unsigned *error_off
   for (unsigned i = 0; i < self->steps.size; i++) {
     QueryStep *step = array_get(&self->steps, i);
     if (step->depth == PATTERN_DONE_MARKER) {
-      step->flags = (step->flags & ~SQ_STEP_PARENT_PATTERN_GUARANTEED) | ((true) ? SQ_STEP_PARENT_PATTERN_GUARANTEED : 0);
-      step->flags = (step->flags & ~SQ_STEP_ROOT_PATTERN_GUARANTEED) | ((true) ? SQ_STEP_ROOT_PATTERN_GUARANTEED : 0);
+      step->flags = (step->flags & ~SQ_STEP_PARENT_PATTERN_GUARANTEED) |
+                    ((true) ? SQ_STEP_PARENT_PATTERN_GUARANTEED : 0);
+      step->flags = (step->flags & ~SQ_STEP_ROOT_PATTERN_GUARANTEED) |
+                    ((true) ? SQ_STEP_ROOT_PATTERN_GUARANTEED : 0);
       continue;
     }
 
     bool has_children = false;
     bool is_wildcard = step->symbol == WILDCARD_SYMBOL;
-    step->flags = (step->flags & ~SQ_STEP_CONTAINS_CAPTURES) | ((step->capture_ids[0] != NONE) ? SQ_STEP_CONTAINS_CAPTURES : 0);
+    step->flags = (step->flags & ~SQ_STEP_CONTAINS_CAPTURES) |
+                  ((step->capture_ids[0] != NONE) ? SQ_STEP_CONTAINS_CAPTURES : 0);
     for (unsigned j = i + 1; j < self->steps.size; j++) {
       QueryStep *next_step = array_get(&self->steps, j);
       if (next_step->depth == PATTERN_DONE_MARKER || next_step->depth <= step->depth) {
@@ -1236,12 +1246,15 @@ static bool sq_native_query__analyze_patterns(SQQuery *self, unsigned *error_off
       }
 
       if (next_step->capture_ids[0] != NONE) {
-        step->flags = (step->flags & ~SQ_STEP_CONTAINS_CAPTURES) | ((true) ? SQ_STEP_CONTAINS_CAPTURES : 0);
+        step->flags =
+            (step->flags & ~SQ_STEP_CONTAINS_CAPTURES) | ((true) ? SQ_STEP_CONTAINS_CAPTURES : 0);
       }
 
       if (!is_wildcard) {
-        next_step->flags = (next_step->flags & ~SQ_STEP_ROOT_PATTERN_GUARANTEED) | ((true) ? SQ_STEP_ROOT_PATTERN_GUARANTEED : 0);
-        next_step->flags = (next_step->flags & ~SQ_STEP_PARENT_PATTERN_GUARANTEED) | ((true) ? SQ_STEP_PARENT_PATTERN_GUARANTEED : 0);
+        next_step->flags = (next_step->flags & ~SQ_STEP_ROOT_PATTERN_GUARANTEED) |
+                           ((true) ? SQ_STEP_ROOT_PATTERN_GUARANTEED : 0);
+        next_step->flags = (next_step->flags & ~SQ_STEP_PARENT_PATTERN_GUARANTEED) |
+                           ((true) ? SQ_STEP_PARENT_PATTERN_GUARANTEED : 0);
       }
 
       has_children = true;
@@ -1502,8 +1515,10 @@ static bool sq_native_query__analyze_patterns(SQQuery *self, unsigned *error_off
         }
 
         if (!((step->flags & SQ_STEP_IS_DEAD_END) != 0)) {
-          step->flags = (step->flags & ~SQ_STEP_PARENT_PATTERN_GUARANTEED) | ((false) ? SQ_STEP_PARENT_PATTERN_GUARANTEED : 0);
-          step->flags = (step->flags & ~SQ_STEP_ROOT_PATTERN_GUARANTEED) | ((false) ? SQ_STEP_ROOT_PATTERN_GUARANTEED : 0);
+          step->flags = (step->flags & ~SQ_STEP_PARENT_PATTERN_GUARANTEED) |
+                        ((false) ? SQ_STEP_PARENT_PATTERN_GUARANTEED : 0);
+          step->flags = (step->flags & ~SQ_STEP_ROOT_PATTERN_GUARANTEED) |
+                        ((false) ? SQ_STEP_ROOT_PATTERN_GUARANTEED : 0);
         }
       }
 
@@ -1538,9 +1553,12 @@ static bool sq_native_query__analyze_patterns(SQQuery *self, unsigned *error_off
     for (unsigned j = 0; j < analysis.final_step_indices.size; j++) {
       uint32_t final_step_index = *array_get(&analysis.final_step_indices, j);
       QueryStep *step = array_get(&self->steps, final_step_index);
-      if (step->depth != PATTERN_DONE_MARKER && step->depth > parent_depth && !((step->flags & SQ_STEP_IS_DEAD_END) != 0)) {
-        step->flags = (step->flags & ~SQ_STEP_PARENT_PATTERN_GUARANTEED) | ((false) ? SQ_STEP_PARENT_PATTERN_GUARANTEED : 0);
-        step->flags = (step->flags & ~SQ_STEP_ROOT_PATTERN_GUARANTEED) | ((false) ? SQ_STEP_ROOT_PATTERN_GUARANTEED : 0);
+      if (step->depth != PATTERN_DONE_MARKER && step->depth > parent_depth &&
+          !((step->flags & SQ_STEP_IS_DEAD_END) != 0)) {
+        step->flags = (step->flags & ~SQ_STEP_PARENT_PATTERN_GUARANTEED) |
+                      ((false) ? SQ_STEP_PARENT_PATTERN_GUARANTEED : 0);
+        step->flags = (step->flags & ~SQ_STEP_ROOT_PATTERN_GUARANTEED) |
+                      ((false) ? SQ_STEP_ROOT_PATTERN_GUARANTEED : 0);
       }
     }
   }
@@ -1575,7 +1593,8 @@ static bool sq_native_query__analyze_patterns(SQQuery *self, unsigned *error_off
         unsigned index, exists;
         array_search_sorted_by(&predicate_capture_ids, , capture_id, &index, &exists);
         if (exists) {
-          step->flags = (step->flags & ~SQ_STEP_ROOT_PATTERN_GUARANTEED) | ((false) ? SQ_STEP_ROOT_PATTERN_GUARANTEED : 0);
+          step->flags = (step->flags & ~SQ_STEP_ROOT_PATTERN_GUARANTEED) |
+                        ((false) ? SQ_STEP_ROOT_PATTERN_GUARANTEED : 0);
           break;
         }
       }
@@ -1611,9 +1630,11 @@ static bool sq_native_query__analyze_patterns(SQQuery *self, unsigned *error_off
       // If not, mark its predecessor as indefinite.
       if (!parent_pattern_guaranteed) {
         QueryStep *prev_step = array_get(&self->steps, i - 1);
-        if (!((prev_step->flags & SQ_STEP_IS_DEAD_END) != 0) && prev_step->depth != PATTERN_DONE_MARKER &&
+        if (!((prev_step->flags & SQ_STEP_IS_DEAD_END) != 0) &&
+            prev_step->depth != PATTERN_DONE_MARKER &&
             ((prev_step->flags & SQ_STEP_ROOT_PATTERN_GUARANTEED) != 0)) {
-          prev_step->flags = (prev_step->flags & ~SQ_STEP_ROOT_PATTERN_GUARANTEED) | ((false) ? SQ_STEP_ROOT_PATTERN_GUARANTEED : 0);
+          prev_step->flags = (prev_step->flags & ~SQ_STEP_ROOT_PATTERN_GUARANTEED) |
+                             ((false) ? SQ_STEP_ROOT_PATTERN_GUARANTEED : 0);
           done = false;
         }
       }
@@ -1711,8 +1732,8 @@ supertype_cleanup:
   return all_patterns_are_valid;
 }
 
-static void sq_native_query__add_negated_fields(SQQuery *self, uint16_t step_index, TSFieldId *field_ids,
-                                         uint16_t field_count) {
+static void sq_native_query__add_negated_fields(SQQuery *self, uint16_t step_index,
+                                                TSFieldId *field_ids, uint16_t field_count) {
   QueryStep *step = array_get(&self->steps, step_index);
 
   // The negated field array stores a list of field lists, separated by zeros.
@@ -1921,8 +1942,8 @@ static TSQueryError sq_native_query__parse_predicate(SQQuery *self, Stream *stre
 // The caller is responsible for passing in a dedicated CaptureQuantifiers.
 // These should not be shared between different calls to sq_native_query__parse_pattern!
 static TSQueryError sq_native_query__parse_pattern(SQQuery *self, Stream *stream, uint32_t depth,
-                                            bool is_immediate, bool is_inside_alternation,
-                                            CaptureQuantifiers *capture_quantifiers) {
+                                                   bool is_immediate, bool is_inside_alternation,
+                                                   CaptureQuantifiers *capture_quantifiers) {
   if (stream->next == 0) {
     return TSQueryErrorSyntax;
   }
@@ -1953,7 +1974,7 @@ static TSQueryError sq_native_query__parse_pattern(SQQuery *self, Stream *stream
     for (;;) {
       uint32_t start_index = self->steps.size;
       TSQueryError e = sq_native_query__parse_pattern(self, stream, depth, is_immediate, true,
-                                               &branch_capture_quantifiers);
+                                                      &branch_capture_quantifiers);
 
       if (e == PARENT_DONE) {
         if (stream->next == ']' && branch_step_indices.size > 0) {
@@ -1992,7 +2013,8 @@ static TSQueryError sq_native_query__parse_pattern(SQQuery *self, Stream *stream
       QueryStep *end_step = array_get(&self->steps, next_step_index - 1);
       start_step->alternative_index = next_step_index;
       end_step->alternative_index = self->steps.size;
-      end_step->flags = (end_step->flags & ~SQ_STEP_IS_DEAD_END) | ((true) ? SQ_STEP_IS_DEAD_END : 0);
+      end_step->flags =
+          (end_step->flags & ~SQ_STEP_IS_DEAD_END) | ((true) ? SQ_STEP_IS_DEAD_END : 0);
     }
 
     capture_quantifiers_delete(&branch_capture_quantifiers);
@@ -2027,8 +2049,9 @@ static TSQueryError sq_native_query__parse_pattern(SQQuery *self, Stream *stream
           }
         }
 
-        TSQueryError e = sq_native_query__parse_pattern(self, stream, depth, child_is_immediate,
-                                                 is_inside_alternation, &child_capture_quantifiers);
+        TSQueryError e =
+            sq_native_query__parse_pattern(self, stream, depth, child_is_immediate,
+                                           is_inside_alternation, &child_capture_quantifiers);
         if (e == PARENT_DONE) {
           if (stream->next == ')') {
             stream_advance(stream);
@@ -2242,8 +2265,9 @@ static TSQueryError sq_native_query__parse_pattern(SQQuery *self, Stream *stream
         }
 
         uint16_t step_index = self->steps.size;
-        TSQueryError e = sq_native_query__parse_pattern(self, stream, depth + 1, child_is_immediate,
-                                                 is_inside_alternation, &child_capture_quantifiers);
+        TSQueryError e =
+            sq_native_query__parse_pattern(self, stream, depth + 1, child_is_immediate,
+                                           is_inside_alternation, &child_capture_quantifiers);
 
         // In the event we only parsed a predicate, meaning no new steps were added,
         // then subtract one so we're not indexing past the end of the array
@@ -2261,23 +2285,26 @@ static TSQueryError sq_native_query__parse_pattern(SQQuery *self, Stream *stream
 
               // Mark this step *and* its alternatives as the last child of the parent.
               QueryStep *last_child_step = array_get(&self->steps, last_child_step_index);
-              last_child_step->flags = (last_child_step->flags & ~SQ_STEP_IS_LAST_CHILD) | ((true) ? SQ_STEP_IS_LAST_CHILD : 0);
+              last_child_step->flags = (last_child_step->flags & ~SQ_STEP_IS_LAST_CHILD) |
+                                       ((true) ? SQ_STEP_IS_LAST_CHILD : 0);
               if (last_child_step->alternative_index != NONE &&
                   last_child_step->alternative_index < self->steps.size) {
                 QueryStep *alternative_step =
                     array_get(&self->steps, last_child_step->alternative_index);
-                alternative_step->flags = (alternative_step->flags & ~SQ_STEP_IS_LAST_CHILD) | ((true) ? SQ_STEP_IS_LAST_CHILD : 0);
+                alternative_step->flags = (alternative_step->flags & ~SQ_STEP_IS_LAST_CHILD) |
+                                          ((true) ? SQ_STEP_IS_LAST_CHILD : 0);
                 while (alternative_step->alternative_index != NONE &&
                        alternative_step->alternative_index < self->steps.size) {
                   alternative_step = array_get(&self->steps, alternative_step->alternative_index);
-                  alternative_step->flags = (alternative_step->flags & ~SQ_STEP_IS_LAST_CHILD) | ((true) ? SQ_STEP_IS_LAST_CHILD : 0);
+                  alternative_step->flags = (alternative_step->flags & ~SQ_STEP_IS_LAST_CHILD) |
+                                            ((true) ? SQ_STEP_IS_LAST_CHILD : 0);
                 }
               }
             }
 
             if (negated_field_count) {
               sq_native_query__add_negated_fields(self, starting_step_index, negated_field_ids,
-                                           negated_field_count);
+                                                  negated_field_count);
             }
 
             stream_advance(stream);
@@ -2349,8 +2376,8 @@ static TSQueryError sq_native_query__parse_pattern(SQQuery *self, Stream *stream
 
     // Parse the pattern
     CaptureQuantifiers field_capture_quantifiers = capture_quantifiers_new();
-    TSQueryError e = sq_native_query__parse_pattern(self, stream, depth, is_immediate,
-                                             is_inside_alternation, &field_capture_quantifiers);
+    TSQueryError e = sq_native_query__parse_pattern(
+        self, stream, depth, is_immediate, is_inside_alternation, &field_capture_quantifiers);
     if (e) {
       capture_quantifiers_delete(&field_capture_quantifiers);
       if (e == PARENT_DONE) {
@@ -2459,16 +2486,20 @@ static TSQueryError sq_native_query__parse_pattern(SQQuery *self, Stream *stream
   switch (quantifier) {
   case TSQuantifierOneOrMore:
     repeat_step = query_step__new(WILDCARD_SYMBOL, depth, false);
-    repeat_step.flags = (repeat_step.flags & ~SQ_STEP_IS_INSIDE_ALTERNATION) | ((is_inside_alternation) ? SQ_STEP_IS_INSIDE_ALTERNATION : 0);
+    repeat_step.flags = (repeat_step.flags & ~SQ_STEP_IS_INSIDE_ALTERNATION) |
+                        ((is_inside_alternation) ? SQ_STEP_IS_INSIDE_ALTERNATION : 0);
     repeat_step.alternative_index = starting_step_index;
-    repeat_step.flags = (repeat_step.flags & ~SQ_STEP_IS_PASS_THROUGH) | ((true) ? SQ_STEP_IS_PASS_THROUGH : 0);
+    repeat_step.flags =
+        (repeat_step.flags & ~SQ_STEP_IS_PASS_THROUGH) | ((true) ? SQ_STEP_IS_PASS_THROUGH : 0);
     array_push(&self->steps, repeat_step);
     break;
   case TSQuantifierZeroOrMore:
     repeat_step = query_step__new(WILDCARD_SYMBOL, depth, false);
-    repeat_step.flags = (repeat_step.flags & ~SQ_STEP_IS_INSIDE_ALTERNATION) | ((is_inside_alternation) ? SQ_STEP_IS_INSIDE_ALTERNATION : 0);
+    repeat_step.flags = (repeat_step.flags & ~SQ_STEP_IS_INSIDE_ALTERNATION) |
+                        ((is_inside_alternation) ? SQ_STEP_IS_INSIDE_ALTERNATION : 0);
     repeat_step.alternative_index = starting_step_index;
-    repeat_step.flags = (repeat_step.flags & ~SQ_STEP_IS_PASS_THROUGH) | ((true) ? SQ_STEP_IS_PASS_THROUGH : 0);
+    repeat_step.flags =
+        (repeat_step.flags & ~SQ_STEP_IS_PASS_THROUGH) | ((true) ? SQ_STEP_IS_PASS_THROUGH : 0);
     array_push(&self->steps, repeat_step);
 
     // Stop when `step->alternative_index` is `NONE` or it points to
@@ -2480,7 +2511,8 @@ static TSQueryError sq_native_query__parse_pattern(SQQuery *self, Stream *stream
     }
 
     step->alternative_index = self->steps.size;
-    step->flags = (step->flags & ~SQ_STEP_ALTERNATIVE_IS_SKIP) | ((true) ? SQ_STEP_ALTERNATIVE_IS_SKIP : 0);
+    step->flags =
+        (step->flags & ~SQ_STEP_ALTERNATIVE_IS_SKIP) | ((true) ? SQ_STEP_ALTERNATIVE_IS_SKIP : 0);
     break;
   case TSQuantifierZeroOrOne:
     step = array_get(&self->steps, starting_step_index);
@@ -2489,7 +2521,8 @@ static TSQueryError sq_native_query__parse_pattern(SQQuery *self, Stream *stream
     }
 
     step->alternative_index = self->steps.size;
-    step->flags = (step->flags & ~SQ_STEP_ALTERNATIVE_IS_SKIP) | ((true) ? SQ_STEP_ALTERNATIVE_IS_SKIP : 0);
+    step->flags =
+        (step->flags & ~SQ_STEP_ALTERNATIVE_IS_SKIP) | ((true) ? SQ_STEP_ALTERNATIVE_IS_SKIP : 0);
     break;
   default:
     break;
@@ -2501,7 +2534,7 @@ static TSQueryError sq_native_query__parse_pattern(SQQuery *self, Stream *stream
 }
 
 SQQuery *sq_native_query_new(const TSLanguage *language, const char *source, uint32_t source_len,
-                      uint32_t *error_offset, TSQueryError *error_type) {
+                             uint32_t *error_offset, TSQueryError *error_type) {
   if (!language || language->abi_version > TREE_SITTER_LANGUAGE_VERSION ||
       language->abi_version < TREE_SITTER_MIN_COMPATIBLE_LANGUAGE_VERSION) {
     *error_type = TSQueryErrorLanguage;
@@ -2542,7 +2575,8 @@ SQQuery *sq_native_query_new(const TSLanguage *language, const char *source, uin
                    .flags = (false ? SQ_PATTERN_IS_NON_LOCAL : 0),
                }));
     CaptureQuantifiers capture_quantifiers = capture_quantifiers_new();
-    *error_type = sq_native_query__parse_pattern(self, &stream, 0, false, false, &capture_quantifiers);
+    *error_type =
+        sq_native_query__parse_pattern(self, &stream, 0, false, false, &capture_quantifiers);
     array_push(&self->steps, query_step__new(0, PATTERN_DONE_MARKER, false));
 
     QueryPattern *pattern = array_back(&self->patterns);
@@ -2604,10 +2638,11 @@ SQQuery *sq_native_query_new(const TSLanguage *language, const char *source, uin
         }
       }
 
-      sq_native_query__pattern_map_insert(self, step->symbol,
-                                   (PatternEntry){.step_index = start_step_index,
-                                                  .pattern_index = pattern_index,
-                                                  .flags = (is_rooted ? SQ_PATTERN_IS_ROOTED : 0)});
+      sq_native_query__pattern_map_insert(
+          self, step->symbol,
+          (PatternEntry){.step_index = start_step_index,
+                         .pattern_index = pattern_index,
+                         .flags = (is_rooted ? SQ_PATTERN_IS_ROOTED : 0)});
       if (step->symbol == WILDCARD_SYMBOL) {
         self->wildcard_root_pattern_count++;
       }
@@ -2640,7 +2675,8 @@ SQQuery *sq_native_query_new(const TSLanguage *language, const char *source, uin
         QueryStep *s = array_get(&self->steps, i);
 
         // Ensure this step is a pass_through with a _backward_ alternative (a quantifier loop-back)
-        if (!((s->flags & SQ_STEP_IS_PASS_THROUGH) != 0) || !((s->flags & SQ_STEP_IS_INSIDE_ALTERNATION) != 0) || s->alternative_index == NONE ||
+        if (!((s->flags & SQ_STEP_IS_PASS_THROUGH) != 0) ||
+            !((s->flags & SQ_STEP_IS_INSIDE_ALTERNATION) != 0) || s->alternative_index == NONE ||
             s->alternative_index >= i) {
           continue;
         }
@@ -2665,7 +2701,8 @@ SQQuery *sq_native_query_new(const TSLanguage *language, const char *source, uin
         // Add a dead_end that redirects to the pass through step after the target,
         // so the pattern continues correctly after the cleaned copy matches.
         QueryStep redirect = query_step__new(0, target_depth, false);
-        redirect.flags = (redirect.flags & ~SQ_STEP_IS_DEAD_END) | ((true) ? SQ_STEP_IS_DEAD_END : 0);
+        redirect.flags =
+            (redirect.flags & ~SQ_STEP_IS_DEAD_END) | ((true) ? SQ_STEP_IS_DEAD_END : 0);
         redirect.alternative_index = target_idx + 1;
         array_push(&self->steps, redirect);
 
@@ -2701,37 +2738,47 @@ SQQuery *sq_native_query_new(const TSLanguage *language, const char *source, uin
 }
 
 void sq_native_query_delete(SQQuery *self) {
- if (!self) return;
- array_delete(&self->steps); array_delete(&self->pattern_map);
- array_delete(&self->predicate_steps); array_delete(&self->patterns);
- array_delete(&self->step_offsets); array_delete(&self->negated_fields);
- array_delete(&self->string_buffer); array_delete(&self->repeat_symbols_with_rootless_patterns);
- symbol_table_delete(&self->captures); symbol_table_delete(&self->predicate_values);
- for (uint32_t index=0; index<self->capture_quantifiers.size; index++)
-   capture_quantifiers_delete(&self->capture_quantifiers.contents[index]);
- array_delete(&self->capture_quantifiers);
- array_delete(&self->quantifier_views);
- ts_language_delete(self->language); ts_free(self);
+  if (!self) return;
+  array_delete(&self->steps);
+  array_delete(&self->pattern_map);
+  array_delete(&self->predicate_steps);
+  array_delete(&self->patterns);
+  array_delete(&self->step_offsets);
+  array_delete(&self->negated_fields);
+  array_delete(&self->string_buffer);
+  array_delete(&self->repeat_symbols_with_rootless_patterns);
+  symbol_table_delete(&self->captures);
+  symbol_table_delete(&self->predicate_values);
+  for (uint32_t index = 0; index < self->capture_quantifiers.size; index++)
+    capture_quantifiers_delete(&self->capture_quantifiers.contents[index]);
+  array_delete(&self->capture_quantifiers);
+  array_delete(&self->quantifier_views);
+  ts_language_delete(self->language);
+  ts_free(self);
 }
 
 void sq_native_query_view(const SQQuery *self, SQQueryView *view) {
 #define VIEW(array) ((NativeView){(array).contents, (array).size})
   *view = (SQQueryView){
-    .language = self->language,
-    .symbol_count = self->language->symbol_count + self->language->alias_count,
-    .public_symbols = {self->language->public_symbol_map,
-                       self->language->symbol_count + self->language->alias_count},
-    .steps = VIEW(self->steps), .pattern_entries = VIEW(self->pattern_map),
-    .patterns = VIEW(self->patterns), .predicate_steps = VIEW(self->predicate_steps),
-    .capture_names = {VIEW(self->captures.characters), VIEW(self->captures.slices)},
-    .predicate_values = {VIEW(self->predicate_values.characters), VIEW(self->predicate_values.slices)},
-    .capture_quantifiers = VIEW(self->quantifier_views),
-    .negated_fields = VIEW(self->negated_fields),
-    .rootless_repeat_symbols = VIEW(self->repeat_symbols_with_rootless_patterns),
-    .wildcard_root_pattern_count = self->wildcard_root_pattern_count,
+      .language = self->language,
+      .symbol_count = self->language->symbol_count + self->language->alias_count,
+      .public_symbols = {self->language->public_symbol_map,
+                         self->language->symbol_count + self->language->alias_count},
+      .steps = VIEW(self->steps),
+      .pattern_entries = VIEW(self->pattern_map),
+      .patterns = VIEW(self->patterns),
+      .predicate_steps = VIEW(self->predicate_steps),
+      .capture_names = {VIEW(self->captures.characters), VIEW(self->captures.slices)},
+      .predicate_values = {VIEW(self->predicate_values.characters),
+                           VIEW(self->predicate_values.slices)},
+      .capture_quantifiers = VIEW(self->quantifier_views),
+      .negated_fields = VIEW(self->negated_fields),
+      .rootless_repeat_symbols = VIEW(self->repeat_symbols_with_rootless_patterns),
+      .wildcard_root_pattern_count = self->wildcard_root_pattern_count,
   };
 #undef VIEW
 }
+
 uint32_t sq_native_query_pattern_count(const SQQuery *self) {
   return self->patterns.size;
 }
@@ -2744,22 +2791,25 @@ uint32_t sq_native_query_string_count(const SQQuery *self) {
   return self->predicate_values.slices.size;
 }
 
-const char *sq_native_query_capture_name_for_id(const SQQuery *self, uint32_t index, uint32_t *length) {
+const char *sq_native_query_capture_name_for_id(const SQQuery *self, uint32_t index,
+                                                uint32_t *length) {
   return symbol_table_name_for_id(&self->captures, index, length);
 }
 
 TSQuantifier sq_native_query_capture_quantifier_for_id(const SQQuery *self, uint32_t pattern_index,
-                                                uint32_t capture_index) {
+                                                       uint32_t capture_index) {
   CaptureQuantifiers *capture_quantifiers = array_get(&self->capture_quantifiers, pattern_index);
   return capture_quantifier_for_id(capture_quantifiers, capture_index);
 }
 
-const char *sq_native_query_string_value_for_id(const SQQuery *self, uint32_t index, uint32_t *length) {
+const char *sq_native_query_string_value_for_id(const SQQuery *self, uint32_t index,
+                                                uint32_t *length) {
   return symbol_table_name_for_id(&self->predicate_values, index, length);
 }
 
-const QueryPredicateStep *
-sq_native_query_predicates_for_pattern(const SQQuery *self, uint32_t pattern_index, uint32_t *step_count) {
+const QueryPredicateStep *sq_native_query_predicates_for_pattern(const SQQuery *self,
+                                                                 uint32_t pattern_index,
+                                                                 uint32_t *step_count) {
   Slice slice = array_get(&self->patterns, pattern_index)->predicate_steps;
   *step_count = slice.length;
   if (slice.length == 0) {
@@ -2790,10 +2840,10 @@ void sq_native_query_disable_capture(SQQuery *self, const char *name, uint32_t l
 }
 
 void sq_native_query_disable_pattern(SQQuery *self, uint32_t pattern_index) {
- for (uint32_t index=0; index<self->pattern_map.size;) {
-  if (self->pattern_map.contents[index].pattern_index == pattern_index) {
-   if (index < self->wildcard_root_pattern_count) self->wildcard_root_pattern_count--;
-   array_erase(&self->pattern_map, index);
-  } else index++;
- }
+  for (uint32_t index = 0; index < self->pattern_map.size;) {
+    if (self->pattern_map.contents[index].pattern_index == pattern_index) {
+      if (index < self->wildcard_root_pattern_count) self->wildcard_root_pattern_count--;
+      array_erase(&self->pattern_map, index);
+    } else index++;
+  }
 }

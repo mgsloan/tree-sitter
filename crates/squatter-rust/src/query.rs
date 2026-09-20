@@ -12,6 +12,7 @@ pub enum QueryExecutionError {
     UnsupportedRange,
     InvalidExecution,
 }
+
 impl std::fmt::Display for QueryExecutionError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
@@ -20,12 +21,14 @@ impl std::fmt::Display for QueryExecutionError {
         })
     }
 }
+
 impl std::error::Error for QueryExecutionError {}
 impl std::fmt::Display for QueryError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "query byte {}: {}", self.offset, self.message)
     }
 }
+
 impl std::error::Error for QueryError {}
 
 #[derive(Debug)]
@@ -44,6 +47,7 @@ pub struct Query {
     predicates: Vec<Vec<Predicate>>,
     general: Vec<Vec<QueryPredicate>>,
 }
+
 unsafe impl Send for Query {}
 unsafe impl Sync for Query {}
 impl Query {
@@ -151,6 +155,7 @@ impl Query {
         }
         Ok(query)
     }
+
     fn string(&self, index: u32, capture: bool) -> String {
         let table = if capture {
             &self.compiled.view.capture_names
@@ -160,15 +165,19 @@ impl Query {
         String::from_utf8(unsafe { table.get(index as usize) }.to_vec())
             .expect("query strings originate in UTF-8")
     }
+
     pub fn pattern_count(&self) -> usize {
         self.compiled.patterns().len()
     }
+
     pub fn capture_names(&self) -> &[String] {
         &self.capture_names
     }
+
     pub fn general_predicates(&self, pattern: usize) -> &[QueryPredicate] {
         &self.general[pattern]
     }
+
     pub fn disable_pattern(&mut self, pattern: usize) {
         assert!(
             pattern < self.pattern_count(),
@@ -176,6 +185,7 @@ impl Query {
         );
         self.compiled.disable_pattern(pattern as u32);
     }
+
     pub fn disable_capture(&mut self, name: &str) {
         self.compiled.disable_capture(name);
     }

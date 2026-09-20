@@ -8,15 +8,30 @@
 #include <stdlib.h>
 #include <string.h>
 #define SQ_NONE UINT32_MAX
+
 static inline uint8_t sq_native_width(uint32_t maximum) {
   uint8_t width = 0;
-  while (maximum) { width++; maximum >>= 1; }
+  while (maximum) {
+    width++;
+    maximum >>= 1;
+  }
   return width;
 }
-typedef enum { SQ_OK, SQ_ERROR_ARGUMENT, SQ_ERROR_ALLOCATION, SQ_ERROR_OVERFLOW,
- SQ_ERROR_DICTIONARY_FULL, SQ_ERROR_INVALID_SLAB, SQ_ERROR_LANGUAGE, SQ_ERROR_PARSE } SQError;
+
+typedef enum {
+  SQ_OK,
+  SQ_ERROR_ARGUMENT,
+  SQ_ERROR_ALLOCATION,
+  SQ_ERROR_OVERFLOW,
+  SQ_ERROR_DICTIONARY_FULL,
+  SQ_ERROR_INVALID_SLAB,
+  SQ_ERROR_LANGUAGE,
+  SQ_ERROR_PARSE
+} SQError;
+
 const char *sq_native_error_string(SQError);
 typedef struct SQGrammar SQGrammar;
+
 typedef struct {
   const TSLanguage *language;
   const char *const *symbol_names, *const *field_names;
@@ -28,6 +43,7 @@ typedef struct {
   uint32_t encoding, dictionary_length;
   uint8_t symbol_shift, separate;
 } SQGrammarView;
+
 typedef struct SQSupertypeGrammar {
   const TSLanguage *language;
   uint64_t *masks;
@@ -37,7 +53,7 @@ typedef struct SQSupertypeGrammar {
 
 SQSupertypeGrammar *sq_native_supertype_grammar_new(const TSLanguage *, uint32_t, SQError *);
 SQSupertypeGrammar *sq_native_supertype_grammar_new_cached(const TSLanguage *, uint32_t,
-                                                  const void *, size_t, SQError *);
+                                                           const void *, size_t, SQError *);
 void sq_native_supertype_grammar_delete(SQSupertypeGrammar *);
 uint32_t sq_native_supertype_mask_id(const SQSupertypeGrammar *, const uint64_t *);
 size_t sq_native_supertype_grammar_cache_size(const SQSupertypeGrammar *);
@@ -53,9 +69,9 @@ typedef struct {
 typedef enum { SQ_SYMBOL_LOCAL, SQ_SYMBOL_GLOBAL, SQ_SYMBOL_BYTES } SQSymbolEncoding;
 
 typedef struct {
-  uint16_t *grammar_ids; // local code or global selector -> original ID
-  uint16_t *default_codes; // original ID -> unaliased code
-  uint16_t *counts; // variants per public display ID
+  uint16_t *grammar_ids;              // local code or global selector -> original ID
+  uint16_t *default_codes;            // original ID -> unaliased code
+  uint16_t *counts;                   // variants per public display ID
   uint16_t *defaults, *grammar_codes; // global: unique display default, original ID -> selector
   SQSymbolEncoding encoding;
   uint32_t length;
@@ -82,7 +98,6 @@ struct SQGrammar {
   SQSupertypeGrammar *supertype_grammar;
 };
 
-
 SQGrammar *sq_native_grammar_new(const TSLanguage *, SQError *);
 SQGrammar *sq_native_grammar_new_with_cache(const TSLanguage *, const void *, size_t, SQError *);
 SQGrammar *sq_native_grammar_copy(SQGrammar *);
@@ -91,6 +106,7 @@ const TSLanguage *sq_native_grammar_language(const SQGrammar *);
 uint32_t sq_native_grammar_cache_size(const SQGrammar *);
 bool sq_native_grammar_copy_cache(const SQGrammar *, void *, size_t, SQError *);
 bool sq_native_language_compatible(const TSLanguage *);
+
 static inline bool sq_native_little_endian(void) {
   const uint16_t one = 1;
   return *(const uint8_t *)&one != 0;
@@ -110,7 +126,8 @@ static inline uint16_t sq_native_get_u16(const uint8_t *data, uint32_t offset, u
   return sq_native_little_endian() ? value : __builtin_bswap16(value);
 }
 
-static inline void sq_native_set_u16(uint8_t *data, uint32_t offset, uint32_t index, uint16_t value) {
+static inline void sq_native_set_u16(uint8_t *data, uint32_t offset, uint32_t index,
+                                     uint16_t value) {
   if (!sq_native_little_endian()) value = __builtin_bswap16(value);
   memcpy(data + offset + (uint64_t)index * 2, &value, sizeof(value));
 }
@@ -121,7 +138,8 @@ static inline uint32_t sq_native_get_u32(const uint8_t *data, uint32_t offset, u
   return sq_native_little_endian() ? value : __builtin_bswap32(value);
 }
 
-static inline void sq_native_set_u32(uint8_t *data, uint32_t offset, uint32_t index, uint32_t value) {
+static inline void sq_native_set_u32(uint8_t *data, uint32_t offset, uint32_t index,
+                                     uint32_t value) {
   if (!sq_native_little_endian()) value = __builtin_bswap32(value);
   memcpy(data + offset + (uint64_t)index * 4, &value, sizeof(value));
 }
@@ -132,7 +150,8 @@ static inline uint64_t sq_native_get_u64(const uint8_t *data, uint32_t offset, u
   return sq_native_little_endian() ? value : __builtin_bswap64(value);
 }
 
-static inline void sq_native_set_u64(uint8_t *data, uint32_t offset, uint32_t index, uint64_t value) {
+static inline void sq_native_set_u64(uint8_t *data, uint32_t offset, uint32_t index,
+                                     uint64_t value) {
   if (!sq_native_little_endian()) value = __builtin_bswap64(value);
   memcpy(data + offset + (uint64_t)index * 8, &value, sizeof(value));
 }

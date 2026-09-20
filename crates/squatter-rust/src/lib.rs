@@ -1,4 +1,10 @@
 mod native;
+mod packing;
+mod parser;
+mod storage;
+pub use packing::{PackContext, PackOptions};
+pub use parser::{ParseError, Parser};
+pub use storage::{BackedTree, BorrowedTree, StableSlab, Tree, representation_id};
 pub mod query;
 pub use native::Grammar;
 pub use query::{Query, QueryError, QueryExecutionError};
@@ -14,19 +20,21 @@ pub enum Error {
     Language = 6,
     Parse = 7,
 }
+
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
             Self::InvalidArgument => "invalid argument",
-            Self::Allocation => "allocation failure",
-            Self::Overflow => "overflow",
-            Self::DictionaryFull => "supertype dictionary full",
-            Self::InvalidSlab => "invalid slab",
-            Self::Language => "incompatible language",
-            Self::Parse => "parse error",
+            Self::Allocation => "allocation failed",
+            Self::Overflow => "grammar IDs or slab size exceed representation limits",
+            Self::DictionaryFull => "more than 65536 supertype masks",
+            Self::InvalidSlab => "invalid or incompatible slab",
+            Self::Language => "unsupported language",
+            Self::Parse => "parse failed",
         })
     }
 }
+
 impl std::error::Error for Error {}
 impl Error {
     pub(crate) fn from_code(code: i32) -> Error {
