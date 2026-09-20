@@ -171,6 +171,8 @@ struct SymbolIndex {
     entry_bytes: u32,
 }
 impl SymbolIndex {
+    // Group counts fit in the u32 slot space, so entry lengths use at most 26 bits.
+    const BITMAP: u32 = 1 << 31;
     #[inline(always)]
     fn new(group: &GroupRef<'_>, targets: impl Iterator<Item = u16>) -> Self {
         unsafe extern "C" {
@@ -180,10 +182,12 @@ impl SymbolIndex {
         // Only offsets are retained; entries borrow the scan's existing slab slice.
         unsafe { sq_tree_scan_symbol_index(group.columns.root.raw.tree, &mut index) };
         if index.entry_bytes != 0 {
+            let mut bitmap = false;
             let mut occupied = 0;
             for target in targets {
                 let entry = index.entry(group, target);
                 if entry.bitmap {
+                    bitmap = true;
                     let words = entry.bytes.len() / 4;
                     occupied += [0, words / 2, words - 1]
                         .into_iter()
@@ -196,6 +200,9 @@ impl SymbolIndex {
                     }
                 }
             }
+            if bitmap {
+                index.entry_bytes |= Self::BITMAP;
+            }
         }
         index
     }
@@ -205,9 +212,10 @@ impl SymbolIndex {
     }
     #[inline]
     fn entry<'tree>(self, group: &GroupRef<'tree>, target: u16) -> SymbolEntry<'tree> {
-        let start = self.entries as usize + usize::from(target) * self.entry_bytes as usize;
+        let length = (self.entry_bytes & !Self::BITMAP) as usize;
+        let start = self.entries as usize + usize::from(target) * length;
         SymbolEntry {
-            bytes: &group.columns.data[start..start + self.entry_bytes as usize],
+            bytes: &group.columns.data[start..start + length],
             bitmap: group.columns.byte(self.modes, u32::from(target) / 8) & (1 << (target % 8))
                 != 0,
             shift: group.columns.layout.group_shift,
@@ -983,6 +991,29 @@ impl<'tree> Preorder<'tree> {
         predicate: &P,
     ) -> Option<Mask> {
         loop {
+            // Bitmap jumps can bypass the ancestor that rejects a whole subtree.
+            // Exact slot lists already skip those groups without reading ranges.
+            if INDEXED && SUBTREES && predicate.has_bitmap_index() {
+                if self.groups.is_empty() {
+                    return None;
+                }
+                self.group.index = self.groups.end - 1;
+                if predicate.excludes_subtrees(&self.group) {
+                    let span = self
+                        .group
+                        .columns
+                        .word(self.group.columns.layout.span_base, self.group.index);
+                    self.groups.end = if span == 0 {
+                        self.group.index
+                    } else {
+                        (self.group.first_slot() - span)
+                            .div_ceil(self.group.columns.group_size())
+                            .min(self.group.index)
+                            .max(self.groups.start)
+                    };
+                    continue;
+                }
+            }
             self.group.index = if INDEXED {
                 let Some(index) = predicate.next_group(&self.group, self.groups.clone(), REVERSE)
                 else {
@@ -2388,6 +2419,10 @@ impl<'tree, S: GroupScan<'tree>, C: Coordinates, R: Relation<C::Position>> Group
 
 pub trait Predicate: sealed::Predicate {
     #[inline(always)]
+    fn has_bitmap_index(&self) -> bool {
+        false
+    }
+    #[inline(always)]
     fn has_group_index(&self) -> bool {
         false
     }
@@ -2431,6 +2466,10 @@ pub trait Predicate: sealed::Predicate {
 impl<P: Predicate> sealed::Predicate for &P {}
 impl<P: Predicate> Predicate for &P {
     #[inline(always)]
+    fn has_bitmap_index(&self) -> bool {
+        P::has_bitmap_index(self)
+    }
+    #[inline(always)]
     fn has_group_index(&self) -> bool {
         P::has_group_index(self)
     }
@@ -2470,6 +2509,14 @@ impl Predicate for Identity {
 struct And<P, Q>(P, Q);
 impl<P: Predicate, Q: Predicate> sealed::Predicate for And<P, Q> {}
 impl<P: Predicate, Q: Predicate> Predicate for And<P, Q> {
+    #[inline(always)]
+    fn has_bitmap_index(&self) -> bool {
+        if self.0.has_group_index() {
+            self.0.has_bitmap_index()
+        } else {
+            self.1.has_bitmap_index()
+        }
+    }
     #[inline(always)]
     fn has_group_index(&self) -> bool {
         self.0.has_group_index() || self.1.has_group_index()
@@ -2660,6 +2707,11 @@ pub struct FixedKindIds<const N: usize> {
 impl<const N: usize> sealed::Predicate for FixedKindIds<N> {}
 impl<const N: usize> Predicate for FixedKindIds<N> {
     #[inline(always)]
+    fn has_bitmap_index(&self) -> bool {
+        self.index.entry_bytes & SymbolIndex::BITMAP != 0
+    }
+
+    #[inline(always)]
     fn has_group_index(&self) -> bool {
         self.index.enabled()
     }
@@ -2738,6 +2790,11 @@ impl KindIds<'_> {
 }
 impl sealed::Predicate for KindIds<'_> {}
 impl Predicate for KindIds<'_> {
+    #[inline(always)]
+    fn has_bitmap_index(&self) -> bool {
+        self.index.entry_bytes & SymbolIndex::BITMAP != 0
+    }
+
     #[inline(always)]
     fn has_group_index(&self) -> bool {
         self.index.enabled()

@@ -1043,6 +1043,24 @@ fn indexed_kind_filters() {
                             },
                             &expected,
                         );
+                        let overlapping = all
+                            .iter()
+                            .copied()
+                            .filter(|node| {
+                                kinds.contains(node.kind_id())
+                                    && node.start_byte() < range.end
+                                    && (node.end_byte() > range.start
+                                        || node.start_byte() >= range.start)
+                            })
+                            .collect::<Vec<_>>();
+                        check_pipeline(
+                            || {
+                                root.all()
+                                    .overlapping_bytes(range.clone())
+                                    .filter_kind_ids(ids)
+                            },
+                            &overlapping,
+                        );
                     }
                     let expected = expected
                         .into_iter()
