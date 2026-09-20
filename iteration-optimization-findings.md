@@ -965,3 +965,135 @@ binary is `byte-pruning`; the main result is `confirm-byte-pruning-summary.json`
 Local/downloaded binary hashes match the build manifests and confirmation report;
 the baseline parent, committed scan source, and shared harness hashes also agree.
 The cloud instance was returned to its previous stopped state.
+
+## Range scans with 16-, 32-, and 64-slot groups (2026-09-19)
+
+Larger groups substantially improve narrow overlap scans and broad counts.
+64 slots gives the strongest results for those workloads, but increases default
+slab storage by 30–50%. 32 slots improves most measured scans while reducing slab
+storage by 2–3%; its broad reverse byte overlap and byte-within enumeration are
+slower than 16. The default remains 16.
+
+### Method
+
+Built `619a65964` three times in the same isolated worktree path with
+`CFLAGS=-DSQ_GROUP_SIZE=16`, `32`, or `64`, using rustc 1.95.0 and portable release
+settings. Scan implementation is unchanged from `1f951f1df`; the harness adds
+representation identity and slot counts to its reports. Only the ELF interpreter
+path was patched for the cloud host.
+
+All runs used `squatter-benchmark`, `mgsloan-compute/us-central1-a`,
+`e2-standard-4`, on the same Intel Xeon Broadwell CPU allocation, model 79 at
+2.20 GHz. Timing was pinned to CPU 1 under the activity and benchmark locks.
+Tuning and holdout each contain 32 files across 11 languages, totaling
+747,560 and 503,590 nodes. Trees use default packing: points and symbol presence
+enabled, without repacking away spare group capacity.
+
+Five query windows cover the first, middle, and last 1% of source bytes,
+the middle 50% starting at 25%, and the whole source. Point queries use the
+corresponding source positions; exact-start queries use each window's start.
+Each scenario has three processes per size/corpus, with size order rotating
+16/32/64, 32/64/16, then 64/16/32. The second round reverses workload order;
+the harness rotates workloads between samples.
+
+Midpoint rates are medians of 15 samples targeting 60 ms each. Other windows use
+nine samples targeting 40 ms. The harness caps repetitions at 10,000, so some
+exact-start samples are shorter. Parsing, packing, and scalar validation are
+outside timing; scan construction and consumption are included. Every process
+validates membership and timed counts. All 90 reports agree on source/grammar
+identities and cross-size output counts, and confirm the requested group size.
+
+### Midpoint 1%
+
+Rates are **million input nodes/s**, including skipped nodes. Each cell is
+**tuning / holdout**. There are 9,589 / 5,196 overlap matches per iteration.
+Compare sizes within this build; earlier sections use different harness binaries.
+
+| Operation | 16 slots | 32 slots | 64 slots |
+| --- | ---: | ---: | ---: |
+| Byte overlap nodes | 9,799.5 / 12,244.4 | 14,423.0 / 16,407.0 | 18,407.7 / 19,166.7 |
+| Byte overlap count | 14,177.7 / 17,227.2 | 23,744.9 / 25,316.1 | 33,869.8 / 31,614.9 |
+| Point overlap nodes | 4,439.7 / 5,093.7 | 7,127.5 / 7,648.6 | 9,913.5 / 9,565.0 |
+| Point overlap count | 7,713.2 / 8,483.5 | 13,068.8 / 12,985.9 | 18,759.1 / 16,424.6 |
+| Reverse byte overlap nodes | 5,898.1 / 6,837.0 | 9,040.0 / 9,996.2 | 13,020.6 / 13,073.5 |
+| Reverse point overlap nodes | 5,734.1 / 6,529.0 | 8,921.6 / 9,550.2 | 11,580.2 / 11,549.2 |
+| Byte within nodes | 28,035.3 / 31,301.2 | 27,572.9 / 31,115.8 | 33,106.8 / 35,029.0 |
+| Point within nodes | 23,563.2 / 24,594.4 | 26,384.9 / 27,042.7 | 27,944.4 / 27,809.6 |
+| Byte starting-in nodes | 29,172.9 / 32,058.8 | 32,208.4 / 35,066.9 | 33,623.2 / 35,562.5 |
+| Point starting-in nodes | 21,202.4 / 22,153.2 | 22,718.1 / 23,301.0 | 26,042.8 / 26,404.4 |
+| Byte exact-start nodes | 200,841.0 / 138,398.1 | 206,166.2 / 140,883.3 | 209,109.2 / 138,723.2 |
+| Point exact-start nodes | 105,149.0 / 72,074.2 | 108,822.2 / 75,206.8 | 111,978.8 / 75,317.2 |
+
+Relative to 16 slots, 32 improves forward byte overlap enumeration by 34–47%
+and point overlap by 50–61%. At 64 slots, those gains are 57–88% and 88–123%.
+Within/starting-in counts improve 18–40% at 32 and 29–67% at 64. Exact-start
+changes are much smaller because both start bounds already restrict the scan to
+very few groups.
+
+### Other query windows
+
+Overlap enumeration throughput relative to 16 slots; each cell is tuning /
+holdout. A value below 1 means slower.
+
+| Window and coordinates | 32 / 16 | 64 / 16 |
+| --- | ---: | ---: |
+| First 1%, bytes | 1.09× / 1.05× | 1.13× / 1.05× |
+| First 1%, points | 1.13× / 1.09× | 1.20× / 1.11× |
+| Last 1%, bytes | 1.48× / 1.38× | 1.91× / 1.66× |
+| Last 1%, points | 1.74× / 1.63× | 2.58× / 2.22× |
+| Middle 50%, bytes | 1.14× / 1.13× | 1.22× / 1.16× |
+| Middle 50%, points | 1.20× / 1.17× | 1.31× / 1.24× |
+| Whole source, bytes | 1.09× / 1.07× | 1.05× / 1.06× |
+| Whole source, points | 1.18× / 1.16× | 1.29× / 1.20× |
+
+Counts benefit more than enumeration. Across both broad windows and corpora,
+byte overlap counts improve 1.77–1.82× at 32 slots and 2.60–2.95× at 64;
+point overlap counts improve 1.69–1.74× and 2.32–2.51× respectively.
+
+There are repeatable regressions. With 32 slots, reverse byte overlap enumeration
+is 7–16% slower at the first 1%, 21–22% slower at the middle 50%, and 25% slower
+over the whole source. At 64 slots, whole-source reverse byte overlap is 4–8%
+slower. Byte-within enumeration at 32 slots loses 5–8% on broad windows; 64 slots
+improves it 14–20%. Larger groups are not a uniform win across consumers.
+
+Midpoint forward overlap process medians vary by less than 3% within each
+size/corpus. Some broad enumeration and exact-start workloads have substantially
+more variation, reaching 28% between process medians. Treat small differences,
+including the whole-source byte enumeration ranking, as inconclusive.
+
+### Storage and interpretation
+
+Each cell is tuning / holdout. Unused slots are padding inside populated groups.
+Slab bytes include spare group capacity retained by default packing; they exclude
+grammar metadata and are not compact-export sizes.
+
+| Group size | Populated groups | Unused slots | Slab MiB |
+| --- | ---: | ---: | ---: |
+| 16 | 49,536 / 34,147 | 5.7% / 7.8% | 16.97 / 11.64 |
+| 32 | 26,721 / 18,909 | 12.6% / 16.8% | 16.52 / 11.45 |
+| 64 | 16,606 / 12,643 | 29.7% / 37.8% | 22.03 / 17.43 |
+
+Larger groups amortize coordinate bounds, mask construction, and count operations
+over more nodes. They keep the same SSE2 comparison width, using more chunks per
+group. Fixed delta limits still close groups early, so increasing group size also
+increases padding. The group count falls by less than the nominal size ratio.
+
+The extracted forward overlap nodes/count consumers, reverse overlap consumers,
+and plain preorder nodes/fold controls have identical normalized instructions and
+identical entry addresses across all three binaries. Plain preorder nodes change
+only 1–2%; fold improves 10% at 32 and 13–16% at 64. Scalar preorder stays within
+0.6%. The observed range differences are not accompanied by the consumer code
+placement changes seen in earlier experiments.
+
+For these corpora, 32 offers a useful space/throughput compromise; 64 is more
+attractive when narrow overlap or counts dominate and the storage increase is
+acceptable. These measurements cover resident range scans with stored points,
+not packing time, point-free slabs, random access, or general query performance.
+No production configuration changed.
+
+Artifacts are in `build/range-group-sizes/`: build/comparison/analysis/verification
+scripts, source and binary hashes in `build.json`, assembly and
+`codegen-comparison.txt`, and `analysis.txt`. The downloaded
+`range-group-sizes-20260919/` directory contains all 90 reports and logs, the
+three binaries, source snapshots, and `summary.json`. Downloaded hashes and
+recomputed medians match the build and comparison records.

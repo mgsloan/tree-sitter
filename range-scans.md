@@ -65,6 +65,11 @@ Forward preorder walks groups and slots in descending physical order. Node start
 are nondecreasing in preorder, but node ends are not: an ancestor can precede many
 descendants whose ends are earlier than its own.
 
+The [cloud group-size comparison](iteration-optimization-findings.md#range-scans-with-16--32--and-64-slot-groups-2026-09-19)
+finds substantial narrow-overlap and count gains at 32/64 slots. At 32, default
+slabs are slightly smaller; at 64, they grow 30–50% on the measured corpora.
+Broad reverse byte overlap regresses, so group size remains a workload tradeoff.
+
 Every subtree occupies a contiguous physical slot interval, possibly containing
 group waste. `Preorder` clips each group's live slots to that interval. Range
 bounds can reject a whole group before this mask is constructed. Otherwise the
