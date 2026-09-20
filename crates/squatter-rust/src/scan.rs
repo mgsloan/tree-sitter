@@ -906,7 +906,7 @@ impl<'tree, S: GroupScan<'tree>> Scan<'tree, S> {
         supertype: GrammarKindId,
     ) -> Scan<'tree, Filtered<S, SupertypeId>> {
         self.filtered(SupertypeId {
-            symbol: supertype.get(),
+            symbol: supertype,
             index: None,
         })
     }
@@ -3386,7 +3386,7 @@ fn retain_supertype_masks(masks: &[u8], candidates: Mask, bit: u16) -> Mask {
 }
 
 pub struct SupertypeId {
-    symbol: u16,
+    symbol: GrammarKindId,
     index: Option<usize>,
 }
 impl sealed::Predicate for SupertypeId {}
@@ -3397,7 +3397,7 @@ impl Predicate for SupertypeId {
             .columns
             .tables()
             .supertypes()
-            .binary_search(&self.symbol)
+            .binary_search(&self.symbol.get())
             .ok();
     }
     #[inline]
