@@ -4,36 +4,35 @@
 
 - [ ] Review and polish design.md
 
-- [ ] Library that uses tree-sitter instead of a fork
+- [x] Library that uses tree-sitter instead of a fork
 
 - [ ] Document Send+Sync for scans
 
 - [ ] Separate viz branch for visualizer
 
-- [ ] Can query compilation code be similar to upstream with a minimized diff?
+- [x] Can query compilation code be similar to upstream with a minimized diff?
 
-- [ ] Port core to Rust.  Use the scan iterators to reduce code complexity
+- [x] Port core to Rust.  Use the scan iterators to reduce code complexity
 
-- [ ] Decide how much to use newtypes.
-
-- [ ] Remove has_error / make it part of a side cache?
+- [x] Decide how much to use newtypes.
 
 ## Performance
 
-- [ ] https://github.com/Dekker1/tree-feller
+- [x] https://github.com/Dekker1/tree-feller
 
       >   codex resume 01a0b257-8b8e-7123-bdd6-c5deddc08fb7
-
-      * [ ] Relatedly, also have a postorder representation?!
 
 - [ ] Try adding sibling / parent jump columns
 
 - [ ] slot count and field widths. Range scan benchmarks suggest 32 slots might
   be better for both space and time.
 
+- [ ] Make groups cache-line aligned via offsets and choice of initial group
+  count capacity?
+
 ## Query
 
-- [ ] Range containment
+- [x] Range containment
 
 ## Injections
 
@@ -106,8 +105,14 @@ Parse only the needed info.
 
 - [ ] tune iterator code - could shorter impls inline more for more complex pipelines?
 
+- [ ] Update C version with all lessons learned from Rust version - enssure language choice isn't causing performance losses
+
+- [ ] symbol presence optimizations - bitmap per group and then do a SIMD transpose?
+
 
 # Backburner
+
+- [ ] Dedupe query compiler with upstream TS?
 
 ## Correctness
 
