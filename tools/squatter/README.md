@@ -260,6 +260,12 @@ Range selection runs before the kind filter. Setup validates each combination's
 membership against scalar accessors and records per-file match counts.
 
 `--kind-selection rare` selects the least frequent named kinds instead;
+`--kind-selection sparse` selects the most frequent named kinds with at most
+`ceil(nodes / 2048)` occurrences. These fit sparse posting lists at every tested
+group size when the index is present, and the selection stays identical across
+16/32/64 slots. Per-ID frequencies and the threshold are recorded. The
+`fixed_N.reverse_nodes` and `dynamic_N.reverse_nodes` workloads traverse the
+selected nodes in reverse preorder, with scalar order validation before timing.
 `--kind-selection absent` selects valid grammar IDs absent from each input,
 preferring named IDs. `--no-symbol-index` disables index construction during
 packing. `field.{fixed,dynamic}_N.{nodes,count}` filters by field before 8/16
