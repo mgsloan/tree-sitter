@@ -163,6 +163,12 @@ typedef struct {
 void sq_tree_scan_columns(const SQTree *, SQScanColumns *);
 
 typedef struct {
+  uint32_t modes, entries, entry_bytes;
+} SQScanSymbolIndex;
+
+void sq_tree_scan_symbol_index(const SQTree *, SQScanSymbolIndex *);
+
+typedef struct {
   uint32_t start_base, start_delta, end_base, end_delta;
 } SQScanPointLayout;
 
