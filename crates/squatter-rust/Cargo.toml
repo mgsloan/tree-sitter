@@ -9,6 +9,7 @@ build = "build.rs"
 [features]
 typed-query-scan = []
 typed-presence-scan = []
+typed-seek = []
 
 [dependencies]
 tree-sitter.workspace = true

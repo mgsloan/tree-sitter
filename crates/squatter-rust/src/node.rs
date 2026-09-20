@@ -552,27 +552,41 @@ impl<'tree> Node<'tree> {
 
         let mut slot = (low * GROUP_SIZE).max(first);
         let limit = data.group_end(low).min(self.slot() + 1);
-        if POINTS {
-            let base = data.long(data.layout.start_point_base, low);
-            let threshold = point_threshold(
-                (start >> 32) as i64 - (base >> 32) as i64,
-                start as u32 as i64 - base as u32 as i64,
-            );
-            while slot < limit
-                && threshold.is_none_or(|threshold| {
-                    data.short(data.layout.start_point, slot) as u32 > threshold
-                })
-            {
-                slot += 1;
-            }
-        } else {
-            let base = data.word(data.layout.start_byte_base, low) as u64;
-            let mask = start_mask(data, low, (start - base).min(255) as u8) >> (slot % GROUP_SIZE);
+        #[cfg(feature = "typed-seek")]
+        {
+            let group = scan::GroupRef::new(self).at(low);
+            let mask = group.starts_before::<POINTS>(start).bits() >> (slot % GROUP_SIZE);
             slot = if mask == 0 {
                 limit
             } else {
                 (slot + mask.trailing_zeros()).min(limit)
             };
+        }
+        #[cfg(not(feature = "typed-seek"))]
+        {
+            if POINTS {
+                let base = data.long(data.layout.start_point_base, low);
+                let threshold = point_threshold(
+                    (start >> 32) as i64 - (base >> 32) as i64,
+                    start as u32 as i64 - base as u32 as i64,
+                );
+                while slot < limit
+                    && threshold.is_none_or(|threshold| {
+                        data.short(data.layout.start_point, slot) as u32 > threshold
+                    })
+                {
+                    slot += 1;
+                }
+            } else {
+                let base = data.word(data.layout.start_byte_base, low) as u64;
+                let mask =
+                    start_mask(data, low, (start - base).min(255) as u8) >> (slot % GROUP_SIZE);
+                slot = if mask == 0 {
+                    limit
+                } else {
+                    (slot + mask.trailing_zeros()).min(limit)
+                };
+            }
         }
         if slot == limit {
             slot = (low + 1) * GROUP_SIZE;
@@ -619,29 +633,49 @@ impl<'tree> Node<'tree> {
         while candidate.slot() < self.slot() {
             let group = candidate.slot() / GROUP_SIZE;
             let limit = data.group_end(group).min(self.slot());
-            let threshold = if POINTS {
-                let base = data.long(data.layout.end_point_base, group);
-                point_threshold(
-                    (base >> 32) as i64 - (end >> 32) as i64,
-                    base as u32 as i64 - end as u32 as i64 - (start == end) as i64,
-                )
-            } else {
-                let base = data.word(data.layout.end_byte_base, group) as u64;
-                (base >= end && base > start).then(|| (base - end).min(base - start - 1) as u32)
-            };
-            if let Some(threshold) = threshold {
-                let offset = if POINTS {
-                    data.layout.end_point
-                } else {
-                    data.layout.end_byte_delta
-                };
-                while candidate.slot() < limit {
-                    if data.short(offset, candidate.slot()) as u32 <= threshold
-                        && (!named || candidate.is_named())
-                    {
-                        return Some(candidate);
+            #[cfg(feature = "typed-seek")]
+            {
+                let view = scan::GroupRef::new(self).at(group);
+                let first = candidate.slot() % GROUP_SIZE;
+                let mut mask = view.ends_after::<POINTS>(start, end).bits() >> first;
+                while mask != 0 {
+                    let slot = group * GROUP_SIZE + first + mask.trailing_zeros();
+                    if slot >= limit {
+                        break;
                     }
-                    candidate.raw.slot += 1;
+                    let node = self.at(slot);
+                    if !named || node.is_named() {
+                        return Some(node);
+                    }
+                    mask &= mask - 1;
+                }
+            }
+            #[cfg(not(feature = "typed-seek"))]
+            {
+                let threshold = if POINTS {
+                    let base = data.long(data.layout.end_point_base, group);
+                    point_threshold(
+                        (base >> 32) as i64 - (end >> 32) as i64,
+                        base as u32 as i64 - end as u32 as i64 - (start == end) as i64,
+                    )
+                } else {
+                    let base = data.word(data.layout.end_byte_base, group) as u64;
+                    (base >= end && base > start).then(|| (base - end).min(base - start - 1) as u32)
+                };
+                if let Some(threshold) = threshold {
+                    let offset = if POINTS {
+                        data.layout.end_point
+                    } else {
+                        data.layout.end_byte_delta
+                    };
+                    while candidate.slot() < limit {
+                        if data.short(offset, candidate.slot()) as u32 <= threshold
+                            && (!named || candidate.is_named())
+                        {
+                            return Some(candidate);
+                        }
+                        candidate.raw.slot += 1;
+                    }
                 }
             }
             candidate.raw.slot = (group + 1) * GROUP_SIZE;
@@ -652,6 +686,7 @@ impl<'tree> Node<'tree> {
 
 // Row occupies the high byte of a point delta. A negative column difference
 // excludes the tied row but still permits all columns of smaller row deltas.
+#[cfg(not(feature = "typed-seek"))]
 fn point_threshold(rows: i64, columns: i64) -> Option<u32> {
     if rows < 0 {
         None
@@ -669,6 +704,7 @@ fn point_key(point: Point) -> Option<u64> {
     Some(((u32::try_from(point.row).ok()? as u64) << 32) | u32::try_from(point.column).ok()? as u64)
 }
 
+#[cfg(not(feature = "typed-seek"))]
 fn start_mask(data: &TreeData, group: u32, threshold: u8) -> u64 {
     #[cfg(target_arch = "x86_64")]
     unsafe {

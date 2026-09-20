@@ -63,6 +63,23 @@ typed scan kernels. They are off by default. Forward them through `squatter-benc
 when measuring either runner; paired reports record both selections. Presence
 indexes, scan budgets, caches, and cancellation remain active in each variant.
 
+`typed-seek` independently substitutes coordinate masks within descendant range
+lookup. Binary search, immediate returns, empty-boundary descent, and the distant
+point-search fallback are preserved. This experiment is also off by default.
+
+`core-lifecycle-bench` uses the same reference/candidate build selection. It
+measures packing alone (cold/reused/trimmed scratch), full and safety-only loads,
+borrowed/backed loads, compact copying, repacking, grammar preparation/cache
+loading, and query construction, destruction, and disabling. Each operation
+includes destruction unless named `query-drop` or `query-disable-*`; those exclude
+compilation. Compact copying reuses its destination. Mutation/destruction batches
+retain at most 16 programs and bound untimed compilation work per sample.
+`--workload` restricts operations; `--query` selects a registry query, otherwise
+the first supported query is used. Use `--iterations` for equal operation counts
+under allocation instrumentation such as heaptrack. Pin these processes externally
+and alternate their order. Reports retain raw times, iteration counts, input and
+binary hashes, sizes, and the objects kept resident.
+
 ## Measurement contract
 
 Eight workloads are available:

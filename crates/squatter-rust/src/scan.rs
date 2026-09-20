@@ -188,17 +188,64 @@ pub struct GroupRef<'tree> {
     index: u32,
 }
 impl<'tree> GroupRef<'tree> {
-    #[cfg(any(feature = "typed-query-scan", feature = "typed-presence-scan"))]
+    #[cfg(any(
+        feature = "typed-query-scan",
+        feature = "typed-presence-scan",
+        feature = "typed-seek"
+    ))]
     pub(crate) fn new(root: Node<'tree>) -> Self {
         let columns = Columns::new(root);
         columns.group(root.slot() >> GROUP_SIZE.trailing_zeros())
     }
 
-    #[cfg(any(feature = "typed-query-scan", feature = "typed-presence-scan"))]
+    #[cfg(any(
+        feature = "typed-query-scan",
+        feature = "typed-presence-scan",
+        feature = "typed-seek"
+    ))]
     pub(crate) fn at(mut self, index: u32) -> Self {
         debug_assert!(index < self.columns.root.data().groups());
         self.index = index;
         self
+    }
+
+    #[cfg(feature = "typed-seek")]
+    pub(crate) fn starts_before<const POINTS: bool>(&self, start: u64) -> Mask {
+        let candidates = self.valid_mask();
+        if POINTS {
+            PointPositions::<true> { group: self }
+                .start()
+                .retain(candidates, (Unbounded, Included(start)))
+        } else {
+            BytePositions(self)
+                .start()
+                .retain(candidates, (Unbounded, Included(start as usize)))
+        }
+    }
+
+    #[cfg(feature = "typed-seek")]
+    pub(crate) fn ends_after<const POINTS: bool>(&self, start: u64, end: u64) -> Mask {
+        let candidates = self.valid_mask();
+        // Nonempty nodes ending exactly at the query start cannot contain it.
+        if POINTS {
+            let lower = if start == end {
+                Excluded(start)
+            } else {
+                Included(end)
+            };
+            PointPositions::<true> { group: self }
+                .end()
+                .retain(candidates, (lower, Unbounded))
+        } else {
+            let lower = if start == end {
+                Excluded(start as usize)
+            } else {
+                Included(end as usize)
+            };
+            BytePositions(self)
+                .end()
+                .retain(candidates, (lower, Unbounded))
+        }
     }
 
     pub fn index(self) -> u32 {

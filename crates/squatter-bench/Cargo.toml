@@ -12,6 +12,7 @@ rust-core = ["dep:tree-squatter-rust"]
 core-comparison = ["dep:tree-squatter", "dep:tree-squatter-rust"]
 typed-query-scan = ["rust-core", "tree-squatter-rust/typed-query-scan"]
 typed-presence-scan = ["rust-core", "tree-squatter-rust/typed-presence-scan"]
+typed-seek = ["rust-core", "tree-squatter-rust/typed-seek"]
 
 [[bin]]
 name = "core-query-bench"
