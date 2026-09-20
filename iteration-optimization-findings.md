@@ -678,3 +678,117 @@ zero-width nodes, empty queries, traversal direction, and absent/oversized point
 Downloaded artifacts are in `build/delta-scans/delta-scans-20260919/`: `run.py`,
 `summary.json`, individual reports/logs, source snapshots, and both binaries with
 verified hashes. The instance was returned to its previous stopped state.
+
+## Range group rejection profiling (2026-09-19)
+
+Two changes make rejected groups cheaper:
+
+- `fd24c8692` defers delta-slice construction and its bounds checks until a
+  comparison needs deltas. Whole-column acceptance and rejection need only bases.
+- `c0c7ba2ec` defers candidate-mask construction until a range predicate accepts
+  the group's conservative bounds. Rejected groups skip waste lookup, subtree
+  clipping, and mask construction. Preorder enumeration and counting share this
+  path, including composed predicates.
+
+Neither change alters the packed format or introduces unchecked reads. Other
+traversals and predicates retain the ordinary mask path.
+
+### Profiles and assembly
+
+On the cloud VM, hardware performance counters were unavailable. Profiles use
+`perf record -e cpu-clock:u -F 997`, with twelve 500 ms samples of byte or point
+overlap enumeration on the tuning corpus. Sampling includes setup; benchmark
+timings exclude it. No samples were lost. Instruction percentages are approximate
+software-sampling evidence, not cycle counts.
+
+Before these changes, `Restricted::next_mask` accounts for 78% of byte-profile
+samples and 77% of point-profile samples. Within the byte function, 57.5% falls
+in group iteration and candidate-mask construction, 36.7% in column setup and
+rejection, and only 2.9% in surviving-group comparisons. Disassembly confirms
+that rejected groups construct masks and check delta-slice bounds first.
+
+The final assembly branches back to group iteration before waste lookup, mask
+construction, or delta-slice checks. Follow-up profiles still place 74% of both
+workloads in `next_mask`; within the byte function, 87% now falls in its shorter
+iteration/rejection loop. This points toward skipping groups as the next target.
+The byte function's stack allocation remains 184 bytes, and total function size
+does not shrink: the gain comes from avoiding work on the frequent path.
+
+Point query packing is already hoisted out of the per-group rejection loop in
+release assembly, though it repeats on calls to `next_mask`. Moving the source
+conversion alone should not be assumed to save work for every rejected group.
+The SIMD comparison regions receive few samples for these narrow queries.
+
+### Cloud comparison
+
+This start of `squatter-benchmark` selected an **Intel Xeon Broadwell**, model 79,
+at 2.20 GHz, on the same `e2-standard-4` instance in
+`mgsloan-compute/us-central1-a`. The preceding encoded-delta experiment ran on
+AMD EPYC; its absolute rates are not directly comparable.
+
+The baseline scan source is `1999904af`; the final source is `c0c7ba2ec`. Both
+use the same benchmark harness from `c564d636f`, built in the same worktree path
+with rustc 1.95.0, portable release settings, and 16-slot groups. Only the ELF
+interpreter path was patched for the cloud host. Runs held the activity and
+benchmark locks, used CPU 1, and had no competing benchmark or compilation.
+
+The tuning/holdout corpora contain 747,560/503,590 input nodes across 32 files
+and 11 languages each. Midpoint 1% overlap queries produce 9,589/5,196 matches.
+Each result is the median of 14 samples from two processes, targeting 80 ms per
+sample; binary and workload order reverse on the second pass. Scan construction
+is timed; parsing, packing, and validation are excluded. The harness verifies
+source/grammar hashes and scalar agreement; match counts agree across variants.
+
+Rates are **million input nodes/s**, including skipped nodes:
+
+| Operation | Tuning, before → after | Holdout, before → after |
+| --- | ---: | ---: |
+| Byte overlap nodes | 2,934.2 → 4,964.3 (+69.2%) | 3,455.4 → 5,750.4 (+66.4%) |
+| Byte overlap fold | 2,883.0 → 4,896.9 (+69.9%) | 3,397.3 → 5,635.9 (+65.9%) |
+| Byte overlap count | 1,768.7 → 6,298.9 (+256.1%) | 2,119.1 → 7,205.1 (+240.0%) |
+| Point overlap nodes | 2,790.5 → 4,428.1 (+58.7%) | 3,247.5 → 5,071.4 (+56.2%) |
+| Point overlap fold | 2,731.8 → 4,355.3 (+59.4%) | 3,211.8 → 4,922.4 (+53.3%) |
+| Point overlap count | 1,986.4 → 7,639.2 (+284.6%) | 2,333.8 → 8,381.0 (+259.1%) |
+| Preorder nodes | 580.6 → 579.2 (-0.3%) | 576.9 → 575.0 (-0.3%) |
+| Preorder fold | 917.6 → 915.7 (-0.2%) | 872.5 → 870.0 (-0.3%) |
+| Scalar preorder control | 49.9 → 51.4 (+3.1%) | 50.8 → 51.4 (+1.2%) |
+
+The benchmark now accepts `--range-start-percent` and `--range-percent`, keeping
+the midpoint 1% default. Short checks at other positions use one process and
+three 50 ms samples per variant/corpus, with baseline first:
+
+| Query | Byte nodes, tuning / holdout | Point nodes, tuning / holdout |
+| --- | ---: | ---: |
+| First 1% | +1.3% / +1.5% | +12.8% / +13.2% |
+| Last 1% | +80.1% / +77.5% | +65.2% / +60.7% |
+| Whole source | +1.8% / +2.6% | +13.7% / +38.9% |
+
+All six overlap workloads improve in these checks. They provide less evidence
+than the midpoint confirmation; code placement and VM variation can influence
+individual gains. The stronger late-query gains fit the larger rejected prefix.
+These results do not establish gains for every range relation or selectivity.
+
+### Remaining opportunities
+
+- Skip earlier groups for `starting_in_*`, `starting_at_*`, and `within_*`, using
+  their lower start bound as well as the existing upper bound.
+- For overlap, investigate subtree skipping or hierarchical maximum-end
+  summaries. A start-only lower bound would incorrectly omit ancestors. The
+  current loop still visits preceding groups even when each rejection is cheap.
+- Consider separating the oversized-point fallback from the compact-point path
+  to reduce setup and code size. Measure before retaining it; query packing is
+  already partly hoisted by the compiler.
+- Profile broad queries before tuning SIMD further. Fusing start/end masks or
+  changing dense-kernel thresholds targets little of the measured narrow-query
+  cost.
+
+Exhaustive delta tests, scanning tests, and pattern tests pass at group sizes
+16/32/64. The full default-size suite, including bindings and doctests, strict
+library/test Clippy, and formatting checks pass.
+
+Artifacts in `build/range-profile/` include source snapshots, `matrix-build.json`,
+build/comparison/profile scripts, and extracted assembly. Its downloaded
+`range-profile-20260919/` directory contains raw perf data, annotations, reports,
+per-run benchmark data, summaries, and binaries. Local and downloaded binary
+hashes agree with the build manifest, as do the committed scan and harness
+sources. The instance was returned to its previous stopped state.
