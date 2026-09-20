@@ -32,6 +32,14 @@ void sq_tree_scan_columns(const SQTree *tree, SQScanColumns *out) {
   };
 }
 
+void sq_tree_scan_symbol_index(const SQTree *tree, SQScanSymbolIndex *out) {
+  uint32_t offset = sq_presence_offset(tree);
+  *out = offset
+      ? (SQScanSymbolIndex){offset, offset + sq_column_size(sq_symbols(tree), 1),
+                            (sq_tree_group_count(tree) + 31) / 32 * 4}
+      : (SQScanSymbolIndex){0};
+}
+
 void sq_tree_scan_point_layout(const SQTree *tree, SQScanPointLayout *out) {
   *out = sq_tree_has_points(tree)
       ? (SQScanPointLayout){tree->layout.start_point_base, tree->layout.start_point,

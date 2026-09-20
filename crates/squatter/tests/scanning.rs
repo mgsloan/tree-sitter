@@ -964,6 +964,104 @@ fn sparse_kind_filters() {
     }
 }
 
+#[test]
+fn indexed_kind_filters() {
+    let language = json_language();
+    let grammar = Grammar::new(&language).unwrap();
+    let source = format!(
+        "[true,[{}false],[{}true],[{}false]]",
+        "1,".repeat(1800),
+        "[\"text\",2],".repeat(300),
+        "3,".repeat(1800),
+    );
+    let [truth, falsity, string, number, absent] = ["true", "false", "string", "number", "null"]
+        .map(|name| language.id_for_node_kind(name, true));
+    for symbol_presence in [false, true] {
+        let (_, packed) = parse(
+            &language,
+            &source,
+            PackOptions {
+                symbol_presence,
+                ..Default::default()
+            },
+        );
+        assert!(packed.group_count() > 32);
+        let borrowed = Tree::from_bytes_borrowed(&grammar, packed.as_bytes()).unwrap();
+        for tree in [&packed, &borrowed] {
+            let nodes = reference_preorder(tree.root_node());
+            let subtree = nodes
+                .iter()
+                .copied()
+                .find(|node| node.start_byte() == 6 && node.kind() == "array")
+                .unwrap();
+            for root in [tree.root_node(), subtree] {
+                for ids in [
+                    [truth, falsity, absent, 32768],
+                    [string, truth, absent, u16::MAX],
+                    [number, number, u16::MAX - 1, 32768],
+                    [absent, absent, 32768, u16::MAX],
+                ] {
+                    check_fixed_kinds(root, ids);
+                    let kinds = KindSet::new(ids);
+                    let all = reference_preorder(root);
+                    let expected = all
+                        .iter()
+                        .copied()
+                        .filter(|node| kinds.contains(node.kind_id()))
+                        .collect::<Vec<_>>();
+                    check_pipeline(|| root.all().filter_kind_ids(&kinds), &expected);
+                    for range in [
+                        0..source.len(),
+                        5..41,
+                        source.len() / 3..source.len() * 2 / 3,
+                        source.len() - 20..source.len(),
+                    ] {
+                        let expected = all
+                            .iter()
+                            .copied()
+                            .filter(|node| {
+                                kinds.contains(node.kind_id())
+                                    && range.start <= node.start_byte()
+                                    && node.end_byte() <= range.end
+                            })
+                            .collect::<Vec<_>>();
+                        check_pipeline(
+                            || {
+                                root.all()
+                                    .within_bytes(range.clone())
+                                    .filter_kind_ids(&kinds)
+                            },
+                            &expected,
+                        );
+                        check_pipeline(
+                            || {
+                                root.all()
+                                    .within_points(
+                                        Point::new(0, range.start)..Point::new(0, range.end),
+                                    )
+                                    .filter_kind_ids(ids)
+                            },
+                            &expected,
+                        );
+                    }
+                    let expected = expected
+                        .into_iter()
+                        .filter(|node| [truth, string].contains(&node.kind_id()))
+                        .collect::<Vec<_>>();
+                    check_pipeline(
+                        || {
+                            root.all()
+                                .filter_kind_ids(ids)
+                                .filter_kind_ids([truth, string])
+                        },
+                        &expected,
+                    );
+                }
+            }
+        }
+    }
+}
+
 fn check_fixed_kinds<const N: usize>(root: Node<'_>, ids: [u16; N]) {
     let expected = reference_preorder(root)
         .into_iter()
