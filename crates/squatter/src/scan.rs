@@ -1059,13 +1059,23 @@ impl<'tree> Preorder<'tree> {
         }
     }
     #[inline(always)]
-    fn count_matching<const SUBTREES: bool, const INDEXED: bool, P: Predicate>(
-        mut self,
-        predicate: &P,
-    ) -> usize {
+    fn count_indexed<const SUBTREES: bool, P: Predicate>(mut self, predicate: &P) -> usize {
         let mut count = 0;
-        while let Some(matches) = self.next_matching_group::<false, SUBTREES, INDEXED, _>(predicate)
-        {
+        while let Some(matches) = self.next_matching_group::<false, SUBTREES, true, _>(predicate) {
+            count += matches.count_ones() as usize;
+        }
+        count
+    }
+    // Own the predicate and isolate the loop from index setup so column metadata
+    // can stay in registers. The call is paid once per flat scan.
+    #[inline(never)]
+    fn count_flat<P: Predicate>(mut self, predicate: P) -> usize {
+        let mut count = 0;
+        while let Some(matches) = if predicate.has_subtree_bound() {
+            self.next_matching_group::<false, true, false, _>(&predicate)
+        } else {
+            self.next_matching_group::<false, false, false, _>(&predicate)
+        } {
             count += matches.count_ones() as usize;
         }
         count
@@ -1134,11 +1144,12 @@ impl<'tree> GroupScan<'tree> for Preorder<'tree> {
     }
     #[inline(always)]
     fn count_matches<P: Predicate>(self, predicate: P) -> usize {
-        match (predicate.has_group_index(), predicate.has_subtree_bound()) {
-            (true, true) => self.count_matching::<true, true, _>(&predicate),
-            (true, false) => self.count_matching::<false, true, _>(&predicate),
-            (false, true) => self.count_matching::<true, false, _>(&predicate),
-            (false, false) => self.count_matching::<false, false, _>(&predicate),
+        if !predicate.has_group_index() {
+            self.count_flat(predicate)
+        } else if predicate.has_subtree_bound() {
+            self.count_indexed::<true, _>(&predicate)
+        } else {
+            self.count_indexed::<false, _>(&predicate)
         }
     }
     #[inline]
@@ -2395,7 +2406,7 @@ impl<'tree, S: GroupScan<'tree>, C: Coordinates, R: Relation<C::Position>> Group
         }
         self.source.count_matches(self.selection)
     }
-    #[inline]
+    #[inline(always)]
     fn count_matches<P: Predicate>(self, predicate: P) -> usize {
         if self.selection.relation.is_empty() {
             return 0;
@@ -2585,7 +2596,7 @@ impl<'tree, S: GroupScan<'tree>, P: Predicate> GroupScan<'tree> for Filtered<S, 
     fn group(&self) -> &GroupRef<'tree> {
         self.source.group()
     }
-    #[inline]
+    #[inline(always)]
     fn count_matches<Q: Predicate>(self, predicate: Q) -> usize {
         self.source.count_matches(And(self.predicate, predicate))
     }
@@ -2808,7 +2819,7 @@ impl Predicate for KindIds<'_> {
     fn has_group_index(&self) -> bool {
         self.index.enabled()
     }
-    #[inline]
+    #[inline(always)]
     fn next_group(&self, group: &GroupRef<'_>, groups: Range<u32>, reverse: bool) -> Option<u32> {
         self.index
             .next_group(group, self.targets(group.columns.layout), groups, reverse)
