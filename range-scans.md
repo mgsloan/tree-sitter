@@ -125,6 +125,9 @@ dense selections. Missing indexes also use that fallback. This adds no slab data
 the index is already built by default for trees exceeding 32 groups. Dynamic kind
 sets with more than four IDs inspect only surviving slots when at most four remain,
 so a selective range or preceding filter avoids scanning every used slot.
+Dynamic sets of up to sixteen IDs prepare their stored symbol values once and
+share the fixed-array SIMD kernel. Dense groups load each symbol chunk once for
+all comparisons; sparse candidate masks retain their membership shortcut.
 The [index and sparse-mask measurements](iteration-optimization-findings.md#indexed-symbol-filters-and-sparse-candidate-masks-2026-09-20)
 cover rare/absent IDs, dense-scan regressions, and filter combinations at all three
 group sizes.

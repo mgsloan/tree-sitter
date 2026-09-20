@@ -81,7 +81,8 @@ groups byte and point counterparts, such as `overlapping_{bytes,points}`.
 | `starting_at_{byte,point}` | Position restriction + mask filter | Yes¹ | Exact start equality; includes zero-width nodes. |
 | `ending_at_{byte,point}` | Position restriction + mask filter | Yes¹ | Exact end equality; includes zero-width nodes. |
 | `filter_kind_ids(array)` / `filter_field_ids(array)` | Mask filter | Yes² | Array length specializes the kernel; larger arrays share column loads across targets. |
-| `filter_kind_ids(&IdSet)` / `filter_field_ids(&IdSet)` | Mask filter | Conditional² | SIMD for 1–4 IDs; larger sets use scalar membership checks. |
+| `filter_kind_ids(&IdSet)` | Mask filter | Conditional² | Prepared SIMD targets for up to 16 IDs; larger sets use scalar membership checks. |
+| `filter_field_ids(&IdSet)` | Mask filter | Conditional² | SIMD for 1–4 IDs; larger sets use scalar membership checks. |
 | `filter_field_id(id)` | Mask filter | Yes² | Fixed-width equality; zero means no field. |
 | `filter_extra(bool)` / `filter_missing(bool)` | Mask intersection | No | Intersects stored flag bitmaps without per-node decoding. |
 | `filter_supertype_id(id)` | Membership checks → mask | Conditional³ | SIMD for direct membership masks; dictionary lookup remains scalar. |
@@ -343,7 +344,7 @@ Filters read stored columns directly:
 - Predicates over packed values decode only what their kernel needs.
 
 Predicates prepare grammar-dependent state when attached to a scan: fixed-array
-and dynamic single-kind IDs map to stored representations; supertype IDs resolve to
+and dynamic sets of up to sixteen kind IDs map to stored representations; supertype IDs resolve to
 membership indices. Kind predicates also fetch offsets for the optional persisted
 symbol index through one private C bridge call. No index is copied or allocated.
 
@@ -351,10 +352,11 @@ symbol index through one private C bridge call. No index is copied or allocated.
 surviving slots. Single-kind and field equality use SSE2 on x86_64, with a scalar
 fallback elsewhere. Fixed arrays specialize equality by cardinality: one target
 uses single equality, two combine equality masks, and larger arrays share column
-loads across comparisons. Dynamic sets of two to four IDs combine equality masks;
-larger dynamic sets use membership lookup, visiting only surviving slots when at
-most four remain. Singleton candidates and expensive
-predicates use scalar checks. Flags intersect already-valid candidate masks, so
+loads across comparisons. Dynamic sets of up to sixteen IDs reuse the same kernel,
+with their encoded targets stored inline in the predicate. Empty and singleton
+sets keep separate strategies. Larger sets use membership lookup. Sets with more
+than four targets visit only surviving slots when at most four remain. Singleton
+candidates and expensive predicates use scalar checks. Flags intersect already-valid candidate masks, so
 they need not reread group waste.
 
 Direct supertype masks use SSE2 bit tests for at least three candidates, with
@@ -376,8 +378,11 @@ Forward byte scans try subtree rejection at the current boundary before bitmap
 jumps, preserving the pruning opportunity there. Sparse-only selections keep
 direct index jumps. Both paths still validate the selected group against the range.
 Dense enumeration keeps the ordinary fragment loop. Counts choose indexed or
-flat traversal once. The dynamic scalar membership kernel is kept separate from
-SIMD and index traversal to limit register pressure.
+flat traversal once. Flat counts own their predicate in a separate function,
+allowing column metadata to stay in registers independently of index setup.
+The call is once per flat scan. Dynamic multi-ID
+kernels are separate from singleton equality and index traversal to limit
+register pressure. Count adapters inline so chained filters share one loop.
 
 Dense symbol selections retain the flat kernel. Preparation samples the first,
 middle, and last bitmap words for each requested symbol. More than twelve set
