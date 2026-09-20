@@ -169,7 +169,7 @@ static bool emit_values(Builder *builder, const EmitNode *frame, PackPosition en
       .grammar = original,
       .field = frame->field,
       .supertype = supertype,
-      .flags = !frame->later | (extra << 1) | (missing << 2) | (has_error << 3),
+      .flags = (!frame->later) | (extra << 1) | (missing << 2) | (has_error << 3),
   };
   return true;
 }

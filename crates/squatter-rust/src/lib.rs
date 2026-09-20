@@ -1,7 +1,13 @@
+mod node;
+use node::RawNode;
+pub use node::{Children, Cursor, Node};
+pub mod scan;
+pub use scan::{Postorder, Preorder, Scan};
 mod native;
 mod packing;
 mod parser;
 mod storage;
+pub mod traits;
 pub use packing::{PackContext, PackOptions};
 pub use parser::{ParseError, Parser};
 pub use storage::{BackedTree, BorrowedTree, StableSlab, Tree, representation_id};
@@ -49,3 +55,42 @@ impl Error {
         }
     }
 }
+
+/// A reusable runtime-sized set of IDs, interpreted by the selected scan filter.
+#[derive(Clone, Debug, Default)]
+pub struct IdSet {
+    ids: Vec<u16>,
+    words: Vec<u64>,
+}
+impl IdSet {
+    pub fn new(ids: impl IntoIterator<Item = u16>) -> Self {
+        ids.into_iter().collect()
+    }
+    pub fn contains(&self, id: u16) -> bool {
+        self.words
+            .get(id as usize / 64)
+            .is_some_and(|word| word & (1u64 << (id % 64)) != 0)
+    }
+    pub fn is_empty(&self) -> bool {
+        self.ids.is_empty()
+    }
+}
+impl FromIterator<u16> for IdSet {
+    fn from_iter<I: IntoIterator<Item = u16>>(ids: I) -> Self {
+        let mut ids: Vec<_> = ids.into_iter().collect();
+        ids.sort_unstable();
+        ids.dedup();
+        let mut words = vec![0; ids.last().map_or(0, |&kind| kind as usize / 64 + 1)];
+        for &id in &ids {
+            words[id as usize / 64] |= 1u64 << (id % 64);
+        }
+        Self { ids, words }
+    }
+}
+
+/// A reusable set of public kind IDs, interpreted in the scanned tree's language.
+pub type KindSet = IdSet;
+
+/// Preorder traversal filtered by public kind IDs.
+pub type KindMatches<'tree, 'kinds> =
+    scan::Nodes<'tree, scan::Filtered<Preorder<'tree>, scan::KindIds<'kinds>>>;

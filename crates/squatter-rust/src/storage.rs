@@ -7,9 +7,14 @@ use std::{
     ptr::{self, NonNull},
 };
 
-pub(crate) const GROUP_SIZE: u32 = 16;
-pub(crate) const ALIGNMENT: usize = 8;
-pub(crate) const VERSION: u32 = 0x5351_0001;
+include!(concat!(env!("OUT_DIR"), "/format.rs"));
+pub(crate) const VERSION: u32 = 0x5351_0001
+    | match GROUP_SIZE {
+        32 => 2,
+        64 => 4,
+        _ => 0,
+    }
+    | if ALIGNMENT == 64 { 8 } else { 0 };
 pub(crate) const NO_POINTS: u32 = 0x100;
 pub(crate) const PRESENCE: u32 = 0x200;
 pub(crate) const WIDE_SUPERTYPES: u32 = 0x400;
