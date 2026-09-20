@@ -4,13 +4,15 @@ use crate::{
     storage::*,
     traits,
 };
-use std::{ffi::c_void, marker::PhantomData, ops::Range};
+use std::{marker::PhantomData, ops::Range, ptr::NonNull};
 use tree_sitter::Point;
 
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
 pub(crate) struct RawNode {
-    pub tree: *const c_void,
+    // Every node borrows a live descriptor. Encoding that invariant also lets
+    // Option<Node> use null for None without a separate discriminant.
+    pub tree: NonNull<TreeData>,
     pub slot: u32,
 }
 
@@ -54,7 +56,7 @@ impl Tree {
     pub fn root_node(&self) -> Node<'_> {
         Node {
             raw: RawNode {
-                tree: self.0.as_ptr().cast(),
+                tree: self.0,
                 slot: self.data().group_end(self.group_count() - 1) - 1,
             },
             lifetime: PhantomData,
@@ -71,7 +73,7 @@ impl<'tree> Node<'tree> {
     #[inline]
     pub(crate) fn data(self) -> &'tree TreeData {
         // Node construction is restricted to live slots in a retained tree.
-        unsafe { &*self.raw.tree.cast::<TreeData>() }
+        unsafe { self.raw.tree.as_ref() }
     }
 
     #[inline]

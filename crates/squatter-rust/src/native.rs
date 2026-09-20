@@ -33,6 +33,22 @@ pub(crate) struct GrammarView {
 }
 
 impl GrammarView {
+    pub fn supertypes(&self) -> &[u16] {
+        if self.supertype_count == 0 {
+            return &[];
+        }
+        // The native owner retains these immutable arrays with the view.
+        unsafe { std::slice::from_raw_parts(self.supertypes, self.supertype_count as usize) }
+    }
+
+    pub fn supertype_masks(&self) -> &[u64] {
+        let length = self.dictionary_count as usize * self.dictionary_words as usize;
+        if length == 0 {
+            return &[];
+        }
+        unsafe { std::slice::from_raw_parts(self.supertype_masks, length) }
+    }
+
     pub fn symbol_code(&self, display: u16, original: u16) -> Option<u16> {
         unsafe {
             if *self.public_symbols.add(original as usize) == display {

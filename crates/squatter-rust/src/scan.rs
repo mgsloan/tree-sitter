@@ -23,7 +23,11 @@
 //! let _ = group.nodes().next();
 //! # }
 //! ```
-use crate::{KindSet, Node, RawNode};
+use crate::{
+    KindSet, Node, RawNode,
+    native::GrammarView,
+    storage::{GROUP_SIZE, Layout, TreeData},
+};
 use std::{
     iter::FusedIterator,
     marker::PhantomData,
@@ -31,103 +35,69 @@ use std::{
 };
 use tree_sitter::Point;
 
-#[derive(Clone, Copy)]
-#[repr(C)]
-struct ColumnLayout {
-    group_shift: u32,
-    symbol_count: u32,
-    symbol_shift: u32,
-    waste: u32,
-    span_base: u32,
-    span_delta: u32,
-    start_byte_base: u32,
-    start_byte_delta: u32,
-    end_byte_base: u32,
-    end_byte_delta: u32,
-    symbol: u32,
-    field: u32,
-    supertype: u32,
-    extra: u32,
-    missing: u32,
-}
-
+// Group views borrow the same descriptor as nodes. Keeping layout and grammar
+// metadata there avoids copying either into each scan and returned group.
 #[derive(Clone, Copy)]
 struct Columns<'tree> {
-    layout: ColumnLayout,
-    data: &'tree [u8],
-    supertypes: &'tree [u16],
-    supertype_masks: &'tree [u64],
     root: Node<'tree>,
 }
+
 impl<'tree> Columns<'tree> {
     fn new(root: Node<'tree>) -> Self {
-        let data = root.data();
-        let tables = data.tables();
-        let layout = data.layout;
-        let flags = data.flags();
-        use crate::storage::{EXTRAS, GROUP_SIZE, MISSING};
+        Self { root }
+    }
 
-        // The tree retains these immutable grammar tables, including when the
-        // slab is externally owned. Empty native tables may have null pointers.
-        unsafe {
-            Self {
-                layout: ColumnLayout {
-                    group_shift: GROUP_SIZE.trailing_zeros(),
-                    symbol_count: tables.symbol_count + 2,
-                    symbol_shift: tables.symbol_shift as u32,
-                    waste: layout.waste,
-                    span_base: layout.span_base,
-                    span_delta: layout.span_delta,
-                    start_byte_base: layout.start_byte_base,
-                    start_byte_delta: layout.start_byte_delta,
-                    end_byte_base: layout.end_byte_base,
-                    end_byte_delta: layout.end_byte_delta,
-                    symbol: layout.symbol,
-                    field: layout.field,
-                    supertype: layout.supertype,
-                    extra: if flags & EXTRAS != 0 { layout.extra } else { 0 },
-                    missing: if flags & MISSING != 0 {
-                        layout.missing
-                    } else {
-                        0
-                    },
-                },
-                data: data.slice(),
-                supertypes: if tables.supertype_count == 0 {
-                    &[]
-                } else {
-                    std::slice::from_raw_parts(tables.supertypes, tables.supertype_count as usize)
-                },
-                supertype_masks: if tables.dictionary_count == 0 || tables.dictionary_words == 0 {
-                    &[]
-                } else {
-                    std::slice::from_raw_parts(
-                        tables.supertype_masks,
-                        tables.dictionary_count as usize * tables.dictionary_words as usize,
-                    )
-                },
-                root,
-            }
+    #[inline]
+    fn tree(self) -> &'tree TreeData {
+        self.root.data()
+    }
+
+    #[inline]
+    fn layout(self) -> &'tree Layout {
+        &self.tree().layout
+    }
+
+    #[inline]
+    fn tables(self) -> &'tree GrammarView {
+        self.tree().tables()
+    }
+
+    #[inline]
+    fn encode_kind(self, kind: u16) -> Option<u16> {
+        let tables = self.tables();
+        match kind {
+            u16::MAX => Some(tables.symbol_count as u16),
+            value if value == u16::MAX - 1 => Some((tables.symbol_count + 1) as u16),
+            value if u32::from(value) < tables.symbol_count => Some(value),
+            _ => None,
         }
     }
+
+    #[inline]
+    fn data(self) -> &'tree [u8] {
+        self.tree().slice()
+    }
+
     #[inline]
     fn group_size(self) -> u32 {
-        1 << self.layout.group_shift
+        GROUP_SIZE
     }
+
     #[inline]
     fn byte(self, offset: u32, index: u32) -> u8 {
-        self.data[offset as usize + index as usize]
+        self.tree().byte(offset, index)
     }
+
     #[inline]
     fn short(self, offset: u32, index: u32) -> u16 {
-        let offset = offset as usize + index as usize * 2;
-        u16::from_le_bytes(self.data[offset..offset + 2].try_into().unwrap())
+        self.tree().short(offset, index)
     }
+
     #[inline]
     fn word(self, offset: u32, index: u32) -> u32 {
-        let offset = offset as usize + index as usize * 4;
-        u32::from_le_bytes(self.data[offset..offset + 4].try_into().unwrap())
+        self.tree().word(offset, index)
     }
+
     #[inline]
     fn group(self, index: u32) -> GroupRef<'tree> {
         GroupRef {
@@ -135,25 +105,17 @@ impl<'tree> Columns<'tree> {
             index,
         }
     }
+
     #[inline]
     fn first_slot(self, slot: u32) -> u32 {
-        slot - self.word(self.layout.span_base, slot >> self.layout.group_shift)
-            - u32::from(self.byte(self.layout.span_delta, slot))
+        self.tree().first_slot(slot)
     }
+
     #[inline]
     fn previous_slot(self, slot: u32) -> Option<u32> {
-        let previous = slot.checked_sub(1)?;
-        // Slots and subtree boundaries have a live predecessor within a group;
-        // only crossing a physical group boundary requires skipping its waste.
-        if slot & (self.group_size() - 1) != 0 {
-            Some(previous)
-        } else {
-            Some(
-                previous
-                    - u32::from(self.short(self.layout.waste, previous >> self.layout.group_shift)),
-            )
-        }
+        self.tree().previous_slot(slot)
     }
+
     #[inline]
     fn node(self, slot: u32) -> Node<'tree> {
         Node {
@@ -229,7 +191,7 @@ impl<'tree> GroupRef<'tree> {
     #[cfg(any(feature = "typed-query-scan", feature = "typed-presence-scan"))]
     pub(crate) fn new(root: Node<'tree>) -> Self {
         let columns = Columns::new(root);
-        columns.group(root.slot() >> columns.layout.group_shift)
+        columns.group(root.slot() >> GROUP_SIZE.trailing_zeros())
     }
 
     #[cfg(any(feature = "typed-query-scan", feature = "typed-presence-scan"))]
@@ -243,7 +205,7 @@ impl<'tree> GroupRef<'tree> {
         self.index
     }
     pub fn first_slot(self) -> u32 {
-        self.index << self.columns.layout.group_shift
+        self.index << GROUP_SIZE.trailing_zeros()
     }
     #[inline]
     pub fn valid_mask(self) -> Mask {
@@ -256,21 +218,16 @@ impl<'tree> GroupRef<'tree> {
     #[inline]
     fn used(self) -> u32 {
         self.columns.group_size()
-            - u32::from(self.columns.short(self.columns.layout.waste, self.index))
+            - u32::from(self.columns.short(self.columns.layout().waste, self.index))
     }
     #[inline]
     fn kind(self, slot: u32) -> u16 {
-        let layout = self.columns.layout;
-        let symbol = u32::from(self.columns.short(layout.symbol, self.first_slot() + slot))
-            >> layout.symbol_shift;
-        if symbol == layout.symbol_count - 2 {
-            u16::MAX
-        } else if symbol == layout.symbol_count - 1 {
-            u16::MAX - 1
-        } else {
-            symbol as u16
-        }
+        let columns = self.columns;
+        let symbol = columns.short(columns.layout().symbol, self.first_slot() + slot)
+            >> columns.tables().symbol_shift;
+        columns.tables().decode_id(symbol as u32)
     }
+
     #[inline]
     fn equal_ids(&self, offset: u32, shift: u32, target: u16, candidates: Mask) -> Mask {
         if candidates.0.is_power_of_two() {
@@ -279,7 +236,7 @@ impl<'tree> GroupRef<'tree> {
             });
         }
         let start = offset as usize + self.first_slot() as usize * 2;
-        let bytes = &self.columns.data[start..start + self.columns.group_size() as usize * 2];
+        let bytes = &self.columns.data()[start..start + self.columns.group_size() as usize * 2];
         let mut matches = 0;
         #[cfg(target_arch = "x86_64")]
         {
@@ -342,7 +299,7 @@ impl<'tree> GroupRef<'tree> {
         {
             use std::arch::x86_64::*;
             let start = offset as usize + self.first_slot() as usize * 2;
-            let bytes = &self.columns.data[start..start + self.columns.group_size() as usize * 2];
+            let bytes = &self.columns.data()[start..start + self.columns.group_size() as usize * 2];
             let mut matches = 0;
             // SSE2 is baseline. Each checked chunk contains both vector loads;
             // the const-sized target loop can unroll independently of group size.
@@ -762,9 +719,9 @@ impl<'tree> Preorder<'tree> {
         let root = columns.root;
         let first = columns.first_slot(root.slot());
         Self {
-            group: columns.group(root.slot() >> columns.layout.group_shift),
-            groups: (first >> columns.layout.group_shift)
-                ..(root.slot() >> columns.layout.group_shift) + 1,
+            group: columns.group(root.slot() >> GROUP_SIZE.trailing_zeros()),
+            groups: (first >> GROUP_SIZE.trailing_zeros())
+                ..(root.slot() >> GROUP_SIZE.trailing_zeros()) + 1,
             slots: first..root.slot() + 1,
         }
     }
@@ -946,7 +903,7 @@ impl<'tree> Postorder<'tree> {
     }
     fn new(columns: Columns<'tree>) -> Self {
         Self {
-            group: columns.group(columns.root.slot() >> columns.layout.group_shift),
+            group: columns.group(columns.root.slot() >> GROUP_SIZE.trailing_zeros()),
             traversal: ForwardPostorder::default(),
         }
     }
@@ -993,7 +950,7 @@ impl<'tree> GroupScan<'tree> for Postorder<'tree> {
     #[inline(always)]
     fn next_mask(&mut self) -> Option<Mask> {
         let slot = self.traversal.next(&self.group.columns)?;
-        self.group.index = slot >> self.group.columns.layout.group_shift;
+        self.group.index = slot >> GROUP_SIZE.trailing_zeros();
         Some(Mask(1u64 << (slot & (self.group.columns.group_size() - 1))))
     }
 }
@@ -1068,7 +1025,7 @@ impl<'tree> GroupScan<'tree> for ReversePostorder<'tree> {
             }
         };
         self.expand = Some(slot);
-        self.group.index = slot >> columns.layout.group_shift;
+        self.group.index = slot >> GROUP_SIZE.trailing_zeros();
         Some(Mask(1u64 << (slot & (columns.group_size() - 1))))
     }
 }
@@ -1077,18 +1034,13 @@ impl<'tree> GroupScan<'tree> for ReversePostorder<'tree> {
 pub struct Bytes;
 
 /// Row/column coordinates, using `(0, byte_offset)` when points are not stored.
-#[repr(C)]
 pub struct Points {
-    start_base: u32,
-    start_delta: u32,
-    end_base: u32,
-    end_delta: u32,
+    stored: bool,
 }
 
 struct BytePositions<'group, 'tree>(&'group GroupRef<'tree>);
 struct PointPositions<'group, 'tree, const STORED: bool> {
     group: &'group GroupRef<'tree>,
-    layout: &'group Points,
 }
 struct ByteColumn<'tree, const END: bool> {
     base: usize,
@@ -1116,7 +1068,7 @@ impl<'tree> ColumnDeltas<'tree> {
 #[inline]
 fn column_deltas<'tree>(group: &GroupRef<'tree>, offset: u32, width: usize) -> ColumnDeltas<'tree> {
     ColumnDeltas {
-        data: group.columns.data,
+        data: group.columns.data(),
         start: offset as usize + group.first_slot() as usize * width,
         length: group.columns.group_size() as usize * width,
     }
@@ -1124,7 +1076,7 @@ fn column_deltas<'tree>(group: &GroupRef<'tree>, offset: u32, width: usize) -> C
 #[inline]
 fn point_base(group: &GroupRef<'_>, offset: u32) -> u64 {
     let offset = offset as usize + group.index as usize * 8;
-    u64::from_le_bytes(group.columns.data[offset..offset + 8].try_into().unwrap())
+    u64::from_le_bytes(group.columns.data()[offset..offset + 8].try_into().unwrap())
 }
 #[inline]
 fn point_from_key(key: u64) -> Point {
@@ -1416,8 +1368,9 @@ impl<'tree> Positions for BytePositions<'_, 'tree> {
         ByteColumn {
             base: group
                 .columns
-                .word(group.columns.layout.start_byte_base, group.index) as usize,
-            deltas: column_deltas(group, group.columns.layout.start_byte_delta, 1),
+                .word(group.columns.layout().start_byte_base, group.index)
+                as usize,
+            deltas: column_deltas(group, group.columns.layout().start_byte_delta, 1),
         }
     }
     #[inline]
@@ -1426,8 +1379,8 @@ impl<'tree> Positions for BytePositions<'_, 'tree> {
         ByteColumn {
             base: group
                 .columns
-                .word(group.columns.layout.end_byte_base, group.index) as usize,
-            deltas: column_deltas(group, group.columns.layout.end_byte_delta, 2),
+                .word(group.columns.layout().end_byte_base, group.index) as usize,
+            deltas: column_deltas(group, group.columns.layout().end_byte_delta, 2),
         }
     }
 }
@@ -1439,8 +1392,8 @@ impl<'tree, const STORED: bool> Positions for PointPositions<'_, 'tree, STORED> 
     fn start(&self) -> Self::Start {
         if STORED {
             PointColumn {
-                base: point_base(self.group, self.layout.start_base),
-                deltas: column_deltas(self.group, self.layout.start_delta, 2),
+                base: point_base(self.group, self.group.columns.layout().start_point_base),
+                deltas: column_deltas(self.group, self.group.columns.layout().start_point, 2),
             }
         } else {
             let column = BytePositions(self.group).start();
@@ -1454,8 +1407,8 @@ impl<'tree, const STORED: bool> Positions for PointPositions<'_, 'tree, STORED> 
     fn end(&self) -> Self::End {
         if STORED {
             PointColumn {
-                base: point_base(self.group, self.layout.end_base),
-                deltas: column_deltas(self.group, self.layout.end_delta, 2),
+                base: point_base(self.group, self.group.columns.layout().end_point_base),
+                deltas: column_deltas(self.group, self.group.columns.layout().end_point, 2),
             }
         } else {
             let column = BytePositions(self.group).end();
@@ -1475,7 +1428,7 @@ impl Coordinates for Bytes {
     fn start_minimum(&self, group: &GroupRef<'_>) -> usize {
         group
             .columns
-            .word(group.columns.layout.start_byte_base, group.index) as usize
+            .word(group.columns.layout().start_byte_base, group.index) as usize
     }
     #[inline(always)]
     fn retain<R: Relation<usize>>(
@@ -1490,37 +1443,21 @@ impl Coordinates for Bytes {
 impl Coordinates for Points {
     type Position = Point;
     fn new(group: &GroupRef<'_>) -> Self {
-        let data = group.columns.root.data();
-        if data.has_points() {
-            Self {
-                start_base: data.layout.start_point_base,
-                start_delta: data.layout.start_point,
-                end_base: data.layout.end_point_base,
-                end_delta: data.layout.end_point,
-            }
-        } else {
-            Self {
-                start_base: 0,
-                start_delta: 0,
-                end_base: 0,
-                end_delta: 0,
-            }
+        Self {
+            stored: group.columns.tree().has_points(),
         }
     }
     #[inline]
     fn start_minimum(&self, group: &GroupRef<'_>) -> Point {
-        if self.start_base == 0 {
+        if !self.stored {
             Point::new(0, Bytes.start_minimum(group))
         } else {
             // Row and column bases are independent minima. Only the earliest
             // live node gives an actual start position ordered across groups.
             point_from_key(
-                PointPositions::<true> {
-                    group,
-                    layout: self,
-                }
-                .start()
-                .get(group.used() - 1),
+                PointPositions::<true> { group }
+                    .start()
+                    .get(group.used() - 1),
             )
         }
     }
@@ -1532,24 +1469,10 @@ impl Coordinates for Points {
         relation: &R,
     ) -> Mask {
         // Select the decoder once per group, keeping storage checks out of slot loops.
-        if self.start_base == 0 {
-            retain_points(
-                relation,
-                PointPositions::<false> {
-                    group,
-                    layout: self,
-                },
-                candidates,
-            )
+        if !self.stored {
+            retain_points(relation, PointPositions::<false> { group }, candidates)
         } else {
-            retain_points(
-                relation,
-                PointPositions::<true> {
-                    group,
-                    layout: self,
-                },
-                candidates,
-            )
+            retain_points(relation, PointPositions::<true> { group }, candidates)
         }
     }
 }
@@ -2143,13 +2066,7 @@ impl<const N: usize> sealed::Predicate for FixedKindIds<N> {}
 impl<const N: usize> Predicate for FixedKindIds<N> {
     #[inline]
     fn prepare(&mut self, group: &GroupRef<'_>) {
-        let layout = group.columns.layout;
-        let encode = |kind| match kind {
-            u16::MAX => Some((layout.symbol_count - 2) as u16),
-            value if value == u16::MAX - 1 => Some((layout.symbol_count - 1) as u16),
-            value if u32::from(value) < layout.symbol_count - 2 => Some(value),
-            _ => None,
-        };
+        let encode = |kind| group.columns.encode_kind(kind);
         let Some(first) = self.ids.iter().copied().find_map(encode) else {
             self.empty = true;
             return;
@@ -2163,8 +2080,13 @@ impl<const N: usize> Predicate for FixedKindIds<N> {
         if self.empty {
             return Mask::default();
         }
-        let layout = group.columns.layout;
-        group.equal_id_set(layout.symbol, layout.symbol_shift, &self.ids, candidates)
+        let layout = group.columns.layout();
+        group.equal_id_set(
+            layout.symbol,
+            group.columns.tables().symbol_shift as u32,
+            &self.ids,
+            candidates,
+        )
     }
 }
 
@@ -2181,17 +2103,12 @@ impl Predicate for KindIds<'_> {
         let KindStrategy::Multiple(kinds) = self.0 else {
             return;
         };
-        let layout = group.columns.layout;
         self.0 = match kinds.ids.as_slice() {
             [] => KindStrategy::Empty,
-            &[kind] => match kind {
-                u16::MAX => KindStrategy::Single((layout.symbol_count - 2) as u16),
-                value if value == u16::MAX - 1 => {
-                    KindStrategy::Single((layout.symbol_count - 1) as u16)
-                }
-                value if u32::from(value) < layout.symbol_count - 2 => KindStrategy::Single(value),
-                _ => KindStrategy::Empty,
-            },
+            &[kind] => group
+                .columns
+                .encode_kind(kind)
+                .map_or(KindStrategy::Empty, KindStrategy::Single),
             _ => KindStrategy::Multiple(kinds),
         };
     }
@@ -2201,24 +2118,31 @@ impl Predicate for KindIds<'_> {
         let kinds = match self.0 {
             KindStrategy::Empty => return Mask::default(),
             KindStrategy::Single(target) => {
-                let layout = group.columns.layout;
-                return group.equal_ids(layout.symbol, layout.symbol_shift, target, candidates);
+                let layout = group.columns.layout();
+                return group.equal_ids(
+                    layout.symbol,
+                    group.columns.tables().symbol_shift as u32,
+                    target,
+                    candidates,
+                );
             }
             KindStrategy::Multiple(kinds) => kinds,
         };
         #[cfg(target_arch = "x86_64")]
         if kinds.ids.len() <= 4 && !candidates.0.is_power_of_two() {
-            let layout = group.columns.layout;
+            let layout = group.columns.layout();
             let mut matches = Mask::default();
             for &kind in &kinds.ids {
-                let target = match kind {
-                    u16::MAX => (layout.symbol_count - 2) as u16,
-                    value if value == u16::MAX - 1 => (layout.symbol_count - 1) as u16,
-                    value if u32::from(value) < layout.symbol_count - 2 => value,
-                    _ => continue,
+                let Some(target) = group.columns.encode_kind(kind) else {
+                    continue;
                 };
                 matches.0 |= group
-                    .equal_ids(layout.symbol, layout.symbol_shift, target, candidates)
+                    .equal_ids(
+                        layout.symbol,
+                        group.columns.tables().symbol_shift as u32,
+                        target,
+                        candidates,
+                    )
                     .0;
             }
             return matches;
@@ -2226,19 +2150,14 @@ impl Predicate for KindIds<'_> {
         if candidates.0.is_power_of_two() {
             return candidates.retain(|slot| kinds.contains(group.kind(slot)));
         }
-        let layout = group.columns.layout;
+        let layout = group.columns.layout();
         let start = layout.symbol as usize + group.first_slot() as usize * 2;
-        let bytes = &group.columns.data[start..start + group.used() as usize * 2];
+        let bytes = &group.columns.data()[start..start + group.used() as usize * 2];
         let mut matches = 0;
         for (slot, bytes) in bytes.chunks_exact(2).enumerate() {
-            let symbol = u32::from(u16::from_le_bytes([bytes[0], bytes[1]])) >> layout.symbol_shift;
-            let kind = if symbol == layout.symbol_count - 2 {
-                u16::MAX
-            } else if symbol == layout.symbol_count - 1 {
-                u16::MAX - 1
-            } else {
-                symbol as u16
-            };
+            let symbol = u32::from(u16::from_le_bytes([bytes[0], bytes[1]]))
+                >> group.columns.tables().symbol_shift as u32;
+            let kind = group.columns.tables().decode_id(symbol);
             matches |= u64::from(kinds.contains(kind)) << slot;
         }
         candidates.intersection(Mask(matches))
@@ -2249,7 +2168,7 @@ impl<const N: usize> sealed::Predicate for FixedFieldIds<N> {}
 impl<const N: usize> Predicate for FixedFieldIds<N> {
     #[inline(always)]
     fn retain_matches(&self, group: &GroupRef<'_>, candidates: Mask) -> Mask {
-        group.equal_id_set(group.columns.layout.field, 0, &self.0, candidates)
+        group.equal_id_set(group.columns.layout().field, 0, &self.0, candidates)
     }
 }
 pub struct FieldIds<'ids>(&'ids crate::IdSet);
@@ -2257,7 +2176,7 @@ impl sealed::Predicate for FieldIds<'_> {}
 impl Predicate for FieldIds<'_> {
     #[inline]
     fn retain_matches(&self, group: &GroupRef<'_>, candidates: Mask) -> Mask {
-        let offset = group.columns.layout.field;
+        let offset = group.columns.layout().field;
         match self.0.ids.as_slice() {
             [] => Mask::default(),
             &[field] => group.equal_ids(offset, 0, field, candidates),
@@ -2278,7 +2197,7 @@ impl sealed::Predicate for FieldId {}
 impl Predicate for FieldId {
     #[inline]
     fn retain_matches(&self, group: &GroupRef<'_>, candidates: Mask) -> Mask {
-        group.equal_ids(group.columns.layout.field, 0, self.0, candidates)
+        group.equal_ids(group.columns.layout().field, 0, self.0, candidates)
     }
 }
 pub struct Extra(bool);
@@ -2286,7 +2205,11 @@ impl sealed::Predicate for Extra {}
 impl Predicate for Extra {
     #[inline]
     fn retain_matches(&self, group: &GroupRef<'_>, candidates: Mask) -> Mask {
-        let flags = group.bitmap(group.columns.layout.extra);
+        let flags = if group.columns.tree().flags() & crate::storage::EXTRAS != 0 {
+            group.bitmap(group.columns.layout().extra)
+        } else {
+            0
+        };
         Mask(candidates.0 & if self.0 { flags } else { !flags })
     }
 }
@@ -2295,7 +2218,11 @@ impl sealed::Predicate for Missing {}
 impl Predicate for Missing {
     #[inline]
     fn retain_matches(&self, group: &GroupRef<'_>, candidates: Mask) -> Mask {
-        let flags = group.bitmap(group.columns.layout.missing);
+        let flags = if group.columns.tree().flags() & crate::storage::MISSING != 0 {
+            group.bitmap(group.columns.layout().missing)
+        } else {
+            0
+        };
         Mask(candidates.0 & if self.0 { flags } else { !flags })
     }
 }
@@ -2341,7 +2268,12 @@ impl sealed::Predicate for SupertypeId {}
 impl Predicate for SupertypeId {
     #[inline]
     fn prepare(&mut self, group: &GroupRef<'_>) {
-        self.index = group.columns.supertypes.binary_search(&self.symbol).ok();
+        self.index = group
+            .columns
+            .tables()
+            .supertypes()
+            .binary_search(&self.symbol)
+            .ok();
     }
     #[inline]
     fn retain_matches(&self, group: &GroupRef<'_>, candidates: Mask) -> Mask {
@@ -2349,17 +2281,17 @@ impl Predicate for SupertypeId {
             return Mask::default();
         };
         let columns = &group.columns;
-        if columns.supertypes.len() <= 8 {
+        if columns.tables().supertypes().len() <= 8 {
             return retain_supertype_masks(
-                column_deltas(group, columns.layout.supertype, 2).slice(),
+                column_deltas(group, columns.layout().supertype, 2).slice(),
                 candidates,
                 1 << index,
             );
         }
-        let words = columns.supertypes.len().div_ceil(64);
+        let words = columns.tables().supertypes().len().div_ceil(64);
         candidates.retain(|slot| {
-            let value = columns.short(columns.layout.supertype, group.first_slot() + slot);
-            columns.supertype_masks[usize::from(value) * words + index / 64]
+            let value = columns.short(columns.layout().supertype, group.first_slot() + slot);
+            columns.tables().supertype_masks()[usize::from(value) * words + index / 64]
                 & (1u64 << (index % 64))
                 != 0
         })
