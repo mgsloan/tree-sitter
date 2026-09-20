@@ -179,6 +179,12 @@ Byte and point queries cover the same interval. Use repeated `--workload NAME`
 arguments to time selected operations. Results describe this selected corpus
 and cache behavior, not parsing performance.
 
+`range` and `point_range` workloads measure overlap. `within`, `starting_in`,
+and `starting_at` (also prefixed with `point_`) provide `.nodes`, `.fold`, and
+`.count` consumers. Exact-start queries use the range's start. Overlap also has
+`.reverse_nodes` workloads. Setup validates selected nodes against scalar
+accessors before timing.
+
 Forward/reverse fold and grouped-fold workloads also consume every node with `black_box`.
 `flags.count` excludes extra and missing nodes; `combined.count` additionally
 intersects the selected kind and field. Supertype workloads select the grammar's
@@ -189,7 +195,36 @@ recorded so this early-rejection effect is visible.
 `fixed_N.{nodes,count,fold}` and `dynamic_N.{nodes,count,fold}` compare arrays and
 reusable sets for N = 1, 2, 4, 8, 16 frequent named kinds. Field variants are
 `fixed_field_N`, `dynamic_field_N`, and `scalar_field_N`, for N = 1, 2, 4 frequent
-nonzero fields (or zero when none exists). If fewer distinct IDs are present,
-arrays repeat the most frequent ID; dynamic sets deduplicate the same selection.
+nonzero fields (or zero when none exists). If fewer distinct IDs are available,
+arrays repeat the first selected ID; dynamic sets deduplicate the same selection.
 Per-file arrays and match counts are recorded. Both paths include scan/predicate
 preparation in timing; constructing reusable dynamic sets is setup work.
+
+`range.fixed_N.{nodes,count}` and `range.dynamic_N.{nodes,count}` combine byte
+overlap with one or four frequent named kinds. The `point_range`, `within`, and
+`point_within` prefixes provide point-coordinate and within selections.
+Range selection runs before the kind filter. Setup validates each combination's
+membership against scalar accessors and records per-file match counts.
+
+`--kind-selection rare` selects the least frequent named kinds instead;
+`--kind-selection absent` selects valid grammar IDs absent from each input,
+preferring named IDs. `--no-symbol-index` disables index construction during
+packing. `field.{fixed,dynamic}_N.{nodes,count}` filters by field before 8/16
+selected kind IDs; `range.{fixed,dynamic}_8.{nodes,count}` covers byte overlap
+followed by eight IDs. These combinations exercise sparse candidate masks.
+
+Composed workloads use 2/4/8/16 IDs, arrays and sets, and `.nodes`/`.count`:
+
+| Prefix | Filter order |
+| --- | --- |
+| `field` / `kind_field` | Field then symbols / symbols then field |
+| `flags` | Exclude extra and missing nodes, then symbols |
+| `range_field` / `range_kind_field` | Byte overlap, then both field/symbol orders |
+| `intersection` / `intersection_reverse` | Two symbol filters, in both orders |
+
+The second symbol set selects alternate entries from the sixteen selected IDs;
+its intersection with the first set varies with cardinality. Per-file IDs and
+counts are recorded. Setup checks each composed enumeration against scalar node
+accessors, and every timed count must match the scalar total. Use both narrow and
+broad byte windows and `--no-symbol-index` to distinguish sparse-mask, SIMD, and
+index effects.

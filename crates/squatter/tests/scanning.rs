@@ -413,6 +413,114 @@ macro_rules! check_selection {
     }};
 }
 
+#[test]
+fn range_seeks_across_subtrees() {
+    let source = format!(
+        "[{}[{}0{}],\n{}[1,2]]",
+        format!("[{}0],\n", "[1,2],".repeat(100)).repeat(8),
+        "[".repeat(80),
+        "]".repeat(80),
+        " ".repeat(700),
+    );
+    for points in [false, true] {
+        let (_, tree) = parse(
+            &json_language(),
+            &source,
+            PackOptions {
+                points,
+                initial_group_capacity: 1,
+                ..Default::default()
+            },
+        );
+        let all = reference_preorder(tree.root_node());
+        for root in all.iter().copied().step_by(all.len() / 5) {
+            let preorder = reference_preorder(root);
+            let postorder = root.postorder().nodes().collect::<Vec<_>>();
+            for node in all.iter().step_by(all.len() / 7) {
+                let range = node.start_byte()..node.end_byte();
+                check_selection!(
+                    root,
+                    preorder,
+                    postorder,
+                    overlapping_bytes,
+                    range.clone(),
+                    |node: &Node<'_>| {
+                        !range.is_empty()
+                            && node.start_byte() < range.end
+                            && (node.end_byte() > range.start || node.start_byte() >= range.start)
+                    }
+                );
+                check_selection!(
+                    root,
+                    preorder,
+                    postorder,
+                    within_bytes,
+                    range.clone(),
+                    |node: &Node<'_>| {
+                        range.start <= node.start_byte() && node.end_byte() <= range.end
+                    }
+                );
+                check_selection!(
+                    root,
+                    preorder,
+                    postorder,
+                    starting_in_bytes,
+                    range.clone(),
+                    |node: &Node<'_>| { range.contains(&node.start_byte()) }
+                );
+                check_selection!(
+                    root,
+                    preorder,
+                    postorder,
+                    starting_at_byte,
+                    range.start,
+                    |node: &Node<'_>| { node.start_byte() == range.start }
+                );
+                let range = node.start_position()..node.end_position();
+                check_selection!(
+                    root,
+                    preorder,
+                    postorder,
+                    overlapping_points,
+                    range.clone(),
+                    |node: &Node<'_>| {
+                        !range.is_empty()
+                            && node.start_position() < range.end
+                            && (node.end_position() > range.start
+                                || node.start_position() >= range.start)
+                    }
+                );
+                check_selection!(
+                    root,
+                    preorder,
+                    postorder,
+                    within_points,
+                    range.clone(),
+                    |node: &Node<'_>| {
+                        range.start <= node.start_position() && node.end_position() <= range.end
+                    }
+                );
+                check_selection!(
+                    root,
+                    preorder,
+                    postorder,
+                    starting_in_points,
+                    range.clone(),
+                    |node: &Node<'_>| { range.contains(&node.start_position()) }
+                );
+                check_selection!(
+                    root,
+                    preorder,
+                    postorder,
+                    starting_at_point,
+                    range.start,
+                    |node: &Node<'_>| { node.start_position() == range.start }
+                );
+            }
+        }
+    }
+}
+
 fn check_position_selections(root: Node<'_>) {
     let preorder = reference_preorder(root);
     let postorder = root.postorder().nodes().collect::<Vec<_>>();
@@ -800,6 +908,244 @@ fn dense_id_filters() {
             .filter(|node| kinds.contains(node.kind_id()))
             .collect::<Vec<_>>();
         check_pipeline(|| root.preorder().filter_kind_ids(&kinds), &expected);
+    }
+}
+
+#[test]
+fn sparse_kind_filters() {
+    let language = json_language();
+    let source = format!("[{}null]", "[\"text\",true,false,1,null],".repeat(64));
+    let booleans = ["true", "false"].map(|name| language.id_for_node_kind(name, true));
+    let kinds = KindSet::new((0..language.node_kind_count() as u16).chain([32768, u16::MAX]));
+    for symbol_presence in [false, true] {
+        let (_, tree) = parse(
+            &language,
+            &source,
+            PackOptions {
+                symbol_presence,
+                ..Default::default()
+            },
+        );
+        let root = tree.root_node();
+        let nodes = reference_preorder(root);
+        let expected = nodes
+            .iter()
+            .copied()
+            .filter(|node| booleans.contains(&node.kind_id()))
+            .collect::<Vec<_>>();
+        check_pipeline(
+            || {
+                root.preorder()
+                    .filter_kind_ids(booleans)
+                    .filter_kind_ids(&kinds)
+            },
+            &expected,
+        );
+        for start in [0, 7, source.len() / 2, source.len() - 16] {
+            let range = start..start + 16;
+            let expected = nodes
+                .iter()
+                .copied()
+                .filter(|node| {
+                    range.start <= node.start_byte()
+                        && node.end_byte() <= range.end
+                        && kinds.contains(node.kind_id())
+                })
+                .collect::<Vec<_>>();
+            check_pipeline(
+                || {
+                    root.preorder()
+                        .within_bytes(range.clone())
+                        .filter_kind_ids(&kinds)
+                },
+                &expected,
+            );
+        }
+    }
+}
+
+#[test]
+fn prepared_kind_sets() {
+    let language = json_language();
+    let source = format!(
+        "{{\"items\": [{}null], \"bad\": invalid}}",
+        "[1,true,false,\"text\"],".repeat(25)
+    );
+    for symbol_presence in [false, true] {
+        let (_, tree) = parse(
+            &language,
+            &source,
+            PackOptions {
+                symbol_presence,
+                ..Default::default()
+            },
+        );
+        let root = tree.root_node();
+        let nodes = reference_preorder(root);
+        let other = KindSet::new(nodes.iter().step_by(3).map(|node| node.kind_id()));
+        for length in [0, 1, 2, 3, 4, 5, 7, 8, 9, 15, 16, 17, 23] {
+            for start in [0, 32768, u16::MAX - 23] {
+                let kinds = KindSet::new((start..start + length).chain([u16::MAX, u16::MAX - 1]));
+                let plain = KindSet::new(start..start + length);
+                for kinds in [&plain, &kinds] {
+                    let expected = nodes
+                        .iter()
+                        .copied()
+                        .filter(|node| kinds.contains(node.kind_id()))
+                        .collect::<Vec<_>>();
+                    check_pipeline(|| root.all().filter_kind_ids(kinds), &expected);
+                    let range = 10..source.len() - 10;
+                    let expected = expected
+                        .into_iter()
+                        .filter(|node| {
+                            range.start <= node.start_byte()
+                                && node.end_byte() <= range.end
+                                && node.field_id() == 0
+                                && !node.is_extra()
+                                && other.contains(node.kind_id())
+                        })
+                        .collect::<Vec<_>>();
+                    check_pipeline(
+                        || {
+                            root.all()
+                                .within_bytes(range.clone())
+                                .filter_field_id(0)
+                                .filter_extra(false)
+                                .filter_kind_ids(kinds)
+                                .filter_kind_ids(&other)
+                        },
+                        &expected,
+                    );
+                    check_pipeline(
+                        || {
+                            root.all()
+                                .within_bytes(range.clone())
+                                .filter_kind_ids(&other)
+                                .filter_kind_ids(kinds)
+                                .filter_extra(false)
+                                .filter_field_id(0)
+                        },
+                        &expected,
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn indexed_kind_filters() {
+    let language = json_language();
+    let grammar = Grammar::new(&language).unwrap();
+    let source = format!(
+        "[true,[{}false],[{}true],[{}false]]",
+        "1,".repeat(1800),
+        "[\"text\",2],".repeat(300),
+        "3,".repeat(5400),
+    );
+    let [truth, falsity, string, number, absent] = ["true", "false", "string", "number", "null"]
+        .map(|name| language.id_for_node_kind(name, true));
+    for symbol_presence in [false, true] {
+        let (_, packed) = parse(
+            &language,
+            &source,
+            PackOptions {
+                symbol_presence,
+                ..Default::default()
+            },
+        );
+        assert!(packed.group_count() > 32);
+        let borrowed = Tree::from_bytes_borrowed(&grammar, packed.as_bytes()).unwrap();
+        for tree in [&packed, &borrowed] {
+            let nodes = reference_preorder(tree.root_node());
+            let subtree = nodes
+                .iter()
+                .copied()
+                .find(|node| node.start_byte() == 6 && node.kind() == "array")
+                .unwrap();
+            for root in [tree.root_node(), subtree] {
+                for ids in [
+                    [truth, falsity, absent, 32768],
+                    [string, truth, absent, u16::MAX],
+                    [number, number, u16::MAX - 1, 32768],
+                    [absent, absent, 32768, u16::MAX],
+                ] {
+                    check_fixed_kinds(root, ids);
+                    let kinds = KindSet::new(ids);
+                    let all = reference_preorder(root);
+                    let expected = all
+                        .iter()
+                        .copied()
+                        .filter(|node| kinds.contains(node.kind_id()))
+                        .collect::<Vec<_>>();
+                    check_pipeline(|| root.all().filter_kind_ids(&kinds), &expected);
+                    for range in [
+                        0..source.len(),
+                        5..41,
+                        source.len() / 3..source.len() * 2 / 3,
+                        source.len() - 20..source.len(),
+                    ] {
+                        let expected = all
+                            .iter()
+                            .copied()
+                            .filter(|node| {
+                                kinds.contains(node.kind_id())
+                                    && range.start <= node.start_byte()
+                                    && node.end_byte() <= range.end
+                            })
+                            .collect::<Vec<_>>();
+                        check_pipeline(
+                            || {
+                                root.all()
+                                    .within_bytes(range.clone())
+                                    .filter_kind_ids(&kinds)
+                            },
+                            &expected,
+                        );
+                        check_pipeline(
+                            || {
+                                root.all()
+                                    .within_points(
+                                        Point::new(0, range.start)..Point::new(0, range.end),
+                                    )
+                                    .filter_kind_ids(ids)
+                            },
+                            &expected,
+                        );
+                        let overlapping = all
+                            .iter()
+                            .copied()
+                            .filter(|node| {
+                                kinds.contains(node.kind_id())
+                                    && node.start_byte() < range.end
+                                    && (node.end_byte() > range.start
+                                        || node.start_byte() >= range.start)
+                            })
+                            .collect::<Vec<_>>();
+                        check_pipeline(
+                            || {
+                                root.all()
+                                    .overlapping_bytes(range.clone())
+                                    .filter_kind_ids(ids)
+                            },
+                            &overlapping,
+                        );
+                    }
+                    let expected = expected
+                        .into_iter()
+                        .filter(|node| [truth, string].contains(&node.kind_id()))
+                        .collect::<Vec<_>>();
+                    check_pipeline(
+                        || {
+                            root.all()
+                                .filter_kind_ids(ids)
+                                .filter_kind_ids([truth, string])
+                        },
+                        &expected,
+                    );
+                }
+            }
+        }
     }
 }
 

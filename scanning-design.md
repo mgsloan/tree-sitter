@@ -81,7 +81,8 @@ groups byte and point counterparts, such as `overlapping_{bytes,points}`.
 | `starting_at_{byte,point}` | Position restriction + mask filter | Yes¹ | Exact start equality; includes zero-width nodes. |
 | `ending_at_{byte,point}` | Position restriction + mask filter | Yes¹ | Exact end equality; includes zero-width nodes. |
 | `filter_kind_ids(array)` / `filter_field_ids(array)` | Mask filter | Yes² | Array length specializes the kernel; larger arrays share column loads across targets. |
-| `filter_kind_ids(&IdSet)` / `filter_field_ids(&IdSet)` | Mask filter | Conditional² | SIMD for 1–4 IDs; larger sets use scalar membership checks. |
+| `filter_kind_ids(&IdSet)` | Mask filter | Conditional² | Prepared SIMD targets for up to 16 IDs; larger sets use scalar membership checks. |
+| `filter_field_ids(&IdSet)` | Mask filter | Conditional² | SIMD for 1–4 IDs; larger sets use scalar membership checks. |
 | `filter_field_id(id)` | Mask filter | Yes² | Fixed-width equality; zero means no field. |
 | `filter_extra(bool)` / `filter_missing(bool)` | Mask intersection | No | Intersects stored flag bitmaps without per-node decoding. |
 | `filter_supertype_id(id)` | Membership checks → mask | Conditional³ | SIMD for direct membership masks; dictionary lookup remains scalar. |
@@ -105,7 +106,9 @@ lanes. Masks with at least three candidates use SIMD; one or two use scalar bit
 tests. Larger grammars store dictionary IDs and use scalar membership lookup.
 
 One range/position restriction is allowed before other filters. Preorder seeks
-only the upper start boundary; postorder enumeration has no range pruning.
+both start boundaries for within, starting-in, and exact-start relations; other
+relations supply only an upper bound. Forward preorder byte scans can skip
+subtrees whose end bounds are too early. Postorder enumeration has no range pruning.
 Masks always exclude waste and nodes outside the selected subtree.
 
 ## Typed composition
@@ -164,6 +167,15 @@ range selections invoke it only for groups that survive conservative rejection.
 Other predicates default to constructing the mask immediately. Counts use this
 same path, and composition keeps the first predicate's opportunity to reject
 before mask construction. Postorder retains its ordinary fragments.
+
+Forward preorder byte scans also ask `Predicate::excludes_subtrees` before
+ordinary group evaluation. Byte selections prove this from their required minimum end and the
+group's maximum end. The stored span base then bounds a safe jump across whole
+descendant groups. Zero span bases avoid delta reads and short jumps. Reverse
+enumeration keeps its group walk; counts can use forward skipping over the
+remaining interval.
+Queries without a useful lower end bound, and point selections, use the ordinary
+group kernel. The point pruning prototype regressed broad scans and some counts.
 
 Generic composition permits inlining and specialization without dynamic dispatch
 or allocations for adapters. It does not guarantee SIMD. The hot column reads
@@ -301,12 +313,12 @@ Delta columns retain their slab slice, offset, and length until decoding or
 comparison is required. Group rejection and acceptance use only bases, avoiding
 delta-slice bounds checks on those paths. Reads still use checked slices.
 
-Preorder restrictions use a binary search over group start minima to remove
-groups beyond the relation's upper bound on node starts. Point bases store
-independent row and column minima; seeking reconstructs the earliest live node's
-position to obtain a bound ordered across groups. Each relation refines valid
-subtree-slot masks with conservative group bounds and endpoint comparisons.
-Further seeking and early termination require ordering guarantees.
+Preorder restrictions binary-search group start minima for the relation's upper
+start bound, and its lower bound when one exists. The lower seek retains one
+crossing group for slot comparisons. Point bases store independent row and column
+minima; seeking reconstructs the earliest live node's position to obtain a bound
+ordered across groups. Each relation refines valid subtree-slot masks with
+conservative group bounds and endpoint comparisons.
 
 Zero-width overlap changes boundary rejection. A group whose maximum end equals
 the query start may contain matching zero-width nodes, so only a maximum end
@@ -332,16 +344,21 @@ Filters read stored columns directly:
 - Predicates over packed values decode only what their kernel needs.
 
 Predicates prepare grammar-dependent state when attached to a scan: fixed-array
-and dynamic single-kind IDs map to stored representations; supertype IDs resolve to
-membership indices. This uses existing column metadata without another C call.
+and dynamic sets of up to sixteen kind IDs map to stored representations; supertype IDs resolve to
+membership indices. Kind predicates also fetch offsets for the optional persisted
+symbol index through one private C bridge call. No index is copied or allocated.
 
 `retain_matches` permits both dense group evaluation and scalar evaluation of
 surviving slots. Single-kind and field equality use SSE2 on x86_64, with a scalar
 fallback elsewhere. Fixed arrays specialize equality by cardinality: one target
 uses single equality, two combine equality masks, and larger arrays share column
-loads across comparisons. Dynamic sets of two to four IDs combine equality masks;
-larger dynamic sets use membership lookup. Singleton candidates and expensive
-predicates use scalar checks. Flags intersect already-valid candidate masks, so
+loads across comparisons. Dynamic sets of up to sixteen IDs reuse the same kernel,
+with their encoded targets stored inline in the predicate. Empty and singleton
+sets keep separate strategies. Two- and four-target kernels inline; three targets
+repeat one ID to use the four-target kernel. The variable-length kernel stays
+outside the caller to limit register pressure. Larger sets use membership lookup. Sets with more
+than four targets visit only surviving slots when at most four remain. Singleton
+candidates and expensive predicates use scalar checks. Flags intersect already-valid candidate masks, so
 they need not reread group waste.
 
 Direct supertype masks use SSE2 bit tests for at least three candidates, with
@@ -351,6 +368,36 @@ supertypes; dictionary-based membership remains scalar.
 Filter order is initially call order. Empty masks short-circuit subsequent
 filters. Choosing dense versus sparse evaluation stays inside the predicate,
 where column costs are known; consumers need not make that choice.
+
+Preorder filters use the existing symbol index to find the next possible group
+in either direction, bounded by the remaining range and subtree. Each symbol's
+entry is either a descending exact slot list or a group bitmap. Sparse entries
+also supply the matching slot mask, intersected with the live candidates. A union
+containing a bitmap still checks the group's symbol column for exact membership.
+Indexed filters pass composed predicates to the source; the first indexed
+predicate controls jumps, while all predicates refine the returned candidates.
+Forward byte scans try subtree rejection at the current boundary before bitmap
+jumps, preserving the pruning opportunity there. Sparse-only selections keep
+direct index jumps. Both paths still validate the selected group against the range.
+Dense enumeration keeps the ordinary fragment loop. Counts choose indexed or
+flat traversal once. Flat counts own their predicate in a separate function,
+allowing column metadata to stay in registers independently of index setup.
+The call is once per flat scan. Dynamic multi-ID
+kernels are separate from singleton equality and index traversal to limit
+register pressure. Count adapters inline so chained filters share one loop.
+
+Dense symbol selections retain the flat kernel. Preparation samples the first,
+middle, and last bitmap words for each requested symbol. More than twelve set
+bits across those samples disables index lookup for the selection. Summing across
+symbols overcounts shared bits. This is only a cost heuristic: exact membership is unchanged. Trees without the index
+(including trees with at most 32 groups) also use the flat kernel. Postorder
+enumeration retains its topology walk; fresh postorder counts can use preorder's
+index traversal. The [index and sparse-mask measurements](iteration-optimization-findings.md#indexed-symbol-filters-and-sparse-candidate-masks-2026-09-20)
+compare selective and dense queries, including the remaining count regressions.
+
+The [16/32/64-slot cloud comparison](iteration-optimization-findings.md#symbol-filters-and-rangefilter-combinations-by-group-size-2026-09-19)
+covers symbol arrays/sets, fields, flags, supertypes, and range-plus-symbol
+pipelines, including their storage tradeoffs.
 
 ## Terminal operations
 
