@@ -141,3 +141,9 @@ nonzero fields (or zero when none exists). If fewer distinct IDs are present,
 arrays repeat the most frequent ID; dynamic sets deduplicate the same selection.
 Per-file arrays and match counts are recorded. Both paths include scan/predicate
 preparation in timing; constructing reusable dynamic sets is setup work.
+
+`range.fixed_N.{nodes,count}` and `range.dynamic_N.{nodes,count}` combine byte
+overlap with one or four frequent named kinds. The `point_range`, `within`, and
+`point_within` prefixes provide the corresponding point/containment selections.
+Range selection runs before the kind filter. Setup validates each combination's
+membership against scalar accessors and records per-file match counts.

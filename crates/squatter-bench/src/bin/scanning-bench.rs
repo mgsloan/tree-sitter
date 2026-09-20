@@ -66,7 +66,9 @@ struct Case {
     field: u16,
     field_matches: usize,
     range_matches: usize,
+    range_kind_matches: [usize; 5],
     within_matches: usize,
+    within_kind_matches: [usize; 5],
     starting_in_matches: usize,
     starting_at_matches: usize,
     supertype: u16,
@@ -519,6 +521,89 @@ fn workloads() -> Vec<(&'static str, Operation)> {
         case,
         case.point_range.start
     );
+    macro_rules! range_kind_workloads {
+        ($name:literal, $method:ident, $case:ident, $value:expr, $length:literal) => {
+            let selected: [(&'static str, Operation); 4] = [
+                (concat!($name, ".fixed_", $length, ".nodes"), |$case| {
+                    consume(
+                        $case
+                            .tree
+                            .root_node()
+                            .all()
+                            .$method($value)
+                            .filter_kind_ids(fixed_kinds::<$length>($case))
+                            .nodes(),
+                    )
+                }),
+                (concat!($name, ".fixed_", $length, ".count"), |$case| {
+                    $case
+                        .tree
+                        .root_node()
+                        .all()
+                        .$method($value)
+                        .filter_kind_ids(fixed_kinds::<$length>($case))
+                        .count()
+                }),
+                (concat!($name, ".dynamic_", $length, ".nodes"), |$case| {
+                    consume(
+                        $case
+                            .tree
+                            .root_node()
+                            .all()
+                            .$method($value)
+                            .filter_kind_ids(
+                                &$case.sized_kind_sets[($length as usize).ilog2() as usize],
+                            )
+                            .nodes(),
+                    )
+                }),
+                (concat!($name, ".dynamic_", $length, ".count"), |$case| {
+                    $case
+                        .tree
+                        .root_node()
+                        .all()
+                        .$method($value)
+                        .filter_kind_ids(
+                            &$case.sized_kind_sets[($length as usize).ilog2() as usize],
+                        )
+                        .count()
+                }),
+            ];
+            workloads.extend(selected);
+        };
+    }
+    range_kind_workloads!("range", overlapping_bytes, case, case.range.clone(), 1);
+    range_kind_workloads!("range", overlapping_bytes, case, case.range.clone(), 4);
+    range_kind_workloads!(
+        "point_range",
+        overlapping_points,
+        case,
+        case.point_range.clone(),
+        1
+    );
+    range_kind_workloads!(
+        "point_range",
+        overlapping_points,
+        case,
+        case.point_range.clone(),
+        4
+    );
+    range_kind_workloads!("within", within_bytes, case, case.range.clone(), 1);
+    range_kind_workloads!("within", within_bytes, case, case.range.clone(), 4);
+    range_kind_workloads!(
+        "point_within",
+        within_points,
+        case,
+        case.point_range.clone(),
+        1
+    );
+    range_kind_workloads!(
+        "point_within",
+        within_points,
+        case,
+        case.point_range.clone(),
+        4
+    );
     workloads.extend(sized_kind_workloads::<1>([
         "fixed_1.nodes",
         "fixed_1.count",
@@ -734,6 +819,63 @@ fn validate(case: &Case) {
         case.point_range.start,
         |node: &Node<'_>| node.start_byte() == case.range.start
     );
+    macro_rules! validate_range_kinds {
+        ($length:literal, $byte_method:ident, $point_method:ident, $predicate:expr) => {
+            let kinds = &case.sized_kind_sets[($length as usize).ilog2() as usize];
+            let expected = preorder
+                .iter()
+                .copied()
+                .filter($predicate)
+                .filter(|node| kinds.contains(node.kind_id()))
+                .collect::<Vec<_>>();
+            for actual in [
+                root.all()
+                    .$byte_method(case.range.clone())
+                    .filter_kind_ids(fixed_kinds::<$length>(case))
+                    .nodes()
+                    .collect::<Vec<_>>(),
+                root.all()
+                    .$byte_method(case.range.clone())
+                    .filter_kind_ids(kinds)
+                    .nodes()
+                    .collect::<Vec<_>>(),
+                root.all()
+                    .$point_method(case.point_range.clone())
+                    .filter_kind_ids(fixed_kinds::<$length>(case))
+                    .nodes()
+                    .collect::<Vec<_>>(),
+                root.all()
+                    .$point_method(case.point_range.clone())
+                    .filter_kind_ids(kinds)
+                    .nodes()
+                    .collect::<Vec<_>>(),
+            ] {
+                assert_eq!(actual, expected);
+            }
+        };
+    }
+    validate_range_kinds!(1, overlapping_bytes, overlapping_points, |node: &Node<
+        '_,
+    >| overlaps(
+        *node,
+        &case.range
+    ));
+    validate_range_kinds!(4, overlapping_bytes, overlapping_points, |node: &Node<
+        '_,
+    >| overlaps(
+        *node,
+        &case.range
+    ));
+    validate_range_kinds!(1, within_bytes, within_points, |node: &Node<'_>| case
+        .range
+        .start
+        <= node.start_byte()
+        && node.end_byte() <= case.range.end);
+    validate_range_kinds!(4, within_bytes, within_points, |node: &Node<'_>| case
+        .range
+        .start
+        <= node.start_byte()
+        && node.end_byte() <= case.range.end);
     let point_matches = preorder
         .iter()
         .copied()
@@ -914,6 +1056,18 @@ fn main() -> Result<()> {
         let range_matches = scalar_preorder(&tree)
             .filter(|&node| overlaps(node, &range))
             .count();
+        let mut range_kind_matches = [0; 5];
+        let mut within_kind_matches = [0; 5];
+        for node in scalar_preorder(&tree) {
+            let overlapping = overlaps(node, &range);
+            let within = range.start <= node.start_byte() && node.end_byte() <= range.end;
+            for (index, kinds) in sized_kind_sets.iter().enumerate() {
+                if kinds.contains(node.kind_id()) {
+                    range_kind_matches[index] += usize::from(overlapping);
+                    within_kind_matches[index] += usize::from(within);
+                }
+            }
+        }
         let supertype = language.supertypes().first().copied().unwrap_or(u16::MAX);
         let supertype_matches = scalar_preorder(&tree)
             .filter(|node| node.has_supertype(supertype))
@@ -936,6 +1090,7 @@ fn main() -> Result<()> {
             "multiple_kind_matches": multiple_kind_matches,
             "field_id": field, "field_matches": field_matches,
             "range": [range.start, range.end], "range_matches": range_matches,
+            "range_kind_matches": range_kind_matches, "within_kind_matches": within_kind_matches,
             "point_range": [
                 [point_range.start.row, point_range.start.column],
                 [point_range.end.row, point_range.end.column],
@@ -959,7 +1114,9 @@ fn main() -> Result<()> {
             field,
             field_matches,
             range_matches,
+            range_kind_matches,
             within_matches,
+            within_kind_matches,
             starting_in_matches,
             starting_at_matches,
             supertype,
@@ -1001,7 +1158,18 @@ fn main() -> Result<()> {
         let expected: usize = cases
             .iter()
             .map(|case| {
-                if let Some(sized) = name
+                if let Some((selection, sized)) = name
+                    .split_once(".fixed_")
+                    .or_else(|| name.split_once(".dynamic_"))
+                {
+                    let length = sized.split('.').next().unwrap().parse::<usize>().unwrap();
+                    let matches = match selection {
+                        "range" | "point_range" => &case.range_kind_matches,
+                        "within" | "point_within" => &case.within_kind_matches,
+                        _ => unreachable!("unknown kind selection: {selection}"),
+                    };
+                    matches[length.ilog2() as usize]
+                } else if let Some(sized) = name
                     .strip_prefix("fixed_field_")
                     .or_else(|| name.strip_prefix("dynamic_field_"))
                     .or_else(|| name.strip_prefix("scalar_field_"))
