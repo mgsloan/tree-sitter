@@ -144,6 +144,6 @@ preparation in timing; constructing reusable dynamic sets is setup work.
 
 `range.fixed_N.{nodes,count}` and `range.dynamic_N.{nodes,count}` combine byte
 overlap with one or four frequent named kinds. The `point_range`, `within`, and
-`point_within` prefixes provide the corresponding point/containment selections.
+`point_within` prefixes provide point-coordinate and within selections.
 Range selection runs before the kind filter. Setup validates each combination's
 membership against scalar accessors and records per-file match counts.

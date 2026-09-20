@@ -1097,3 +1097,150 @@ scripts, source and binary hashes in `build.json`, assembly and
 `range-group-sizes-20260919/` directory contains all 90 reports and logs, the
 three binaries, source snapshots, and `summary.json`. Downloaded hashes and
 recomputed medians match the build and comparison records.
+
+## Symbol filters and range/filter combinations by group size (2026-09-19)
+
+For `filter_kind_ids`, 64 slots usually gives the highest throughput; 32 captures
+much of the gain with slightly smaller slabs than 16. The range-only result above
+understates the gains for broad enumeration when a symbol filter also removes
+most output nodes. The default remains 16.
+
+### Method and coverage
+
+The scan implementation is unchanged. Harness `a4b8d18b9` adds range-plus-symbol
+workloads and validates their exact node sequences against scalar accessors.
+All three binaries use the same source/worktree path, rustc 1.95.0, portable
+release settings, and `CFLAGS=-DSQ_GROUP_SIZE=16`, `32`, or `64`.
+
+The cloud instance was restarted for this extension and again selected Broadwell
+model 79. Runs use CPU 1, activity/benchmark locks, and the same tuning/holdout
+corpora and default packing as the preceding comparison. Each corpus has 32 files
+across 11 languages, with 747,560 / 503,590 nodes. Binary order rotates across
+three processes per size/corpus, with workload order reversed on the second pass.
+
+The 46 standalone workloads cover arrays and reusable sets of 1/2/4/8/16 symbol
+IDs, using nodes, fold, and count consumers; postorder symbol filtering; fields,
+supertypes, flags, a kind/field/flags combination, and traversal controls.
+Each rate uses 15 samples targeting 60 ms. Combined-query runs cover 32
+combinations plus eight range-only controls: byte/point overlap and within,
+followed by one/four symbol IDs in an array or set, with nodes/count consumers.
+They use nine samples targeting 40 ms, for midpoint 1% and middle 50% windows.
+
+IDs are each file's most frequent named public kind IDs. Arrays repeat the most
+frequent ID if a grammar has fewer than the requested number; sets deduplicate.
+A one-ID selection matches 19.5% / 14.4% of nodes, four IDs 48.3% / 33.2%, and
+sixteen IDs 62.4% / 54.5%. These are frequent-symbol measurements. Reusable set
+construction, parsing, packing, and validation are outside timing; scan/filter
+preparation and consumption are included. All rates use input nodes, including
+skipped nodes, as the denominator.
+
+### Symbol filters
+
+Each cell is **tuning / holdout**. The 16-slot column is million input nodes/s;
+other columns are throughput ratios against 16. Arrays call
+`filter_kind_ids([ids...])`; sets call `filter_kind_ids(&kinds)`.
+
+| Filter and consumer | 16 slots, M input nodes/s | 32 / 16 | 64 / 16 |
+| --- | ---: | ---: | ---: |
+| Array, 1 ID, nodes | 989.5 / 866.7 | 1.20× / 1.28× | 1.25× / 1.38× |
+| Array, 1 ID, count | 1,483.7 / 1,352.8 | 1.53× / 1.55× | 1.77× / 1.69× |
+| Set, 1 ID, nodes | 672.2 / 624.8 | 1.38× / 1.41× | 1.62× / 1.66× |
+| Set, 1 ID, count | 1,376.4 / 1,277.0 | 1.46× / 1.46× | 1.77× / 1.66× |
+| Array, 2 IDs, nodes | 554.3 / 520.5 | 1.29× / 1.35× | 1.41× / 1.51× |
+| Array, 2 IDs, count | 1,129.0 / 1,062.0 | 1.41× / 1.39× | 1.58× / 1.47× |
+| Set, 2 IDs, nodes | 446.6 / 425.3 | 1.38× / 1.43× | 1.65× / 1.70× |
+| Set, 2 IDs, count | 775.8 / 740.4 | 1.60× / 1.57× | 1.96× / 1.82× |
+| Array, 4 IDs, nodes | 548.5 / 546.8 | 1.11× / 1.19× | 1.23× / 1.34× |
+| Array, 4 IDs, count | 1,142.5 / 1,092.4 | 1.40× / 1.40× | 1.56× / 1.43× |
+| Set, 4 IDs, nodes | 324.1 / 321.2 | 1.32× / 1.38× | 1.52× / 1.59× |
+| Set, 4 IDs, count | 616.9 / 594.9 | 1.43× / 1.43× | 1.64× / 1.54× |
+| Array, 8 IDs, nodes | 394.1 / 366.7 | 1.15× / 1.24× | 1.27× / 1.38× |
+| Array, 8 IDs, count | 998.2 / 965.4 | 1.25× / 1.25× | 1.30× / 1.20× |
+| Set, 8 IDs, nodes | 197.1 / 193.7 | 1.11× / 1.14× | 1.17× / 1.22× |
+| Set, 8 IDs, count | 283.3 / 280.7 | 1.09× / 1.09× | 1.13× / 1.12× |
+| Array, 16 IDs, nodes | 253.6 / 240.2 | 1.28× / 1.32× | 1.41× / 1.44× |
+| Array, 16 IDs, count | 449.6 / 441.2 | 1.35× / 1.34× | 1.53× / 1.41× |
+| Set, 16 IDs, nodes | 194.9 / 188.8 | 1.10× / 1.12× | 1.17× / 1.20× |
+| Set, 16 IDs, count | 282.2 / 277.7 | 1.10× / 1.09× | 1.15× / 1.13× |
+
+For one-ID enumeration, 32 gains 20–28% with arrays and 38–41% with sets;
+64 gains 25–38% and 62–66%. Counts benefit more. Fixed arrays are faster than
+sets at every measured cardinality in these binaries. Large dynamic sets retain
+per-candidate membership work, so their gains from fewer groups are smaller.
+Fold results follow the same general ordering and are retained in the artifacts.
+
+64 is not always faster than 32: eight-ID array count is 3.9% faster on tuning
+but 3.6% slower on holdout. All standalone process medians vary by less than 5%
+within a size/corpus; small differences do not establish a universal ranking.
+
+### Range followed by symbol filtering
+
+The narrow window is the midpoint 1%; the broad window starts at 25% and spans
+50%. Each cell is again tuning / holdout, relative to the same combined query at
+16 slots. Both the range and symbol predicates execute in the timed operation.
+
+| Selection and filter, nodes | Narrow, 32 / 16 | Narrow, 64 / 16 | Broad, 32 / 16 | Broad, 64 / 16 |
+| --- | ---: | ---: | ---: | ---: |
+| Byte overlap, one-ID array | 1.70× / 1.53× | 2.41× / 1.90× | 1.54× / 1.51× | 1.86× / 1.85× |
+| Byte overlap, four-ID set | 1.53× / 1.41× | 1.98× / 1.65× | 1.32× / 1.39× | 1.53× / 1.59× |
+| Point overlap, one-ID array | 1.71× / 1.57× | 2.43× / 2.01× | 1.46× / 1.47× | 1.83× / 1.79× |
+| Point overlap, four-ID set | 1.62× / 1.51× | 2.18× / 1.83× | 1.35× / 1.37× | 1.61× / 1.61× |
+| Byte within, one-ID array | 1.38× / 1.27× | 1.56× / 1.35× | 1.43× / 1.45× | 1.74× / 1.74× |
+| Byte within, four-ID set | 1.24× / 1.20× | 1.42× / 1.27× | 1.30× / 1.35× | 1.56× / 1.60× |
+| Point within, one-ID array | 1.39× / 1.29× | 1.57× / 1.38× | 1.50× / 1.51× | 1.79× / 1.81× |
+| Point within, four-ID set | 1.29× / 1.25× | 1.43× / 1.33× | 1.38× / 1.43× | 1.62× / 1.66× |
+
+All measured combined enumeration cases improve over 16 slots at both larger
+sizes. For broad byte overlap plus a one-ID array, 32 improves enumeration by
+51–54% and 64 by 85–86%; their count gains are 68–70% and 116–140%.
+For the corresponding narrow query, enumeration improves 53–70% and 90–141%,
+and counts improve 54–72% and 97–160%.
+
+The range-only broad byte-within control still regresses 6–7% at 32 slots,
+while adding either measured symbol filter improves enumeration. The result
+therefore depends on the complete pipeline and how many nodes it emits.
+Some narrow within counts are effectively tied at 32 and 64. Combined-query
+process medians vary by less than 7%, apart from one range-only control at 7.4%.
+
+### Other filters and storage
+
+| Filter and consumer | 32 / 16 | 64 / 16 |
+| --- | ---: | ---: |
+| One field, nodes | 1.25× / 1.24× | 1.36× / 1.31× |
+| One field, count | 1.53× / 1.58× | 1.88× / 1.83× |
+| Four-field array, nodes | 1.13× / 1.17× | 1.28× / 1.27× |
+| Four-field set, nodes | 1.25× / 1.23× | 1.42× / 1.35× |
+| Supertype, nodes | 1.69× / 1.54× | 2.39× / 2.00× |
+| Supertype, count | 1.76× / 1.68× | 2.54× / 2.30× |
+| Exclude extra/missing, count | 1.67× / 1.56× | 2.25× / 1.87× |
+| One kind + field + flags, count | 1.41× / 1.50× | 1.78× / 1.79× |
+| Postorder + one kind, nodes | 1.03× / 1.04× | 1.05× / 1.06× |
+| Postorder + one kind, count | 1.41× / 1.42× | 1.79× / 1.69× |
+
+Postorder enumeration gains much less than preorder filtering. Its count can
+use the forward group walk, so it benefits similarly to preorder counts.
+Supertype selects the grammar's first supertype, or an invalid ID when none
+exists; the input-node denominator includes those early-rejected trees.
+
+Storage exactly matches the preceding range comparison. Relative to 16 slots,
+32 reduces default slab bytes by 2.7% / 1.6%; 64 increases them by 29.8% / 49.8%.
+These totals include spare capacity and exclude grammar metadata. Plain preorder
+nodes stay within 1.1%, scalar preorder within 0.3%, and preorder fold improves
+10% at 32 and 13–17% at 64.
+
+64 is the stronger throughput choice for these symbol/filter workloads when
+that storage cost is acceptable. 32 offers a useful compromise. This does not
+resolve the reverse byte-range regressions recorded above, and neither setting
+has been selected as a new production default.
+
+All 54 processes pass membership and timed-count validation. Downloaded reports
+confirm group sizes, source/grammar identities, cross-size match counts, binary
+hashes, and recomputed medians. Formatting and compilation pass; Clippy passes
+with the existing `collapsible_if` warning in `crates/squatter-bench/src/lib.rs`
+suppressed. No production scan code changed.
+
+Artifacts are in `build/filter-group-sizes/`: build, comparison, analysis, and
+verification scripts; source/binary hashes in `build.json`; and `analysis.txt`.
+The downloaded `filter-group-sizes-20260919/` contains all 54 reports/logs,
+source snapshots, binaries, and `summary.json`.
+The cloud instance was returned to its previous stopped state.

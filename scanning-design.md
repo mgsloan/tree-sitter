@@ -363,6 +363,10 @@ Filter order is initially call order. Empty masks short-circuit subsequent
 filters. Choosing dense versus sparse evaluation stays inside the predicate,
 where column costs are known; consumers need not make that choice.
 
+The [16/32/64-slot cloud comparison](iteration-optimization-findings.md#symbol-filters-and-rangefilter-combinations-by-group-size-2026-09-19)
+covers symbol arrays/sets, fields, flags, supertypes, and range-plus-symbol
+pipelines, including their storage tradeoffs.
+
 ## Terminal operations
 
 `nodes()` retains a base slot and the current fragment's slot iterator. Unfiltered
