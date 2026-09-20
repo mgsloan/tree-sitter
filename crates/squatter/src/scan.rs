@@ -10,7 +10,7 @@
 //! # }
 //! ```
 //! Range filters reject reversed queries. Empty queries match only for
-//! `containing_bytes` and `containing_points`, using inclusive endpoint containment.
+//! `within_*` and `containing_*`, using inclusive endpoint containment.
 //! Overlap includes zero-width nodes at positions inside the half-open range.
 //! Point ranges use row/column order; trees without stored points use `(0, byte_offset)`.
 //!
@@ -28,7 +28,7 @@ use std::{
     ffi::c_void,
     iter::FusedIterator,
     marker::PhantomData,
-    ops::{Bound, Range},
+    ops::{Bound, Bound::*, Range, RangeBounds},
 };
 use tree_sitter::Point;
 
@@ -456,6 +456,7 @@ impl FusedIterator for GroupNodes<'_> {}
 
 mod sealed {
     use super::{Bound, GroupRef, Mask};
+    use std::ops::RangeBounds;
     pub trait Source {}
     pub trait Predicate {}
     pub trait IdSelection {}
@@ -476,6 +477,14 @@ mod sealed {
         fn minimum(&self) -> Self::Position;
         fn maximum(&self) -> Self::Position;
         fn get(&self, slot: u32) -> Self::Position;
+        #[inline]
+        fn retain(
+            &self,
+            candidates: Mask,
+            bounds: (Bound<Self::Position>, Bound<Self::Position>),
+        ) -> Mask {
+            candidates.retain(|slot| bounds.contains(&self.get(slot)))
+        }
     }
     pub trait Positions {
         type Position: Copy + Ord;
@@ -1058,6 +1067,83 @@ fn point_key(point: Point) -> Option<u64> {
             | u64::from(u32::try_from(point.column).ok()?),
     )
 }
+
+#[inline]
+fn byte_cutoff(base: u64, position: u64, inclusive: bool, limit: u32) -> u32 {
+    position.checked_sub(base).map_or(0, |delta| {
+        delta
+            .saturating_add(u64::from(inclusive))
+            .min(u64::from(limit)) as u32
+    })
+}
+
+#[inline]
+fn point_cutoff(base: u64, position: u64, inclusive: bool) -> u32 {
+    let Some(row) = (position >> 32).checked_sub(base >> 32) else {
+        return 0;
+    };
+    if row > 255 {
+        return 65536;
+    }
+    // A query column outside this row's encoded interval selects all or none
+    // of that row, while earlier delta rows still qualify.
+    let columns = (i64::from(position as u32) - i64::from(base as u32) + i64::from(inclusive))
+        .clamp(0, 256) as u32;
+    (row as u32 * 256) + columns
+}
+
+#[inline]
+fn delta_bounds<T: Copy, const END: bool>(
+    bounds: (Bound<T>, Bound<T>),
+    limit: u32,
+    cutoff: impl Fn(T, bool) -> u32,
+) -> Range<u32> {
+    let lower = match bounds.0 {
+        Included(position) => cutoff(position, false),
+        Excluded(position) => cutoff(position, true),
+        Unbounded => {
+            if END {
+                limit
+            } else {
+                0
+            }
+        }
+    };
+    let upper = match bounds.1 {
+        Included(position) => cutoff(position, true),
+        Excluded(position) => cutoff(position, false),
+        Unbounded => {
+            if END {
+                0
+            } else {
+                limit
+            }
+        }
+    };
+    if END { upper..lower } else { lower..upper }
+}
+
+#[inline]
+fn retain_deltas<const WIDE: bool>(deltas: &[u8], candidates: Mask, bounds: Range<u32>) -> Mask {
+    if bounds.is_empty() || candidates.is_empty() {
+        return Mask::default();
+    }
+    if bounds.start == 0 && bounds.end == if WIDE { 65536 } else { 256 } {
+        return candidates;
+    }
+    candidates.retain(|slot| {
+        let delta = if WIDE {
+            let offset = slot as usize * 2;
+            u32::from(u16::from_le_bytes(
+                deltas[offset..offset + 2].try_into().unwrap(),
+            ))
+        } else {
+            u32::from(deltas[slot as usize])
+        };
+        bounds.contains(&delta)
+    })
+}
+
 impl<const END: bool> PositionColumn for ByteColumn<'_, END> {
     type Position = usize;
     #[inline]
@@ -1087,6 +1173,18 @@ impl<const END: bool> PositionColumn for ByteColumn<'_, END> {
         } else {
             self.base + usize::from(self.deltas[slot as usize])
         }
+    }
+    #[inline]
+    fn retain(&self, candidates: Mask, bounds: (Bound<usize>, Bound<usize>)) -> Mask {
+        let limit = if END { 65536 } else { 256 };
+        let bounds = delta_bounds::<_, END>(bounds, limit, |position, inclusive| {
+            if END {
+                byte_cutoff(position as u64, self.base as u64, !inclusive, limit)
+            } else {
+                byte_cutoff(self.base as u64, position as u64, inclusive, limit)
+            }
+        });
+        retain_deltas::<END>(self.deltas, candidates, bounds)
     }
 }
 impl<const END: bool, const STORED: bool> PositionColumn for PointColumn<'_, END, STORED> {
@@ -1129,6 +1227,27 @@ impl<const END: bool, const STORED: bool> PositionColumn for PointColumn<'_, END
             self.base - delta
         } else {
             self.base + delta
+        }
+    }
+    #[inline]
+    fn retain(&self, candidates: Mask, bounds: (Bound<u64>, Bound<u64>)) -> Mask {
+        let limit = if STORED || END { 65536 } else { 256 };
+        let bounds = delta_bounds::<_, END>(bounds, limit, |position, inclusive| {
+            let (base, position, inclusive) = if END {
+                (position, self.base, !inclusive)
+            } else {
+                (self.base, position, inclusive)
+            };
+            if STORED {
+                point_cutoff(base, position, inclusive)
+            } else {
+                byte_cutoff(base, position, inclusive, limit)
+            }
+        });
+        if STORED {
+            retain_deltas::<true>(self.deltas, candidates, bounds)
+        } else {
+            retain_deltas::<END>(self.deltas, candidates, bounds)
         }
     }
 }
@@ -1324,25 +1443,27 @@ fn retain_pair<T: Copy + Ord>(
     candidates: Mask,
     first: impl PositionColumn<Position = T>,
     second: impl PositionColumn<Position = T>,
-    first_matches: impl Fn(T) -> bool,
-    second_matches: impl Fn(T) -> bool,
+    first_bounds: (Bound<T>, Bound<T>),
+    second_bounds: (Bound<T>, Bound<T>),
 ) -> Mask {
-    let first_minimum = first_matches(first.minimum());
-    let first_maximum = first_matches(first.maximum());
-    let second_minimum = second_matches(second.minimum());
-    let second_maximum = second_matches(second.maximum());
+    let first_minimum = first_bounds.contains(&first.minimum());
+    let first_maximum = first_bounds.contains(&first.maximum());
+    let second_minimum = second_bounds.contains(&second.minimum());
+    let second_maximum = second_bounds.contains(&second.maximum());
     if !(first_minimum || first_maximum) || !(second_minimum || second_maximum) {
         return Mask::default();
     }
     let all_first = first_minimum && first_maximum;
     let all_second = second_minimum && second_maximum;
-    if all_first && all_second {
+    let candidates = if all_first {
+        candidates
+    } else {
+        first.retain(candidates, first_bounds)
+    };
+    if all_second || candidates.is_empty() {
         return candidates;
     }
-    candidates.retain(|slot| {
-        (all_first || first_matches(first.get(slot)))
-            && (all_second || second_matches(second.get(slot)))
-    })
+    second.retain(candidates, second_bounds)
 }
 #[inline(always)]
 fn retain_interval<T: Copy + Ord>(
@@ -1356,7 +1477,7 @@ fn retain_interval<T: Copy + Ord>(
     if range.start <= column.minimum() && column.maximum() < range.end {
         return candidates;
     }
-    candidates.retain(|slot| range.contains(&column.get(slot)))
+    column.retain(candidates, (Included(range.start), Excluded(range.end)))
 }
 #[inline(always)]
 fn retain_equal<T: Copy + Ord>(
@@ -1367,7 +1488,7 @@ fn retain_equal<T: Copy + Ord>(
     if position < column.minimum() || position > column.maximum() {
         return Mask::default();
     }
-    candidates.retain(|slot| column.get(slot) == position)
+    column.retain(candidates, (Included(position), Included(position)))
 }
 
 pub struct Overlapping<T>(Range<T>);
@@ -1401,22 +1522,28 @@ range_relation!(Overlapping, >=, Excluded, end, self, positions, candidates, {
     }
     let all_start = starts.maximum() < self.0.end;
     let all_end = ends.minimum() > self.0.start || starts.minimum() >= self.0.start;
-    if all_start && all_end {
+    let candidates = if all_start {
+        candidates
+    } else {
+        starts.retain(candidates, (Unbounded, Excluded(self.0.end)))
+    };
+    if all_end || candidates.is_empty() {
         return candidates;
     }
-    candidates.retain(|slot| {
-        let start = starts.get(slot);
-        (all_start || start < self.0.end)
-            && (all_end || ends.get(slot) > self.0.start || start >= self.0.start)
-    })
+    let matches = ends.retain(candidates, (Excluded(self.0.start), Unbounded));
+    let remaining = Mask(candidates.0 & !matches.0);
+    if remaining.is_empty() {
+        return matches;
+    }
+    Mask(matches.0 | starts.retain(remaining, (Included(self.0.start), Unbounded)).0)
 });
 range_relation!(Within, >, Included, end, self, positions, candidates, {
     retain_pair(
         candidates,
         positions.start(),
         positions.end(),
-        |start| start >= self.0.start,
-        |end| end <= self.0.end,
+        (Included(self.0.start), Unbounded),
+        (Unbounded, Included(self.0.end)),
     )
 });
 range_relation!(Containing, >, Included, start, self, positions, candidates, {
@@ -1424,8 +1551,8 @@ range_relation!(Containing, >, Included, start, self, positions, candidates, {
         candidates,
         positions.start(),
         positions.end(),
-        |start| start <= self.0.start,
-        |end| end >= self.0.end,
+        (Unbounded, Included(self.0.start)),
+        (Included(self.0.end), Unbounded),
     )
 });
 range_relation!(StartingIn, >=, Excluded, end, self, positions, candidates, {
@@ -1452,8 +1579,8 @@ position_relation!(ContainingPosition, self, positions, candidates, {
         candidates,
         positions.start(),
         positions.end(),
-        |start| start <= self.0,
-        |end| end > self.0,
+        (Unbounded, Included(self.0)),
+        (Excluded(self.0), Unbounded),
     )
 });
 position_relation!(StartingAt, self, positions, candidates, {
@@ -2061,5 +2188,113 @@ impl Predicate for SupertypeId {
                     != 0
             }
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn check_column<C: PositionColumn>(column: C, length: u32, positions: &[C::Position]) {
+        let live = Mask::lower(length);
+        for candidates in [
+            live,
+            Mask(live.0 & 0xaaaa_aaaa_aaaa_aaaa),
+            Mask(1 << (length - 1)),
+        ] {
+            for &position in positions {
+                for bounds in [
+                    (Unbounded, Included(position)),
+                    (Unbounded, Excluded(position)),
+                    (Included(position), Unbounded),
+                    (Excluded(position), Unbounded),
+                    (Included(position), Included(position)),
+                ] {
+                    let expected = candidates.retain(|slot| bounds.contains(&column.get(slot)));
+                    assert_eq!(column.retain(candidates, bounds), expected);
+                }
+            }
+            for pair in positions.windows(2) {
+                let bounds = (Included(pair[0]), Excluded(pair[1]));
+                let expected = candidates.retain(|slot| bounds.contains(&column.get(slot)));
+                assert_eq!(column.retain(candidates, bounds), expected);
+            }
+        }
+    }
+
+    #[test]
+    fn byte_delta_bounds_match_decoded_positions() {
+        let bytes = (0..=u8::MAX).collect::<Vec<_>>();
+        for length in [16, 32, 64] {
+            for deltas in bytes.chunks_exact(length) {
+                for base in [0, 65535, u32::MAX as usize - 255] {
+                    check_column(
+                        ByteColumn::<false> { base, deltas },
+                        length as u32,
+                        &[
+                            0,
+                            base,
+                            base + 1,
+                            base + 127,
+                            base + 128,
+                            base + 255,
+                            base + 256,
+                            usize::MAX,
+                        ],
+                    );
+                }
+            }
+        }
+        let bytes = (0..=u16::MAX)
+            .flat_map(u16::to_le_bytes)
+            .collect::<Vec<_>>();
+        for deltas in bytes.chunks_exact(128) {
+            check_column(
+                ByteColumn::<true> {
+                    base: 65535,
+                    deltas,
+                },
+                64,
+                &[
+                    0,
+                    1,
+                    255,
+                    256,
+                    32767,
+                    32768,
+                    65534,
+                    65535,
+                    65536,
+                    usize::MAX,
+                ],
+            );
+        }
+    }
+
+    #[test]
+    fn point_delta_bounds_match_decoded_positions() {
+        let bytes = (0..=u16::MAX)
+            .flat_map(u16::to_le_bytes)
+            .collect::<Vec<_>>();
+        let base = (300 << 32) | 400;
+        let positions = [
+            0,
+            (44 << 32) | 400,
+            (45 << 32) | 144,
+            (45 << 32) | 145,
+            (299 << 32) | u64::from(u32::MAX),
+            (300 << 32) | 399,
+            base,
+            (300 << 32) | 401,
+            (301 << 32) | 399,
+            (555 << 32) | 655,
+            (555 << 32) | 656,
+            556 << 32,
+            u64::MAX,
+        ];
+        for deltas in bytes.chunks_exact(128) {
+            check_column(PointColumn::<false, true> { base, deltas }, 64, &positions);
+            check_column(PointColumn::<true, true> { base, deltas }, 64, &positions);
+        }
     }
 }
