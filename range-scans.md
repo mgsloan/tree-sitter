@@ -90,7 +90,10 @@ root.preorder()
    `sq_tree_scan_point_layout` for its offsets.
 2. `Scan::selected` constructs `Selection<Coordinates, Relation>`. Unless the
    relation is empty, it asks the traversal to restrict its group bounds.
-3. `Restricted::next_mask` asks its source for the next matching fragment.
+3. Composed selections and filters ask their source for the next matching fragment.
+   A selective kind filter uses the persisted symbol index to skip directly to a
+   possible group within the remaining bounds. Sparse symbol entries also provide
+   exact slot masks; bitmap entries require a symbol-column comparison.
    Forward preorder byte scans first check whether the group's end bound excludes
    its subtrees. Preorder passes a deferred mask constructor to the selection, so
    rejected groups need no waste lookup or subtree clipping. Other traversals
@@ -114,6 +117,12 @@ Only unrestricted traversals expose selection methods: a scan accepts one range
 or position selection, before other filters. Reversal preserves that selection.
 `all()` currently selects preorder but does not promise that order as an API
 contract.
+
+Kind-index preparation samples bitmap density and keeps the flat kernel for
+dense selections. Missing indexes also use that fallback. This adds no slab data;
+the index is already built by default for trees exceeding 32 groups. Dynamic kind
+sets with more than four IDs inspect only surviving slots when at most four remain,
+so a selective range or preceding filter avoids scanning every used slot.
 
 ### Coordinate columns and conservative bounds
 

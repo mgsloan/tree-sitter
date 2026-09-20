@@ -344,14 +344,16 @@ Filters read stored columns directly:
 
 Predicates prepare grammar-dependent state when attached to a scan: fixed-array
 and dynamic single-kind IDs map to stored representations; supertype IDs resolve to
-membership indices. This uses existing column metadata without another C call.
+membership indices. Kind predicates also fetch offsets for the optional persisted
+symbol index through one private C bridge call. No index is copied or allocated.
 
 `retain_matches` permits both dense group evaluation and scalar evaluation of
 surviving slots. Single-kind and field equality use SSE2 on x86_64, with a scalar
 fallback elsewhere. Fixed arrays specialize equality by cardinality: one target
 uses single equality, two combine equality masks, and larger arrays share column
 loads across comparisons. Dynamic sets of two to four IDs combine equality masks;
-larger dynamic sets use membership lookup. Singleton candidates and expensive
+larger dynamic sets use membership lookup, visiting only surviving slots when at
+most four remain. Singleton candidates and expensive
 predicates use scalar checks. Flags intersect already-valid candidate masks, so
 they need not reread group waste.
 
@@ -362,6 +364,25 @@ supertypes; dictionary-based membership remains scalar.
 Filter order is initially call order. Empty masks short-circuit subsequent
 filters. Choosing dense versus sparse evaluation stays inside the predicate,
 where column costs are known; consumers need not make that choice.
+
+Preorder filters use the existing symbol index to find the next possible group
+in either direction, bounded by the remaining range and subtree. Each symbol's
+entry is either a descending exact slot list or a group bitmap. Sparse entries
+also supply the matching slot mask, intersected with the live candidates. A union
+containing a bitmap still checks the group's symbol column for exact membership.
+Indexed filters pass composed predicates to the source; the first indexed
+predicate controls jumps, while all predicates refine the returned candidates.
+Dense enumeration keeps the ordinary fragment loop. Counts choose indexed or
+flat traversal once. The dynamic scalar membership kernel is kept separate from
+SIMD and index traversal to limit register pressure.
+
+Dense symbol selections retain the flat kernel. Preparation samples the first,
+middle, and last bitmap words for each requested symbol. More than twelve set
+bits across those samples disables index lookup for the selection. Summing across
+symbols overcounts shared bits. This is only a cost heuristic: exact membership is unchanged. Trees without the index
+(including trees with at most 32 groups) also use the flat kernel. Postorder
+enumeration retains its topology walk; fresh postorder counts can use preorder's
+index traversal.
 
 The [16/32/64-slot cloud comparison](iteration-optimization-findings.md#symbol-filters-and-rangefilter-combinations-by-group-size-2026-09-19)
 covers symbol arrays/sets, fields, flags, supertypes, and range-plus-symbol

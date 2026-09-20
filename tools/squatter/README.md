@@ -137,8 +137,8 @@ recorded so this early-rejection effect is visible.
 `fixed_N.{nodes,count,fold}` and `dynamic_N.{nodes,count,fold}` compare arrays and
 reusable sets for N = 1, 2, 4, 8, 16 frequent named kinds. Field variants are
 `fixed_field_N`, `dynamic_field_N`, and `scalar_field_N`, for N = 1, 2, 4 frequent
-nonzero fields (or zero when none exists). If fewer distinct IDs are present,
-arrays repeat the most frequent ID; dynamic sets deduplicate the same selection.
+nonzero fields (or zero when none exists). If fewer distinct IDs are available,
+arrays repeat the first selected ID; dynamic sets deduplicate the same selection.
 Per-file arrays and match counts are recorded. Both paths include scan/predicate
 preparation in timing; constructing reusable dynamic sets is setup work.
 
