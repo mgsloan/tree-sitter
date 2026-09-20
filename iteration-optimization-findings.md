@@ -1400,3 +1400,170 @@ hashes, selected counts, group widths, slab sizes, and reconstructed sample rate
 Earlier 40 ms confirmation runs and focused experiments are retained separately
 in `symbol-index-20260919/` and the parent directory. The GCP instance is returned
 to its original stopped state after download verification.
+
+## Prepared symbol filters and composed counts (2026-09-20)
+
+Dynamic symbol sets of up to sixteen IDs now encode their targets once per scan
+and use SSE2, sharing column loads for three or more targets. Empty and singleton
+sets retain separate strategies. Larger sets and non-x86 targets retain bitmap
+membership checks. Sets with more than four targets inspect only surviving slots
+when at most four remain.
+No allocation, slab format, density heuristic, or default group size changes.
+
+Two- and four-target dynamic kernels inline; three targets repeat one ID to use
+the four-target kernel. Larger dynamic kernels are outlined to limit register
+pressure. When only one candidate survives, multi-target checks read its symbol
+directly, avoiding closures that make group metadata escape into slice search.
+Broadcasting each comparison target also avoids constructing a temporary vector
+array in the sixteen-ID kernel.
+Flat counts own their predicate in a separate function; count adapters inline so
+composed filters share the traversal loop. Indexed counts retain their own path.
+
+### Coverage and method
+
+The harness adds both field/symbol orders, flags followed by symbols, byte
+overlap followed by both field/symbol orders, and two intersecting symbol filters
+in both orders. Each uses arrays and reusable sets of 2/4/8/16 IDs, enumeration
+and count. The second symbol set contains alternate entries from the sixteen-ID
+selection; actual IDs and per-file intersection counts are recorded. Setup checks
+composed enumeration against scalar node accessors, and all timed counts must
+match independent scalar totals. Repeated array IDs are deduplicated in sets.
+
+Compare `364fa1046` (expanded harness, previous implementation) with `29a192f92`.
+Both are rebuilt on the cloud VM with Rust 1.95.0 and GCC 13.3.0; the baseline
+uses its original scan implementation and the same expanded benchmark harness.
+Release builds use `CFLAGS=-DSQ_GROUP_SIZE=16`, `32`, or `64`, without
+additional Rust target features. Measurements run on the same Broadwell GCP
+instance, pinned to CPU 1: 32 tuning files (747,560 nodes) and 32 disjoint
+holdout files (503,590 nodes), covering Bash, C, C++, CSS, Go, HTML, JSON, Python,
+TSX, TypeScript, and YAML. Scan construction and consumption are timed; parsing,
+packing, reusable set construction, and validation are excluded.
+
+The final matrix has 108 processes, three 25 ms samples each:
+
+- Common symbols: 150 workloads, two reversed-order process rounds, both corpora,
+  all three group sizes.
+- Rare/absent symbols: 30 workloads, two rounds, both corpora, all sizes.
+- Broad 25–75% byte windows: 35 workloads, one round, frequent/rare IDs, both
+  corpora, all sizes. The main matrix uses the 50–51% window.
+- Index disabled: 48 workloads, one round, frequent IDs, both corpora, all sizes.
+
+Tables show final / baseline throughput at the same group size, tuning / holdout.
+Input-node throughput includes skipped nodes; it is not a physical lane rate.
+
+### Common symbols
+
+| Query | 16 slots | 32 slots | 64 slots |
+| --- | ---: | ---: | ---: |
+| Set, 2 IDs, count | 1.50× / 1.48× | 1.26× / 1.24× | 1.19× / 1.19× |
+| Set, 4 IDs, count | 2.18× / 2.15× | 2.11× / 2.16× | 2.02× / 1.99× |
+| Set, 8 IDs, nodes | 1.86× / 1.86× | 2.01× / 2.05× | 1.97× / 2.06× |
+| Set, 8 IDs, count | 2.53× / 2.41× | 2.92× / 2.76× | 2.95× / 2.71× |
+| Set, 16 IDs, nodes | 1.63× / 1.54× | 1.64× / 1.61× | 1.59× / 1.57× |
+| Set, 16 IDs, count | 2.00× / 1.88× | 2.16× / 2.05× | 2.08× / 1.93× |
+| Array, 16 IDs, count | 1.51× / 1.52× | 1.28× / 1.27× | 1.18× / 1.17× |
+| Narrow overlap + four-ID array, count | 1.40× / 1.28× | 1.25× / 1.14× | 1.22× / 1.13× |
+
+### Composed filters
+
+Symbols below use dynamic sets. Ratios compare each pipeline with its own
+baseline; they do not compare filter orders with each other.
+
+| Query | 16 slots | 32 slots | 64 slots |
+| --- | ---: | ---: | ---: |
+| Field → eight IDs, count | 1.29× / 1.27× | 1.32× / 1.52× | 2.15× / 2.26× |
+| Eight IDs → field, count | 2.43× / 2.37× | 2.81× / 2.75× | 2.85× / 2.69× |
+| Flags → eight IDs, count | 2.20× / 2.03× | 2.67× / 2.41× | 2.73× / 2.49× |
+| Overlap → field → eight IDs, count | 1.14× / 1.08× | 1.13× / 1.13× | 1.34× / 1.29× |
+| Overlap → eight IDs → field, count | 1.72× / 1.59× | 1.81× / 1.66× | 1.86× / 1.62× |
+| Two eight-ID sets, nodes | 2.31× / 2.25× | 2.70× / 2.77× | 2.69× / 2.69× |
+| Two eight-ID sets, count | 2.47× / 2.36× | 3.11× / 3.28× | 3.27× / 3.08× |
+| Two eight-ID sets, reversed filters, count | 2.36× / 2.30× | 3.22× / 3.26× | 3.37× / 3.08× |
+| Two sixteen-ID sets, count | 2.26× / 2.22× | 2.68× / 2.65× | 2.67× / 2.46× |
+
+In absolute throughput, field-first counts beat symbol-first counts by 1.22–1.48×
+for eight IDs and 1.44–1.82× for sixteen IDs. The sparse-mask shortcut still
+matters after improving the dense kernel.
+
+Rare eight-ID set counts improve 2.21–2.82×; rare four-ID counts improve
+1.40–2.12×. Absent sixteen-ID counts improve 1.13–1.63×. With the symbol index
+disabled, eight-ID counts improve 2.34–3.00×, sixteen-ID counts 1.89–2.17×,
+and two eight-ID filters 2.45–3.32×.
+
+Broad-window counts also improve: overlap → eight-ID set → field gains
+2.24–2.69×, and point overlap + four-ID set gains 1.28–1.39×. Narrow point
+windows remain roughly level. These one-round controls support the kernel
+improvement independently of selective index jumps.
+
+### Remaining regressions
+
+- Rare singleton set counts lose 13–15%; absent singleton counts lose 16–19%.
+  Absent overlap → field → eight-ID set counts lose 10–13% at 16/64 slots.
+- Common singleton set enumeration loses 1–6% in preorder and 21–28% in
+  postorder. The larger prepared state and inlining remain worth investigating.
+- Narrow overlap → eight-ID array → field counts lose 11–26%; the same ordering
+  with a two-ID array loses 12–25% in enumeration.
+- Flags → two-ID set enumeration loses 12–21% at 32/64 slots. The two-ID array
+  count loses about 13% at 16 slots.
+- At 16 slots, eight-ID array enumeration loses 11–13%, overlap → field →
+  eight-ID array enumeration loses 14–17%, and overlap → field → sixteen-ID
+  array counts lose 11–18%.
+
+### Group sizes with the retained implementation
+
+The following ratios compare group sizes, again tuning / holdout.
+
+| Query | 32 / 16 slots | 64 / 16 slots |
+| --- | ---: | ---: |
+| Common set, 1 ID, nodes | 1.34× / 1.37× | 1.46× / 1.51× |
+| Common set, 8 IDs, count | 1.30× / 1.27× | 1.38× / 1.30× |
+| Common set, 16 IDs, count | 1.21× / 1.19× | 1.23× / 1.16× |
+| Field → common eight-ID set, count | 1.28× / 1.34× | 1.35× / 1.37× |
+| Overlap → common eight-ID set → field, count | 1.49× / 1.35× | 1.86× / 1.46× |
+| Two common eight-ID sets, count | 1.33× / 1.38× | 1.48× / 1.38× |
+| Rare set, 1 ID, count | 0.95× / 0.97× | 0.98× / 0.92× |
+
+For these corpora, 32-slot slabs are 1.6–2.7% smaller than 16-slot slabs; 64-slot
+slabs are 30–50% larger. The 32-slot option improves common multi-ID counts with
+less storage, while rare singleton counts still favor 16 slots. The default
+remains 16 pending an application workload mix.
+
+For the two-round measurements, 95% of paired process medians differ by less
+than 4.8%; the largest difference is 12.5%. Differences of a few percent deserve
+less weight than the large-set gains. Broad-window and index-disabled controls
+have only one process round.
+
+### Profiling and validation
+
+CPU-clock sampling and assembly are retained with the reports. A separate
+profile of eight-/sixteen-ID counts, narrow four-ID array counts, and two
+intersecting eight-ID filters puts 54.2% of baseline samples in scalar
+`retain_kind_set`. The retained build spends 38.5% in `retain_small_kind_set`
+and 37.5% in flat count loops. Its assembly contains the expected SSE2 loads,
+shifts, equality comparisons, packing, and mask extraction. Hardware PMU
+events were unavailable on this VM. The assembly exposed scalar membership work,
+outlined array-broadcast helpers, and column spills caused by escaping group
+references. The retained kernels remove the temporary broadcast array and
+multi-target singleton search closure; dense count ownership and outlining limit
+register pressure. Compiler inlining choices matter across composed pipelines. The
+benchmark executable grows from 4.5 MiB to 5.3 MiB, including all workload
+instantiations.
+
+The full default-size crate suite passes. All sixteen scan integration tests
+pass at 16, 32, and 64 slots. Added cases cover cardinality boundaries through
+23 IDs, invalid/error IDs, indexed and unindexed storage, reversed filter order,
+range/field/flag composition, and counts after partial consumption. Library
+clippy passes with warnings denied; benchmark clippy passes with its pre-existing
+`collapsible_if` allowance. Slab sizes match the baseline at every group size.
+
+Artifacts under `build/dense-symbols/` retain source snapshots, build manifests,
+binaries, raw reports, drivers, assembly, profiles, and validation logs. The final
+remote directory is downloaded as `dense-symbols-retained-20260920/`.
+`verify.py` checks all 108 reports, binary/source hashes, counts, selections,
+sample rates, slab sizes, group widths, and the 64 distinct inputs. The instance
+is stopped after verification.
+
+Deferred opportunity **(3): sparse-index cursors**. Consider retaining a position
+in each selected symbol's postings instead of repeating binary searches for
+successive groups. Measure the added iterator state and setup cost against the
+already-short selective scans, including intersections and clipped ranges.

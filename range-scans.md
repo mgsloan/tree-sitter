@@ -126,11 +126,14 @@ the index is already built by default for trees exceeding 32 groups. Dynamic kin
 sets with more than four IDs inspect only surviving slots when at most four remain,
 so a selective range or preceding filter avoids scanning every used slot.
 Dynamic sets of up to sixteen IDs prepare their stored symbol values once and
-share the fixed-array SIMD kernel. Dense groups load each symbol chunk once for
-all comparisons; sparse candidate masks retain their membership shortcut.
+share the fixed-array SIMD kernel. With three or more targets, dense groups load
+each symbol chunk once for all comparisons; sparse candidate masks retain their
+membership shortcut.
 The [index and sparse-mask measurements](iteration-optimization-findings.md#indexed-symbol-filters-and-sparse-candidate-masks-2026-09-20)
 cover rare/absent IDs, dense-scan regressions, and filter combinations at all three
 group sizes.
+The [prepared-filter measurements](iteration-optimization-findings.md#prepared-symbol-filters-and-composed-counts-2026-09-20)
+cover the dense count recovery, shared SIMD kernels, and multiple-filter pipelines.
 
 ### Coordinate columns and conservative bounds
 
