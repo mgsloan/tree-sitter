@@ -147,3 +147,10 @@ overlap with one or four frequent named kinds. The `point_range`, `within`, and
 `point_within` prefixes provide point-coordinate and within selections.
 Range selection runs before the kind filter. Setup validates each combination's
 membership against scalar accessors and records per-file match counts.
+
+`--kind-selection rare` selects the least frequent named kinds instead;
+`--kind-selection absent` selects valid grammar IDs absent from each input,
+preferring named IDs. `--no-symbol-index` disables index construction during
+packing. `field.{fixed,dynamic}_N.{nodes,count}` filters by field before 8/16
+selected kind IDs; `range.{fixed,dynamic}_8.{nodes,count}` covers byte overlap
+followed by eight IDs. These combinations exercise sparse candidate masks.

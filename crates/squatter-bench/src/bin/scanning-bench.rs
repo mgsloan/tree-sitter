@@ -1,6 +1,6 @@
 //! Corpus throughput for the group-scan prototype; parsing and packing are setup.
 use anyhow::{Result, ensure};
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use corpus_analysis::{LoadedGrammar, Registry, digest, parse};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -12,7 +12,14 @@ use std::{
     time::{Duration, Instant},
 };
 use tree_sitter::Point;
-use tree_squatter::{Grammar, IdSet, KindSet, Node, Tree, traits::NodeLike};
+use tree_squatter::{Grammar, IdSet, KindSet, Node, PackOptions, Tree, traits::NodeLike};
+
+#[derive(Clone, Copy, Serialize, ValueEnum)]
+enum KindSelection {
+    Frequent,
+    Rare,
+    Absent,
+}
 
 #[derive(Parser, Serialize)]
 struct Arguments {
@@ -40,6 +47,11 @@ struct Arguments {
     /// Number of frequent named kinds selected by multi_kind workloads.
     #[arg(long, default_value_t = 4)]
     kind_count: usize,
+    /// Select frequent/rare named IDs or valid IDs absent from each input.
+    #[arg(long, value_enum, default_value = "frequent")]
+    kind_selection: KindSelection,
+    #[arg(long)]
+    no_symbol_index: bool,
     /// Query start as a percentage of source length.
     #[arg(long, default_value_t = 50, value_parser = clap::value_parser!(u8).range(0..=100))]
     range_start_percent: u8,
@@ -69,13 +81,14 @@ struct Case {
     range_kind_matches: [usize; 5],
     within_matches: usize,
     within_kind_matches: [usize; 5],
+    field_kind_matches: [usize; 5],
     starting_in_matches: usize,
     starting_at_matches: usize,
     supertype: u16,
     supertype_matches: usize,
     flags_matches: usize,
     combined_matches: usize,
-    frequent_kind_ids: [u16; 16],
+    selected_kind_ids: [u16; 16],
     sized_kind_sets: [KindSet; 5],
     sized_kind_matches: [usize; 5],
     frequent_field_ids: [u16; 4],
@@ -134,7 +147,7 @@ fn source_point(source: &[u8], offset: usize) -> Point {
 }
 type Operation = fn(&Case) -> usize;
 fn fixed_kinds<const N: usize>(case: &Case) -> [u16; N] {
-    case.frequent_kind_ids[..N].try_into().unwrap()
+    case.selected_kind_ids[..N].try_into().unwrap()
 }
 fn sized_kind_workloads<const N: usize>(
     names: [&'static str; 6],
@@ -574,6 +587,9 @@ fn workloads() -> Vec<(&'static str, Operation)> {
     }
     range_kind_workloads!("range", overlapping_bytes, case, case.range.clone(), 1);
     range_kind_workloads!("range", overlapping_bytes, case, case.range.clone(), 4);
+    range_kind_workloads!("range", overlapping_bytes, case, case.range.clone(), 8);
+    range_kind_workloads!("field", filter_field_id, case, case.field, 8);
+    range_kind_workloads!("field", filter_field_id, case, case.field, 16);
     range_kind_workloads!(
         "point_range",
         overlapping_points,
@@ -975,12 +991,21 @@ fn main() -> Result<()> {
         let mut parser = tree_sitter::Parser::new();
         parser.set_language(language)?;
         let native = parse(&mut parser, &source, Duration::from_secs(10))?;
-        let tree = Tree::pack(&grammar, &native)?;
+        let tree = Tree::pack_with_options(
+            &grammar,
+            &native,
+            PackOptions {
+                symbol_presence: !arguments.no_symbol_index,
+                ..Default::default()
+            },
+        )?;
         let mut frequencies = BTreeMap::new();
+        let mut present_kinds = std::collections::BTreeSet::new();
         let mut fields = BTreeMap::new();
         let mut nodes = 0;
         for node in scalar_preorder(&tree) {
             nodes += 1;
+            present_kinds.insert(node.kind_id());
             if node.field_id() != 0 {
                 *fields.entry(node.field_id()).or_insert(0usize) += 1;
             }
@@ -988,18 +1013,34 @@ fn main() -> Result<()> {
                 *frequencies.entry(node.kind_id()).or_insert(0usize) += 1;
             }
         }
-        let kind = *frequencies
-            .iter()
-            .max_by_key(|&(kind, count)| (*count, std::cmp::Reverse(*kind)))
-            .unwrap()
-            .0;
-        let kinds = KindSet::new([kind]);
         let mut ranked_kinds = frequencies.iter().collect::<Vec<_>>();
-        ranked_kinds.sort_by_key(|&(&kind, &count)| (std::cmp::Reverse(count), kind));
-        let frequent_kind_ids =
-            std::array::from_fn(|index| ranked_kinds.get(index).map_or(kind, |&(&kind, _)| kind));
+        match arguments.kind_selection {
+            KindSelection::Frequent => {
+                ranked_kinds.sort_by_key(|&(&kind, &count)| (std::cmp::Reverse(count), kind))
+            }
+            _ => ranked_kinds.sort_by_key(|&(&kind, &count)| (count, kind)),
+        }
+        let selected_kinds = if matches!(arguments.kind_selection, KindSelection::Absent) {
+            let mut absent = (0..language.node_kind_count())
+                .filter_map(|kind| u16::try_from(kind).ok())
+                .filter(|kind| !present_kinds.contains(kind))
+                .collect::<Vec<_>>();
+            absent.sort_by_key(|&kind| (!language.node_kind_is_named(kind), kind));
+            absent
+        } else {
+            ranked_kinds.into_iter().map(|(&kind, _)| kind).collect()
+        };
+        ensure!(
+            !selected_kinds.is_empty(),
+            "no IDs for the selected kind workload: {}",
+            input.path
+        );
+        let kind = selected_kinds[0];
+        let kinds = KindSet::new([kind]);
+        let selected_kind_ids =
+            std::array::from_fn(|index| selected_kinds.get(index).copied().unwrap_or(kind));
         let sized_kind_sets = std::array::from_fn(|index| {
-            KindSet::new(frequent_kind_ids[..1 << index].iter().copied())
+            KindSet::new(selected_kind_ids[..1 << index].iter().copied())
         });
         let mut sized_kind_matches = [0; 5];
         for node in scalar_preorder(&tree) {
@@ -1007,12 +1048,7 @@ fn main() -> Result<()> {
                 *count += usize::from(kinds.contains(node.kind_id()));
             }
         }
-        let multiple_kinds = KindSet::new(
-            ranked_kinds
-                .into_iter()
-                .take(arguments.kind_count)
-                .map(|(&kind, _)| kind),
-        );
+        let multiple_kinds = KindSet::new(selected_kinds.into_iter().take(arguments.kind_count));
         let multiple_kind_matches = scalar_preorder(&tree)
             .filter(|node| multiple_kinds.contains(node.kind_id()))
             .count();
@@ -1058,13 +1094,16 @@ fn main() -> Result<()> {
             .count();
         let mut range_kind_matches = [0; 5];
         let mut within_kind_matches = [0; 5];
+        let mut field_kind_matches = [0; 5];
         for node in scalar_preorder(&tree) {
             let overlapping = overlaps(node, &range);
             let within = range.start <= node.start_byte() && node.end_byte() <= range.end;
+            let selected_field = node.field_id() == field;
             for (index, kinds) in sized_kind_sets.iter().enumerate() {
                 if kinds.contains(node.kind_id()) {
                     range_kind_matches[index] += usize::from(overlapping);
                     within_kind_matches[index] += usize::from(within);
+                    field_kind_matches[index] += usize::from(selected_field);
                 }
             }
         }
@@ -1091,6 +1130,7 @@ fn main() -> Result<()> {
             "field_id": field, "field_matches": field_matches,
             "range": [range.start, range.end], "range_matches": range_matches,
             "range_kind_matches": range_kind_matches, "within_kind_matches": within_kind_matches,
+            "field_kind_matches": field_kind_matches,
             "point_range": [
                 [point_range.start.row, point_range.start.column],
                 [point_range.end.row, point_range.end.column],
@@ -1098,7 +1138,7 @@ fn main() -> Result<()> {
             "supertype_id": supertype, "supertype_count": language.supertypes().len(),
             "supertype_matches": supertype_matches,
             "flags_matches": flags_matches, "combined_matches": combined_matches,
-            "frequent_kind_ids": frequent_kind_ids, "sized_kind_matches": sized_kind_matches,
+            "selected_kind_ids": selected_kind_ids, "sized_kind_matches": sized_kind_matches,
             "frequent_field_ids": frequent_field_ids, "sized_field_matches": sized_field_matches,
         }));
         let case = Case {
@@ -1117,13 +1157,14 @@ fn main() -> Result<()> {
             range_kind_matches,
             within_matches,
             within_kind_matches,
+            field_kind_matches,
             starting_in_matches,
             starting_at_matches,
             supertype,
             supertype_matches,
             flags_matches,
             combined_matches,
-            frequent_kind_ids,
+            selected_kind_ids,
             sized_kind_sets,
             sized_kind_matches,
             frequent_field_ids,
@@ -1166,6 +1207,7 @@ fn main() -> Result<()> {
                     let matches = match selection {
                         "range" | "point_range" => &case.range_kind_matches,
                         "within" | "point_within" => &case.within_kind_matches,
+                        "field" => &case.field_kind_matches,
                         _ => unreachable!("unknown kind selection: {selection}"),
                     };
                     matches[length.ilog2() as usize]
