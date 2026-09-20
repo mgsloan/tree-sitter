@@ -223,13 +223,15 @@ includes them. Unlike range containment of `position..position`, single-position
 containment also excludes nodes ending at that position. No single-position
 overlap or within variants are planned.
 
-Point filters compare packed `u64` keys, with row in the high word and column in
-the low word. Expand stored deltas into that layout before adding or subtracting
-the group base; one unsigned comparison orders both components. Query bounds are
-packed once per group. Bounds exceeding `u32` retain full `Point` comparisons to
-avoid truncation. No source text or conversion to byte offsets is needed. When
-the tree has no stored points, use the existing node-position convention
-`(0, byte_offset)` for the same comparisons.
+Point filters pack query bounds into `u64` keys, with row in the high word and
+column in the low word, once per group. They translate these bounds into encoded
+`u16` delta intervals, handling row and column differences separately. Byte
+filters likewise translate bounds into `u8` start or `u16` end delta intervals.
+On x86_64, masks with at least three candidates use SSE2; smaller masks and other
+architectures use scalar delta comparisons. Bounds exceeding `u32` retain full
+`Point` comparisons to avoid truncation. No source text or conversion to byte
+offsets is needed. When the tree has no stored points, use the existing
+node-position convention `(0, byte_offset)` for the same comparisons.
 
 ## Range traversal
 

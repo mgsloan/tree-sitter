@@ -1131,6 +1131,52 @@ fn retain_deltas<const WIDE: bool>(deltas: &[u8], candidates: Mask, bounds: Rang
     if bounds.start == 0 && bounds.end == if WIDE { 65536 } else { 256 } {
         return candidates;
     }
+    #[cfg(target_arch = "x86_64")]
+    {
+        let remaining = candidates.0 & (candidates.0 - 1);
+        if remaining != 0 && !remaining.is_power_of_two() {
+            use std::arch::x86_64::*;
+            let mut matches = 0;
+            let length = bounds.end - bounds.start;
+            // Bias the wrapped delta-minus-lower by the sign bit so signed SIMD
+            // comparisons implement an unsigned interval test. Checked chunks
+            // cover complete groups; candidate clipping excludes waste lanes.
+            unsafe {
+                if WIDE {
+                    let lower = _mm_set1_epi16((bounds.start as u16 ^ 0x8000) as i16);
+                    let upper = _mm_set1_epi16((length as u16 ^ 0x8000) as i16);
+                    let equal = _mm_set1_epi16(bounds.start as i16);
+                    let matching = |values| {
+                        if length == 1 {
+                            _mm_cmpeq_epi16(values, equal)
+                        } else {
+                            _mm_cmpgt_epi16(upper, _mm_sub_epi16(values, lower))
+                        }
+                    };
+                    for (index, bytes) in deltas.chunks_exact(32).enumerate() {
+                        let low = matching(_mm_loadu_si128(bytes.as_ptr().cast()));
+                        let high = matching(_mm_loadu_si128(bytes.as_ptr().add(16).cast()));
+                        matches |=
+                            (_mm_movemask_epi8(_mm_packs_epi16(low, high)) as u64) << (index * 16);
+                    }
+                } else {
+                    let lower = _mm_set1_epi8((bounds.start as u8 ^ 0x80) as i8);
+                    let upper = _mm_set1_epi8((length as u8 ^ 0x80) as i8);
+                    let equal = _mm_set1_epi8(bounds.start as i8);
+                    for (index, bytes) in deltas.chunks_exact(16).enumerate() {
+                        let values = _mm_loadu_si128(bytes.as_ptr().cast());
+                        let selected = if length == 1 {
+                            _mm_cmpeq_epi8(values, equal)
+                        } else {
+                            _mm_cmpgt_epi8(upper, _mm_sub_epi8(values, lower))
+                        };
+                        matches |= (_mm_movemask_epi8(selected) as u64) << (index * 16);
+                    }
+                }
+            }
+            return candidates.intersection(Mask(matches));
+        }
+    }
     candidates.retain(|slot| {
         let delta = if WIDE {
             let offset = slot as usize * 2;
@@ -1174,7 +1220,7 @@ impl<const END: bool> PositionColumn for ByteColumn<'_, END> {
             self.base + usize::from(self.deltas[slot as usize])
         }
     }
-    #[inline]
+    #[inline(always)]
     fn retain(&self, candidates: Mask, bounds: (Bound<usize>, Bound<usize>)) -> Mask {
         let limit = if END { 65536 } else { 256 };
         let bounds = delta_bounds::<_, END>(bounds, limit, |position, inclusive| {
@@ -1229,7 +1275,7 @@ impl<const END: bool, const STORED: bool> PositionColumn for PointColumn<'_, END
             self.base + delta
         }
     }
-    #[inline]
+    #[inline(always)]
     fn retain(&self, candidates: Mask, bounds: (Bound<u64>, Bound<u64>)) -> Mask {
         let limit = if STORED || END { 65536 } else { 256 };
         let bounds = delta_bounds::<_, END>(bounds, limit, |position, inclusive| {
@@ -2198,9 +2244,12 @@ mod tests {
     fn check_column<C: PositionColumn>(column: C, length: u32, positions: &[C::Position]) {
         let live = Mask::lower(length);
         for candidates in [
+            Mask::default(),
             live,
             Mask(live.0 & 0xaaaa_aaaa_aaaa_aaaa),
+            Mask::lower(5),
             Mask(1 << (length - 1)),
+            Mask(1 | 1 << (length - 1)),
         ] {
             for &position in positions {
                 for bounds in [

@@ -3,14 +3,15 @@
 Range scans currently combine one-sided seeking with group predicates. Preorder
 can skip groups whose starts are too late, then rejects or accepts remaining
 groups using coordinate bounds. Groups that cannot be decided from their bounds
-are filtered slot by slot. Postorder enumeration applies the same predicates
-after visiting each node, without range-based traversal pruning.
+compare stored deltas directly, using SIMD for dense candidate masks on x86_64.
+Postorder enumeration applies the same predicates after visiting each node,
+without range-based traversal pruning.
 
 This document describes the Rust scanning API in
 [scan.rs](crates/squatter/src/scan.rs).
 [scanning-design.md](scanning-design.md) covers the broader API. The descendant
-seeks in [node.c](lib/squat/node.c) and query-cursor
-range restrictions are separate implementations; these scans do not call them.
+seeks in [node.c](lib/squat/node.c) and query-cursor range restrictions are separate
+implementations; these scans do not call them.
 
 ## Relations and boundaries
 
@@ -89,8 +90,10 @@ root.preorder()
 Coordinate systems and relations are generic types, so there is no per-node
 relation switch or dynamic dispatch. Range kernels read the slab directly;
 they neither call node accessors through C nor retain decoded column arrays.
-`Mask::retain` currently evaluates surviving slots with a scalar set-bit loop.
-The explicit SIMD kernels for kind and field filters do not accelerate ranges.
+Endpoint predicates translate query bounds into group-relative delta intervals.
+On x86_64, masks with at least three candidates use SSE2; one or two candidates
+use the scalar set-bit loop. Other architectures use that scalar loop for all
+masks. Both paths compare encoded deltas without reconstructing each position.
 
 Only unrestricted traversals expose selection methods: a scan accepts one range
 or position selection, before other filters. Reversal preserves that selection.
@@ -116,17 +119,19 @@ have a scan minimum of 34,465 even if every end is above 99,900.
 
 Stored point bases contain independent row and column minima for starts, or
 maxima for ends. These pairs need not be actual node positions. A stored `u16`
-delta holds an 8-bit row difference and an 8-bit column difference. Scans expand
-it before arithmetic:
+delta holds an 8-bit row difference and an 8-bit column difference. Absolute
+positions, when needed for seeking or fallback comparisons, are reconstructed
+using:
 
 ```text
 point key      = (row << 32) | column
 expanded delta = ((delta >> 8) << 32) | (delta & 255)
 ```
 
-Unsigned `u64` comparisons then implement point order. `retain_points` attempts
-to pack the query bounds once per group. If any query component exceeds `u32`,
-it uses `UnpackedPositions` and full `Point` comparisons instead of truncating.
+Unsigned `u64` comparisons implement point order. `retain_points` attempts to
+pack the query bounds once per group, then translates them into delta bounds.
+If any query component exceeds `u32`, it uses `UnpackedPositions` and full `Point`
+comparisons instead of truncating.
 The stored-point versus absent-point decoder is also selected once per group.
 Without stored points, point filters reuse byte columns with coordinates
 `(0, byte_offset)`; they do not reconstruct source lines.
@@ -134,6 +139,32 @@ Without stored points, point filters reuse byte columns with coordinates
 Bounds cover the entire physical group, even when the candidate mask selects
 only a subtree fragment or one node. That is safe but can weaken rejection and
 acceptance.
+
+### Direct delta comparisons
+
+`PositionColumn::retain` accepts inclusive, exclusive, or unbounded endpoints.
+Byte and stored-point columns convert them into a half-open interval of encoded
+deltas. `delta_bounds` reverses that interval for end columns, whose values
+decrease as their deltas increase. It uses `u32` thresholds so 256 and 65,536
+can represent the boundary after the largest `u8` or `u16` value.
+
+Byte thresholds subtract the column base from the query, reversing the
+subtraction for ends. `byte_cutoff` handles out-of-range queries before
+narrowing. `point_cutoff` derives row and column differences separately: query
+columns outside the encoded column interval admit all or none of that delta
+row, while earlier delta rows still qualify. This avoids expanding each `u16`
+to a `u64` absolute point.
+
+`retain_deltas` returns immediately for empty or unrestricted delta intervals.
+Its scalar path compares individual encoded values. The SSE2 path subtracts the
+interval's lower bound and biases the result's sign bit, allowing a signed
+comparison to test the unsigned interval. Single-value intervals use equality.
+Byte starts use 8-bit lanes; byte ends and stored points use 16-bit lanes.
+Comparison results become a bitmap, intersected with the original candidates
+to exclude waste and slots outside the subtree.
+
+The generic column implementation remains a decoded scalar fallback for query
+points with components larger than `u32`.
 
 ### The existing seek
 
@@ -173,21 +204,23 @@ all candidates when both of these facts hold:
 - Every start is before `to`.
 - Every end is after `from`, or every start is at least `from`.
 
-Otherwise it checks candidate slots with the overlap predicate above, omitting
-comparisons already proved by the bounds. Maximum end equal to `from` does not
-prove rejection: zero-width nodes at `from` may match.
+Otherwise it filters starts before `to`, then unions ends after `from` with
+remaining starts at or after `from`, omitting conditions already proved by the
+bounds. Maximum end equal to `from` does not prove rejection: zero-width nodes
+at `from` may match.
 
 `Within`, `Containing`, and `ContainingPosition` use `retain_pair`. Each endpoint
 condition is monotonic, so testing it at the column's minimum and maximum can
 prove that all or no candidates pass. If either condition rejects the whole
 group, the mask is empty. If both accept the whole group, the mask is unchanged.
-Otherwise the scalar loop reads only the endpoints whose conditions remain
-undecided, short-circuiting the second condition when the first fails.
+Otherwise it filters the first column and passes survivors to the second,
+skipping conditions already proved and stopping when no candidates remain.
 
 `StartingIn` and `EndingIn` use `retain_interval` on one column. Disjoint bounds
 reject the group; bounds wholly inside the half-open query accept it; other
-groups need per-slot comparisons. `StartingAt` and `EndingAt` use `retain_equal`,
-which rejects out-of-bounds positions and otherwise tests every candidate.
+groups need a delta interval comparison. `StartingAt` and `EndingAt` use
+`retain_equal`, which rejects out-of-bounds positions and otherwise compares
+against a single-value delta interval, or rejects an unrepresentable position.
 
 These shortcuts avoid endpoint decoding, not group traversal. There is no
 hierarchy of range summaries or range-specific index used by the scan.
@@ -215,9 +248,10 @@ the relation cannot match: an empty within or containing query still runs.
 ### Cost
 
 For a subtree with `G` physical groups, let `V` be groups visited after seeking,
-`C` the total candidate slots requiring individual checks, and `K` the matches.
-Preorder range enumeration costs O(log G + V + C + K); counting omits the output
-term. With fixed group size, the worst case remains O(nodes). A small `K` does
+`C` the candidate slots in groups needing delta comparisons, and `K` the matches.
+Preorder range enumeration costs O(log G + V + C + K); SIMD reduces comparison
+constants, and counting omits the output term. With fixed group size, the worst
+case remains O(nodes). A small `K` does
 not imply a small `V`.
 
 Postorder enumeration remains O(nodes), plus its topology storage. Fresh
@@ -305,26 +339,16 @@ empty-boundary rules, so calling a seek and walking one ancestor chain is not a
 general replacement. In particular, inclusive empty-range containment can match
 both sides of a shared sibling boundary, including zero-width siblings.
 
-### 5. Compare encoded deltas directly, then consider SIMD
+### 5. Tune delta kernels and composition
 
-For byte columns, convert absolute query bounds into group-relative thresholds:
-`start < to` becomes `start_delta < to - start_base`, and `end > from` becomes
-`end_delta < end_base - from`. Handle bounds outside the encoded interval before
-subtraction or narrowing. This removes repeated base arithmetic and exposes
-unsigned 8-bit and 16-bit comparisons.
+Direct delta comparisons and SSE2 kernels are implemented. The current dense
+threshold is three candidates; measure other thresholds and architectures before
+specializing further. Combining endpoint vector results before packing a bitmap
+could avoid intermediate masks, particularly when both endpoints need testing.
+Preserve overlap's extra start condition for zero-width nodes.
 
-Stored point deltas are ordered packed row/column differences. Group-specific
-thresholds can compare their `u16` keys directly, without expanding every lane
-to `u64`. Derivation must handle row changes and out-of-range columns;
-subtracting packed absolute keys and truncating is insufficient. The
-`seek_start_point_threshold` and `seek_end_point_threshold` helpers in
-[node.c](lib/squat/node.c) demonstrate the required boundary handling.
-
-Dense SIMD kernels could then compare several deltas and produce a mask. Keep
-scalar checks for singleton and sparse candidates, particularly postorder. For
-overlap, preserve the extra start condition for zero-width nodes. Benchmark the
-complete kernel, including bounds, loads, unsigned comparisons, mask extraction,
-and clipping to candidates; comparison throughput alone is insufficient.
+Benchmark complete kernels, including bounds, loads, unsigned comparisons, mask
+extraction, and candidate clipping; comparison throughput alone is insufficient.
 
 ### 6. Reorder cheap predicates where it saves decoding
 
@@ -359,9 +383,10 @@ are `range_and_position_relations` and `zero_width_overlap_boundaries`.
 Pruning changes should additionally target long ancestors crossing many groups,
 many equal starts, adjacent siblings at an empty-query boundary, and partial
 groups containing qualifying nodes outside the scan root. Check groups of
-16/32/64 and counts after partial enumeration. The module-level comment in
-`scan.rs` still lists only `containing_*` for empty queries; the implementation
-and tests also allow `within_*`.
+16/32/64 and counts after partial enumeration. Unit tests in `scan.rs` also
+compare delta filtering against decoded positions across every `u16` encoding,
+including signed-lane boundaries, exact matches, and queries between encoded
+point rows.
 
 [scanning-bench.rs](crates/squatter-bench/src/bin/scanning-bench.rs) currently
 benchmarks byte and point overlap on the middle 1% of each source, with node,
