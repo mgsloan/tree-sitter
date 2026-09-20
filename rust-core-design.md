@@ -1,7 +1,7 @@
 # Rust core
 
-The current comparison baseline is `main` at `51ecbfafb`, which merges `iteration`
-through `9cf1cdb35`. The candidate implementation is in `crates/squatter-rust`.
+The current comparison baseline is `main` at `9a3f0292c`, which merges `iteration`
+through `dae674ea2`. The candidate implementation is in `crates/squatter-rust`.
 The port does not modify the reference. [rust-core-results.md](rust-core-results.md)
 distinguishes measurements against this baseline from the original `0c3f79ab5`
 baseline and records remaining promotion checks.
@@ -391,12 +391,24 @@ through composed scans rather than introducing interior mutability. Point scans
 retain two-sided seeking without subtree pruning. These require no slab-format
 changes.
 
+Flat predicates borrow or own only comparison state. Initialize posting cursors
+only after selecting an index, using one hint for dynamic singleton selections.
+Standalone counts dispatch one-, two-, and three/four-kind selections before the
+group loop. Keep prepared singleton column parameters and subtree bounds when
+converting composed predicates to flat views. Cursor variants still reserve
+inline storage; the savings are initialization and state carried into flat loops.
+
 Dynamic kind sets of up to sixteen IDs prepare their encoded targets once.
 Sparse candidate masks retain the scalar membership shortcut. Query kernels that
 already choose their groups prepare only column predicates; they must not sample
 symbol-index density or construct unused traversal state. Adopting index jumps
 inside query execution remains a separate experiment with its existing budgets,
 cache, cancellation, and cooldown controls.
+
+Carry over `IdSet::intersection` so callers can prepare one reusable selection
+for chained kind or field filters. Filter the smaller set through the other's
+membership bitmap; this preparation allocates, so keep it outside measured scans
+unless the workload constructs a new selection each time.
 
 The recorded experiments support trying these implementations, not assuming
 they are faster than current C query execution or seeks. Some scan changes

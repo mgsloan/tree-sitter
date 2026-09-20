@@ -14,9 +14,9 @@ is deferred. Persistence and benchmarks can select the candidate with their
 ## Baseline and measurement scope
 
 The original measurements use reference `0c3f79ab5`; `83d962cdd` differs only in
-`todo.md`. The current reference is `main` at `51ecbfafb`, which merges `iteration`
-through `9cf1cdb35`. The first iteration refresh below uses `8bb827f73` /
-`29a192f92`; the sparse-cursor refresh uses the current reference. Earlier ratios
+`todo.md`. The current reference is `main` at `9a3f0292c`, which merges `iteration`
+through `dae674ea2`. The first iteration refresh below uses `8bb827f73` /
+`29a192f92`; the sparse-cursor refresh uses `51ecbfafb` / `9cf1cdb35`. Earlier ratios
 remain tied to their stated baseline and must not be read as comparisons against
 current `main`. The port itself does not modify reference production
 sources. Both cores use one resolved Tree-sitter runtime and disjoint
@@ -128,7 +128,7 @@ below belong to the earlier implementation and were not repeated for this port.
 
 ## Sparse-cursor refresh
 
-The candidate now includes the scan implementation through `46828abdd`, with
+The sparse-cursor refresh includes scan changes through `46828abdd`, with
 reference `main` at `51ecbfafb` / iteration `9cf1cdb35`. Sparse index jumps and
 exact masks share per-target posting cursors. Each seek verifies the hint, probes
 at most four nearby entries, then binary-searches the remaining interval. Fixed
@@ -187,6 +187,92 @@ do not repeat the earlier slowdown against pre-cursor Rust, but take 1.016 times
 the current reference's time. Retain these as open dense-scan costs rather than
 trading them against the sparse gains. Separating cursor storage from dense
 predicate state remains a follow-up, as noted in iteration's own findings.
+
+## Flat-predicate refresh
+
+The candidate carries over `a1392880a` and `9fc350ea9` in `b5842d2aa`, with
+follow-ups `4e67e1080` and `89e9f0622`. Reference `main` at `9a3f0292c` also includes
+iteration's profiling notes from `dae674ea2`; its production code matches
+`7a5dc4a93`. Flat scans use comparison-only predicate views; fixed-size views copy
+their encoded IDs, while composed counts move comparison state into the flat
+loop. Posting hints initialize only when index preparation selects indexed
+traversal. Dynamic singleton selections use one hint; larger selections retain
+the bounded sixteen-hint cache. The enum and option
+payloads still reserve inline storage, so this does not claim smaller owning
+predicates.
+
+Standalone counts choose singleton, two-ID, and four-ID kernels before visiting
+groups. `Filtered::count` forwards directly so the default `Identity` wrapper
+cannot hide that specialization, as described in iteration's latest profiling
+notes. Three targets duplicate one ID in the four-ID kernel. The candidate keeps
+its cached singleton column parameters and query-only `prepare_columns` path.
+`IdSet::intersection` matches the reference API and filters the smaller set through
+the other's membership bitmap. Slab layout and the default backend are unchanged.
+
+Thirty-one all-feature tests pass: seven library tests, four query-execution
+tests, two scan-pattern tests, and eighteen shared scanning tests. They cover the
+new ID-set intersections, empty and invalid selections, size-specialized counts,
+filter composition, ranges, partial consumption, reversal, and disabled indexes.
+Formatting and whitespace checks pass. Alternate slab layouts, sanitizers, and
+cross-target builds were not repeated for this update.
+
+Artifacts are in
+[`build/rust-core-comparison/flat-predicates`](build/rust-core-comparison/flat-predicates).
+`final/` contains the `89e9f0622` executable, source and binary hashes, patch,
+raw reports, tests, and build log. The reference executable was built at
+`7a5dc4a93`; the subsequent merge adds only profiling notes. The old Rust
+executable is the retained `b3baaf1fb` sparse-cursor build, whose Rust sources
+match the pre-port `7fbf135ef`. Intermediate builds and assembly diagnostics
+remain in the parent directory and `comparison-only/`.
+
+The pilot uses the same eleven inputs and 28,299 nodes, CPU 2, AC online, default
+build flags and slab layout, and seven samples targeting 30 ms each. Twenty-four
+workloads cover counts, forward/reverse enumeration, folds, ranges, fields,
+intersections, and unfiltered controls. Reference runs bracket the two Rust
+processes; Rust order alternates between profiles. Builds and tests finish before
+timing. Input metadata, grammar hashes, and input/output counts agree across
+backends. The intersection workloads compose filters; they do not measure
+construction of the new reusable `IdSet` intersection.
+
+| Selection | Final / old Rust median | Final / reference median | Reference-repeat ratio range |
+|---|---:|---:|---:|
+| Frequent | 1.012 | 0.852 | 0.994–1.019 |
+| Sparse | 1.010 | 0.811 | 0.986–1.038 |
+| Frequent, symbol index disabled | 0.996 | 0.846 | 0.967–1.015 |
+
+These elapsed-time ratios are medians across selected workloads. Frequent
+dynamic one- and two-kind counts take 0.919 and 0.932 times the old Rust time;
+without the index, 0.914 and 0.918. Sparse eight-kind counts and sixteen-kind
+folds also improve. These gains do not offset the remaining regressions:
+
+- Frequent fixed four- and sixteen-kind counts take about 1.16 times the old
+  Rust time; without the index, 1.13–1.14. Both remain faster than the reference.
+- Frequent fixed four-kind reverse enumeration takes 1.44–1.45 times the old
+  Rust time, with and without the index. Dynamic four-kind forward enumeration
+  takes 1.11–1.15 times the old Rust time and about 1.10 times the reference time.
+- Sparse dynamic one- and two-kind counts take 1.14 and 1.08 times the old Rust
+  time, while remaining faster than the reference.
+- Unfiltered reverse folds take 1.48–1.51 times the old Rust time and 1.53–1.56
+  times the reference time. Forward folds are close to the old Rust build.
+
+Focused repeats use nine samples targeting 60 ms, with process order
+old/new/new/old (`final/focus-summary.json`). Without the index, fixed four- and
+sixteen-kind counts take 1.146 and 1.150 times the old Rust time, fixed four-kind
+reverse enumeration 1.411, and the unfiltered reverse fold 1.523. Dynamic one-
+and two-kind counts take 0.921 and 0.938. Sparse dynamic one- and two-kind counts
+repeat at 1.140 and 1.095. Process repeats differ by at most 2.4% for these cases.
+Dynamic four-kind enumeration is inconclusive in this repeat: the old binary's
+throughput repeat ratio is 0.851, so the near-equal aggregate ratio does not clear
+the pilot regression.
+
+The initial port's fixed four-kind reverse slowdown repeated at 2.45 times the
+old Rust time. Copying its comparison record reduced the regression, but did not
+remove it. Unfiltered fold code is sensitive to placement: final forward/reverse
+hot functions have the same 85/91 instructions as the old Rust build after
+normalizing addresses and relocations. An initial-port diagnostic with
+`-C llvm-args=-align-all-blocks=5` removed the forward-fold slowdown but left
+other regressions. Production flags are unchanged; this is evidence of layout
+sensitivity, not a portable fix. The performance acceptance gate remains open.
 
 ## Query execution
 
@@ -362,6 +448,9 @@ immutable snapshots. In particular:
 - Repeat the individual scan, lifecycle, and query-mutation outliers with C/C
   controls; extend independent process repetitions of the large-input and
   pressure comparisons.
+- Resolve the flat-predicate refresh's repeated count, reverse-enumeration, and
+  unfiltered-fold regressions; retain the specialized dispatch and test across
+  binary layouts rather than accepting a favorable workload median.
 - Complete retained-scratch/capacity accounting, parser-memory and large capture
   histories, and compare allocation counts independently of timing.
 - Resolve the corpus failures individually and complete supported configuration

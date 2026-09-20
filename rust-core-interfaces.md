@@ -2,8 +2,8 @@
 
 Companion to [rust-core-design.md](rust-core-design.md). This specifies component
 boundaries, ownership, and error contracts implemented by `crates/squatter-rust`.
-The current comparison baseline is `main` at `51ecbfafb`, including `iteration`
-through `9cf1cdb35`. Earlier measurements against `0c3f79ab5` remain historical
+The current comparison baseline is `main` at `9a3f0292c`, including `iteration`
+through `dae674ea2`. Earlier measurements against `0c3f79ab5` remain historical
 results; they do not establish performance against the refreshed reference.
 
 Keep the public Rust API unchanged. The temporary `tree-squatter-rust` package
@@ -27,7 +27,7 @@ Packing uses batches of reverse-preorder events with visible depth.
 | [`Parser`, `ParseError`](crates/squatter/src/parser.rs) | `new`, `parse`, `parse_with_options`, `trim`, and `Tree::parse_direct*`; C parses and walks reductions, Rust encodes. Preserve eligibility and syntax-error behavior. |
 | [`Node`, `Children`, `Cursor`](crates/squatter/src/lib.rs) | Preserve attributes, names, flags, identity, topology, byte/point seeks, child iteration, typed scans, cursor movement/reset, and lifetime contracts. Implement reads and movement in Rust. |
 | [`scan`](crates/squatter/src/scan.rs) | Preserve all public types, aliases, sealed traits, iterator implementations, preorder/postorder and reversal, groups/masks, kind/field/supertype/extra/missing filters, and byte/point range and position selections. Replace the C column-view bridge internally. |
-| [`IdSet`, `KindSet`, `KindMatches`](crates/squatter/src/lib.rs) | Preserve construction, membership, aliases, and accepted fixed/dynamic scan selections. |
+| [`IdSet`, `KindSet`, `KindMatches`](crates/squatter/src/lib.rs) | Preserve construction, membership, reusable `intersection(&self, other: &Self) -> Self`, aliases, and accepted fixed/dynamic scan selections. |
 | [`Query`](crates/squatter/src/query.rs) | `new(&Language, &str)`, `pattern_count`, `capture_names`, `general_predicates`, `disable_pattern`, and `disable_capture`. Own native compiled records and Rust preparation. |
 | [`QueryCursor`, `QueryExecution`, query results/errors](crates/squatter/src/query.rs) | Preserve optimization, timeout, match-limit, range/depth controls, `execute`, borrowed match/capture streams, removal, cancellation/error reporting, and result fields. Execution becomes Rust. |
 | [`traits`](crates/squatter/src/traits.rs) | Preserve `Attributes`, `TreeLike`, `NodeLike`, `CursorLike`, and existing implementations. Candidate definitions are independent of the reference crate. |
@@ -586,12 +586,24 @@ remain behind these interfaces.
 the remaining subtree/range interval in both directions; sparse entries can also
 return exact slot masks. Dense selections keep flat traversal. Byte-subtree
 rejection runs before bitmap jumps so an index cannot skip a useful ancestor.
-Fixed predicates retain one posting cursor per target; dynamic predicates retain
-a bounded prefix of sixteen. Index jumps and exact masks share these hints.
+Indexed fixed predicates initialize one posting cursor per target; indexed dynamic
+predicates initialize one for a singleton or a bounded prefix of sixteen otherwise.
+Flat predicates do not initialize cursor payloads. Index jumps and exact masks
+share these hints.
 Each seek verifies its cursor and bounds local probing before binary search, so
 clipping, reversal, and skipped groups need no reset. `next_group` and
 `retain_indexed` borrow predicates mutably through composition; column-only
 `retain_matches` remains immutable.
+
+The sealed `Predicate` protocol includes `flat(&self) -> impl Predicate` and
+`into_flat(self) -> impl Predicate`. They retain comparison state and subtree
+bounds without mutable index cursors. `And` converts both children; a shared
+predicate reference forwards comparisons and bounds, without enabling index
+traversal. `count_flat(self, source: Preorder<'_>) -> usize` selects specialized
+singleton, two-ID, and four-ID kernels before the group loop when applicable.
+`Filtered::count` forwards its predicate directly, so an unnecessary `Identity`
+wrapper cannot hide this dispatch. Fixed-size flat views copy the encoded IDs
+to keep their loop state independent of the mutable source.
 
 `Predicate::prepare` prepares encoded IDs and optional index traversal together
 for public scans. Query consumers use the narrower internal operation:
