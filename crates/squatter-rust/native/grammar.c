@@ -30,15 +30,21 @@ static SQGrammar *grammar_new(const TSLanguage *language, const void *grammar_ca
   }
   uint32_t symbols = language->symbol_count + language->alias_count;
   size_t space = (size_t)symbols + 2;
-  grammar->supertypes = calloc(3 * space, sizeof(uint16_t));
+  // All four tables have the same lifetime. Share their allocation and collect
+  // flags during the existing metadata walk, avoiding a second language-API pass.
+  grammar->supertypes = calloc(space, 3 * sizeof(uint16_t) + sizeof(uint8_t));
   if (!grammar->supertypes) {
     sq_native_grammar_delete(grammar);
     goto allocation;
   }
   grammar->supertype_indexes = grammar->supertypes + space;
   grammar->public_index = grammar->supertypes + 2 * space;
+  grammar->symbol_flags = (uint8_t *)(grammar->supertypes + 3 * space);
   for (uint32_t symbol = 0; symbol < symbols; symbol++) {
-    if (language->symbol_metadata[symbol].supertype) {
+    TSSymbolMetadata metadata = language->symbol_metadata[symbol];
+    grammar->symbol_flags[symbol] =
+        metadata.named | (metadata.visible << 1) | (metadata.supertype << 2);
+    if (metadata.supertype) {
       grammar->supertypes[grammar->supertype_count++] = (TSSymbol)symbol;
       grammar->supertype_indexes[symbol] = (uint16_t)grammar->supertype_count;
     }
@@ -94,12 +100,8 @@ static SQGrammar *grammar_new(const TSLanguage *language, const void *grammar_ca
       }
     }
   }
-  grammar->symbol_flags = calloc(space, 1);
-  if (!grammar->symbol_flags) goto grammar_allocation;
-  for (uint32_t symbol = 0; symbol < space; symbol++) {
-    TSSymbol actual = symbol == symbols       ? ts_builtin_sym_error
-                      : symbol == symbols + 1 ? ts_builtin_sym_error_repeat
-                                              : (TSSymbol)symbol;
+  for (uint32_t symbol = symbols; symbol < space; symbol++) {
+    TSSymbol actual = symbol == symbols ? ts_builtin_sym_error : ts_builtin_sym_error_repeat;
     TSSymbolMetadata metadata = ts_language_symbol_metadata(language, actual);
     grammar->symbol_flags[symbol] =
         metadata.named | (metadata.visible << 1) | (metadata.supertype << 2);
@@ -166,7 +168,6 @@ void sq_native_grammar_delete(SQGrammar *grammar) {
   free(grammar->supertypes);
   free(grammar->production_fields);
   free(grammar->direct_fields);
-  free(grammar->symbol_flags);
   free(grammar);
 }
 

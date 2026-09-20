@@ -2730,6 +2730,7 @@ SQQuery *sq_native_query_new(const TSLanguage *language, const char *source, uin
 
   array_delete(&self->string_buffer);
   array_delete(&self->step_offsets);
+  array_reserve(&self->quantifier_views, self->capture_quantifiers.size);
   for (uint32_t index = 0; index < self->capture_quantifiers.size; index++) {
     CaptureQuantifiers *quantifiers = &self->capture_quantifiers.contents[index];
     array_push(&self->quantifier_views, ((NativeView){quantifiers->contents, quantifiers->size}));

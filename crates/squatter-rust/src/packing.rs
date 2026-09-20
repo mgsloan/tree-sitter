@@ -27,14 +27,49 @@ impl Default for PackOptions {
 
 #[derive(Default)]
 pub(crate) struct Scratch {
-    boundaries: Vec<u32>,
+    boundaries: Boundaries,
     presence: PresenceScratch,
 }
 
 impl Scratch {
     pub fn trim(&mut self) {
-        self.boundaries = Vec::new();
+        self.boundaries = Boundaries::default();
         self.presence.trim();
+    }
+}
+
+#[derive(Default)]
+struct Boundaries {
+    // Most trees need no allocation beyond the native traversal stack.
+    shallow: [u32; 32],
+    deep: Vec<u32>,
+    depth: usize,
+}
+
+impl Boundaries {
+    fn clear(&mut self) {
+        self.depth = 0;
+        self.deep.clear();
+    }
+
+    fn start(&mut self, depth: usize, position: u32) -> u32 {
+        // Reverse preorder first reaches a depth at its rightmost descendant.
+        // Its physical boundary stays live until the parent arrives, including
+        // any waste added while forming the descendant groups.
+        let end = (depth + 1).min(self.shallow.len());
+        self.shallow[self.depth.min(end)..end].fill(position);
+        let boundary = if depth < self.shallow.len() {
+            self.deep.clear();
+            self.shallow[depth]
+        } else {
+            let index = depth - self.shallow.len();
+            self.deep.resize(index + 1, position);
+            let boundary = self.deep[index];
+            self.deep.truncate(index);
+            boundary
+        };
+        self.depth = depth;
+        boundary
     }
 }
 
@@ -161,9 +196,11 @@ impl Builder {
         self.slot_base + self.count
     }
 
-    fn fit(&self, value: Values) -> Option<(Values, Values)> {
+    fn extend(&mut self, value: Values) -> bool {
         if self.count == 0 {
-            return Some((value, value));
+            self.base = value;
+            self.maximum = value;
+            return true;
         }
 
         let mut base = self.base;
@@ -186,7 +223,7 @@ impl Builder {
                 65535,
             )
         {
-            return None;
+            return false;
         }
 
         if self.points {
@@ -206,13 +243,15 @@ impl Builder {
                     255,
                 )
             {
-                return None;
+                return false;
             }
         }
-        Some((base, maximum))
+        self.base = base;
+        self.maximum = maximum;
+        true
     }
 
-    fn emit(&mut self, event: Event, boundary: u32) -> Result<(), Error> {
+    fn emit(&mut self, event: &Event, boundary: u32) -> Result<(), Error> {
         loop {
             if self.count == GROUP_SIZE {
                 self.close();
@@ -232,10 +271,10 @@ impl Builder {
                 start_column: event.start_point.column,
                 end_column: event.end_point.column,
             };
-            let Some((base, maximum)) = self.fit(value) else {
+            if !self.extend(value) {
                 self.close();
                 continue;
-            };
+            }
 
             if self.count == 0 && self.tree.group_count() == self.tree.group_capacity() {
                 let capacity = self
@@ -264,8 +303,6 @@ impl Builder {
                 }
             }
 
-            self.base = base;
-            self.maximum = maximum;
             self.pending[self.count as usize] = Pending {
                 values: value,
                 supertype: event.supertype,
@@ -423,17 +460,14 @@ pub(crate) fn encode(
             for event in events {
                 let depth = event.depth as usize;
 
-                // A depth first appears at its rightmost descendant. Keep that
-                // physical boundary until the parent arrives after its children.
-                scratch.boundaries.resize(depth + 1, builder.distance());
-                builder.emit(*event, scratch.boundaries[depth])?;
-                scratch.boundaries.truncate(depth);
+                let boundary = scratch.boundaries.start(depth, builder.distance());
+                builder.emit(event, boundary)?;
             }
             if done {
                 break;
             }
         }
-        debug_assert!(scratch.boundaries.is_empty());
+        debug_assert_eq!(scratch.boundaries.depth, 0);
         builder.finish(&mut scratch.presence, options)
     })();
     scratch.boundaries.clear();

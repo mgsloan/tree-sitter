@@ -270,7 +270,7 @@ impl DirectPlan {
         }
         let mut plan = Self {
             steps: vec![DirectStep::default(); compiled.steps().len()],
-            roots: vec![0; compiled.view.symbol_count as usize + 2],
+            roots: Vec::new(),
             start_steps: [0; 64],
             end_steps: [0; 64],
             local_patterns: 0,
@@ -370,6 +370,9 @@ impl DirectPlan {
             }
         }
 
+        // Unsupported plans need no root table.
+        plan.roots
+            .resize(compiled.view.symbol_count as usize + 2, 0);
         let public = unsafe { compiled.view.public_symbols.as_slice() };
         for symbol in 0..compiled.view.symbol_count as usize {
             if public[symbol] != symbol as u16 {
