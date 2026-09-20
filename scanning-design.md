@@ -380,7 +380,8 @@ probes at most four nearby entries, then binary-searches the remaining interval.
 This supports clipped scans, skipped subtrees, and reversal without resets or
 long linear walks. Fixed arrays have one cursor per ID; dynamic sets keep cursors
 for the first sixteen valid targets and binary-search any remaining targets.
-Cursors live in the predicate, without allocations or changes to the slab.
+Cursors live in the predicate: four bytes per fixed-array ID, or 64 bytes for a
+dynamic set, without allocations or changes to the slab.
 Index callbacks borrow predicates mutably; scans retain `Send` and `Sync`.
 Indexed filters pass composed predicates to the source; the first indexed
 predicate controls jumps, while all predicates refine the returned candidates.
@@ -402,6 +403,9 @@ symbols overcounts shared bits. This is only a cost heuristic: exact membership 
 enumeration retains its topology walk; fresh postorder counts can use preorder's
 index traversal. The [index and sparse-mask measurements](iteration-optimization-findings.md#indexed-symbol-filters-and-sparse-candidate-masks-2026-09-20)
 compare selective and dense queries, including the remaining count regressions.
+The [cursor measurements](iteration-optimization-findings.md#sparse-symbol-index-cursors-2026-09-20)
+compare posting reuse at all three group sizes, including reverse scans and
+multiple-filter pipelines.
 
 The [16/32/64-slot cloud comparison](iteration-optimization-findings.md#symbol-filters-and-rangefilter-combinations-by-group-size-2026-09-19)
 covers symbol arrays/sets, fields, flags, supertypes, and range-plus-symbol

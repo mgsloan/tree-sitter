@@ -1145,8 +1145,8 @@ impl<'tree> Preorder<'tree> {
         matches
     }
 }
-// Only the remaining group interval is mutable across this call. Flat scan
-// kernels can keep their column metadata in registers between matching groups.
+// Keep traversal mutation in the remaining group interval, so flat scan
+// kernels can retain column metadata in registers between matching groups.
 #[inline(always)]
 fn indexed_group<const REVERSE: bool, const SUBTREES: bool, P: Predicate>(
     group: &GroupRef<'_>,

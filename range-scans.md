@@ -136,6 +136,8 @@ cover rare/absent IDs, dense-scan regressions, and filter combinations at all th
 group sizes.
 The [prepared-filter measurements](iteration-optimization-findings.md#prepared-symbol-filters-and-composed-counts-2026-09-20)
 cover the dense count recovery, shared SIMD kernels, and multiple-filter pipelines.
+The [sparse-cursor measurements](iteration-optimization-findings.md#sparse-symbol-index-cursors-2026-09-20)
+cover posting reuse, reverse scans, composed filters, and the added predicate state.
 
 ### Coordinate columns and conservative bounds
 

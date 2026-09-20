@@ -1563,7 +1563,158 @@ remote directory is downloaded as `dense-symbols-retained-20260920/`.
 sample rates, slab sizes, group widths, and the 64 distinct inputs. The instance
 is stopped after verification.
 
-Deferred opportunity **(3): sparse-index cursors**. Consider retaining a position
-in each selected symbol's postings instead of repeating binary searches for
-successive groups. Measure the added iterator state and setup cost against the
-already-short selective scans, including intersections and clipped ranges.
+Opportunity **(3), sparse-index cursors**, is implemented and measured below.
+
+
+## Sparse symbol-index cursors (2026-09-20)
+
+Sparse symbol filters retain posting positions between groups. The same hint
+serves group jumps and exact slot masks. Each lookup validates the boundary,
+probes at most four nearby entries, then binary-searches the remaining interval.
+Clipping, subtree skips, and reversal can reuse the hint safely. Fixed arrays
+retain one `u32` per ID; dynamic sets retain sixteen, with binary search for any
+remaining targets. The state belongs to the predicate and needs no allocation.
+Slab format and the density heuristic are unchanged.
+
+### Coverage and method
+
+Compare the scan implementation at `ae551d74d` with `46828abdd`, using the same
+expanded benchmark harness. The `sparse` selection chooses the most frequent
+named symbols with at most `ceil(nodes / 2048)` occurrences. These fit sparse
+posting lists at all three group sizes when the tree has an index. Small trees
+retain their ordinary fallback. IDs and frequencies are identical across sizes;
+arrays repeat the first ID when necessary, while dynamic sets deduplicate them.
+The first selected sparse symbol has 172 occurrences across the tuning corpus
+and 217 across holdout. Eight-ID selections have a median of eight distinct IDs
+per file in both corpora.
+
+The harness adds reverse enumeration for arrays and sets of 1/2/4/8/16 IDs,
+validated against reversed scalar node identities before timing. The retained
+matrix measures 21 workloads: forward/reverse symbols, counts, fields, narrow
+byte overlap, overlap plus field and symbols, and intersecting symbol filters in
+both orders. Common, rare, absent, and sparse selections each run on both corpora,
+at 16/32/64 slots, with two process rounds in opposite orders. Broad 25–75% byte
+windows add within-byte and point-overlap queries and both field/symbol orders.
+Index-disabled controls cover dense and sparse selections. These controls have
+one process round. The main matrix uses the 50–51% window.
+
+All builds, tests, profiles, and timings run on `squatter-benchmark` in
+`us-central1-a`, serialized with the cohort's benchmark lock. Rust 1.95.0,
+GCC 13.3.0, release builds, and `CFLAGS=-DSQ_GROUP_SIZE=16/32/64` match the previous
+experiment. No additional Rust target features are enabled. Timings use CPU 1
+on Broadwell, with three 25 ms samples per process. The 144 retained processes
+use the same 32 tuning files (747,560 nodes) and 32 disjoint holdout files
+(503,590 nodes), covering Bash, C, C++, CSS, Go, HTML, JSON, Python, TSX,
+TypeScript, and YAML. Parsing, packing, reusable set construction, and scalar
+validation are excluded; scan construction and consumption are timed.
+
+Ratios below are retained / baseline throughput at the same group size,
+tuning / holdout. Input-node throughput counts skipped nodes too.
+
+### Sparse symbols
+
+| Query | 16 slots | 32 slots | 64 slots |
+| --- | ---: | ---: | ---: |
+| Set, 1 ID, count | 1.15× / 1.34× | 1.07× / 1.17× | 1.05× / 1.11× |
+| Array, 4 IDs, count | 3.08× / 3.17× | 2.56× / 2.94× | 2.34× / 2.76× |
+| Set, 4 IDs, count | 2.46× / 2.77× | 2.33× / 2.66× | 2.20× / 2.57× |
+| Set, 4 IDs, reverse nodes | 2.51× / 2.67× | 2.34× / 2.54× | 2.17× / 2.40× |
+| Set, 8 IDs, count | 2.11× / 2.20× | 1.99× / 2.15× | 1.91× / 2.15× |
+| Field → eight IDs, count | 1.89× / 1.84× | 1.70× / 1.80× | 1.69× / 1.77× |
+| Overlap + four-ID array, count | 1.41× / 1.68× | 1.24× / 1.38× | 1.15× / 1.21× |
+| Overlap → field → eight IDs, count | 1.68× / 1.81× | 1.50× / 1.66× | 1.32× / 1.59× |
+| Two eight-ID sets, count | 2.02× / 2.00× | 1.93× / 1.97× | 1.89× / 1.94× |
+
+Four-ID array reverse enumeration improves 2.21–3.01×. Reversing the order of
+the two eight-ID filters gives similar gains, 1.88–2.03×. Singleton sets gain
+less: sparse counts improve 5–34%, while enumeration stays within about 4%.
+
+### Group sizes with cursors
+
+These ratios compare retained group sizes, again tuning / holdout.
+
+| Query | 32 / 16 slots | 64 / 16 slots |
+| --- | ---: | ---: |
+| Common set, 8 IDs, count | 1.30× / 1.29× | 1.42× / 1.33× |
+| Common set, 16 IDs, count | 1.22× / 1.18× | 1.26× / 1.13× |
+| Field → common eight-ID set, count | 1.40× / 1.39× | 1.41× / 1.41× |
+| Two common eight-ID sets, count | 1.33× / 1.34× | 1.46× / 1.38× |
+| Rare set, 1 ID, count | 0.96× / 0.97× | 0.98× / 0.89× |
+| Sparse set, 1 ID, count | 1.02× / 1.03× | 1.08× / 1.05× |
+| Sparse set, 4 IDs, count | 1.11× / 1.09× | 1.18× / 1.18× |
+| Sparse set, 4 IDs, reverse nodes | 1.11× / 1.09× | 1.20× / 1.16× |
+| Two sparse eight-ID sets, count | 1.11× / 1.09× | 1.19× / 1.15× |
+
+
+Slab sizes match baseline at each width. Relative to 16 slots, 32-slot slabs
+are 1.6–2.7% smaller; 64-slot slabs are 30–50% larger. The 32-slot option remains
+a useful tradeoff for common multi-ID queries. Rare singleton counts still favor
+16 slots, and sparse multi-ID scans gain less from wider groups. The default
+remains 16.
+
+### Broad ranges and common queries
+
+For sparse IDs in the broad window, overlap plus a four-ID array improves
+1.57–2.63×; point overlap plus a four-ID set improves 1.42–2.34×. Overlap →
+field → eight-ID counts improve 1.54–1.89×, and the reverse filter order improves
+1.71–2.10×. Within-byte singleton counts stay close to baseline. Common-symbol
+broad range/filter combinations mostly stay within a few percent; singleton
+array overlap counts gain 4–23%.
+
+Common four-ID set counts improve 5–18%, and common singleton set counts gain
+4–18%. Common eight-ID counts gain 2–6%; common intersections stay within about
+4%. Rare four-ID set counts improve 10–44%, and absent multi-ID scans generally
+benefit from rejecting a posting list at its first padding entry.
+
+### Remaining regressions and variability
+
+- Common singleton set enumeration loses 18–22% across all group sizes.
+- Common four-ID array reverse enumeration loses 21–29%.
+- Common singleton array counts lose 16–17% at 16 slots and 8–9% at 32 slots.
+- Narrow overlap plus a common eight-ID set loses 15–17% at 16 slots,
+  12–14% at 32 slots, and 8–9% at 64 slots.
+
+The same cases regress with the symbol index disabled, pointing to generated
+dense code and the larger predicate state. These remain worth addressing before
+choosing this implementation solely for common-symbol enumeration. Counts and
+sparse multi-ID queries have a different tradeoff.
+
+For the two-round matrix, 95% of paired process medians differ by less than
+3.8%. The largest spread is 23.2%, for sparse singleton reverse enumeration on
+holdout at 16 slots. Differences of a few percent deserve less weight than the
+multi-ID gains. Broad-range and index-disabled controls have one process round.
+
+### Assembly, alternatives, and validation
+
+CPU-clock profiles and disassembly are retained for baseline and cursor builds.
+The profiles cover whole benchmark processes, including setup and scalar
+validation; their sample percentages are not isolated query costs. The assembly
+extracts identify the individual symbol operations and outlined count loops.
+The singleton-set operation reserves 128 more stack bytes and explicitly zeros
+the 64-byte cursor array during setup. The benchmark executable grows from
+5.48 to 6.02 MiB, including all workload instantiations.
+
+Two 16-slot alternatives were screened on the same 21 workloads and four symbol
+selections. Outlining only the posting search reduced some gains and worsened
+common array reverse scans. Isolating indexed traversal helped some narrow ranges
+but worsened other common array scans and lost common set count gains. Neither
+was retained. Separating the dense predicate state from cursor state at traversal
+boundaries remains a more targeted follow-up.
+
+The full default-size crate suite passes, as do scan tests at 32 and 64 slots.
+New tests compare cursor boundaries with an independent linear partition across
+ascending, descending, and shuffled seeks, including empty and padded lists.
+Integration tests exercise repeated sparse groups, subtrees, clipping, reversed
+filter orders, partial consumption, and index-disabled trees. Existing checks
+retain `Send` and `Sync`. Library clippy passes with warnings denied; benchmark
+clippy passes with its pre-existing `collapsible_if` allowance.
+
+Artifacts are under `build/sparse-cursors/sparse-cursors-20260920/`: source
+snapshots, build manifests, binaries, raw reports, profiles, assembly, scripts,
+and test logs. `verify.py . screen matrix wide no-index` checks all 144 retained
+reports, binary/source hashes, counts, selected IDs and frequencies, sparse-entry
+capacity bounds, group widths, storage, and reconstructed rates. The two rejected
+layout experiments are retained separately within that directory.
+
+The temporary build filesystem and external access configuration are removed;
+the GCP instance is returned to its original stopped state after verification.
