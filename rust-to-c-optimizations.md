@@ -4,6 +4,8 @@ Start with direct repacking, cheaper navigation of known-valid nodes, query curs
 
 This audit compares the committed implementations at `9800d0c3fdd9`. The subsequent merge of local `main`, `c07d1b2a7`, changes documentation only. The working tree's ongoing typed-ID/API edits are not included in the performance conclusions. No compilation, tests, or benchmarks were run for this audit; no implementation changes were made.
 
+Implementation and subsequent measurements are recorded below under **Direct repacking completed**. They live on the separate `c-optimizations` branch, based on `c07d1b2a7` before the newtypes changes.
+
 The [saved Google Cloud report](build/rust-core-comparison/gcp-medium-20260920-124652/report.md) measures the whole implementations on 264 files and 11 languages. Its ratios help prioritize investigation; they do not measure the benefit of individual proposed C changes.
 
 | Operation | C time / Rust time | Implication |
@@ -107,3 +109,31 @@ The experiment assessments come from [rust-core-results.md](rust-core-results.md
 | Typed IDs, ownership wrappers, compiler trust boundary | Useful Rust correctness/interface choices, not evidence of faster C execution. Do not remove C's recoverable errors or external-input validation to imitate Rust's allocation or ownership model. |
 
 Recommended order: direct repack; known-live navigation plus constant waste offset; query cursor reuse; deduplication specialization/outlining; range-support caching and metadata access; then the small facade changes. Keep each change separable so later measurements can attribute its effect. Leave the experimental kernels and packing redesign for targeted investigation when benchmarking is appropriate.
+
+**Direct repacking completed — 2026-09-20**
+
+Commit `820a3d577` implements the first candidate. [slab.c](lib/squat/slab.c) now allocates the compact owned tree directly and shares the serialization writer with `sq_tree_copy_compact`. This removes full validation and the intermediate oversized copy from repacking. External loading retains its validation checks; grammar retention, borrowed-input independence, optional columns/indexes, padding, and allocation errors are preserved.
+
+The Google Cloud before/after run used the same 264 inputs and 11 languages as the original comparison. Each binary ran twice in before/after/after/before order, with five samples per operation and CPU affinity. Times below sum one representative operation per input, including destruction. Speedup is before / after. These results compare C before and after this change.
+
+| Operation | Files | Before, ms | After, ms | Speedup | Median file speedup |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Repack | 264 | 34.898 | 0.819 | **42.60×** | **36.89×** |
+| Compact copy | 264 | 0.792 | 0.798 | 0.99× | 0.99× |
+| Full copied loading | 264 | 31.464 | 31.570 | 1.00× | 0.99× |
+
+All 264 files improved on repacking, from 1.81× to 73.11×. The two control totals increased by 0.73% and 0.34%, respectively. Smaller profiles used the median-sized and largest input per language:
+
+| Repack source | Files | Before, ms | After, ms | Speedup |
+| --- | ---: | ---: | ---: | ---: |
+| Without points | 22 | 7.115 | 0.130 | 54.53× |
+| Without presence indexes | 22 | 5.876 | 0.156 | 37.55× |
+| Already compact | 22 | 7.009 | 0.171 | 41.10× |
+
+Machine: `squatter-benchmark`, `e2-standard-4`, `us-central1-a`, Intel Xeon at 2.20 GHz. Both binaries use portable release builds with Rust 1.95.0 and GCC 15.3.0. The baseline is `9800d0c3fdd9`; its code and dependency manifests match the implementation commit's parent. All 176 commands succeeded, yielding 3,432 result rows; all 360 downloaded artifact hashes verified. Source, grammar, query hashes, and slab sizes matched between binaries.
+
+The [full report](build/repack/cloud/report.md) and [formatted tables](build/repack/cloud/report.html) include language breakdowns, repetition checks, methodology, and limitations. Raw results and both binaries are in `build/repack/cloud/`; the source archive, patch, analysis scripts, and local test logs are in `build/repack/`. This run isolates repacking and its controls; the earlier report remains the comparison for other operations and Rust versus C.
+
+Local validation passed: native unit/supertype/parser checks, allocation-failure recovery, ASan/UBSan checks, a 32-slot/64-byte-alignment layout, 52 Rust binding/persistence tests (3 ignored), and native comparisons on 22 files across all 11 languages. The broad Rust suite was stopped during compilation; only the focused suites are counted. All benchmarking ran on Google Cloud.
+
+Next: known-live navigation and the constant waste-column offset, followed by query cursor reuse. These remain unimplemented.
