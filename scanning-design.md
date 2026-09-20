@@ -354,7 +354,9 @@ fallback elsewhere. Fixed arrays specialize equality by cardinality: one target
 uses single equality, two combine equality masks, and larger arrays share column
 loads across comparisons. Dynamic sets of up to sixteen IDs reuse the same kernel,
 with their encoded targets stored inline in the predicate. Empty and singleton
-sets keep separate strategies. Larger sets use membership lookup. Sets with more
+sets keep separate strategies. Two- and four-target kernels inline; three targets
+repeat one ID to use the four-target kernel. The variable-length kernel stays
+outside the caller to limit register pressure. Larger sets use membership lookup. Sets with more
 than four targets visit only surviving slots when at most four remain. Singleton
 candidates and expensive predicates use scalar checks. Flags intersect already-valid candidate masks, so
 they need not reread group waste.

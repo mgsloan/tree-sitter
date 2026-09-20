@@ -459,12 +459,9 @@ impl<'tree> GroupRef<'tree> {
     #[inline]
     fn equal_ids(&self, offset: u32, shift: u32, target: u16, candidates: Mask) -> Mask {
         if candidates.0.is_power_of_two() {
-            let slot = self.first_slot() + candidates.0.trailing_zeros();
-            return if self.columns.short(offset, slot) >> shift == target {
-                candidates
-            } else {
-                Mask::default()
-            };
+            return candidates.retain(|slot| {
+                self.columns.short(offset, self.first_slot() + slot) >> shift == target
+            });
         }
         let start = offset as usize + self.first_slot() as usize * 2;
         let bytes = &self.columns.data[start..start + self.columns.group_size() as usize * 2];
@@ -2844,6 +2841,10 @@ impl Predicate for KindIds<'_> {
                     ids[length] = target;
                     length += 1;
                 }
+                // Three targets use the four-ID kernel without adding a match.
+                if length == 3 {
+                    ids[3] = ids[0];
+                }
                 match length {
                     0 => KindStrategy::Empty,
                     1 => KindStrategy::Single(ids[0]),
@@ -2880,9 +2881,13 @@ impl Predicate for KindIds<'_> {
                 group.equal_ids(layout.symbol, layout.symbol_shift, *target, candidates)
             }
             #[cfg(target_arch = "x86_64")]
-            KindStrategy::Small { ids, length, kinds } => {
-                retain_small_kind_set(group, candidates, &ids[..usize::from(*length)], kinds)
-            }
+            KindStrategy::Small { ids, length, kinds } => match *length {
+                2 => group.equal_id_set(layout.symbol, layout.symbol_shift, &ids[..2], candidates),
+                3..=4 => {
+                    group.equal_id_set(layout.symbol, layout.symbol_shift, &ids[..4], candidates)
+                }
+                _ => retain_small_kind_set(group, candidates, &ids[..usize::from(*length)], kinds),
+            },
             #[cfg(not(target_arch = "x86_64"))]
             KindStrategy::Small { kinds, .. } => retain_kind_set(group, candidates, kinds),
             KindStrategy::Multiple(kinds) => retain_kind_set(group, candidates, kinds),
