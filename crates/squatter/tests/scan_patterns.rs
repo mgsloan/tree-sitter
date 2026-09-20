@@ -1,5 +1,6 @@
 //! Small scan examples, also used to inspect optimized code generation.
 use std::{hint::black_box, ops::Range};
+use tree_sitter::Point;
 use tree_squatter::{Grammar, KindSet, Node, Tree};
 
 const SOURCE: &str = r#"{"a": [1, 2], "b": {"c": 3}, "d": 4}"#;
@@ -218,6 +219,14 @@ mod patterns {
             .sum()
     }
     #[inline(never)]
+    pub fn point_range_slots(root: Node<'_>, range: Range<Point>) -> u64 {
+        root.all()
+            .overlapping_points(range)
+            .nodes()
+            .map(|node| u64::from(node.slot()))
+            .sum()
+    }
+    #[inline(never)]
     pub fn combined_count(
         root: Node<'_>,
         range: Range<usize>,
@@ -391,13 +400,22 @@ fn assembly_patterns_match_examples() {
             .iter()
             .filter(|node| {
                 !range.is_empty()
-                    && node.start_byte() < node.end_byte()
                     && node.start_byte() < range.end
-                    && node.end_byte() > range.start
+                    && (node.end_byte() > range.start || node.start_byte() >= range.start)
             })
             .map(|node| u64::from(node.slot()))
             .sum::<u64>();
-        assert_eq!(patterns::range_slots(root, black_box(range)), expected);
+        assert_eq!(
+            patterns::range_slots(root, black_box(range.clone())),
+            expected
+        );
+        assert_eq!(
+            patterns::point_range_slots(
+                root,
+                black_box(Point::new(0, range.start)..Point::new(0, range.end)),
+            ),
+            expected,
+        );
     }
     assert_eq!(
         patterns::combined_count(

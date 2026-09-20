@@ -102,7 +102,7 @@ fn scalar_preorder(tree: &Tree) -> impl Iterator<Item = Node<'_>> {
 fn overlaps(node: Node<'_>, range: &Range<usize>) -> bool {
     let start = node.start_byte();
     let end = node.end_byte();
-    start < end && start < range.end && end > range.start
+    !range.is_empty() && start < range.end && (end > range.start || start >= range.start)
 }
 type Operation = fn(&Case) -> usize;
 fn fixed_kinds<const N: usize>(case: &Case) -> [u16; N] {

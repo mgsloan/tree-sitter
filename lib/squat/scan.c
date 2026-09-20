@@ -32,6 +32,13 @@ void sq_tree_scan_columns(const SQTree *tree, SQScanColumns *out) {
   };
 }
 
+void sq_tree_scan_point_layout(const SQTree *tree, SQScanPointLayout *out) {
+  *out = sq_tree_has_points(tree)
+      ? (SQScanPointLayout){tree->layout.start_point_base, tree->layout.start_point,
+                            tree->layout.end_point_base, tree->layout.end_point}
+      : (SQScanPointLayout){0};
+}
+
 // Each lane contributes one low bit and one high bit. Only complete lanes
 // participate: for nine-bit fields, bit 63 must remain outside the mask.
 uint64_t sq_lane_starts(uint8_t bits) {

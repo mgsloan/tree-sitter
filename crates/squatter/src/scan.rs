@@ -9,6 +9,10 @@
 //! let backwards = root.postorder().rev().nodes();
 //! # }
 //! ```
+//! Range filters match nothing for empty or reversed queries. Overlap includes
+//! zero-width nodes at positions inside the half-open range. Point ranges use
+//! row/column order; trees without stored points use `(0, byte_offset)`.
+//!
 //! Scans and returned groups borrow the tree, not the iterator:
 //!
 //! ```compile_fail
@@ -19,7 +23,13 @@
 //! # }
 //! ```
 use crate::{KindSet, Node, RawNode};
-use std::{ffi::c_void, iter::FusedIterator, marker::PhantomData, ops::Range};
+use std::{
+    ffi::c_void,
+    iter::FusedIterator,
+    marker::PhantomData,
+    ops::{Bound, Range},
+};
+use tree_sitter::Point;
 
 #[derive(Clone, Copy)]
 #[repr(C)]
@@ -444,10 +454,49 @@ impl ExactSizeIterator for GroupNodes<'_> {
 impl FusedIterator for GroupNodes<'_> {}
 
 mod sealed {
+    use super::{Bound, GroupRef, Mask};
     pub trait Source {}
     pub trait Predicate {}
     pub trait IdSelection {}
+
+    pub trait Coordinates: Sized {
+        type Position: Copy + Ord;
+        fn new(group: &GroupRef<'_>) -> Self;
+        fn start_minimum(&self, group: &GroupRef<'_>) -> Self::Position;
+        fn retain<R: Relation<Self::Position>>(
+            &self,
+            group: &GroupRef<'_>,
+            candidates: Mask,
+            relation: &R,
+        ) -> Mask;
+    }
+    pub trait PositionColumn {
+        type Position: Copy + Ord;
+        fn minimum(&self) -> Self::Position;
+        fn maximum(&self) -> Self::Position;
+        fn get(&self, slot: u32) -> Self::Position;
+    }
+    pub trait Positions {
+        type Position: Copy + Ord;
+        type Start: PositionColumn<Position = Self::Position>;
+        type End: PositionColumn<Position = Self::Position>;
+        fn start(&self) -> Self::Start;
+        fn end(&self) -> Self::End;
+    }
+    pub trait Relation<T: Copy + Ord> {
+        type Mapped<U: Copy + Ord>: Relation<U>;
+        fn try_map<U: Copy + Ord>(
+            &self,
+            convert: impl Fn(T) -> Option<U>,
+        ) -> Option<Self::Mapped<U>>;
+        fn is_empty(&self) -> bool {
+            false
+        }
+        fn start_bound(&self) -> Bound<T>;
+        fn retain<P: Positions<Position = T>>(&self, positions: P, candidates: Mask) -> Mask;
+    }
 }
+use sealed::{Coordinates, PositionColumn, Positions, Relation};
 
 /// Internal protocol exposed for generic scan consumers. Implementations are sealed.
 pub trait GroupScan<'tree>: sealed::Source + Sized {
@@ -961,21 +1010,477 @@ impl<'tree> GroupScan<'tree> for ReversePostorder<'tree> {
     }
 }
 
+/// Byte-offset coordinates.
+pub struct Bytes;
+
+/// Row/column coordinates, using `(0, byte_offset)` when points are not stored.
+#[repr(C)]
+pub struct Points {
+    start_base: u32,
+    start_delta: u32,
+    end_base: u32,
+    end_delta: u32,
+}
+
+struct BytePositions<'group, 'tree>(&'group GroupRef<'tree>);
+struct PointPositions<'group, 'tree, const STORED: bool> {
+    group: &'group GroupRef<'tree>,
+    layout: &'group Points,
+}
+struct ByteColumn<'tree, const END: bool> {
+    base: usize,
+    deltas: &'tree [u8],
+}
+struct PointColumn<'tree, const END: bool, const STORED: bool> {
+    base: u64,
+    deltas: &'tree [u8],
+}
+
+#[inline]
+fn column_deltas<'tree>(group: &GroupRef<'tree>, offset: u32, width: usize) -> &'tree [u8] {
+    let start = offset as usize + group.first_slot() as usize * width;
+    &group.columns.data[start..start + group.columns.group_size() as usize * width]
+}
+#[inline]
+fn point_base(group: &GroupRef<'_>, offset: u32) -> u64 {
+    let offset = offset as usize + group.index as usize * 8;
+    u64::from_le_bytes(group.columns.data[offset..offset + 8].try_into().unwrap())
+}
+#[inline]
+fn point_from_key(key: u64) -> Point {
+    Point::new((key >> 32) as usize, (key as u32) as usize)
+}
+#[inline]
+fn point_key(point: Point) -> Option<u64> {
+    Some(
+        (u64::from(u32::try_from(point.row).ok()?) << 32)
+            | u64::from(u32::try_from(point.column).ok()?),
+    )
+}
+impl<const END: bool> PositionColumn for ByteColumn<'_, END> {
+    type Position = usize;
+    #[inline]
+    fn minimum(&self) -> usize {
+        if END {
+            self.base.saturating_sub(65535)
+        } else {
+            self.base
+        }
+    }
+    #[inline]
+    fn maximum(&self) -> usize {
+        if END {
+            self.base
+        } else {
+            self.base.saturating_add(255)
+        }
+    }
+    #[inline]
+    fn get(&self, slot: u32) -> usize {
+        if END {
+            let offset = slot as usize * 2;
+            self.base
+                - usize::from(u16::from_le_bytes(
+                    self.deltas[offset..offset + 2].try_into().unwrap(),
+                ))
+        } else {
+            self.base + usize::from(self.deltas[slot as usize])
+        }
+    }
+}
+impl<const END: bool, const STORED: bool> PositionColumn for PointColumn<'_, END, STORED> {
+    type Position = u64;
+    #[inline]
+    fn minimum(&self) -> u64 {
+        if END {
+            self.base
+                .saturating_sub(if STORED { (255 << 32) | 255 } else { 65535 })
+        } else {
+            self.base
+        }
+    }
+    #[inline]
+    fn maximum(&self) -> u64 {
+        if END {
+            self.base
+        } else {
+            self.base
+                .saturating_add(if STORED { (255 << 32) | 255 } else { 255 })
+        }
+    }
+    #[inline]
+    fn get(&self, slot: u32) -> u64 {
+        let delta = if STORED || END {
+            let offset = slot as usize * 2;
+            u64::from(u16::from_le_bytes(
+                self.deltas[offset..offset + 2].try_into().unwrap(),
+            ))
+        } else {
+            u64::from(self.deltas[slot as usize])
+        };
+        // Rows occupy the high word, so unsigned comparison orders both components.
+        let delta = if STORED {
+            ((delta >> 8) << 32) | (delta & 255)
+        } else {
+            delta
+        };
+        if END {
+            self.base - delta
+        } else {
+            self.base + delta
+        }
+    }
+}
+
+// Oversized query coordinates cannot be packed without changing their ordering.
+struct UnpackedPositions<P>(P);
+struct UnpackedColumn<C>(C);
+impl<C: PositionColumn<Position = u64>> PositionColumn for UnpackedColumn<C> {
+    type Position = Point;
+    #[inline]
+    fn minimum(&self) -> Point {
+        point_from_key(self.0.minimum())
+    }
+    #[inline]
+    fn maximum(&self) -> Point {
+        point_from_key(self.0.maximum())
+    }
+    #[inline]
+    fn get(&self, slot: u32) -> Point {
+        point_from_key(self.0.get(slot))
+    }
+}
+impl<P: Positions<Position = u64>> Positions for UnpackedPositions<P> {
+    type Position = Point;
+    type Start = UnpackedColumn<P::Start>;
+    type End = UnpackedColumn<P::End>;
+    #[inline]
+    fn start(&self) -> Self::Start {
+        UnpackedColumn(self.0.start())
+    }
+    #[inline]
+    fn end(&self) -> Self::End {
+        UnpackedColumn(self.0.end())
+    }
+}
+impl<'tree> Positions for BytePositions<'_, 'tree> {
+    type Position = usize;
+    type Start = ByteColumn<'tree, false>;
+    type End = ByteColumn<'tree, true>;
+    #[inline]
+    fn start(&self) -> Self::Start {
+        let group = self.0;
+        ByteColumn {
+            base: group
+                .columns
+                .word(group.columns.layout.start_byte_base, group.index) as usize,
+            deltas: column_deltas(group, group.columns.layout.start_byte_delta, 1),
+        }
+    }
+    #[inline]
+    fn end(&self) -> Self::End {
+        let group = self.0;
+        ByteColumn {
+            base: group
+                .columns
+                .word(group.columns.layout.end_byte_base, group.index) as usize,
+            deltas: column_deltas(group, group.columns.layout.end_byte_delta, 2),
+        }
+    }
+}
+impl<'tree, const STORED: bool> Positions for PointPositions<'_, 'tree, STORED> {
+    type Position = u64;
+    type Start = PointColumn<'tree, false, STORED>;
+    type End = PointColumn<'tree, true, STORED>;
+    #[inline]
+    fn start(&self) -> Self::Start {
+        if STORED {
+            PointColumn {
+                base: point_base(self.group, self.layout.start_base),
+                deltas: column_deltas(self.group, self.layout.start_delta, 2),
+            }
+        } else {
+            let column = BytePositions(self.group).start();
+            PointColumn {
+                base: column.base as u64,
+                deltas: column.deltas,
+            }
+        }
+    }
+    #[inline]
+    fn end(&self) -> Self::End {
+        if STORED {
+            PointColumn {
+                base: point_base(self.group, self.layout.end_base),
+                deltas: column_deltas(self.group, self.layout.end_delta, 2),
+            }
+        } else {
+            let column = BytePositions(self.group).end();
+            PointColumn {
+                base: column.base as u64,
+                deltas: column.deltas,
+            }
+        }
+    }
+}
+impl Coordinates for Bytes {
+    type Position = usize;
+    fn new(_: &GroupRef<'_>) -> Self {
+        Self
+    }
+    #[inline]
+    fn start_minimum(&self, group: &GroupRef<'_>) -> usize {
+        group
+            .columns
+            .word(group.columns.layout.start_byte_base, group.index) as usize
+    }
+    #[inline(always)]
+    fn retain<R: Relation<usize>>(
+        &self,
+        group: &GroupRef<'_>,
+        candidates: Mask,
+        relation: &R,
+    ) -> Mask {
+        relation.retain(BytePositions(group), candidates)
+    }
+}
+impl Coordinates for Points {
+    type Position = Point;
+    fn new(group: &GroupRef<'_>) -> Self {
+        unsafe extern "C" {
+            fn sq_tree_scan_point_layout(tree: *const c_void, layout: *mut Points);
+        }
+        let mut layout = std::mem::MaybeUninit::uninit();
+        // The bridge initializes all offsets; zero denotes absent point columns.
+        unsafe {
+            sq_tree_scan_point_layout(group.columns.root.raw.tree, layout.as_mut_ptr());
+            layout.assume_init()
+        }
+    }
+    #[inline]
+    fn start_minimum(&self, group: &GroupRef<'_>) -> Point {
+        if self.start_base == 0 {
+            Point::new(0, Bytes.start_minimum(group))
+        } else {
+            // Row and column bases are independent minima. Only the earliest
+            // live node gives an actual start position ordered across groups.
+            point_from_key(
+                PointPositions::<true> {
+                    group,
+                    layout: self,
+                }
+                .start()
+                .get(group.used() - 1),
+            )
+        }
+    }
+    #[inline(always)]
+    fn retain<R: Relation<Point>>(
+        &self,
+        group: &GroupRef<'_>,
+        candidates: Mask,
+        relation: &R,
+    ) -> Mask {
+        // Select the decoder once per group, keeping storage checks out of slot loops.
+        if self.start_base == 0 {
+            retain_points(
+                relation,
+                PointPositions::<false> {
+                    group,
+                    layout: self,
+                },
+                candidates,
+            )
+        } else {
+            retain_points(
+                relation,
+                PointPositions::<true> {
+                    group,
+                    layout: self,
+                },
+                candidates,
+            )
+        }
+    }
+}
+
+#[inline(always)]
+fn retain_points<R: Relation<Point>, P: Positions<Position = u64>>(
+    relation: &R,
+    positions: P,
+    candidates: Mask,
+) -> Mask {
+    if let Some(packed) = relation.try_map(point_key) {
+        packed.retain(positions, candidates)
+    } else {
+        relation.retain(UnpackedPositions(positions), candidates)
+    }
+}
+
+// Each comparison must be monotonic over its column's conservative bounds.
+#[inline(always)]
+fn retain_pair<T: Copy + Ord>(
+    candidates: Mask,
+    first: impl PositionColumn<Position = T>,
+    second: impl PositionColumn<Position = T>,
+    first_matches: impl Fn(T) -> bool,
+    second_matches: impl Fn(T) -> bool,
+) -> Mask {
+    let first_minimum = first_matches(first.minimum());
+    let first_maximum = first_matches(first.maximum());
+    let second_minimum = second_matches(second.minimum());
+    let second_maximum = second_matches(second.maximum());
+    if !(first_minimum || first_maximum) || !(second_minimum || second_maximum) {
+        return Mask::default();
+    }
+    let all_first = first_minimum && first_maximum;
+    let all_second = second_minimum && second_maximum;
+    if all_first && all_second {
+        return candidates;
+    }
+    candidates.retain(|slot| {
+        (all_first || first_matches(first.get(slot)))
+            && (all_second || second_matches(second.get(slot)))
+    })
+}
+#[inline(always)]
+fn retain_interval<T: Copy + Ord>(
+    candidates: Mask,
+    column: impl PositionColumn<Position = T>,
+    range: &Range<T>,
+) -> Mask {
+    if column.maximum() < range.start || column.minimum() >= range.end {
+        return Mask::default();
+    }
+    if range.start <= column.minimum() && column.maximum() < range.end {
+        return candidates;
+    }
+    candidates.retain(|slot| range.contains(&column.get(slot)))
+}
+#[inline(always)]
+fn retain_equal<T: Copy + Ord>(
+    candidates: Mask,
+    column: impl PositionColumn<Position = T>,
+    position: T,
+) -> Mask {
+    if position < column.minimum() || position > column.maximum() {
+        return Mask::default();
+    }
+    candidates.retain(|slot| column.get(slot) == position)
+}
+
+pub struct Overlapping<T>(Range<T>);
+pub struct Within<T>(Range<T>);
+pub struct Containing<T>(Range<T>);
+pub struct StartingIn<T>(Range<T>);
+pub struct EndingIn<T>(Range<T>);
+pub struct ContainingPosition<T>(T);
+pub struct StartingAt<T>(T);
+pub struct EndingAt<T>(T);
+
+macro_rules! range_relation {
+    ($name:ident, $reject:tt, $bound:ident, $endpoint:ident, $this:ident, $positions:ident, $candidates:ident, $body:block) => {
+        impl<T: Copy + Ord> Relation<T> for $name<T> {
+            type Mapped<U: Copy + Ord> = $name<U>;
+            fn try_map<U: Copy + Ord>(&self, convert: impl Fn(T) -> Option<U>) -> Option<Self::Mapped<U>> {
+                Some($name(convert(self.0.start)?..convert(self.0.end)?))
+            }
+            fn is_empty(&self) -> bool { self.0.start $reject self.0.end }
+            fn start_bound(&self) -> Bound<T> { Bound::$bound(self.0.$endpoint) }
+            #[inline(always)]
+            fn retain<P: Positions<Position = T>>(&$this, $positions: P, $candidates: Mask) -> Mask $body
+        }
+    };
+}
+range_relation!(Overlapping, >=, Excluded, end, self, positions, candidates, {
+    let starts = positions.start();
+    let ends = positions.end();
+    if starts.minimum() >= self.0.end || ends.maximum() < self.0.start {
+        return Mask::default();
+    }
+    let all_start = starts.maximum() < self.0.end;
+    let all_end = ends.minimum() > self.0.start || starts.minimum() >= self.0.start;
+    if all_start && all_end {
+        return candidates;
+    }
+    candidates.retain(|slot| {
+        let start = starts.get(slot);
+        (all_start || start < self.0.end)
+            && (all_end || ends.get(slot) > self.0.start || start >= self.0.start)
+    })
+});
+range_relation!(Within, >=, Included, end, self, positions, candidates, {
+    retain_pair(
+        candidates,
+        positions.start(),
+        positions.end(),
+        |start| start >= self.0.start,
+        |end| end <= self.0.end,
+    )
+});
+range_relation!(Containing, >=, Included, start, self, positions, candidates, {
+    retain_pair(
+        candidates,
+        positions.start(),
+        positions.end(),
+        |start| start <= self.0.start,
+        |end| end >= self.0.end,
+    )
+});
+range_relation!(StartingIn, >=, Excluded, end, self, positions, candidates, {
+    retain_interval(candidates, positions.start(), &self.0)
+});
+range_relation!(EndingIn, >=, Excluded, end, self, positions, candidates, {
+    retain_interval(candidates, positions.end(), &self.0)
+});
+macro_rules! position_relation {
+    ($name:ident, $this:ident, $positions:ident, $candidates:ident, $body:block) => {
+        impl<T: Copy + Ord> Relation<T> for $name<T> {
+            type Mapped<U: Copy + Ord> = $name<U>;
+            fn try_map<U: Copy + Ord>(&self, convert: impl Fn(T) -> Option<U>) -> Option<Self::Mapped<U>> {
+                Some($name(convert(self.0)?))
+            }
+            fn start_bound(&self) -> Bound<T> { Bound::Included(self.0) }
+            #[inline(always)]
+            fn retain<P: Positions<Position = T>>(&$this, $positions: P, $candidates: Mask) -> Mask $body
+        }
+    };
+}
+position_relation!(ContainingPosition, self, positions, candidates, {
+    retain_pair(
+        candidates,
+        positions.start(),
+        positions.end(),
+        |start| start <= self.0,
+        |end| end > self.0,
+    )
+});
+position_relation!(StartingAt, self, positions, candidates, {
+    retain_equal(candidates, positions.start(), self.0)
+});
+position_relation!(EndingAt, self, positions, candidates, {
+    retain_equal(candidates, positions.end(), self.0)
+});
+
 /// Sources that still permit range restriction; filters do not implement this trait.
 pub trait UnrestrictedScan: sealed::Source {
-    fn restrict_bytes(&mut self, range: &Range<usize>);
+    fn restrict<C: Coordinates>(&mut self, coordinates: &C, bound: Bound<C::Position>);
 }
 impl UnrestrictedScan for Preorder<'_> {
-    fn restrict_bytes(&mut self, range: &Range<usize>) {
-        // Start minima decrease with physical group index. This removes only
-        // groups wholly beyond the range end, preserving crossing ancestors.
+    fn restrict<C: Coordinates>(&mut self, coordinates: &C, bound: Bound<C::Position>) {
+        // Start minima decrease with physical group index. All relations supply
+        // an upper bound on node starts, including those that only test ends.
         let mut lower = self.groups.start;
         let mut upper = self.groups.end;
         while lower < upper {
             let middle = lower + (upper - lower) / 2;
-            let columns = &self.group.columns;
-            let start = columns.word(columns.layout.start_byte_base, middle) as usize;
-            if start >= range.end {
+            let start = coordinates.start_minimum(&self.group.columns.group(middle));
+            let beyond = match bound {
+                Bound::Included(limit) => start > limit,
+                Bound::Excluded(limit) => start >= limit,
+                Bound::Unbounded => false,
+            };
+            if beyond {
                 lower = middle + 1;
             } else {
                 upper = middle;
@@ -984,56 +1489,193 @@ impl UnrestrictedScan for Preorder<'_> {
         self.groups.start = lower;
     }
 }
-impl UnrestrictedScan for Postorder<'_> {
-    fn restrict_bytes(&mut self, _: &Range<usize>) {}
-}
 impl UnrestrictedScan for ReversePreorder<'_> {
-    fn restrict_bytes(&mut self, range: &Range<usize>) {
-        self.0.restrict_bytes(range);
+    fn restrict<C: Coordinates>(&mut self, coordinates: &C, bound: Bound<C::Position>) {
+        self.0.restrict(coordinates, bound);
     }
+}
+impl UnrestrictedScan for Postorder<'_> {
+    fn restrict<C: Coordinates>(&mut self, _: &C, _: Bound<C::Position>) {}
 }
 impl UnrestrictedScan for ReversePostorder<'_> {
-    fn restrict_bytes(&mut self, _: &Range<usize>) {}
-}
-impl<'tree, S: UnrestrictedScan> Scan<'tree, S> {
-    /// Intersect a nonempty byte range. Zero-width nodes never overlap.
-    pub fn overlapping_bytes(mut self, range: Range<usize>) -> Scan<'tree, OverlappingBytes<S>> {
-        self.source.restrict_bytes(&range);
-        Scan::new(OverlappingBytes {
-            source: self.source,
-            range,
-        })
-    }
-}
-pub type PreorderOverlappingBytes<'tree> = OverlappingBytes<Preorder<'tree>>;
-pub struct OverlappingBytes<S> {
-    source: S,
-    range: Range<usize>,
-}
-impl<S: sealed::Source> sealed::Source for OverlappingBytes<S> {}
-#[inline(always)]
-fn overlapping_matches(group: &GroupRef<'_>, candidates: Mask, range: &Range<usize>) -> Mask {
-    if range.is_empty() {
-        return Mask::default();
-    }
-    let columns = group.columns;
-    let start_base = columns.word(columns.layout.start_byte_base, group.index) as usize;
-    let end_base = columns.word(columns.layout.end_byte_base, group.index) as usize;
-    if start_base >= range.end || end_base <= range.start {
-        return Mask::default();
-    }
-    let all_start = start_base.saturating_add(255) < range.end;
-    let all_end = end_base.saturating_sub(65535) > range.start;
-    candidates.retain(|slot| {
-        let slot = group.first_slot() + slot;
-        let start = start_base + usize::from(columns.byte(columns.layout.start_byte_delta, slot));
-        let end = end_base - usize::from(columns.short(columns.layout.end_byte_delta, slot));
-        start < end && (all_start || start < range.end) && (all_end || end > range.start)
-    })
+    fn restrict<C: Coordinates>(&mut self, _: &C, _: Bound<C::Position>) {}
 }
 
-impl<'tree, S: GroupScan<'tree>> GroupScan<'tree> for OverlappingBytes<S> {
-    type Reversed = OverlappingBytes<S::Reversed>;
+/// A coordinate system and a statically selected position relation.
+pub struct Selection<C, R> {
+    coordinates: C,
+    relation: R,
+}
+/// A traversal restricted by a range or position before other filters.
+pub struct Restricted<S, P> {
+    source: S,
+    selection: P,
+}
+pub type OverlappingBytes<S> = Restricted<S, Selection<Bytes, Overlapping<usize>>>;
+pub type PreorderOverlappingBytes<'tree> = OverlappingBytes<Preorder<'tree>>;
+
+macro_rules! selection_method {
+    ($method:ident, $coordinates:ident, $relation:ident, $input:ty, $documentation:literal) => {
+        #[doc = $documentation]
+        pub fn $method(
+            self,
+            value: $input,
+        ) -> Scan<
+            'tree,
+            Restricted<
+                S,
+                Selection<$coordinates, $relation<<$coordinates as Coordinates>::Position>>,
+            >,
+        > {
+            self.selected::<$coordinates, _>($relation(value))
+        }
+    };
+}
+impl<'tree, S: UnrestrictedScan + GroupScan<'tree>> Scan<'tree, S> {
+    fn selected<C: Coordinates, R: Relation<C::Position>>(
+        mut self,
+        relation: R,
+    ) -> Scan<'tree, Restricted<S, Selection<C, R>>> {
+        let coordinates = C::new(self.source.group());
+        if !relation.is_empty() {
+            self.source.restrict(&coordinates, relation.start_bound());
+        }
+        Scan::new(Restricted {
+            source: self.source,
+            selection: Selection {
+                coordinates,
+                relation,
+            },
+        })
+    }
+    selection_method!(
+        overlapping_bytes,
+        Bytes,
+        Overlapping,
+        Range<usize>,
+        "Intersect a nonempty byte range, including zero-width nodes at positions inside it."
+    );
+    selection_method!(
+        within_bytes,
+        Bytes,
+        Within,
+        Range<usize>,
+        "Match spans wholly within a nonempty range. Zero-width nodes at either boundary qualify."
+    );
+    selection_method!(
+        containing_bytes,
+        Bytes,
+        Containing,
+        Range<usize>,
+        "Match spans enclosing a nonempty byte range, including equal spans."
+    );
+    selection_method!(
+        starting_in_bytes,
+        Bytes,
+        StartingIn,
+        Range<usize>,
+        "Match start offsets inside a half-open byte range."
+    );
+    selection_method!(
+        ending_in_bytes,
+        Bytes,
+        EndingIn,
+        Range<usize>,
+        "Match exclusive end offsets inside a half-open byte range."
+    );
+    selection_method!(
+        overlapping_points,
+        Points,
+        Overlapping,
+        Range<Point>,
+        "Point-coordinate counterpart of `overlapping_bytes`, including zero-width nodes."
+    );
+    selection_method!(
+        within_points,
+        Points,
+        Within,
+        Range<Point>,
+        "Point-coordinate counterpart of `within_bytes`, including zero-width nodes at either boundary."
+    );
+    selection_method!(
+        containing_points,
+        Points,
+        Containing,
+        Range<Point>,
+        "Match spans enclosing a nonempty point range, including equal spans."
+    );
+    selection_method!(
+        starting_in_points,
+        Points,
+        StartingIn,
+        Range<Point>,
+        "Match start positions inside a half-open point range."
+    );
+    selection_method!(
+        ending_in_points,
+        Points,
+        EndingIn,
+        Range<Point>,
+        "Match exclusive end positions inside a half-open point range."
+    );
+    selection_method!(
+        containing_byte,
+        Bytes,
+        ContainingPosition,
+        usize,
+        "Match `start <= offset < end`; zero-width nodes do not qualify."
+    );
+    selection_method!(
+        starting_at_byte,
+        Bytes,
+        StartingAt,
+        usize,
+        "Match an exact start offset, including zero-width nodes."
+    );
+    selection_method!(
+        ending_at_byte,
+        Bytes,
+        EndingAt,
+        usize,
+        "Match an exact exclusive end offset, including zero-width nodes."
+    );
+    selection_method!(
+        containing_point,
+        Points,
+        ContainingPosition,
+        Point,
+        "Match `start <= position < end`; zero-width nodes do not qualify."
+    );
+    selection_method!(
+        starting_at_point,
+        Points,
+        StartingAt,
+        Point,
+        "Match an exact start position, including zero-width nodes."
+    );
+    selection_method!(
+        ending_at_point,
+        Points,
+        EndingAt,
+        Point,
+        "Match an exact exclusive end position, including zero-width nodes."
+    );
+}
+impl<S: sealed::Source, P> sealed::Source for Restricted<S, P> {}
+impl<C, R> sealed::Predicate for Selection<C, R> {}
+impl<C: Coordinates, R: Relation<C::Position>> Predicate for Selection<C, R> {
+    #[inline(always)]
+    fn retain_matches(&self, group: &GroupRef<'_>, candidates: Mask) -> Mask {
+        if self.relation.is_empty() {
+            return Mask::default();
+        }
+        self.coordinates.retain(group, candidates, &self.relation)
+    }
+}
+impl<'tree, S: GroupScan<'tree>, C: Coordinates, R: Relation<C::Position>> GroupScan<'tree>
+    for Restricted<S, Selection<C, R>>
+{
+    type Reversed = Restricted<S::Reversed, Selection<C, R>>;
     type Slots = MatchingSlots<Self>;
     const DESCENDING: bool = S::DESCENDING;
     #[inline]
@@ -1042,38 +1684,39 @@ impl<'tree, S: GroupScan<'tree>> GroupScan<'tree> for OverlappingBytes<S> {
     }
     #[inline]
     fn reverse(self) -> Self::Reversed {
-        OverlappingBytes {
+        Restricted {
             source: self.source.reverse(),
-            range: self.range,
+            selection: self.selection,
         }
-    }
-    #[inline]
-    fn count(self) -> usize {
-        if self.range.is_empty() {
-            return 0;
-        }
-        self.source.count_matches(ByteRange(self.range))
     }
     #[inline]
     fn group(&self) -> &GroupRef<'tree> {
         self.source.group()
     }
     #[inline]
-    fn count_matches<P: Predicate>(self, predicate: P) -> usize {
-        if self.range.is_empty() {
+    fn count(self) -> usize {
+        if self.selection.relation.is_empty() {
             return 0;
         }
-        self.source
-            .count_matches(And(ByteRange(self.range), predicate))
+        self.source.count_matches(self.selection)
+    }
+    #[inline]
+    fn count_matches<P: Predicate>(self, predicate: P) -> usize {
+        if self.selection.relation.is_empty() {
+            return 0;
+        }
+        self.source.count_matches(And(self.selection, predicate))
     }
     #[inline]
     fn next_mask(&mut self) -> Option<Mask> {
-        if self.range.is_empty() {
+        if self.selection.relation.is_empty() {
             return None;
         }
         loop {
             let candidates = self.source.next_mask()?;
-            let matches = overlapping_matches(self.source.group(), candidates, &self.range);
+            let matches = self
+                .selection
+                .retain_matches(self.source.group(), candidates);
             if !matches.is_empty() {
                 return Some(matches);
             }
@@ -1105,14 +1748,6 @@ impl<P: Predicate, Q: Predicate> Predicate for And<P, Q> {
         } else {
             self.1.retain_matches(group, matches)
         }
-    }
-}
-struct ByteRange(Range<usize>);
-impl sealed::Predicate for ByteRange {}
-impl Predicate for ByteRange {
-    #[inline(always)]
-    fn retain_matches(&self, group: &GroupRef<'_>, candidates: Mask) -> Mask {
-        overlapping_matches(group, candidates, &self.0)
     }
 }
 pub struct Filtered<S, P> {

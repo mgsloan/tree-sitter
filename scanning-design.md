@@ -1,8 +1,6 @@
 # Rust scanning API
 
 The group-based Rust scan API. Read attributes from the returned node handles.
-Range and position selection below describes the planned API; implementation
-status is recorded under Prototype scope.
 
 The scan reads stored columns directly and retains a compact mask of matching
 slots for each group. There is no unpack cache: neither traversal, filters, nor
@@ -70,10 +68,11 @@ types include:
 Scan<'tree, Preorder<'tree>>
 Scan<'tree, Postorder<'tree>>
 Scan<'tree, PreorderOverlappingBytes<'tree>>
+Restricted<Source, Selection<Coordinates, Relation>>
 Filtered<Source, Predicate>
 ```
 
-Each type stores only its own arguments and inner source. Planned restrictions
+Each type stores only its own arguments and inner source. Restrictions
 select the coordinate system and relation through types, allowing specialized
 kernels without a per-node relation switch. Apply range or position restrictions
 before other filters. Bounds cannot change after scanning has started.
@@ -169,9 +168,10 @@ decoded columns or buffers matching node handles.
 
 ## Range and position selection
 
-Byte range methods accept `Range<usize>`; point range methods accept `Range<Point>`. Points
-compare by row, then column, using the same coordinates as `start_position()` and
-`end_position()`. A point range is a continuous source interval, not a rectangle.
+Byte range methods accept `Range<usize>`; point range methods accept `Range<Point>`.
+Points compare by row, then column, using the same coordinates as
+`start_position()` and `end_position()`. A point range is a continuous source
+interval, not a rectangle.
 
 For a nonempty node `start..end` and nonempty query `from..to`:
 
@@ -217,9 +217,13 @@ Single-position queries are separate from empty ranges:
 Single-position containment excludes zero-width nodes; exact start/end matching
 includes them. No single-position overlap or within variants are planned.
 
-Point filters read the stored point columns directly, without source text or
-conversion to byte offsets. When the tree has no stored points, use the existing
-node-position convention `(0, byte_offset)` for the same comparisons.
+Point filters compare packed `u64` keys, with row in the high word and column in
+the low word. Expand stored deltas into that layout before adding or subtracting
+the group base; one unsigned comparison orders both components. Query bounds are
+packed once per group. Bounds exceeding `u32` retain full `Point` comparisons to
+avoid truncation. No source text or conversion to byte offsets is needed. When
+the tree has no stored points, use the existing node-position convention
+`(0, byte_offset)` for the same comparisons.
 
 ## Range traversal
 
@@ -229,11 +233,12 @@ Use group bases and packed deltas directly. Where possible, translate an absolut
 bound into a comparison against stored deltas, handling bounds outside the
 representable interval before narrowing. Do not unpack coordinates into a cache.
 
-The current preorder overlap adapter uses a binary search over group start minima
-to remove groups wholly beyond the query end, preserving overlapping ancestors.
-It refines valid subtree-slot masks with conservative group bounds and endpoint
-comparisons. Further seeking and early termination require ordering guarantees;
-the other relations must use their own bounds.
+Preorder restrictions use a binary search over group start minima to remove
+groups beyond the relation's upper bound on node starts. Point bases store
+independent row and column minima; seeking reconstructs the earliest live node's
+position to obtain a bound ordered across groups. Each relation refines valid
+subtree-slot masks with conservative group bounds and endpoint comparisons.
+Further seeking and early termination require ordering guarantees.
 
 Zero-width overlap changes boundary rejection. A group whose maximum end equals
 the query start may contain matching zero-width nodes, so only a maximum end
@@ -300,7 +305,7 @@ not mutable iterator state.
 
 ## Prototype scope
 
-Column metadata crosses the C boundary once per scan. Raw pointers become borrowed
+Base column metadata crosses the C boundary once per scan. Raw pointers become borrowed
 slices there: bytes for the little-endian slab and native integers for grammar
 tables. Scans and returned groups inherit `Send + Sync` from these immutable
 borrows and their tree handle. Single-kind and field equality use dense SIMD
@@ -308,21 +313,20 @@ where available; extra and missing filters intersect stored flag bits. Supertype
 filters read the stored membership mask or prepared grammar dictionary. There is
 no unpack cache.
 
-Only `overlapping_bytes` is implemented among the planned range and position
-methods. It currently excludes zero-width nodes; the overlap predicate and group
-boundary rejection still need the semantics above. Empty queries already match
-nothing.
+All range and single-position methods above are implemented. Overlap includes
+zero-width nodes inside the half-open query range. Empty queries match nothing.
+Point-column offsets cross a separate C bridge only when a point filter is
+attached, leaving ordinary scans' column metadata unchanged. Stored-point and
+byte-fallback decoders are selected once per group.
 
 Preorder byte traversal uses conservative group bounds to skip groups and avoid
 unnecessary comparisons. It preserves ancestors whose ends cross the requested
-range. Postorder checks its singleton fragments with the same predicate, without
+range. Postorder checks its singleton fragments with the same relation, without
 range-based traversal pruning. Ordered scans require `.nodes()` for ordinary
 iterator adapters; `for node in scan` remains available through `IntoIterator`.
 
 ## Deferred work
 
-- Implement the range and single-position API above, including zero-width
-  overlap, point columns, and the existing fallback for trees without points.
 - Reduce reverse postorder's pending topology storage. Greedy fragment batching
   did not improve the measured workloads enough to retain.
 - Measure dense versus sparse thresholds per predicate.

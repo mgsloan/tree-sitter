@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use tree_sitter::Point;
 use tree_squatter::{
     Grammar, IdSet, KindSet, Node, PackOptions, Tree,
     scan::{GroupScan, Scan},
@@ -215,9 +216,8 @@ fn check_ranges(tree: &Tree, source_len: usize) {
         ] {
             let overlaps = |node: &&Node<'_>| {
                 !range.is_empty()
-                    && node.start_byte() < node.end_byte()
                     && node.start_byte() < range.end
-                    && node.end_byte() > range.start
+                    && (node.end_byte() > range.start || node.start_byte() >= range.start)
             };
             let expected = preorder
                 .iter()
@@ -360,6 +360,363 @@ fn empty_missing_and_error_nodes() {
         }
     }
     assert!(has_empty && has_missing && has_error);
+}
+
+// Compare terminal operations and directions against ordinary node attributes.
+macro_rules! check_selection {
+    ($root:expr, $preorder:expr, $postorder:expr, $method:ident, $argument:expr, $matches:expr) => {{
+        let argument = $argument;
+        let matches = $matches;
+        let expected = $preorder
+            .iter()
+            .copied()
+            .filter(matches)
+            .collect::<Vec<_>>();
+        check_pipeline(|| $root.preorder().$method(argument.clone()), &expected);
+        assert_eq!(
+            $root
+                .preorder()
+                .rev()
+                .$method(argument.clone())
+                .nodes()
+                .collect::<Vec<_>>(),
+            expected.iter().rev().copied().collect::<Vec<_>>()
+        );
+        assert_eq!(
+            $root
+                .all()
+                .$method(argument.clone())
+                .filter_kind_ids([$root.kind_id()])
+                .filter_field_id(0)
+                .nodes()
+                .collect::<Vec<_>>(),
+            expected
+                .into_iter()
+                .filter(|node| node.kind_id() == $root.kind_id() && node.field_id() == 0)
+                .collect::<Vec<_>>()
+        );
+        let expected = $postorder
+            .iter()
+            .copied()
+            .filter(matches)
+            .collect::<Vec<_>>();
+        check_pipeline(|| $root.postorder().$method(argument.clone()), &expected);
+        assert_eq!(
+            $root
+                .postorder()
+                .rev()
+                .$method(argument.clone())
+                .nodes()
+                .collect::<Vec<_>>(),
+            expected.iter().rev().copied().collect::<Vec<_>>()
+        );
+    }};
+}
+
+fn check_position_selections(root: Node<'_>) {
+    let preorder = reference_preorder(root);
+    let postorder = root.postorder().nodes().collect::<Vec<_>>();
+    let samples = preorder.iter().step_by((preorder.len() / 4).max(1)).chain(
+        preorder
+            .iter()
+            .filter(|node| node.start_byte() == node.end_byte()),
+    );
+    let mut byte_ranges = vec![0..0, 0..1, 0..usize::MAX, usize::MAX..usize::MAX];
+    let mut point_ranges = vec![
+        Point::new(0, 0)..Point::new(0, 0),
+        Point::new(0, 0)..Point::new(0, 1),
+        Point::new(0, 0)..Point::new(usize::MAX, usize::MAX),
+        Point::new(0, usize::MAX)..Point::new(1, 0),
+        Point::new(1, 0)..Point::new(0, usize::MAX),
+        Point::new(usize::MAX, 0)..Point::new(usize::MAX, usize::MAX),
+    ];
+    for node in samples {
+        let start = node.start_byte();
+        let end = node.end_byte();
+        byte_ranges.extend([
+            start..end,
+            end..start,
+            start..start + 1,
+            end..end + 1,
+            start.saturating_sub(1)..start,
+        ]);
+        let start = node.start_position();
+        let end = node.end_position();
+        point_ranges.extend([
+            start..end,
+            end..start,
+            start..Point::new(start.row, start.column + 1),
+            end..Point::new(end.row, end.column + 1),
+            Point::new(start.row, start.column.saturating_sub(1))..start,
+        ]);
+    }
+    for range in byte_ranges {
+        check_selection!(
+            root,
+            preorder,
+            postorder,
+            overlapping_bytes,
+            range.clone(),
+            |node: &Node<'_>| {
+                let start = node.start_byte();
+                let end = node.end_byte();
+                !range.is_empty()
+                    && (if start == end {
+                        range.contains(&start)
+                    } else {
+                        start < range.end && range.start < end
+                    })
+            }
+        );
+        check_selection!(
+            root,
+            preorder,
+            postorder,
+            within_bytes,
+            range.clone(),
+            |node: &Node<'_>| {
+                let start = node.start_byte();
+                let end = node.end_byte();
+                !range.is_empty() && (range.start <= start && end <= range.end)
+            }
+        );
+        check_selection!(
+            root,
+            preorder,
+            postorder,
+            containing_bytes,
+            range.clone(),
+            |node: &Node<'_>| {
+                let start = node.start_byte();
+                let end = node.end_byte();
+                !range.is_empty() && (start <= range.start && range.end <= end)
+            }
+        );
+        check_selection!(
+            root,
+            preorder,
+            postorder,
+            starting_in_bytes,
+            range.clone(),
+            |node: &Node<'_>| {
+                let start = node.start_byte();
+                !range.is_empty() && (range.contains(&start))
+            }
+        );
+        check_selection!(
+            root,
+            preorder,
+            postorder,
+            ending_in_bytes,
+            range.clone(),
+            |node: &Node<'_>| {
+                let end = node.end_byte();
+                !range.is_empty() && (range.contains(&end))
+            }
+        );
+        let position = range.start;
+        check_selection!(
+            root,
+            preorder,
+            postorder,
+            containing_byte,
+            position,
+            |node: &Node<'_>| { (node.start_byte()..node.end_byte()).contains(&position) }
+        );
+        check_selection!(
+            root,
+            preorder,
+            postorder,
+            starting_at_byte,
+            position,
+            |node: &Node<'_>| { node.start_byte() == position }
+        );
+        check_selection!(
+            root,
+            preorder,
+            postorder,
+            ending_at_byte,
+            position,
+            |node: &Node<'_>| { node.end_byte() == position }
+        );
+    }
+    for range in point_ranges {
+        check_selection!(
+            root,
+            preorder,
+            postorder,
+            overlapping_points,
+            range.clone(),
+            |node: &Node<'_>| {
+                let start = node.start_position();
+                let end = node.end_position();
+                !range.is_empty()
+                    && (if start == end {
+                        range.contains(&start)
+                    } else {
+                        start < range.end && range.start < end
+                    })
+            }
+        );
+        check_selection!(
+            root,
+            preorder,
+            postorder,
+            within_points,
+            range.clone(),
+            |node: &Node<'_>| {
+                let start = node.start_position();
+                let end = node.end_position();
+                !range.is_empty() && (range.start <= start && end <= range.end)
+            }
+        );
+        check_selection!(
+            root,
+            preorder,
+            postorder,
+            containing_points,
+            range.clone(),
+            |node: &Node<'_>| {
+                let start = node.start_position();
+                let end = node.end_position();
+                !range.is_empty() && (start <= range.start && range.end <= end)
+            }
+        );
+        check_selection!(
+            root,
+            preorder,
+            postorder,
+            starting_in_points,
+            range.clone(),
+            |node: &Node<'_>| {
+                let start = node.start_position();
+                !range.is_empty() && (range.contains(&start))
+            }
+        );
+        check_selection!(
+            root,
+            preorder,
+            postorder,
+            ending_in_points,
+            range.clone(),
+            |node: &Node<'_>| {
+                let end = node.end_position();
+                !range.is_empty() && (range.contains(&end))
+            }
+        );
+        let position = range.start;
+        check_selection!(
+            root,
+            preorder,
+            postorder,
+            containing_point,
+            position,
+            |node: &Node<'_>| { (node.start_position()..node.end_position()).contains(&position) }
+        );
+        check_selection!(
+            root,
+            preorder,
+            postorder,
+            starting_at_point,
+            position,
+            |node: &Node<'_>| { node.start_position() == position }
+        );
+        check_selection!(
+            root,
+            preorder,
+            postorder,
+            ending_at_point,
+            position,
+            |node: &Node<'_>| { node.end_position() == position }
+        );
+    }
+}
+
+#[test]
+fn range_and_position_relations() {
+    let language = json_language();
+    let sources = [
+        String::new(),
+        "[1".into(),
+        "{\"a\": [1,\n2, }".into(),
+        format!(
+            "[{}{}[1,2]]",
+            " \n".repeat(300),
+            "[\"é🦀\",123],\n".repeat(20)
+        ),
+        format!(
+            "{{\"long\": \"{}\",\n\"values\": [{}0]}}",
+            "x".repeat(700),
+            "[1,\n2],".repeat(20)
+        ),
+    ];
+    for source in sources {
+        for points in [false, true] {
+            let (_, tree) = parse(
+                &language,
+                &source,
+                PackOptions {
+                    points,
+                    initial_group_capacity: 1,
+                    ..Default::default()
+                },
+            );
+            let compact = tree.repack().unwrap();
+            let grammar = Grammar::new(&language).unwrap();
+            let borrowed = Tree::from_bytes_borrowed(&grammar, compact.as_bytes()).unwrap();
+            for tree in [&tree, &borrowed] {
+                let roots = reference_preorder(tree.root_node());
+                for root in [roots[0], roots[roots.len() / 2], roots[roots.len() - 1]] {
+                    check_position_selections(root);
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn zero_width_overlap_boundaries() {
+    let (_, tree) = parse(&json_language(), "[1", PackOptions::default());
+    let nodes = reference_preorder(tree.root_node());
+    let empty = nodes
+        .iter()
+        .copied()
+        .find(|node| node.is_missing())
+        .unwrap();
+    let position = empty.start_byte();
+    assert_eq!(position, empty.end_byte());
+    assert!(position > 0);
+    for root in [tree.root_node(), empty] {
+        assert!(
+            root.all()
+                .overlapping_bytes(position..position + 1)
+                .nodes()
+                .any(|node| node == empty)
+        );
+        assert!(
+            root.all()
+                .overlapping_bytes(position - 1..position + 1)
+                .nodes()
+                .any(|node| node == empty)
+        );
+        assert!(
+            !root
+                .all()
+                .overlapping_bytes(position - 1..position)
+                .nodes()
+                .any(|node| node == empty)
+        );
+        assert_eq!(root.all().overlapping_bytes(position..position).count(), 0);
+        assert!(
+            root.all()
+                .within_bytes(position - 1..position)
+                .nodes()
+                .any(|node| node == empty)
+        );
+    }
+    assert_eq!(empty.all().containing_byte(position).count(), 0);
+    assert_eq!(empty.all().starting_at_byte(position).count(), 1);
+    assert_eq!(empty.all().ending_at_byte(position).count(), 1);
 }
 
 #[test]
@@ -532,7 +889,12 @@ fn check_field_set<const N: usize>(root: Node<'_>, fields: [u16; N]) {
     let combined = expected
         .iter()
         .copied()
-        .filter(|node| kinds.contains(&node.kind_id()) && node.start_byte() < node.end_byte())
+        .filter(|node| {
+            kinds.contains(&node.kind_id())
+                && !range.is_empty()
+                && node.start_byte() < range.end
+                && (node.end_byte() > range.start || node.start_byte() >= range.start)
+        })
         .collect::<Vec<_>>();
     check_pipeline(
         || {
@@ -664,6 +1026,13 @@ fn scans_and_groups_are_send_sync() {
     require_send_sync(root.preorder().rev().nodes());
     require_send_sync(root.postorder().nodes());
     require_send_sync(root.postorder().rev().filter_kind_ids(&kinds).groups());
+    require_send_sync(
+        root.preorder()
+            .overlapping_points(Point::new(0, 0)..Point::new(1, 0))
+            .nodes(),
+    );
+    require_send_sync(root.postorder().ending_at_point(Point::new(0, 7)).groups());
+    require_send_sync(root.preorder().within_bytes(0..7));
     let group = root.all().groups().next().unwrap();
     require_send_sync(group);
     require_send_sync(group.group());

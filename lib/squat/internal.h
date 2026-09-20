@@ -161,6 +161,12 @@ typedef struct {
 
 void sq_tree_scan_columns(const SQTree *, SQScanColumns *);
 
+typedef struct {
+  uint32_t start_base, start_delta, end_base, end_delta;
+} SQScanPointLayout;
+
+void sq_tree_scan_point_layout(const SQTree *, SQScanPointLayout *);
+
 static inline uint32_t sq_symbols(const SQTree *tree) {
   return tree->language->symbol_count + tree->language->alias_count + 2;
 }
