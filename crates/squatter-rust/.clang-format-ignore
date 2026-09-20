@@ -1,0 +1,3 @@
+# Keep the copied query compiler aligned with upstream Tree-sitter.
+native/query.c
+native/query.h
