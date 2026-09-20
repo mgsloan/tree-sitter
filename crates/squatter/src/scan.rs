@@ -1039,17 +1039,34 @@ struct PointPositions<'group, 'tree, const STORED: bool> {
 }
 struct ByteColumn<'tree, const END: bool> {
     base: usize,
-    deltas: &'tree [u8],
+    deltas: ColumnDeltas<'tree>,
 }
 struct PointColumn<'tree, const END: bool, const STORED: bool> {
     base: u64,
-    deltas: &'tree [u8],
+    deltas: ColumnDeltas<'tree>,
+}
+
+#[derive(Clone, Copy)]
+struct ColumnDeltas<'tree> {
+    data: &'tree [u8],
+    start: usize,
+    length: usize,
+}
+impl<'tree> ColumnDeltas<'tree> {
+    #[inline]
+    fn slice(self) -> &'tree [u8] {
+        // Rejected groups need only their bases, not delta-slice bounds checks.
+        &self.data[self.start..self.start + self.length]
+    }
 }
 
 #[inline]
-fn column_deltas<'tree>(group: &GroupRef<'tree>, offset: u32, width: usize) -> &'tree [u8] {
-    let start = offset as usize + group.first_slot() as usize * width;
-    &group.columns.data[start..start + group.columns.group_size() as usize * width]
+fn column_deltas<'tree>(group: &GroupRef<'tree>, offset: u32, width: usize) -> ColumnDeltas<'tree> {
+    ColumnDeltas {
+        data: group.columns.data,
+        start: offset as usize + group.first_slot() as usize * width,
+        length: group.columns.group_size() as usize * width,
+    }
 }
 #[inline]
 fn point_base(group: &GroupRef<'_>, offset: u32) -> u64 {
@@ -1124,13 +1141,18 @@ fn delta_bounds<T: Copy, const END: bool>(
 }
 
 #[inline]
-fn retain_deltas<const WIDE: bool>(deltas: &[u8], candidates: Mask, bounds: Range<u32>) -> Mask {
+fn retain_deltas<const WIDE: bool>(
+    deltas: ColumnDeltas<'_>,
+    candidates: Mask,
+    bounds: Range<u32>,
+) -> Mask {
     if bounds.is_empty() || candidates.is_empty() {
         return Mask::default();
     }
     if bounds.start == 0 && bounds.end == if WIDE { 65536 } else { 256 } {
         return candidates;
     }
+    let deltas = deltas.slice();
     #[cfg(target_arch = "x86_64")]
     {
         let remaining = candidates.0 & (candidates.0 - 1);
@@ -1210,14 +1232,15 @@ impl<const END: bool> PositionColumn for ByteColumn<'_, END> {
     }
     #[inline]
     fn get(&self, slot: u32) -> usize {
+        let deltas = self.deltas.slice();
         if END {
             let offset = slot as usize * 2;
             self.base
                 - usize::from(u16::from_le_bytes(
-                    self.deltas[offset..offset + 2].try_into().unwrap(),
+                    deltas[offset..offset + 2].try_into().unwrap(),
                 ))
         } else {
-            self.base + usize::from(self.deltas[slot as usize])
+            self.base + usize::from(deltas[slot as usize])
         }
     }
     #[inline(always)]
@@ -1255,13 +1278,14 @@ impl<const END: bool, const STORED: bool> PositionColumn for PointColumn<'_, END
     }
     #[inline]
     fn get(&self, slot: u32) -> u64 {
+        let deltas = self.deltas.slice();
         let delta = if STORED || END {
             let offset = slot as usize * 2;
             u64::from(u16::from_le_bytes(
-                self.deltas[offset..offset + 2].try_into().unwrap(),
+                deltas[offset..offset + 2].try_into().unwrap(),
             ))
         } else {
-            u64::from(self.deltas[slot as usize])
+            u64::from(deltas[slot as usize])
         };
         // Rows occupy the high word, so unsigned comparison orders both components.
         let delta = if STORED {
@@ -2241,6 +2265,16 @@ impl Predicate for SupertypeId {
 mod tests {
     use super::*;
 
+    impl<'tree> From<&'tree [u8]> for ColumnDeltas<'tree> {
+        fn from(data: &'tree [u8]) -> Self {
+            Self {
+                data,
+                start: 0,
+                length: data.len(),
+            }
+        }
+    }
+
     fn check_column<C: PositionColumn>(column: C, length: u32, positions: &[C::Position]) {
         let live = Mask::lower(length);
         for candidates in [
@@ -2278,7 +2312,10 @@ mod tests {
             for deltas in bytes.chunks_exact(length) {
                 for base in [0, 65535, u32::MAX as usize - 255] {
                     check_column(
-                        ByteColumn::<false> { base, deltas },
+                        ByteColumn::<false> {
+                            base,
+                            deltas: deltas.into(),
+                        },
                         length as u32,
                         &[
                             0,
@@ -2301,7 +2338,7 @@ mod tests {
             check_column(
                 ByteColumn::<true> {
                     base: 65535,
-                    deltas,
+                    deltas: deltas.into(),
                 },
                 64,
                 &[
@@ -2342,8 +2379,22 @@ mod tests {
             u64::MAX,
         ];
         for deltas in bytes.chunks_exact(128) {
-            check_column(PointColumn::<false, true> { base, deltas }, 64, &positions);
-            check_column(PointColumn::<true, true> { base, deltas }, 64, &positions);
+            check_column(
+                PointColumn::<false, true> {
+                    base,
+                    deltas: deltas.into(),
+                },
+                64,
+                &positions,
+            );
+            check_column(
+                PointColumn::<true, true> {
+                    base,
+                    deltas: deltas.into(),
+                },
+                64,
+                &positions,
+            );
         }
     }
 }
