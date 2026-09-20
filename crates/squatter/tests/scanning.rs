@@ -911,6 +911,59 @@ fn dense_id_filters() {
     }
 }
 
+#[test]
+fn sparse_kind_filters() {
+    let language = json_language();
+    let source = format!("[{}null]", "[\"text\",true,false,1,null],".repeat(64));
+    let booleans = ["true", "false"].map(|name| language.id_for_node_kind(name, true));
+    let kinds = KindSet::new((0..language.node_kind_count() as u16).chain([32768, u16::MAX]));
+    for symbol_presence in [false, true] {
+        let (_, tree) = parse(
+            &language,
+            &source,
+            PackOptions {
+                symbol_presence,
+                ..Default::default()
+            },
+        );
+        let root = tree.root_node();
+        let nodes = reference_preorder(root);
+        let expected = nodes
+            .iter()
+            .copied()
+            .filter(|node| booleans.contains(&node.kind_id()))
+            .collect::<Vec<_>>();
+        check_pipeline(
+            || {
+                root.preorder()
+                    .filter_kind_ids(booleans)
+                    .filter_kind_ids(&kinds)
+            },
+            &expected,
+        );
+        for start in [0, 7, source.len() / 2, source.len() - 16] {
+            let range = start..start + 16;
+            let expected = nodes
+                .iter()
+                .copied()
+                .filter(|node| {
+                    range.start <= node.start_byte()
+                        && node.end_byte() <= range.end
+                        && kinds.contains(node.kind_id())
+                })
+                .collect::<Vec<_>>();
+            check_pipeline(
+                || {
+                    root.preorder()
+                        .within_bytes(range.clone())
+                        .filter_kind_ids(&kinds)
+                },
+                &expected,
+            );
+        }
+    }
+}
+
 fn check_fixed_kinds<const N: usize>(root: Node<'_>, ids: [u16; N]) {
     let expected = reference_preorder(root)
         .into_iter()

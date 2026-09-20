@@ -179,6 +179,14 @@ impl Mask {
     pub fn intersection(self, other: Self) -> Self {
         Self(self.0 & other.0)
     }
+    #[inline]
+    fn at_most<const LIMIT: usize>(self) -> bool {
+        let mut remaining = self.0;
+        for _ in 0..LIMIT {
+            remaining &= remaining.wrapping_sub(1);
+        }
+        remaining == 0
+    }
     pub fn contains(self, slot: u32) -> bool {
         slot < 64 && self.0 & (1u64 << slot) != 0
     }
@@ -2363,7 +2371,7 @@ impl Predicate for KindIds<'_> {
             }
             return matches;
         }
-        if candidates.0.is_power_of_two() {
+        if candidates.at_most::<4>() {
             return candidates.retain(|slot| kinds.contains(group.kind(slot)));
         }
         let layout = group.columns.layout;
