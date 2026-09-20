@@ -464,6 +464,7 @@ mod sealed {
     pub trait Coordinates: Sized {
         type Position: Copy + Ord;
         const MINIMUM: Self::Position;
+        const PRUNE_SUBTREES: bool;
         fn new(group: &GroupRef<'_>) -> Self;
         fn start_minimum(&self, group: &GroupRef<'_>) -> Self::Position;
         fn end_before(&self, group: &GroupRef<'_>, bound: Bound<Self::Position>) -> bool;
@@ -1480,6 +1481,7 @@ impl<'tree, const STORED: bool> Positions for PointPositions<'_, 'tree, STORED> 
 impl Coordinates for Bytes {
     type Position = usize;
     const MINIMUM: usize = 0;
+    const PRUNE_SUBTREES: bool = true;
     fn new(_: &GroupRef<'_>) -> Self {
         Self
     }
@@ -1506,6 +1508,7 @@ impl Coordinates for Bytes {
 impl Coordinates for Points {
     type Position = Point;
     const MINIMUM: Point = Point::new(0, 0);
+    const PRUNE_SUBTREES: bool = false;
     fn new(group: &GroupRef<'_>) -> Self {
         unsafe extern "C" {
             fn sq_tree_scan_point_layout(tree: *const c_void, layout: *mut Points);
@@ -2030,6 +2033,9 @@ impl<C, R> sealed::Predicate for Selection<C, R> {}
 impl<C: Coordinates, R: Relation<C::Position>> Predicate for Selection<C, R> {
     #[inline(always)]
     fn has_subtree_bound(&self) -> bool {
+        if !C::PRUNE_SUBTREES {
+            return false;
+        }
         match self.relation.end_lower_bound() {
             Unbounded => false,
             Included(limit) => limit != C::MINIMUM,
