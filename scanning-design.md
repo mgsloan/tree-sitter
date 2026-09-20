@@ -59,6 +59,55 @@ same selections. The singular field/supertype filters remain available.
 Ordinary mapping follows `nodes()`. Specialized consumers can process groups
 directly. There is no `map_cached` operation or type-level column-cache machinery.
 
+## Operation reference
+
+SIMD below means explicit SSE2 kernels on x86_64. Other architectures use scalar
+fallbacks. "Inherited" means upstream predicates may use SIMD. Brace notation
+groups byte and point counterparts, such as `overlapping_{bytes,points}`.
+
+| Operation | Role / representation | SIMD | Important behavior |
+| --- | --- | --- | --- |
+| `preorder()` | Initial source; slot ranges or masks | No | Descending physical slots; clips waste and subtree boundaries. |
+| `postorder()` | Initial source; singleton masks | No | Walks topology; delays ancestors using O(depth) storage. |
+| `all()` | Initial source | No | Currently preorder; order is unspecified by the API. |
+| `.rev()` | Reverses the source through adapters | Inherited | Choose before consumption. Reverse postorder can require O(nodes) pending storage. |
+| `descendants_matching_kinds(...)` | Convenience source + mask filter | Conditional | Preorder with a kind filter; includes the root if matching. |
+| `overlapping_{bytes,points}` | Range restriction + mask filter | Yes¹ | Includes zero-width nodes inside the half-open query. |
+| `within_{bytes,points}` | Range restriction + mask filter | Yes¹ | Both endpoints inside, including boundaries; empty queries match zero-width nodes. |
+| `containing_{bytes,points}` | Range restriction + mask filter | Yes¹ | Inclusive endpoint containment, including empty queries and equal spans. |
+| `starting_in_{bytes,points}` | Range restriction + mask filter | Yes¹ | Tests only the start against a half-open interval. |
+| `ending_in_{bytes,points}` | Range restriction + mask filter | Yes¹ | Tests the exclusive end coordinate itself against a half-open interval. |
+| `containing_{byte,point}` | Position restriction + mask filter | Yes¹ | `start <= position < end`; excludes zero-width nodes. |
+| `starting_at_{byte,point}` | Position restriction + mask filter | Yes¹ | Exact start equality; includes zero-width nodes. |
+| `ending_at_{byte,point}` | Position restriction + mask filter | Yes¹ | Exact end equality; includes zero-width nodes. |
+| `filter_kind_ids(array)` / `filter_field_ids(array)` | Mask filter | Yes² | Array length specializes the kernel; larger arrays share column loads across targets. |
+| `filter_kind_ids(&IdSet)` / `filter_field_ids(&IdSet)` | Mask filter | Conditional² | SIMD for 1–4 IDs; larger sets use scalar membership checks. |
+| `filter_field_id(id)` | Mask filter | Yes² | Fixed-width equality; zero means no field. |
+| `filter_extra(bool)` / `filter_missing(bool)` | Mask intersection | No | Intersects stored flag bitmaps without per-node decoding. |
+| `filter_supertype_id(id)` | Membership checks → mask | Conditional³ | SIMD for direct membership masks; dictionary lookup remains scalar. |
+| `.nodes()` / `for node in scan` | Node consumer | Inherited | Unfiltered preorder uses contiguous slot ranges; filtered scans extract mask bits. |
+| `.count()` / `.nodes().count()` | Aggregate consumer | Inherited | Counts slots/populations without constructing nodes. Fresh postorder counts use preorder groups, currently without range seeking. |
+| `.groups()` | Group-and-mask consumer | Inherited | Returns nonempty fragments; postorder may revisit a group. Its `.count()` counts fragments. |
+| `group_matches.nodes()` | Individual mask consumer | No | Extracts nodes in fragment order; supports consumption from either end. |
+| `.nodes().fold(...)` | Specialized node consumer | Inherited | Drains each fragment in a local loop, reducing iterator bookkeeping. |
+| Other adapters after `.nodes()` | Ordinary node iteration | No group kernel | `map`, `filter`, `find`, etc. operate on individual node handles. |
+
+¹ Range kernels compare encoded deltas directly: SIMD with at least three
+candidates, scalar with one or two. Group bounds can accept or reject everything
+first, and preorder can reject groups before constructing candidate masks.
+Oversized point coordinates use decoded scalar comparisons.
+
+² ID kernels use scalar equality for singleton candidates. Empty sets match
+nothing. Sets use OR internally; successive filters use AND.
+
+³ Grammars with at most eight supertypes store membership bits directly in `u16`
+lanes. Masks with at least three candidates use SIMD; one or two use scalar bit
+tests. Larger grammars store dictionary IDs and use scalar membership lookup.
+
+One range/position restriction is allowed before other filters. Preorder seeks
+only the upper start boundary; postorder enumeration has no range pruning.
+Masks always exclude waste and nodes outside the selected subtree.
+
 ## Typed composition
 
 Range restrictions combine traversal pruning with group predicates. Current scan
@@ -108,6 +157,13 @@ slot iterators with a static extraction direction.
 
 Predicates must return a subset of their input mask. Built-in predicates are
 pure; custom callbacks with observable side effects are outside the interface.
+
+Preorder's `next_matching` lets a predicate inspect group bounds before building
+the live-slot mask. `Predicate::retain_group` receives a deferred mask constructor;
+range selections invoke it only for groups that survive conservative rejection.
+Other predicates default to constructing the mask immediately. Counts use this
+same path, and composition keeps the first predicate's opportunity to reject
+before mask construction. Postorder retains its ordinary fragments.
 
 Generic composition permits inlining and specialization without dynamic dispatch
 or allocations for adapters. It does not guarantee SIMD. The hot column reads
@@ -241,6 +297,10 @@ Use group bases and packed deltas directly. Where possible, translate an absolut
 bound into a comparison against stored deltas, handling bounds outside the
 representable interval before narrowing. Do not unpack coordinates into a cache.
 
+Delta columns retain their slab slice, offset, and length until decoding or
+comparison is required. Group rejection and acceptance use only bases, avoiding
+delta-slice bounds checks on those paths. Reads still use checked slices.
+
 Preorder restrictions use a binary search over group start minima to remove
 groups beyond the relation's upper bound on node starts. Point bases store
 independent row and column minima; seeking reconstructs the earliest live node's
@@ -283,6 +343,10 @@ loads across comparisons. Dynamic sets of two to four IDs combine equality masks
 larger dynamic sets use membership lookup. Singleton candidates and expensive
 predicates use scalar checks. Flags intersect already-valid candidate masks, so
 they need not reread group waste.
+
+Direct supertype masks use SSE2 bit tests for at least three candidates, with
+scalar checks for smaller masks. This applies to grammars with at most eight
+supertypes; dictionary-based membership remains scalar.
 
 Filter order is initially call order. Empty masks short-circuit subsequent
 filters. Choosing dense versus sparse evaluation stays inside the predicate,

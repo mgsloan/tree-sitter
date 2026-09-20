@@ -64,9 +64,10 @@ are nondecreasing in preorder, but node ends are not: an ancestor can precede ma
 descendants whose ends are earlier than its own.
 
 Every subtree occupies a contiguous physical slot interval, possibly containing
-group waste. `Preorder` clips each group's live slots to that interval. Its mask
-therefore excludes waste and nodes outside the chosen root before any predicate
-runs. A `u64` holds candidate and result masks for all supported group sizes.
+group waste. `Preorder` clips each group's live slots to that interval. Range
+bounds can reject a whole group before this mask is constructed. Otherwise the
+mask excludes waste and nodes outside the chosen root before slot comparisons
+run. A `u64` holds candidate and result masks for all supported group sizes.
 
 The pipeline is:
 
@@ -82,8 +83,10 @@ root.preorder()
    `sq_tree_scan_point_layout` for its offsets.
 2. `Scan::selected` constructs `Selection<Coordinates, Relation>`. Unless the
    relation is empty, it asks the traversal to restrict its group bounds.
-3. `Restricted::next_mask` obtains a candidate mask, applies the selection, and
-   continues past empty results. Later filters refine the survivors in call order.
+3. `Restricted::next_mask` asks its source for the next matching fragment.
+   Preorder passes a deferred mask constructor to the selection, so rejected
+   groups need no waste lookup or subtree clipping. Other traversals supply their
+   ordinary fragments. Later filters refine survivors in call order.
 4. `nodes()` extracts matching slots, `groups()` exposes matching fragments, and
    `count()` sums mask population counts without creating node handles.
 
@@ -94,6 +97,10 @@ Endpoint predicates translate query bounds into group-relative delta intervals.
 On x86_64, masks with at least three candidates use SSE2; one or two candidates
 use the scalar set-bit loop. Other architectures use that scalar loop for all
 masks. Both paths compare encoded deltas without reconstructing each position.
+
+`ColumnDeltas` keeps the slab slice, offset, and length until a comparison needs
+the deltas. Rejected and wholly accepted groups avoid delta-slice bounds checks.
+The eventual slice remains checked; no additional unchecked slab reads are used.
 
 Only unrestricted traversals expose selection methods: a scan accepts one range
 or position selection, before other filters. Reversal preserves that selection.
@@ -224,6 +231,10 @@ against a single-value delta interval, or rejects an unrepresentable position.
 
 These shortcuts avoid endpoint decoding, not group traversal. There is no
 hierarchy of range summaries or range-specific index used by the scan.
+`Predicate::retain_group` can use them before invoking the candidate-mask
+constructor. Preorder's `next_matching` supports this for both enumeration and
+counts; composed predicates retain their order and pass the deferred mask only
+to the first predicate.
 
 ### Postorder and counts
 
@@ -388,12 +399,13 @@ compare delta filtering against decoded positions across every `u16` encoding,
 including signed-lane boundaries, exact matches, and queries between encoded
 point rows.
 
-[scanning-bench.rs](crates/squatter-bench/src/bin/scanning-bench.rs) currently
-benchmarks byte and point overlap on the middle 1% of each source, with node,
-count, fold, and scalar variants. It does not characterize the other relations
-or range-restricted postorder. Extend it with queries near the beginning and end,
-outside the root, and spanning varying fractions of the source; include exact
-positions, empty containment/within, deep trees, wide trees, and selective filters.
+[scanning-bench.rs](crates/squatter-bench/src/bin/scanning-bench.rs) benchmarks
+byte and point overlap with node, count, fold, and scalar variants. Queries
+default to the middle 1% of each source; `--range-start-percent` and
+`--range-percent` control their position and width. It does not characterize the
+other relations or range-restricted postorder. Extend it with out-of-root queries,
+exact positions, empty containment/within, deep trees, wide trees, and selective
+filters.
 
 Measure query latency alongside input/output throughput. Instrument group visits,
 groups rejected or accepted by bounds, and slots decoded in separate diagnostic

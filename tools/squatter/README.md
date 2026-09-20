@@ -172,9 +172,12 @@ skipped by range/group operations; output nodes/s and match counts are also save
 The kind filter selects each file's most frequent named kind; `multi_kind` uses
 its four most frequent named kinds, adjustable with `--kind-count N`. The field filter
 selects its most frequent nonzero field, or zero if none exists. The byte range
-covers the middle 1% of each source. Use repeated `--workload NAME` arguments to
-time selected operations. Results describe this selected corpus and
-cache behavior, not parsing performance.
+covers the middle 1% of each source by default. `--range-start-percent` selects
+its start (0–100), and `--range-percent` selects its width (1–100), clipped at EOF.
+For example, `--range-start-percent 0 --range-percent 100` scans the full source.
+Byte and point queries cover the same interval. Use repeated `--workload NAME`
+arguments to time selected operations. Results describe this selected corpus
+and cache behavior, not parsing performance.
 
 Forward/reverse fold and grouped-fold workloads also consume every node with `black_box`.
 `flags.count` excludes extra and missing nodes; `combined.count` additionally

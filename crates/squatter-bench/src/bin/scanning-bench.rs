@@ -40,6 +40,12 @@ struct Arguments {
     /// Number of frequent named kinds selected by multi_kind workloads.
     #[arg(long, default_value_t = 4)]
     kind_count: usize,
+    /// Query start as a percentage of source length.
+    #[arg(long, default_value_t = 50, value_parser = clap::value_parser!(u8).range(0..=100))]
+    range_start_percent: u8,
+    /// Query width as a percentage of source length, clipped at EOF.
+    #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u8).range(1..=100))]
+    range_percent: u8,
 }
 #[derive(Deserialize, Serialize)]
 struct Input {
@@ -784,8 +790,9 @@ fn main() -> Result<()> {
         let field_matches = scalar_preorder(&tree)
             .filter(|node| node.field_id() == field)
             .count();
-        let range =
-            source.len() / 2..(source.len() / 2 + (source.len() / 100).max(1)).min(source.len());
+        let range_start = source.len() * usize::from(arguments.range_start_percent) / 100;
+        let range_length = (source.len() * usize::from(arguments.range_percent) / 100).max(1);
+        let range = range_start..(range_start + range_length).min(source.len());
         let point_range = source_point(&source, range.start)..source_point(&source, range.end);
         let kind_matches = scalar_preorder(&tree)
             .filter(|node| kinds.contains(node.kind_id()))
@@ -819,7 +826,8 @@ fn main() -> Result<()> {
                 [point_range.start.row, point_range.start.column],
                 [point_range.end.row, point_range.end.column],
             ],
-            "supertype_id": supertype, "supertype_matches": supertype_matches,
+            "supertype_id": supertype, "supertype_count": language.supertypes().len(),
+            "supertype_matches": supertype_matches,
             "flags_matches": flags_matches, "combined_matches": combined_matches,
             "frequent_kind_ids": frequent_kind_ids, "sized_kind_matches": sized_kind_matches,
             "frequent_field_ids": frequent_field_ids, "sized_field_matches": sized_field_matches,

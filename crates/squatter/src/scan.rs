@@ -2276,6 +2276,40 @@ impl Predicate for Missing {
         Mask(candidates.0 & if self.0 { flags } else { !flags })
     }
 }
+#[inline]
+fn retain_supertype_masks(masks: &[u8], candidates: Mask, bit: u16) -> Mask {
+    if candidates.is_empty() {
+        return candidates;
+    }
+    #[cfg(target_arch = "x86_64")]
+    {
+        let remaining = candidates.0 & (candidates.0 - 1);
+        if remaining != 0 && !remaining.is_power_of_two() {
+            use std::arch::x86_64::*;
+            let mut absent = 0;
+            // Each checked chunk covers both SSE2 loads. Candidate clipping
+            // excludes waste and slots outside the subtree after mask extraction.
+            unsafe {
+                let bit = _mm_set1_epi16(bit as i16);
+                let zero = _mm_setzero_si128();
+                for (index, bytes) in masks.chunks_exact(32).enumerate() {
+                    let low = _mm_loadu_si128(bytes.as_ptr().cast());
+                    let high = _mm_loadu_si128(bytes.as_ptr().add(16).cast());
+                    let low = _mm_cmpeq_epi16(_mm_and_si128(low, bit), zero);
+                    let high = _mm_cmpeq_epi16(_mm_and_si128(high, bit), zero);
+                    absent |=
+                        (_mm_movemask_epi8(_mm_packs_epi16(low, high)) as u64) << (index * 16);
+                }
+            }
+            return Mask(candidates.0 & !absent);
+        }
+    }
+    candidates.retain(|slot| {
+        let offset = slot as usize * 2;
+        u16::from_le_bytes(masks[offset..offset + 2].try_into().unwrap()) & bit != 0
+    })
+}
+
 pub struct SupertypeId {
     symbol: u16,
     index: Option<usize>,
@@ -2292,16 +2326,19 @@ impl Predicate for SupertypeId {
             return Mask::default();
         };
         let columns = &group.columns;
+        if columns.supertypes.len() <= 8 {
+            return retain_supertype_masks(
+                column_deltas(group, columns.layout.supertype, 2).slice(),
+                candidates,
+                1 << index,
+            );
+        }
         let words = columns.supertypes.len().div_ceil(64);
         candidates.retain(|slot| {
             let value = columns.short(columns.layout.supertype, group.first_slot() + slot);
-            if columns.supertypes.len() <= 8 {
-                value & (1 << index) != 0
-            } else {
-                columns.supertype_masks[usize::from(value) * words + index / 64]
-                    & (1u64 << (index % 64))
-                    != 0
-            }
+            columns.supertype_masks[usize::from(value) * words + index / 64]
+                & (1u64 << (index % 64))
+                != 0
         })
     }
 }
@@ -2309,6 +2346,37 @@ impl Predicate for SupertypeId {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn direct_supertype_masks_match_scalar_membership() {
+        for length in [16, 32, 64] {
+            for first in (0..256).step_by(length) {
+                let values = (first..first + length)
+                    .map(|value| value as u16)
+                    .collect::<Vec<_>>();
+                let bytes = values
+                    .iter()
+                    .flat_map(|value| value.to_le_bytes())
+                    .collect::<Vec<_>>();
+                let live = Mask::lower(length as u32);
+                for candidates in [
+                    Mask::default(),
+                    live,
+                    Mask(live.0 & 0xaaaa_aaaa_aaaa_aaaa),
+                    Mask(live.0 & !Mask::lower(3).0),
+                    Mask::lower(5),
+                    Mask(1 << (length - 1)),
+                    Mask(1 | 1 << (length - 1)),
+                ] {
+                    for index in 0..8 {
+                        let bit = 1 << index;
+                        let expected = candidates.retain(|slot| values[slot as usize] & bit != 0);
+                        assert_eq!(retain_supertype_masks(&bytes, candidates, bit), expected);
+                    }
+                }
+            }
+        }
+    }
 
     impl<'tree> From<&'tree [u8]> for ColumnDeltas<'tree> {
         fn from(data: &'tree [u8]) -> Self {
