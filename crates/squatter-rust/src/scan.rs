@@ -264,8 +264,7 @@ impl<'tree> GroupRef<'tree> {
     }
     #[inline]
     fn used(self) -> u32 {
-        self.columns.group_size()
-            - u32::from(self.columns.short(self.columns.layout().waste, self.index))
+        self.columns.group_size() - self.columns.tree().waste(self.index)
     }
     #[inline]
     fn kind(self, slot: u32) -> u16 {

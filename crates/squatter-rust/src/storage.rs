@@ -63,13 +63,16 @@ pub(crate) fn bit_bytes(count: u32) -> u64 {
 }
 
 impl Layout {
+    // The first column follows the fixed header, independent of capacity and flags.
+    const WASTE: u32 = ((16 + ALIGNMENT - 1) & !(ALIGNMENT - 1)) as u32;
+
     pub fn new(capacity: u32, flags: u32) -> Result<Self, Error> {
         let slots = capacity
             .checked_mul(GROUP_SIZE)
             .filter(|_| capacity != 0)
             .ok_or(Error::Overflow)?;
         let points = flags & NO_POINTS == 0;
-        let mut next = (16u64 + ALIGNMENT as u64 - 1) & !(ALIGNMENT as u64 - 1);
+        let mut next = Self::WASTE as u64;
         let mut column = |length: u64| {
             let offset = next as u32;
             next = (next + length + ALIGNMENT as u64 - 1) & !(ALIGNMENT as u64 - 1);
@@ -285,7 +288,7 @@ impl TreeData {
 
     #[inline]
     pub fn waste(&self, group: u32) -> u32 {
-        self.short(self.layout.waste, group) as u32
+        self.short(Layout::WASTE, group) as u32
     }
 
     #[inline]
