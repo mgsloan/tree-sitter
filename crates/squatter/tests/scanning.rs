@@ -436,6 +436,8 @@ fn check_position_selections(root: Node<'_>) {
         byte_ranges.extend([
             start..end,
             end..start,
+            start..start,
+            end..end,
             start..start + 1,
             end..end + 1,
             start.saturating_sub(1)..start,
@@ -445,6 +447,8 @@ fn check_position_selections(root: Node<'_>) {
         point_ranges.extend([
             start..end,
             end..start,
+            start..start,
+            end..end,
             start..Point::new(start.row, start.column + 1),
             end..Point::new(end.row, end.column + 1),
             Point::new(start.row, start.column.saturating_sub(1))..start,
@@ -489,7 +493,7 @@ fn check_position_selections(root: Node<'_>) {
             |node: &Node<'_>| {
                 let start = node.start_byte();
                 let end = node.end_byte();
-                !range.is_empty() && (start <= range.start && range.end <= end)
+                range.start <= range.end && start <= range.start && range.end <= end
             }
         );
         check_selection!(
@@ -579,7 +583,7 @@ fn check_position_selections(root: Node<'_>) {
             |node: &Node<'_>| {
                 let start = node.start_position();
                 let end = node.end_position();
-                !range.is_empty() && (start <= range.start && range.end <= end)
+                range.start <= range.end && start <= range.start && range.end <= end
             }
         );
         check_selection!(
@@ -689,6 +693,19 @@ fn zero_width_overlap_boundaries() {
     for root in [tree.root_node(), empty] {
         assert!(
             root.all()
+                .containing_bytes(position..position)
+                .nodes()
+                .any(|node| node == root)
+        );
+        let point = empty.start_position();
+        assert!(
+            root.all()
+                .containing_points(point..point)
+                .nodes()
+                .any(|node| node == root)
+        );
+        assert!(
+            root.all()
                 .overlapping_bytes(position..position + 1)
                 .nodes()
                 .any(|node| node == empty)
@@ -715,6 +732,10 @@ fn zero_width_overlap_boundaries() {
         );
     }
     assert_eq!(empty.all().containing_byte(position).count(), 0);
+    assert_eq!(empty.all().containing_bytes(position..position).count(), 1);
+    let point = empty.start_position();
+    assert_eq!(empty.all().containing_point(point).count(), 0);
+    assert_eq!(empty.all().containing_points(point..point).count(), 1);
     assert_eq!(empty.all().starting_at_byte(position).count(), 1);
     assert_eq!(empty.all().ending_at_byte(position).count(), 1);
 }

@@ -9,9 +9,10 @@
 //! let backwards = root.postorder().rev().nodes();
 //! # }
 //! ```
-//! Range filters match nothing for empty or reversed queries. Overlap includes
-//! zero-width nodes at positions inside the half-open range. Point ranges use
-//! row/column order; trees without stored points use `(0, byte_offset)`.
+//! Range filters reject reversed queries. Empty queries match only for
+//! `containing_bytes` and `containing_points`, using inclusive endpoint containment.
+//! Overlap includes zero-width nodes at positions inside the half-open range.
+//! Point ranges use row/column order; trees without stored points use `(0, byte_offset)`.
 //!
 //! Scans and returned groups borrow the tree, not the iterator:
 //!
@@ -1418,7 +1419,7 @@ range_relation!(Within, >=, Included, end, self, positions, candidates, {
         |end| end <= self.0.end,
     )
 });
-range_relation!(Containing, >=, Included, start, self, positions, candidates, {
+range_relation!(Containing, >, Included, start, self, positions, candidates, {
     retain_pair(
         candidates,
         positions.start(),
@@ -1567,7 +1568,7 @@ impl<'tree, S: UnrestrictedScan + GroupScan<'tree>> Scan<'tree, S> {
         Bytes,
         Containing,
         Range<usize>,
-        "Match spans enclosing a nonempty byte range, including equal spans."
+        "Match spans enclosing a byte range, including equal spans. Empty queries use inclusive endpoint containment."
     );
     selection_method!(
         starting_in_bytes,
@@ -1602,7 +1603,7 @@ impl<'tree, S: UnrestrictedScan + GroupScan<'tree>> Scan<'tree, S> {
         Points,
         Containing,
         Range<Point>,
-        "Match spans enclosing a nonempty point range, including equal spans."
+        "Match spans enclosing a point range, including equal spans. Empty queries use inclusive endpoint containment."
     );
     selection_method!(
         starting_in_points,

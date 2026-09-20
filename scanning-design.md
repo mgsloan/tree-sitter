@@ -183,18 +183,21 @@ For a nonempty node `start..end` and nonempty query `from..to`:
 | `starting_in_bytes` | `starting_in_points` | `from <= start && start < to` |
 | `ending_in_bytes` | `ending_in_points` | `from <= end && end < to` |
 
-Empty or reversed query ranges match nothing for every relation. Containment
-includes equality: a node with the query's exact span qualifies for both
-`within_*` and `containing_*`. All matching nodes are returned, including nested
-nodes; `within_*` does not select only the outermost qualifying nodes.
+Reversed query ranges match nothing for every relation. Empty queries match
+nothing except for `containing_*`: `position..position` matches when
+`start <= position && position <= end`, including a node's end boundary and a
+zero-width node at that position. Containment includes equality: a node with the
+query's exact nonempty span qualifies for both `within_*` and `containing_*`.
+All matching nodes are returned, including nested nodes; `within_*` does not
+select only the outermost qualifying nodes.
 
 Zero-width nodes at `position` follow these rules:
 
 - `overlapping_*`, `starting_in_*`, and `ending_in_*` match when
   `from <= position && position < to`.
-- `within_*` matches when `from <= position && position <= to`, including both
-  boundaries under endpoint containment.
-- `containing_*` cannot match a nonempty query.
+- `within_*` matches nonempty queries when `from <= position && position <= to`,
+  including both boundaries under endpoint containment.
+- `containing_*` matches only the empty query `position..position`.
 
 `ending_in_*` selects the exclusive end coordinate itself, not the last occupied
 byte or character. A node ending at `to` is excluded, and one ending at `from`
@@ -215,7 +218,9 @@ Single-position queries are separate from empty ranges:
 | `ending_at_byte` | `ending_at_point` | `end == position` |
 
 Single-position containment excludes zero-width nodes; exact start/end matching
-includes them. No single-position overlap or within variants are planned.
+includes them. Unlike range containment of `position..position`, single-position
+containment also excludes nodes ending at that position. No single-position
+overlap or within variants are planned.
 
 Point filters compare packed `u64` keys, with row in the high word and column in
 the low word. Expand stored deltas into that layout before adding or subtracting
@@ -314,7 +319,8 @@ filters read the stored membership mask or prepared grammar dictionary. There is
 no unpack cache.
 
 All range and single-position methods above are implemented. Overlap includes
-zero-width nodes inside the half-open query range. Empty queries match nothing.
+zero-width nodes inside the half-open query range. Empty queries match only for
+range containment, using inclusive endpoint comparisons.
 Point-column offsets cross a separate C bridge only when a point filter is
 attached, leaving ordinary scans' column metadata unchanged. Stored-point and
 byte-fallback decoders are selected once per group.
