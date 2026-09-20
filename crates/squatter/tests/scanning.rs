@@ -972,7 +972,7 @@ fn indexed_kind_filters() {
         "[true,[{}false],[{}true],[{}false]]",
         "1,".repeat(1800),
         "[\"text\",2],".repeat(300),
-        "3,".repeat(1800),
+        "3,".repeat(5400),
     );
     let [truth, falsity, string, number, absent] = ["true", "false", "string", "number", "null"]
         .map(|name| language.id_for_node_kind(name, true));
