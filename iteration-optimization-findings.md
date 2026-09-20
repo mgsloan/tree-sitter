@@ -1718,3 +1718,85 @@ layout experiments are retained separately within that directory.
 
 The temporary build filesystem and external access configuration are removed;
 the GCP instance is returned to its original stopped state after verification.
+
+## Current-state regression recheck (2026-09-20)
+
+Freshly build clean HEAD `9fc350ea9`, including the count-state changes and
+`IdSet::intersection`. Rerun the retained cursor binary (`46828abdd`) and
+pre-cursor binary (`ae551d74d`) on the same GCP instance alongside it. Compiler,
+flags, benchmark source, inputs, selected IDs, and group width match. This is
+16 slots, Rust 1.95.0, GCC 13.3.0, and default x86_64 target features on Broadwell.
+The 18-workload screen covers common and sparse symbols, both 32-file corpora,
+and four process rounds in alternating order, with three 50 ms samples each.
+All 48 reports pass scalar-result, input, storage, source/binary hash, and rate
+checks. The intersection helper is not called by these existing workloads.
+
+Changes below are current / cursor-baseline throughput, tuning / holdout:
+
+| Query | Common symbols | Sparse symbols |
+| --- | ---: | ---: |
+| Set, 1 ID, count | −0.2% / +0.4% | −4.6% / −6.9% |
+| Set, 4 IDs, count | +0.4% / −0.6% | −6.3% / −8.3% |
+| Array, 4 IDs, count | −13.0% / −12.8% | −5.6% / −3.8% |
+| Overlap → eight-ID set, count | +1.2% / +2.9% | +5.5% / +5.4% |
+| Overlap → field → eight-ID set, count | −7.9% / −5.7% | −11.7% / −14.0% |
+| Array, 4 IDs, reverse nodes | −0.5% / −1.1% | +1.5% / +0.7% |
+
+The previously reported 14–15% common singleton/four-ID set count losses do not
+reproduce on current HEAD. The array and composed-count losses do reproduce:
+common four-ID array counts lose 12.0–13.6% in every paired round across both
+corpora. Sparse overlap/field/eight-ID counts lose 10.8–14.6%. Common four-ID
+array reverse enumeration remains about 25% below the pre-cursor binary.
+
+### Profiles and assembly
+
+Fourteen CPU-clock profiles cover the largest repeatable regressions, singleton
+counts as a control, reverse enumeration, and the earlier checkpoint binary
+(`a1392880a`). Sampling runs only during the middle three of five timed rounds;
+parsing, packing, and scalar validation are excluded. Hardware cycles,
+instructions, and branch counters are unavailable on this VM.
+
+- Common four-ID array counts spend 98–99% of samples in `Preorder::count_flat`.
+  Common singleton counts similarly spend about 98% there. Query initialization
+  does not explain these losses.
+- Common overlap/field/eight-ID counts spend 84–86% in the flat traversal and
+  range-rejection loop, and about 7% in the symbol comparison helper.
+- Sparse overlap/field/eight-ID counts spend 82–84% in the workload's inlined
+  index preparation/traversal. Annotated hot instructions include posting-list
+  cursor reads, comparisons, and boundary checks. The SIMD count loop accounts
+  for only about 3%.
+
+Binary layout matters substantially. After normalizing instruction addresses
+and RIP-relative displacements, the entire singleton count kernel has the same
+539 disassembled instructions in the cursor baseline, checkpoint, and current
+binary. The checkpoint nevertheless reaches 1,137 M input nodes/s in the
+isolated profile, versus 1,327 M for current and 1,321 M for baseline. The current
+and checkpoint four-ID array kernels are also identical under that normalization,
+but current reaches 1,016 M versus checkpoint's 1,161 M. These profiled rates
+include sampling overhead; the ordinary benchmark independently reproduces the
+current-versus-baseline differences.
+
+The fast singleton kernels start 16 bytes into a 32-byte boundary; the slow
+checkpoint kernel starts on the boundary. For four-ID arrays, current starts on
+the boundary and checkpoint starts 16 bytes into it. This points to binary-layout
+sensitivity, rather than extra operations in these particular loop bodies.
+Instruction fetch, decoded-instruction caching, and branch prediction remain
+hypotheses; CPU-clock sampling cannot distinguish them. Smaller stack frames
+alone are not a reliable predictor: the sparse composed workload reserves 1,032
+bytes in current versus 1,416 in baseline, yet current is slower.
+
+There is also a concrete dispatch issue: `Scan::count()` reaches the default
+`GroupScan::count()`, which adds `Identity`. `Filtered::count_matches` then builds
+`And(symbol_predicate, Identity)`. Its default flat-count path bypasses the new
+`KindIds::count_flat` and `FixedKindIds::count_flat` specializations. The generated
+singleton kernel still carries the dynamic strategy and its larger register/stack
+state. A direct `Filtered::count` forwarding to
+`self.source.count_matches(self.predicate)` is the next narrow change to test.
+It would make the intended standalone specialization reachable; its performance
+still needs measurement across binary layouts.
+
+No scan implementation changes were made during this recheck. Artifacts in
+`build/current-recheck/recheck-current-20260920/` contain the source archive,
+binaries, manifests, 48 raw benchmark reports, isolated profiles, annotated
+assembly, normalization diffs, and verification scripts. The remote directory
+has the same name under `/home/mgsloan/scanning-iteration-20260919/`.
