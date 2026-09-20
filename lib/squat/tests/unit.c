@@ -6,6 +6,7 @@
 static void fixed_layout_limit_tests(void) {
   TSLanguage language = {.abi_version = TREE_SITTER_LANGUAGE_VERSION, .symbol_count = 65535};
   SQError error;
+  assert(!sq_tree_repack(NULL, &error) && error == SQ_ERROR_ARGUMENT);
   assert(!sq_grammar_new(&language, &error) && error == SQ_ERROR_OVERFLOW);
   language.symbol_count = 1;
   language.alias_count = UINT32_MAX;
@@ -371,7 +372,7 @@ static void optional_flag_tests(void) {
     for (unsigned combination = 0; combination < 6; combination++) {
       uint32_t flags = combinations[combination] |
                        (representation == 2 ? SQ_SEPARATE_GRAMMAR : 0);
-      for (unsigned variant = 0; variant < 4; variant++) {
+      for (unsigned variant = 0; variant < 8; variant++) {
         SQTree *tree = sq_allocate(grammar, 70, variant & 1, &error);
         assert(tree);
         uint32_t root = 64 * SQ_GROUP_SIZE;
@@ -407,6 +408,10 @@ static void optional_flag_tests(void) {
         if (!(flags & SQ_ERRORS)) saved += full.grammar - full.error;
         if (!(flags & SQ_SEPARATE_GRAMMAR)) saved += full.end - full.grammar;
         assert(tree->size == full.end - saved);
+        if (variant & 4) {
+          assert(sq_grow_data(&tree, tree->size + sq_presence_size(tree), &error));
+          assert(sq_build_presence(tree, &error));
+        }
         for (unsigned pass = 0; pass < 3; pass++) {
           for (uint32_t slot = 0; slot <= root; slot++) {
             SQNode node = {tree, slot};
@@ -427,10 +432,21 @@ static void optional_flag_tests(void) {
           SQTree *borrowed = sq_tree_from_bytes_borrowed(grammar, bytes, size, &error);
           assert(copy && borrowed);
           assert(sq_node_has_error(sq_tree_root_node(borrowed)) == !!(flags & SQ_ERRORS));
+          SQTree *repacked = sq_tree_repack(tree, &error);
+          SQTree *owned = sq_tree_repack(borrowed, &error);
+          assert(repacked && owned && error == SQ_OK);
+          assert(repacked->size == size && owned->size == size);
+          assert(sq_tree_group_capacity(repacked) == sq_tree_group_count(tree));
+          assert(sq_tree_group_capacity(owned) == sq_tree_group_count(tree));
+          assert(repacked->data != tree->data && owned->data != borrowed->data);
           sq_tree_delete(borrowed);
           free(bytes);
           sq_tree_delete(tree);
-          tree = copy;
+          assert(!memcmp(repacked->data, copy->data, size));
+          assert(!memcmp(owned->data, copy->data, size));
+          sq_tree_delete(repacked);
+          sq_tree_delete(copy);
+          tree = owned;
           assert(sq_resize(&tree, pass == 0 ? 90 : 65, &error));
         }
         sq_tree_delete(tree);

@@ -383,6 +383,16 @@ uint32_t sq_tree_compact_size(const SQTree *tree) {
   return layout.end + (tree->size - tree->layout.end);
 }
 
+static void write_compact(const SQTree *tree, uint8_t *data, const SQLayout *next) {
+  // Destination may be uninitialized and unaligned (e.g. an LMDB reservation).
+  // Initialize padding too; no typed loads or stores into destination are used.
+  SQHeader header = sq_read_header(tree->data);
+  header.group_capacity = header.group_count;
+  sq_write_header(data, header);
+  copy_columns(tree, data, next, true);
+  memcpy(data + next->end, tree->data + tree->layout.end, tree->size - tree->layout.end);
+}
+
 bool sq_tree_copy_compact(const SQTree *tree, void *destination, size_t length, SQError *error) {
   sq_fail(error, SQ_OK);
   uint32_t size = sq_tree_compact_size(tree);
@@ -397,15 +407,28 @@ bool sq_tree_copy_compact(const SQTree *tree, void *destination, size_t length, 
     sq_fail(error, SQ_ERROR_OVERFLOW);
     return false;
   }
-  // Destination may be uninitialized and unaligned (e.g. an LMDB reservation).
-  // Initialize padding too; no typed loads or stores into destination are used.
-  uint8_t *data = destination;
-  SQHeader header = sq_read_header(tree->data);
-  header.group_capacity = header.group_count;
-  sq_write_header(data, header);
-  copy_columns(tree, data, &next, true);
-  memcpy(data + next.end, tree->data + tree->layout.end, tree->size - tree->layout.end);
+  write_compact(tree, destination, &next);
   return true;
+}
+
+SQTree *sq_tree_repack(const SQTree *tree, SQError *error) {
+  if (!tree) {
+    sq_fail(error, SQ_ERROR_ARGUMENT);
+    return NULL;
+  }
+
+  uint32_t size = sq_tree_compact_size(tree);
+  if (!size) {
+    sq_fail(error, SQ_ERROR_OVERFLOW);
+    return NULL;
+  }
+
+  SQTree *copy = allocate_tree(tree->grammar, sq_tree_group_count(tree), size,
+                                SQ_STORAGE_COLOCATED, sq_tree_has_points(tree),
+                                sq_header_get(tree, format_flags), error);
+  // The immutable source has already passed construction or loading checks.
+  if (copy) write_compact(tree, copy->data, &copy->layout);
+  return copy;
 }
 
 bool sq_resize(SQTree **tree_pointer, uint32_t capacity, SQError *error) {

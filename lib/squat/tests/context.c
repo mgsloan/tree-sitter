@@ -135,6 +135,20 @@ int main(int argc, char **argv) {
     if (getenv("CONTEXT_FAILURES")) {
       for (size_t nth = 1; ; nth++) {
         assert(nth < 256);
+        allocations = 0;
+        fail_at = nth;
+        SQTree *attempt = sq_tree_repack(expected, &error);
+        fail_at = 0;
+        bool finished = attempt != NULL;
+        if (attempt) { equal(attempt, expected); sq_tree_delete(attempt); }
+        else assert(error == SQ_ERROR_ALLOCATION);
+        SQTree *recovered = sq_tree_repack(expected, &error);
+        equal(recovered, expected);
+        sq_tree_delete(recovered);
+        if (finished) break;
+      }
+      for (size_t nth = 1; ; nth++) {
+        assert(nth < 256);
         sq_pack_context_trim(context);
         allocations = 0;
         fail_at = nth;

@@ -490,18 +490,3 @@ SQTree *sq_tree_from_bytes_borrowed_safety_checked(SQGrammar *grammar, const voi
                                                   size_t length, SQError *error) {
   return load_bytes(grammar, bytes, length, true, false, error);
 }
-
-SQTree *sq_tree_repack(const SQTree *tree, SQError *error) {
-  if (!tree) {
-    sq_fail(error, SQ_ERROR_ARGUMENT);
-    return NULL;
-  }
-
-  SQTree *copy = sq_tree_from_bytes(tree->grammar, tree->data, tree->size, error);
-  if (copy && !sq_resize(&copy, sq_tree_group_count(copy), error)) {
-    sq_tree_delete(copy);
-    return NULL;
-  }
-
-  return copy;
-}
