@@ -242,6 +242,47 @@ static void fixed_width_write_tests(void) {
   }
 }
 
+static void group_membership_tests(SQGrammar *grammar) {
+  SQError error;
+  SQTree *tree = sq_allocate(grammar, 33, false, &error);
+  assert(tree);
+  sq_header_set(tree, group_count, 33);
+  uint32_t symbols = sq_symbols(tree) - 2;
+  for (uint32_t group = 0; group < 33; group++) {
+    sq_set_u16(tree->data, tree->layout.waste, group, SQ_GROUP_SIZE - 3);
+    const uint32_t originals[] = {1, symbols + group % 2, group == 0 ? symbols - 1 : 1};
+    // Waste contains a symbol absent from every live lane.
+    for (uint32_t lane = 0; lane < SQ_GROUP_SIZE; lane++) {
+      uint32_t original = lane < 3 ? originals[lane] : 2;
+      sq_set_u16(tree->data, tree->layout.symbol, group * SQ_GROUP_SIZE + lane,
+                 grammar->symbols.default_codes[original]);
+    }
+  }
+
+  const TSSymbol targets[] = {0, 1, 2, symbols - 1, symbols, symbols + 1, symbols + 2,
+                               ts_builtin_sym_error_repeat - 1,
+                               ts_builtin_sym_error, ts_builtin_sym_error_repeat};
+  for (unsigned indexed = 0; indexed < 2; indexed++) {
+    if (indexed) {
+      assert(sq_grow_data(&tree, tree->size + sq_presence_size(tree), &error));
+      assert(sq_build_presence(tree, &error));
+    }
+    assert(!!sq_presence_offset(tree) == indexed);
+    for (unsigned target = 0; target < sizeof(targets) / sizeof(targets[0]); target++) {
+      TSSymbol symbol = targets[target];
+      assert(!sq_tree_group_has_symbol(NULL, 0, symbol));
+      assert(!sq_tree_group_has_symbol(tree, 33, symbol));
+      assert(!sq_tree_group_has_symbol(tree, UINT32_MAX, symbol));
+      for (uint32_t group = 0; group < 33; group++) {
+        bool expected = symbol == 0 || (group == 0 && symbol == symbols - 1) ||
+                        symbol == (group % 2 ? ts_builtin_sym_error_repeat : ts_builtin_sym_error);
+        assert(sq_tree_group_has_symbol(tree, group, symbol) == expected);
+      }
+    }
+  }
+  sq_tree_delete(tree);
+}
+
 static void symbol_pair_tests(uint32_t symbols, bool separate) {
   SupertypeFixture fixture;
   supertype_fixture(&fixture, 0, false);
@@ -312,6 +353,7 @@ static void symbol_pair_tests(uint32_t symbols, bool separate) {
     sq_tree_delete(loaded);
   }
   sq_tree_delete(tree);
+  group_membership_tests(grammar);
   sq_grammar_delete(grammar);
   free(metadata);
   free(public_symbols);

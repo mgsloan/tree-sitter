@@ -121,16 +121,16 @@ bool sq_tree_group_has_symbol(const SQTree *tree, uint32_t group, TSSymbol symbo
     return false;
   }
 
-  uint32_t symbol_index = sq_encode_symbol(tree, symbol);
-  if (symbol_index >= sq_symbols(tree)) {
+  if (symbol >= sq_symbols(tree) - 2 && symbol < ts_builtin_sym_error_repeat) {
     return false;
   }
+  uint32_t symbol_index = sq_encode_symbol(tree, symbol);
 
   uint32_t offset = sq_presence_offset(tree);
   if (!offset) {
     uint32_t end = (group + 1) * SQ_GROUP_SIZE - sq_group_waste(tree, group);
-    for (uint32_t i = group * SQ_GROUP_SIZE; i < end; i++) {
-      if (sq_node_symbol((SQNode){tree, i}) == symbol) {
+    for (uint32_t slot = group * SQ_GROUP_SIZE; slot < end; slot++) {
+      if (sq_node_symbol_id((SQNode){tree, slot}) == symbol_index) {
         return true;
       }
     }
