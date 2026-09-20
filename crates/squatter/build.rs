@@ -14,7 +14,6 @@ fn main() {
         "parser.c",
         "node.c",
         "cursor.c",
-        "iterator.c",
         "index.c",
         "scan.c",
         "query.c",

@@ -3,6 +3,42 @@
 #include <emmintrin.h>
 #endif
 
+void sq_tree_scan_columns(const SQTree *tree, SQScanColumns *out) {
+  uint32_t flags = sq_header_get(tree, format_flags);
+  *out = (SQScanColumns){
+    .data = tree->data,
+    .supertypes = tree->supertypes,
+    .supertype_masks = tree->supertype_grammar ? tree->supertype_grammar->masks : NULL,
+    .size = tree->size,
+    .supertype_count = tree->supertype_count,
+    .supertype_mask_count = tree->supertype_grammar ? tree->supertype_grammar->count : 0,
+    .layout = {
+      .group_shift = __builtin_ctz(SQ_GROUP_SIZE),
+      .symbol_count = sq_symbols(tree),
+      .symbol_shift = tree->layout.symbol_shift,
+      .waste = tree->layout.waste,
+      .span_base = tree->layout.span_base,
+      .span_delta = tree->layout.span_delta,
+      .start_byte_base = tree->layout.start_byte_base,
+      .start_byte_delta = tree->layout.start_byte_delta,
+      .end_byte_base = tree->layout.end_byte_base,
+      .end_byte_delta = tree->layout.end_byte_delta,
+      .symbol = tree->layout.symbol,
+      .field = tree->layout.field,
+      .supertype = tree->layout.supertype,
+      .extra = flags & SQ_EXTRAS ? tree->layout.extra : 0,
+      .missing = flags & SQ_MISSING ? tree->layout.missing : 0,
+    },
+  };
+}
+
+void sq_tree_scan_point_layout(const SQTree *tree, SQScanPointLayout *out) {
+  *out = sq_tree_has_points(tree)
+      ? (SQScanPointLayout){tree->layout.start_point_base, tree->layout.start_point,
+                            tree->layout.end_point_base, tree->layout.end_point}
+      : (SQScanPointLayout){0};
+}
+
 // Each lane contributes one low bit and one high bit. Only complete lanes
 // participate: for nine-bit fields, bit 63 must remain outside the mask.
 uint64_t sq_lane_starts(uint8_t bits) {

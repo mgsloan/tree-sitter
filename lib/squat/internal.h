@@ -143,6 +143,31 @@ struct SQTree {
   SQSupertypeGrammar *supertype_grammar;
 };
 
+// Private Rust scan bridge. Offsets address immutable little-endian slab columns;
+// grammar tables use native integers. All pointers borrow the tree.
+typedef struct {
+  uint32_t group_shift, symbol_count, symbol_shift;
+  uint32_t waste, span_base, span_delta;
+  uint32_t start_byte_base, start_byte_delta, end_byte_base, end_byte_delta;
+  uint32_t symbol, field, supertype, extra, missing;
+} SQScanLayout;
+
+typedef struct {
+  const uint8_t *data;
+  const TSSymbol *supertypes;
+  const uint64_t *supertype_masks;
+  uint32_t size, supertype_count, supertype_mask_count;
+  SQScanLayout layout;
+} SQScanColumns;
+
+void sq_tree_scan_columns(const SQTree *, SQScanColumns *);
+
+typedef struct {
+  uint32_t start_base, start_delta, end_base, end_delta;
+} SQScanPointLayout;
+
+void sq_tree_scan_point_layout(const SQTree *, SQScanPointLayout *);
+
 static inline uint32_t sq_symbols(const SQTree *tree) {
   return tree->language->symbol_count + tree->language->alias_count + 2;
 }

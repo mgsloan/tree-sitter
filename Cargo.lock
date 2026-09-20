@@ -2575,6 +2575,7 @@ dependencies = [
  "regex",
  "tree-sitter",
  "tree-sitter-c",
+ "tree-sitter-c-sharp",
  "tree-sitter-json",
 ]
 

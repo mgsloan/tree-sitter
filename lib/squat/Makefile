@@ -3,7 +3,7 @@ CC ?= cc
 CFLAGS ?= -O2 -g
 CPPFLAGS += -I$(ROOT)/lib/include -I$(ROOT)/lib/src -Iinclude -I../tree_feller/include
 WARNINGS := -std=c11 -Wall -Wextra -Werror
-SOURCES := symbols.c supertypes.c slab.c pack.c parser.c node.c cursor.c iterator.c index.c scan.c query.c
+SOURCES := symbols.c supertypes.c slab.c pack.c parser.c node.c cursor.c index.c scan.c query.c
 FELLER_SOURCES := tf_language.c tf_lexer.c tf_parser.c
 FELLER_HEADERS := $(wildcard ../tree_feller/src/*.h ../tree_feller/include/*.h ../tree_feller/include/tree_feller/tree_sitter/*.h)
 BUILD ?= $(ROOT)/build/squat
@@ -24,6 +24,7 @@ $(BUILD)/feller_%.o: ../tree_feller/src/%.c $(FELLER_HEADERS) | $(BUILD)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) -c $< -o $@
 
 $(BUILD)/libtree-sitter-squat.a: $(SOURCES:%.c=$(BUILD)/%.o) $(FELLER_SOURCES:%.c=$(BUILD)/feller_%.o)
+	rm -f $@
 	$(AR) rcs $@ $^
 
 $(BUILD)/runtime.o: $(ROOT)/lib/src/lib.c | $(BUILD)

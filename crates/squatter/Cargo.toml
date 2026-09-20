@@ -14,5 +14,6 @@ regex.workspace = true
 cc.workspace = true
 
 [dev-dependencies]
+tree-sitter-c-sharp = "0.23.5"
 tree-sitter-json = "0.24"
 tree-sitter-c = "=0.24.2"

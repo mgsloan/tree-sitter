@@ -2,7 +2,7 @@ use std::error::Error;
 use tree_sitter::StreamingIterator;
 use tree_squatter::{
     KindSet, PackOptions, Tree,
-    traits::{CursorLike, NodeIteratorLike, NodeLike},
+    traits::{CursorLike, NodeLike},
 };
 
 fn check_shared_navigation<'tree, N: NodeLike<'tree>>(
@@ -30,25 +30,6 @@ fn check_shared_navigation<'tree, N: NodeLike<'tree>>(
             .filter(|node| kinds.contains(node.kind_id()))
             .collect();
         assert!(root.descendants_matching_kinds(&kinds).collect::<Vec<_>>() == filtered);
-    }
-    let mut iterator = root.node_iterator()?;
-    assert!(iterator.node().is_none());
-    assert!(iterator.kind_id().is_none());
-    assert!(iterator.byte_range().is_none());
-    assert!(iterator.attributes().is_none());
-    for &node in &expected {
-        assert!(iterator.next() == Some(node));
-        assert!(iterator.node() == Some(node));
-        assert_eq!(iterator.kind_id(), Some(node.kind_id()));
-        assert_eq!(iterator.byte_range(), Some(node.byte_range()));
-        assert_eq!(iterator.attributes(), Some(node.attributes()));
-    }
-    for _ in 0..2 {
-        assert!(iterator.next().is_none());
-        assert!(iterator.node().is_none());
-        assert!(iterator.kind_id().is_none());
-        assert!(iterator.byte_range().is_none());
-        assert!(iterator.attributes().is_none());
     }
     for &node in &expected {
         let attributes = node.attributes();
@@ -285,6 +266,7 @@ fn check_cursor_reuse(
             packed
                 .root_node()
                 .preorder()
+                .nodes()
                 .filter(|node| node.is_named() && !node.is_error())
                 .count()
         );
@@ -334,31 +316,10 @@ fn fixture() -> Result<(tree_sitter::Language, tree_sitter::Tree, Tree), Box<dyn
 }
 
 #[test]
-fn shared_navigation_and_iterator_lifetimes() -> Result<(), Box<dyn Error>> {
+fn shared_navigation() -> Result<(), Box<dyn Error>> {
     let (language, native, packed) = fixture()?;
     check_shared_navigation(native.root_node(), language.field_count() as u16)?;
     check_shared_navigation(packed.root_node(), language.field_count() as u16)?;
-    for root in packed.root_node().preorder() {
-        let expected: Vec<_> = root.preorder().collect();
-        let mut iterator = root.node_iterator()?;
-        assert!(iterator.field_id().is_none());
-        let mut nodes = Vec::new();
-        while let Some(node) = iterator.next() {
-            assert_eq!(
-                iterator.field_id(),
-                (node.field_id() != 0).then_some(node.field_id())
-            );
-            assert_eq!(iterator.attributes(), Some(node.attributes()));
-            nodes.push(node);
-        }
-        assert!(iterator.next().is_none());
-        assert!(iterator.field_id().is_none());
-        assert!(iterator.attributes().is_none());
-        drop(iterator);
-        assert_eq!(nodes, expected);
-        // Returned nodes remain usable after the iterator is dropped.
-        assert_eq!(nodes[0].attributes(), root.attributes());
-    }
     Ok(())
 }
 
@@ -410,6 +371,7 @@ fn owned_and_borrowed_storage() -> Result<(), Box<dyn Error>> {
     let expected: Vec<_> = compact
         .root_node()
         .preorder()
+        .nodes()
         .map(|node| (node.kind().to_owned(), node.byte_range()))
         .collect();
     assert_eq!(compact.group_count(), compact.group_capacity());
@@ -422,6 +384,7 @@ fn owned_and_borrowed_storage() -> Result<(), Box<dyn Error>> {
         decoded
             .root_node()
             .preorder()
+            .nodes()
             .map(|node| (node.kind().to_owned(), node.byte_range()))
             .collect::<Vec<_>>(),
         expected

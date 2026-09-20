@@ -62,6 +62,9 @@ pub fn representation_id() -> u64 {
 mod parser;
 pub use parser::{ParseError, Parser};
 
+pub mod scan;
+pub use scan::{Postorder, Preorder, Scan};
+
 pub mod query;
 pub use query::{
     Query, QueryCapture, QueryCursor, QueryError, QueryExecution, QueryExecutionError, QueryMatch,
@@ -615,37 +618,30 @@ impl<'tree> Node<'tree> {
     pub fn utf8_text(self, source: &[u8]) -> Result<&str, std::str::Utf8Error> {
         std::str::from_utf8(&source[self.byte_range()])
     }
-    pub fn preorder(self) -> Preorder<'tree> {
-        Preorder {
-            next: Some(self),
-            first_slot: unsafe { ffi::sq_node_first_slot(self.raw) },
-        }
+    /// This node and its descendants, parents before children, left to right.
+    pub fn preorder(self) -> Scan<'tree, Preorder<'tree>> {
+        Preorder::scan(self)
     }
 
-    /// Native preorder iterator.
-    /// Returned nodes borrow the tree, independently of the iterator.
-    pub fn node_iterator(self) -> Result<NodeIterator<'tree>, Error> {
-        let raw = unsafe { ffi::sq_node_iterator_new(self.raw) };
-        NonNull::new(raw)
-            .map(|raw| NodeIterator {
-                raw,
-                current: None,
-                lifetime: PhantomData,
-            })
-            .ok_or(Error::Allocation)
+    /// This node and its descendants, children left to right before their parent.
+    pub fn postorder(self) -> Scan<'tree, Postorder<'tree>> {
+        Postorder::scan(self)
+    }
+
+    /// Choose the cheaper traversal. Order is unspecified across representations.
+    pub fn all(self) -> Scan<'tree, Preorder<'tree>> {
+        self.preorder()
     }
 
     /// Scan this node and its descendants in preorder, matching public kind IDs.
-    /// The set is reusable across trees of the same language. Duplicate IDs yield
-    /// no duplicate nodes; an empty set yields no nodes.
-    pub fn descendants_matching_kinds<'kinds>(
+    /// Accepts fixed arrays or a borrowed `KindSet`, reusable across trees of the
+    /// same language. Duplicate IDs yield no duplicate nodes; an empty set yields
+    /// no nodes. Arrays specialize the scan for their compile-time length.
+    pub fn descendants_matching_kinds<K: scan::IdSelection>(
         self,
-        kinds: &'kinds KindSet,
-    ) -> KindMatches<'tree, 'kinds> {
-        KindMatches {
-            kinds,
-            scan: self.preorder(),
-        }
+        kinds: K,
+    ) -> scan::Nodes<'tree, scan::Filtered<Preorder<'tree>, K::KindPredicate>> {
+        self.preorder().filter_kind_ids(kinds).nodes()
     }
 
     /// Test for a child without counting siblings.
@@ -858,69 +854,45 @@ impl<'tree> Node<'tree> {
     }
 }
 
-/// A reusable set of public kind IDs, interpreted in the scanned tree's language.
+/// A reusable runtime-sized set of IDs, interpreted by the selected scan filter.
 #[derive(Clone, Debug, Default)]
-pub struct KindSet {
+pub struct IdSet {
     ids: Vec<u16>,
     words: Vec<u64>,
 }
-impl KindSet {
-    pub fn new(kinds: impl IntoIterator<Item = u16>) -> Self {
-        kinds.into_iter().collect()
+impl IdSet {
+    pub fn new(ids: impl IntoIterator<Item = u16>) -> Self {
+        ids.into_iter().collect()
     }
-    pub fn contains(&self, kind: u16) -> bool {
+    pub fn contains(&self, id: u16) -> bool {
         self.words
-            .get(kind as usize / 64)
-            .is_some_and(|word| word & (1u64 << (kind % 64)) != 0)
+            .get(id as usize / 64)
+            .is_some_and(|word| word & (1u64 << (id % 64)) != 0)
     }
     pub fn is_empty(&self) -> bool {
         self.ids.is_empty()
     }
 }
-impl FromIterator<u16> for KindSet {
-    fn from_iter<I: IntoIterator<Item = u16>>(kinds: I) -> Self {
-        let mut ids: Vec<_> = kinds.into_iter().collect();
+impl FromIterator<u16> for IdSet {
+    fn from_iter<I: IntoIterator<Item = u16>>(ids: I) -> Self {
+        let mut ids: Vec<_> = ids.into_iter().collect();
         ids.sort_unstable();
         ids.dedup();
         let mut words = vec![0; ids.last().map_or(0, |&kind| kind as usize / 64 + 1)];
-        for &kind in &ids {
-            words[kind as usize / 64] |= 1u64 << (kind % 64);
+        for &id in &ids {
+            words[id as usize / 64] |= 1u64 << (id % 64);
         }
         Self { ids, words }
     }
 }
 
-/// Preorder traversal filtered by public kind IDs.
-pub struct KindMatches<'tree, 'kinds> {
-    kinds: &'kinds KindSet,
-    scan: Preorder<'tree>,
-}
-impl<'tree> Iterator for KindMatches<'tree, '_> {
-    type Item = Node<'tree>;
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.kinds.is_empty() {
-            return None;
-        }
-        self.scan.find(|node| self.kinds.contains(node.kind_id()))
-    }
-}
-impl std::iter::FusedIterator for KindMatches<'_, '_> {}
+/// A reusable set of public kind IDs, interpreted in the scanned tree's language.
+pub type KindSet = IdSet;
 
-pub struct Preorder<'tree> {
-    next: Option<Node<'tree>>,
-    first_slot: u32,
-}
-impl<'tree> Iterator for Preorder<'tree> {
-    type Item = Node<'tree>;
-    fn next(&mut self) -> Option<Self::Item> {
-        let node = self.next?;
-        self.next = node
-            .next_preorder()
-            .filter(|next| next.slot() >= self.first_slot);
-        Some(node)
-    }
-}
-impl std::iter::FusedIterator for Preorder<'_> {}
+/// Preorder traversal filtered by public kind IDs.
+pub type KindMatches<'tree, 'kinds> =
+    scan::Nodes<'tree, scan::Filtered<Preorder<'tree>, scan::KindIds<'kinds>>>;
+
 pub struct Children<'tree> {
     next: Option<Node<'tree>>,
 }
@@ -933,61 +905,6 @@ impl<'tree> Iterator for Children<'tree> {
     }
 }
 impl std::iter::FusedIterator for Children<'_> {}
-
-/// Stackless native iteration over a node and its descendants.
-/// Attribute access refers to the most recently yielded node; before the first
-/// next() and after exhaustion it returns None.
-pub struct NodeIterator<'tree> {
-    raw: NonNull<c_void>,
-    current: Option<Node<'tree>>,
-    lifetime: PhantomData<&'tree Tree>,
-}
-impl<'tree> Iterator for NodeIterator<'tree> {
-    type Item = Node<'tree>;
-    fn next(&mut self) -> Option<Self::Item> {
-        self.current = Node::from_raw(unsafe { ffi::sq_node_iterator_next(self.raw.as_ptr()) });
-        self.current
-    }
-}
-impl std::iter::FusedIterator for NodeIterator<'_> {}
-impl<'tree> NodeIterator<'tree> {
-    pub fn node(&self) -> Option<Node<'tree>> {
-        self.current
-    }
-    /// Read the last yielded node's constant-time attributes.
-    pub fn attributes(&mut self) -> Option<traits::Attributes<'tree>> {
-        self.current?;
-        let mut raw = std::mem::MaybeUninit::uninit();
-        Some(unsafe {
-            ffi::sq_node_iterator_attributes(self.raw.as_ptr(), raw.as_mut_ptr());
-            raw.assume_init().into_attributes()
-        })
-    }
-    /// Read the last yielded node's kind directly from fixed-width storage.
-    pub fn kind_id(&mut self) -> Option<u16> {
-        self.current?;
-        Some(unsafe { ffi::sq_node_iterator_symbol(self.raw.as_ptr()) })
-    }
-    /// Read only byte coordinates, without decoding point coordinates or IDs.
-    pub fn byte_range(&mut self) -> Option<Range<usize>> {
-        self.current?;
-        let (mut start, mut end) = (0, 0);
-        unsafe { ffi::sq_node_iterator_byte_range(self.raw.as_ptr(), &mut start, &mut end) };
-        Some(start as usize..end as usize)
-    }
-    pub fn field_id(&mut self) -> Option<u16> {
-        self.current?;
-        let field = unsafe { ffi::sq_node_iterator_field_id(self.raw.as_ptr()) };
-        (field != 0).then_some(field)
-    }
-}
-impl Drop for NodeIterator<'_> {
-    fn drop(&mut self) {
-        unsafe {
-            ffi::sq_node_iterator_delete(self.raw.as_ptr());
-        }
-    }
-}
 
 pub struct Cursor<'tree> {
     raw: NonNull<c_void>,
@@ -1187,13 +1104,6 @@ mod ffi {
         ) -> RawNode;
         pub fn sq_node_child_with_descendant(node: RawNode, descendant: RawNode) -> RawNode;
         pub fn sq_node_has_supertype(node: RawNode, symbol: u16) -> bool;
-        pub fn sq_node_iterator_new(node: RawNode) -> *mut c_void;
-        pub fn sq_node_iterator_delete(iterator: *mut c_void);
-        pub fn sq_node_iterator_next(iterator: *mut c_void) -> RawNode;
-        pub fn sq_node_iterator_attributes(iterator: *mut c_void, out: *mut RawCursorAttributes);
-        pub fn sq_node_iterator_field_id(iterator: *mut c_void) -> u16;
-        pub fn sq_node_iterator_symbol(iterator: *mut c_void) -> u16;
-        pub fn sq_node_iterator_byte_range(iterator: *mut c_void, start: *mut u32, end: *mut u32);
         pub fn sq_node_attributes(node: RawNode, out: *mut RawCursorAttributes);
         pub fn sq_cursor_attributes(cursor: *mut c_void, out: *mut RawCursorAttributes);
         pub fn sq_cursor_new(node: RawNode) -> *mut c_void;
@@ -1218,7 +1128,6 @@ mod ffi {
         pub fn sq_node_is_error(node: RawNode) -> bool;
         pub fn sq_node_has_error(node: RawNode) -> bool;
         pub fn sq_node_has_changes(node: RawNode) -> bool;
-        pub fn sq_node_first_slot(node: RawNode) -> u32;
         pub fn sq_node_descendant_count(node: RawNode) -> u32;
         pub fn sq_node_child_count(node: RawNode) -> u32;
         pub fn sq_node_named_child_count(node: RawNode) -> u32;

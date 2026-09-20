@@ -97,6 +97,7 @@ pub(crate) fn get(
     if tree
         .root_node()
         .preorder()
+        .nodes()
         .any(|node| node.end_byte() > source.len())
     {
         return None;

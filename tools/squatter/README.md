@@ -29,11 +29,11 @@ command and is not run automatically.
 
 ## Measurement contract
 
-Ten workloads are available:
+Eight workloads are available:
 
 - `query-matches`, `query-captures`
-- `cursor-forward`, `iterator-forward`
-- `scan-forward`, `scan-iterator` (full constant-time attributes)
+- `cursor-forward`
+- `scan-forward` (full constant-time attributes)
 - `seek-byte`, `seek-point`
 - `cold-parse` (fresh parsers and grammar preparation)
 - `warm-parse` (reused parsers, prepared grammars, and packing scratch)
@@ -64,7 +64,7 @@ cargo xtask squat bench --output build/parse-bench --repeat 7 \
   --benchmark cold-parse --benchmark warm-parse
 ```
 
-Select workloads with repeated `--benchmark NAME`. Cursor/iterator construction
+Select workloads with repeated `--benchmark NAME`. Cursor construction
 is timed. Read kernels consume results with `black_box`, without benchmark result
 vectors, identity-map lookups, or checksums. Query engine allocations remain part
 of the workload. Exact traversal/attribute/seek comparisons and query snapshots
@@ -136,3 +136,57 @@ taking the first 50 previously successful files under 512 KiB per grammar, plus
 all 201 valid Csound inputs (including its 16 previous position mismatches).
 This was a correctness sample, not a full corpus rerun or a timing measurement.
 The small Csound regression is `lib/squat/tests/fixtures/csound-header.orc`.
+
+## Group-scan throughput
+
+`scanning-bench` measures the Rust scan prototype in nodes/s, including forward
+and reverse preorder/postorder, `all`, native traversal baselines, population
+counts, kind/field filters, and byte-range scans:
+
+```sh
+cargo run --release -p squatter-bench --bin scanning-bench -- \
+  --registry build/scanning-bench/registry.json \
+  --inputs build/scanning-bench/inputs.json \
+  --corpus ../main/build/squat-corpus-10k/corpus \
+  --cpu 2 --samples 7 --sample-ms 60 \
+  --output build/scanning-bench/results.json
+```
+
+The input manifest is a JSON array with `path`, `grammar`, and `sha256` fields.
+Paths are relative to `--corpus`; the registry uses the corpus-analysis format.
+The benchmark checks hashes and traversal/filter results before timing. It
+includes scan construction, excludes parsing and packing, and consumes each
+enumerated node with `black_box`. Count workloads consume the aggregate only.
+
+Scalar filter workloads use `next_preorder()` with per-node property checks.
+The scalar traversal and mainline cursor provide independent baselines; the
+removed C iterator is no longer benchmarked. Scalar-filter timings are not
+directly comparable with earlier results that used that iterator.
+
+Each timed iteration cycles through all input trees. A pilot chooses the iteration
+count targeting `--sample-ms`; workload order rotates across samples. CSV goes to
+stdout, while JSON retains individual timings and input/grammar metadata.
+Use `--reverse-workloads` to reverse the order for a repeat run.
+Filtered throughput uses all input nodes as its denominator, including nodes
+skipped by range/group operations; output nodes/s and match counts are also saved.
+The kind filter selects each file's most frequent named kind; `multi_kind` uses
+its four most frequent named kinds, adjustable with `--kind-count N`. The field filter
+selects its most frequent nonzero field, or zero if none exists. The byte range
+covers the middle 1% of each source. Use repeated `--workload NAME` arguments to
+time selected operations. Results describe this selected corpus and
+cache behavior, not parsing performance.
+
+Forward/reverse fold and grouped-fold workloads also consume every node with `black_box`.
+`flags.count` excludes extra and missing nodes; `combined.count` additionally
+intersects the selected kind and field. Supertype workloads select the grammar's
+first supertype, or an invalid ID when the grammar has none. Their input-node
+denominator includes those grammars; per-file supertype IDs and match counts are
+recorded so this early-rejection effect is visible.
+
+`fixed_N.{nodes,count,fold}` and `dynamic_N.{nodes,count,fold}` compare arrays and
+reusable sets for N = 1, 2, 4, 8, 16 frequent named kinds. Field variants are
+`fixed_field_N`, `dynamic_field_N`, and `scalar_field_N`, for N = 1, 2, 4 frequent
+nonzero fields (or zero when none exists). If fewer distinct IDs are present,
+arrays repeat the most frequent ID; dynamic sets deduplicate the same selection.
+Per-file arrays and match counts are recorded. Both paths include scan/predicate
+preparation in timing; constructing reusable dynamic sets is setup work.

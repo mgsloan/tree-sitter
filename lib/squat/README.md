@@ -172,7 +172,7 @@ decoded-column cache.
 
 ## Rust traversal APIs
 
-`NodeLike` exposes backend-native `preorder()`, `node_iterator()`,
+`NodeLike` exposes backend-native `preorder()`,
 `descendants_matching_kinds(&KindSet)`, and child iterators. These use static
 dispatch; generic callers do not need to select a representation per node.
 
@@ -182,11 +182,8 @@ requested IDs. Filtering uses a linear preorder scan with constant-time
 membership checks.
 
 Individual node getters avoid constructing a full attribute snapshot.
-`NodeIteratorLike` exposes the last yielded node's kind, byte range, and full
-attributes. Kind and field IDs are read directly from fixed-width storage.
-The packed iterator decodes requested coordinates directly from the slab.
-Returned nodes are independent handles. Reads return `None` before iteration
-and after exhaustion.
+Use `node.attributes()` for the complete snapshot. Returned nodes borrow the tree
+independently of the scan.
 
 `children()`, `named_children()`, and `children_by_field_id()` do not require an
 exact count. Field zero yields no children. `has_children()` avoids counting;
@@ -219,12 +216,12 @@ and skip groups whose maximum end is too small. The equal-start boundary walk us
 its subtree root as the bound, avoiding repeated whole-tree checks through the
 public preorder API.
 
-`sq_node_attributes`, `sq_cursor_attributes`, and `sq_node_iterator_attributes`
+`sq_node_attributes` and `sq_cursor_attributes`
 read constant-time bulk snapshots, sharing symbol decoding and metadata reads.
 Child, named-child, and descendant counts are separate node APIs. This removes
 those members from the C snapshot and Rust `Attributes`; callers must rebuild
-and request counts explicitly when needed. Rust nodes, cursors, and iterators
-expose `attributes()`:
+and request counts explicitly when needed. Rust nodes and cursors expose
+`attributes()`:
 
 ```rust,ignore
 let mut cursor = packed.root_node().walk()?;
@@ -415,25 +412,6 @@ Bounded byte/point ranges with branching or rootless patterns report
 rooted ranges are supported. This limitation is independent of ignored seek
 comparisons. Cancellation callbacks terminate execution, but their exact cadence
 depends on the representation.
-
-## Preorder node iterator
-
-`SQNodeIterator` walks a root and its descendants in preorder, including empty
-nodes. Construct it with `sq_node_iterator_new(root)`, consume nodes
-with `sq_node_iterator_next`, and release it with `sq_node_iterator_delete`.
-The iterator owns no tree and keeps no ancestor stack. It advances consecutive
-physical slots in descending order and reads trailing waste only at group boundaries. Exhaustion is
-permanent. The tree must outlive both the iterator and returned ordinary nodes.
-
-`sq_node_iterator_attributes` and `sq_node_iterator_field_id` read the last yielded
-node; they return zeroed attributes / field zero before the first yield and after
-exhaustion. Rust exposes `Node::node_iterator()` and a fused `NodeIterator`;
-its corresponding accessors return `None` outside a yielded position. The older
-allocation-free `Node::preorder()` remains available.
-
-Iterator reads decode coordinates directly from the slab. IDs and flags also
-remain in the slab; there is no unpack cache. Bulk snapshots exclude child and
-descendant counts; their explicit node APIs still use ordinary tree scans.
 
 ## Optional point positions
 
