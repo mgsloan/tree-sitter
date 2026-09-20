@@ -1,7 +1,10 @@
 # Rust core
 
-Proposal based on `main` at `0e0237126`, which merges `iteration` through
-`c0c7ba2ec`. No Rust-core implementation changes have been made.
+Proposal based on `main` at `0c3f79ab5`, which merges `iteration` through
+`8810c4828`. No Rust-core implementation changes have been made.
+
+[rust-core-interfaces.md](rust-core-interfaces.md) specifies the planned private
+interfaces and ownership contracts. Preserve the existing public Rust API.
 
 Move packed storage, packing, traversal, and query execution into Rust. Keep
 Tree-sitter's private tree/grammar access, tree-feller, and query compilation in
@@ -26,7 +29,7 @@ Current implementation size, including comments and blank lines:
 | Query compilation and execution | `query.c`, `query_plan.c` | 6,590 |
 | Internal headers | top-level `*.h` | 589 |
 
-Typed scans already live in [scan.rs](crates/squatter/src/scan.rs) (2,445 lines).
+Typed scans already live in [scan.rs](crates/squatter/src/scan.rs) (2,513 lines).
 The reference is therefore a C core with Rust bindings and Rust scan execution,
 not an entirely C implementation. The port should adapt those scans to Rust-owned
 storage rather than reimplement them.
@@ -59,8 +62,9 @@ ABI dependency while the native adapter still reads `Subtree` and grammar tables
 
 ## Structure and comparison
 
-Freeze `crates/squatter` and `lib/squat` at the merged baseline as the C-backed
-reference, including the Rust scans, build, and tests. Introduce
+At implementation start, refresh to the latest `main` and record its revision.
+Freeze `crates/squatter` and `lib/squat` at that baseline as the C-backed reference,
+including the Rust scans, build, and tests. Introduce
 `crates/squatter-rust` (`tree-squatter-rust`) for the candidate. Both depend on the
 same resolved `tree-sitter` crate. The candidate must not depend on the reference
 crate to reuse its public traits, scans, or wrappers.
@@ -92,16 +96,15 @@ Compile-time renaming can leave vendored tree-feller sources unchanged. Check th
 global symbol lists in the paired build. Never compile a second Tree-sitter
 runtime into the candidate.
 
-The candidate's ordinary Rust build does not export public `sq_*` C symbols.
-Its C facade is an opt-in standalone artifact, tested in a separate executable
-while the reference owns those names in paired benchmarks. Rust callers invoke
-the Rust implementation directly; C facade functions invoke that same code.
-The adapter never calls public `sq_*` functions, owns a packed tree, or executes
-a packed query. There is no crate dependency cycle.
+The candidate exposes a Rust API; a public C facade is deferred. It does not
+export public `sq_*` C symbols, so the reference owns those names in paired
+benchmarks. Rust callers invoke the Rust implementation directly. The adapter
+never calls public `sq_*` functions, owns a packed tree, or executes a packed
+query. There is no crate dependency cycle.
 
 Keep native interop in one internal Rust module. Use a few substantial modules
-for storage/packing, traversal/scans, query execution, and the optional C facade;
-do not reproduce one module per C helper. Preserve the current typed scanning
+for storage/packing, traversal/scans, and query execution; do not reproduce one
+module per C helper. Preserve the current typed scanning
 API and adapt its internals; experiment with reusing those kernels in other
 operations. The old C and Rust node iterator APIs were removed before this
 baseline. Further public API changes and the proposed `TreePacker` rename are
@@ -120,8 +123,8 @@ Squatter-owned interface types, not a mirror of `TSLanguage` or `SQGrammar`.
 
 Use explicit integer fields and pointer/count pairs, with integer flag masks in
 place of C bitfields. A Rust owner retains the native handle for the lifetime of
-all borrowed views. Construct checked slice views once; store them beside that
-owner internally and expose borrows only through it. Accessors and query loops
+all borrowed views. Cache pointer/count descriptors beside the owner and expose
+slices borrowing it. Accessors and query loops
 read the prepared tables directly without a C call per symbol. Copying metadata
 into Rust-owned buffers is an alternative to measure if it simplifies ownership;
 do not retain two persistent copies without accounting for the cost.
@@ -140,7 +143,8 @@ Its handle borrows the original `TSTree`; a Rust guard enforces that lifetime.
 The adapter resolves hidden wrappers, aliases, inherited fields, extras, and
 exact supertype membership. It emits visible topology only.
 
-The event protocol has three operations:
+The exact event protocol remains an implementation-time question. A starting
+point is three operations:
 
 | Event | Meaning |
 |---|---|
@@ -148,11 +152,11 @@ The event protocol has three operations:
 | Leaf | Emit a visible node with no visible children |
 | Leave | Finish the most recent unmatched Enter |
 
-Enter/Leaf carry byte and optional point coordinates, display and grammar IDs,
-field ID, last-visible-child status, extra/missing/error flags, and the prepared
-supertype code. A code is a direct mask for small supertype sets or an index into
-the prepared dictionary. Hidden-node effects must be fully represented before
-they are omitted. No raw subtree pointer crosses into Rust.
+Node records carry byte and optional point coordinates, display and grammar IDs,
+field ID, last-visible-child status, extra/missing/subtree-error flags, and the
+prepared supertype code. A code is a direct mask for small supertype sets or an
+index into the prepared dictionary. Hidden-node effects must be fully represented
+before they are omitted. No raw subtree pointer crosses into Rust.
 
 Visit children from last to first and emit their parent on Leave. This preserves
 the current reverse-preorder encoding. On Enter, Rust saves its current physical
@@ -169,10 +173,13 @@ discards the incomplete slab and leaves reusable contexts resettable.
 
 The fill function reports initialized event count and a distinct completion or
 error status. Only the initialized prefix is readable. Records belong to the
-caller; no adapter pointer may survive a refill. Batch size and Leaf handling
-need measurement against current packing before this interface is fixed. A
-batch callback is a fallback if pull-state overhead is measurable; neither
-design requires callbacks for individual attributes.
+caller; no adapter pointer may survive a refill. Resolve attribute placement on
+Enter versus Leave, batch size, Leaf handling, initial node-count estimates, and
+division of traversal scratch while implementing the packer. Compare allocation,
+peak scratch, and packing time before fixing the interface; these are not
+prerequisites for starting implementation. A batch callback is a fallback if
+pull-state overhead is measurable; neither design requires callbacks for
+individual attributes.
 
 ## Direct parsing
 
@@ -190,17 +197,28 @@ calls the packed-tree API from C.
 
 Preserve the existing eligibility rules: ABI 15, no external scanners or
 nonterminal extras, syntax errors reported, and no automatic recovery fallback.
-Both implementations must agree on supported inputs and failures as well as
-successful output. Warm comparisons reuse prepared tables and scratch equally.
+Both implementations must agree on supported inputs, syntax failures, and
+successful output. Allocation-failure behavior need not match. Warm comparisons
+reuse prepared tables and scratch equally.
 
 ## Query compilation boundary
 
-Keep S-expression parsing and grammar analysis in the C compiler. Replace its
-combined `SQQuery` output with an opaque compilation result exposing a plain
-program view. The Rust wrapper copies this trusted view, then frees the C
-result before execution. Compilation failure also releases partial output.
+Keep S-expression parsing and grammar analysis in the C compiler, retaining its
+internal structures where practical and minimizing changes to the upstream-shaped
+code. Use a Rust owning wrapper around an opaque native compilation result.
+Its `Drop` calls the native destructor. C allocates the compiled data; Rust
+controls its lifetime and reads it directly during execution. There is no
+mandatory copy into Rust-owned buffers or early destruction of the native result.
 
-The program contains:
+Expose pointer/count views of the arrays and strings Rust needs. The owner keeps
+their allocations and language alive; borrowed slices cannot outlive it. Cache
+view descriptors and access them directly in Rust, without per-step C calls.
+Keep raw pointers private and expose borrows tied to the wrapper, rather than
+fabricating static lifetimes. Do not adopt C allocations with `Vec::from_raw_parts`;
+the native destructor remains responsible for freeing them. Release compiler-only
+scratch before returning the result and account for retained array capacity.
+
+The compiled query contains:
 
 - Steps with symbols, supertypes, fields, capture IDs, depth, alternatives,
   negated-field references, and analyzed guarantee/anchor/quantifier flags.
@@ -210,25 +228,62 @@ The program contains:
 - The small language metadata snapshot needed for preparation, plus a retained
   language identity on the Rust side.
 
-This is a private same-build interface, not a persisted bytecode format. Use
-fixed-width records and explicit flags, not `Array(T)`, compiler bitfields, or
-Rust `Vec` layout. On success, the compiler guarantees valid pointer/count pairs,
-indexes, flags, and sentinels. Release builds trust this output without a
-validation scan. Debug builds perform a full validation pass under
-`cfg(debug_assertions)`; compiler and adapter tests also cover these invariants.
-Do not cast the old structures into Rust.
+Replace compiler bitfields in shared records with explicit integer flag words.
+The C compiler writes the final shared layout directly; Rust reads it through
+matching `#[repr(C)]` types. For `QueryStep`, use `uint16_t`/`u16` flags with named
+masks, retaining the current narrow indexes and three inline capture IDs. This
+should preserve the measured 20-byte step layout on native x86_64. Initialize
+all flag words, clear reserved bits, and use masked updates to preserve unrelated
+flags. Keep flag values mechanically consistent across C and Rust, and check
+size, alignment, offsets, and masks in boundary tests. Do not pack structs to
+force their size or widen records merely for convenience.
+
+Apply fixed-width fields to other shared records too, including predicate kind
+tags and pattern flags. Keep C `Array(T)` containers private; only element
+pointers and lengths cross the boundary. Nested capture-quantifier arrays can
+have per-pattern views prepared once, without flattening or copying their data.
+An empty native array may have a null pointer; expose it as an empty Rust slice
+without passing null to `slice::from_raw_parts`. Only initialized elements are
+readable. These adapter rules do not require scanning the records in release.
+
+The planned boundary needs no record-normalization pass or second compiled-query
+copy. Existing Rust metadata APIs and text-predicate preparation may still copy
+names or literal strings; account for those separately from compiled steps.
+
+This is a private same-build interface, not a persisted bytecode format. The
+compiler guarantees valid pointers, counts, indexes, flags, and sentinels.
+Release builds trust this output without a validation scan. Debug builds perform
+a full validation pass under `cfg(debug_assertions)`; compiler and adapter tests
+also cover these invariants. A guard releases native output on preparation
+failure; compilation failure releases partial native output.
 
 Rust derives pattern-map indexes, scan filters, presence requirements, local
-steps, and direct execution plans from the imported program. These currently
+steps, and direct execution plans from the borrowed records. These currently
 span the tail of `sq_query_new`, `sq_query__prepare_symbol_scan`, and preparation
 functions in `query_plan.c`. They belong beside the Rust executor rather than
 inside a C compiler coupled to slab layout.
 
+Native allocation ownership does not require immutable records during Rust
+preparation. Give Rust scoped mutable views under exclusive access to the owner
+for designated preparation fields such as the step's `is_local` flag and pattern
+entry's presence-requirement index. C initializes these fields; Rust fills them
+before exposing shared query borrows. This preserves inline hot metadata without
+copying the steps or adding a side-array lookup. Other derived plans remain
+Rust-owned. No C code may access those records during a mutable Rust borrow.
+
 Keep `Query::new(&Language, source)` independent of full packed-grammar
 preparation. A query and tree match by their retained native language identity,
-not by the address of independently prepared Squatter grammars. Rust owns query
-copying, pattern/capture disabling, and rebuilding affected derived plans.
-Preserve the public metadata and error offsets exposed by the C API as well.
+not by the address of independently prepared Squatter grammars. Keep native
+compiled storage uniquely owned initially. Pattern/capture disabling requires
+exclusive query access, no live borrowed views during native mutation, refreshed
+views afterward, and rebuilding affected Rust plans. Any later sharing must keep
+mutation isolated. Reset preparation fields when rebuilding so stale flags or
+indexes cannot survive disabling. Finished queries remain read-only during
+execution, with cursor state separate. Audit the native result, retained language,
+and destructor before preserving the existing Rust query's `Send`/`Sync` contract;
+avoid execution-time locks or shared mutable caches. Preserve metadata and error
+offsets used by the Rust API and comparison tests; C-only API parity is not a
+prerequisite.
 
 ## Query execution
 
@@ -239,10 +294,11 @@ presence filtering, direct plans, and fallback to the general NFA. It must not
 delegate difficult patterns to the C reference or to a reconstructed mainline
 tree.
 
-The C compiler is absent from execution. The only optional foreign call during
-execution is a C user's progress callback. Rust text predicates stay in Rust;
-the C API continues exposing predicate metadata without evaluating host text
-predicates automatically.
+The C compiler is absent from execution. Rust reads its retained output directly;
+native compilation, mutation, and destruction happen outside query advancement.
+Timeout checks and text predicates stay in Rust. Text-predicate preparation and
+derived plans may still allocate; borrowing compiler output does not eliminate
+that work.
 
 Carry over the actual current contracts:
 
@@ -259,6 +315,12 @@ Carry over the actual current contracts:
 Retain the optimization-off path for differential checks. It is an implementation
 milestone, not an acceptable performance replacement for the optimized engine.
 
+Treat execution-state layout separately from the compiler interface. Record the
+reference sizes and allocation behavior of states, capture lists, and captures
+before choosing Rust representations. In particular, preserve capture pooling,
+inline capacity, and scratch reuse; a convenient Rust representation must not
+silently turn each active state or capture list into an allocation.
+
 ## Storage and unsafe code
 
 Keep the current slab format, grouping decisions, and physical slot identities
@@ -271,8 +333,16 @@ capacity accounting, optional-column removal, and direct compact serialization
 into uninitialized destinations. A `Vec<u8>` does not promise the required
 alignment. Encapsulate aligned allocation and relocation in a small unsafe
 owner; a finished descriptor never moves. Growth uses offsets rather than live
-references into reallocatable storage. Preserve fallible allocation where the
-current packing/loading API returns an allocation error.
+references into reallocatable storage.
+
+Allocation-error compatibility is not required for this unpublished library.
+Prefer ordinary Rust allocation behavior for Rust-owned storage and scratch,
+without threading recoverable allocation errors through every growth path.
+Custom aligned allocations use `std::alloc::handle_alloc_error` on allocation
+failure; its standard `std` behavior is process abort without unwinding. Keep
+invalid-input, format-limit, and arithmetic-overflow errors distinct from memory
+exhaustion. Native code may retain its existing allocation-error handling. Each
+allocation remains owned and freed by the side that created it.
 
 Read persisted integers explicitly as little-endian values. Preserve scalar
 fallbacks and the existing SIMD kernels, with target gating; a scalar-only port
@@ -317,6 +387,11 @@ while masks with one or two candidates and other targets use scalar comparisons.
 Oversized point queries retain full comparisons instead of truncating. Existing
 cloud results show overlap improvements against an earlier scan implementation,
 not against C descendant seeks or query execution. Measure those independently.
+
+Direct supertype membership also uses SSE2 for dense masks. Dictionary membership
+remains scalar; its cost needs separate coverage. The benchmark now accepts range
+position and width, so use those controls to distinguish work on rejected groups
+from comparisons within groups that survive.
 
 ### Reuse boundary
 
@@ -428,19 +503,13 @@ specialization can trade speed for memory. Use the same repeatability and
 no-regression gate as the overall port. Equal performance is sufficient to keep
 a shared, clearer implementation when memory use also passes that gate.
 
-## Public C API and builds
+## Builds
 
-The standalone Rust static library exports the existing headers through opaque
-handles and thin wrappers. Allocations are destroyed by the implementation that
-created them; C must not free Rust buffers or inspect Rust tree/query layout.
-Callbacks and exported functions must not unwind across C. Invalid inputs use
-the existing error contracts; unexpected panics at a non-unwinding entry point
-abort rather than being reclassified as a successful operation.
-
-The static library includes its Tree-sitter dependency. C test executables must
-not also link the current `runtime.o`. Shared-library distribution and arbitrary
-system Tree-sitter builds need separate export/linkage validation; the native
-static probe does not establish them.
+Build the candidate as a Rust library with a private native archive. A public C
+facade, candidate C ABI compatibility, and shared-library distribution are outside
+this implementation. The `tree-sitter` dependency supplies the runtime; the native
+archive must not add another copy. Native callbacks, if used for batched import,
+must not unwind through C.
 
 Build the adapter against the headers for the resolved Tree-sitter dependency.
 Tree-sitter supplies `DEP_TREE_SITTER_INCLUDE`, and its published crate currently
@@ -511,6 +580,10 @@ Add focused measurements for conversion alone, full/safety-only loading,
 borrowed/backed loading, compact copying, grammar preparation, and query
 compilation. The current `compile_ms` in `queries.rs` combines mainline and
 Squatter compilation; it cannot serve as a per-backend compilation benchmark.
+Measure full query construction, including native compilation, Rust preparation,
+and text predicates, plus destruction and disabling/rebuilding separately.
+Include small and large queries and report native capacities alongside Rust
+plans so avoiding a copy does not conceal extra retained memory.
 Report slab bytes, runtime bytes, allocation counts, peak scratch, and retained
 scratch after reuse/trim. Collect allocation metrics separately if instrumentation
 would perturb timed runs. Existing metrics already include wall time, thread
@@ -546,22 +619,23 @@ check metadata, traversal, empty/missing/error nodes, inherited fields, hidden
 supertypes, group waste, seeks, storage modes, and compact bytes against it.
 Mainline Tree-sitter remains a third semantic reference where contracts agree.
 
-Use [slab-compatibility.c](lib/squat/tests/slab-compatibility.c) for separate C ABI
-executables and cross-loading outputs. Compare query compilation errors and
-metadata as well as execution. For capture streams and limited queries, use the
-existing validity/coverage rules instead of requiring undocumented stream
-identity. Check query copying/disabling, cancellation, reuse after failure,
-concurrent grammar preparation, and destruction through each owning API.
+Use [slab-compatibility.c](lib/squat/tests/slab-compatibility.c) as the reference
+slab producer/consumer and add equivalent Rust probes for candidate cross-loading.
+Compare query compilation errors and metadata as well as execution. For capture
+streams and limited queries, use the existing validity/coverage rules instead of
+requiring undocumented stream identity. Check query disabling, cancellation,
+reuse after failure, concurrent
+grammar preparation, and native query destruction through the Rust owner.
 
 Several C tests inspect `internal.h`, and `tests/supertypes.c` includes `pack.c`.
 They cannot simply relink against opaque Rust internals. Keep those reference
-tests and port their invariants into candidate tests; retain public-API probes
-for checking the facade. Existing malloc fault injection does not automatically
-cover Rust allocation paths. Exercise the candidate's fallible allocations at
-their own seam.
+tests and port their invariants into candidate Rust tests. Retain allocation-failure
+cleanup tests for native paths that return errors; Rust paths using ordinary
+allocation need not reproduce those recoverable failures. Continue measuring
+allocation counts and retained scratch.
 
 Update `cargo xtask squat` source snapshots and build manifests to include both
-implementations. Add a Rust-staticlib path for candidate C probes rather than
+implementations. Run candidate Rust probes alongside reference C probes without
 changing the reference Makefile. Preserve endian/32-bit probes; use sanitizers
 on the native boundary and supported Rust instrumentation, and Miri on pure
 Rust storage/traversal tests where foreign calls are absent. The existing C
@@ -581,9 +655,10 @@ candidate before changing that consumer. Temporary caches can be regenerated.
    plumbing without changing the C reference. Verify one Tree-sitter runtime,
    disjoint native symbols, baseline repeatability, and standalone builds.
 2. **Define and check native interfaces.** Extract grammar views, batched tree
-   events, tree-feller reduction walking, and the compiler program view. Test
+   events, tree-feller reduction walking, and the owned compiler-result views. Test
    these against existing metadata and traversal before using them to replace
-   core operations. Measure event production and compilation-copy overhead.
+   core operations. Measure event production, direct compiled-record access, and
+   retained compiled-query storage.
 3. **Implement storage, packing, and traversal.** Cross-load reference slabs,
    reproduce encoded output, and compare allocation/packing/read costs. Preserve
    SIMD, compact copying, borrowed storage, and optional layouts. Establish the
@@ -594,12 +669,12 @@ candidate before changing that consumer. Temporary caches can be regenerated.
    optimized and unoptimized paths. Test typed scan substitutions individually
    against the optimized port and C reference. No C execution fallback in the
    candidate.
-5. **Complete the facade and consumers.** Validate standalone C callers and
-   persistence, then run the full performance gate. Only afterward decide whether
+5. **Complete consumers and comparisons.** Validate persistence and cross-loading,
+   then run the full performance gate. Only afterward decide whether
    to promote the candidate to `tree-squatter`. Keep the reference available for
    regression checks rather than deleting it as part of promotion.
 
 The largest uncertain costs are the traversal batch boundary, extra metadata
-ownership, query-program copying, and preserving query-state/capture allocation
+ownership, compiled-record layout, and preserving query-state/capture allocation
 behavior in Rust. These have explicit measurements above. Benefits from inlining
 and stronger ownership are expectations to test, not assumed speedups.
