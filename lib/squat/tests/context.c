@@ -48,6 +48,58 @@ static void grammar_allocation_failures(bool multi_child) {
   }
 }
 
+static int64_t cursor_seek(SQCursor *cursor, bool by_point, uint32_t target) {
+  return by_point ? sq_cursor_goto_first_child_for_point(cursor, (TSPoint){target, target})
+                  : sq_cursor_goto_first_child_for_byte(cursor, target);
+}
+
+static void cursor_seek_allocation_failures(const SQTree *tree) {
+  SQNode root = sq_tree_root_node(tree);
+  SQNode child = sq_node_child(root, 0);
+  int64_t index = 0;
+  for (; child.tree; child = sq_node_next_sibling_including_empty(child), index++) {
+    TSPoint end = sq_node_end_point(child);
+    if (sq_node_end_byte(child) && (end.row || end.column)) break;
+  }
+  if (!child.tree) return;
+
+  for (unsigned by_point = 0; by_point < 2; by_point++) {
+    assert(cursor_seek(NULL, by_point, 0) == -1);
+    SQCursor *cursor = sq_cursor_new(root);
+    assert(cursor);
+    allocations = 0;
+    fail_at = 1;
+    assert(cursor_seek(cursor, by_point, UINT32_MAX) == -1);
+    assert(allocations == 0);
+    assert(sq_node_eq(sq_cursor_node(cursor), root));
+    assert(sq_cursor_depth(cursor) == 0);
+    assert(sq_node_is_null(sq_cursor_parent_node(cursor)));
+
+    assert(cursor_seek(cursor, by_point, 0) == -1);
+    fail_at = 0;
+    assert(allocations == 1);
+    assert(sq_node_eq(sq_cursor_node(cursor), root));
+    assert(sq_cursor_depth(cursor) == 0);
+    assert(sq_node_is_null(sq_cursor_parent_node(cursor)));
+
+    assert(cursor_seek(cursor, by_point, 0) == index);
+    assert(sq_node_eq(sq_cursor_node(cursor), child));
+    assert(sq_cursor_depth(cursor) == 1);
+    assert(sq_node_eq(sq_cursor_parent_node(cursor), root));
+    allocations = 0;
+    fail_at = 1;
+    assert(cursor_seek(cursor, by_point, UINT32_MAX) == -1);
+    fail_at = 0;
+    assert(allocations == 0);
+    assert(sq_node_eq(sq_cursor_node(cursor), child));
+    assert(sq_cursor_depth(cursor) == 1);
+    assert(sq_node_eq(sq_cursor_parent_node(cursor), root));
+    assert(sq_cursor_goto_parent(cursor));
+    assert(sq_node_eq(sq_cursor_node(cursor), root));
+    sq_cursor_delete(cursor);
+  }
+}
+
 int main(int argc, char **argv) {
   assert(argc >= 4);
   if (getenv("CONTEXT_FAILURES")) {
@@ -133,6 +185,7 @@ int main(int argc, char **argv) {
     SQTree *expected = sq_tree_pack(grammar, parsed, options, &error);
     assert(expected);
     if (getenv("CONTEXT_FAILURES")) {
+      cursor_seek_allocation_failures(expected);
       for (size_t nth = 1; ; nth++) {
         assert(nth < 256);
         allocations = 0;
