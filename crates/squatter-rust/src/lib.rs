@@ -12,8 +12,12 @@ pub use packing::{PackContext, PackOptions};
 pub use parser::{ParseError, Parser};
 pub use storage::{BackedTree, BorrowedTree, StableSlab, Tree, representation_id};
 pub mod query;
+mod query_exec;
+mod query_plan;
 pub use native::Grammar;
-pub use query::{Query, QueryError, QueryExecutionError};
+pub use query::{
+    Query, QueryCapture, QueryCursor, QueryError, QueryExecution, QueryExecutionError, QueryMatch,
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(i32)]

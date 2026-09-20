@@ -1,3 +1,5 @@
+use crate::Node;
+pub use crate::query_exec::{QueryCursor, QueryExecution};
 use regex::bytes::Regex;
 use tree_sitter::{Language, QueryPredicate, QueryPredicateArg};
 
@@ -43,6 +45,7 @@ enum Predicate {
 /// remain available to the host through `general_predicates`.
 pub struct Query {
     pub(crate) compiled: crate::native::CompiledQuery,
+    pub(crate) program: crate::query_plan::Program,
     capture_names: Vec<String>,
     predicates: Vec<Vec<Predicate>>,
     general: Vec<Vec<QueryPredicate>>,
@@ -52,9 +55,11 @@ unsafe impl Send for Query {}
 unsafe impl Sync for Query {}
 impl Query {
     pub fn new(language: &Language, source: &str) -> Result<Self, QueryError> {
-        let compiled = crate::native::CompiledQuery::new(language, source)?;
+        let mut compiled = crate::native::CompiledQuery::new(language, source)?;
+        let program = crate::query_plan::Program::new(&mut compiled);
         let mut query = Self {
             compiled,
+            program,
             capture_names: Vec::new(),
             predicates: Vec::new(),
             general: Vec::new(),
@@ -184,9 +189,91 @@ impl Query {
             "pattern index out of bounds"
         );
         self.compiled.disable_pattern(pattern as u32);
+        self.program = crate::query_plan::Program::new(&mut self.compiled);
     }
 
     pub fn disable_capture(&mut self, name: &str) {
         self.compiled.disable_capture(name);
+        self.program = crate::query_plan::Program::new(&mut self.compiled);
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(C)]
+pub struct QueryCapture<'tree> {
+    pub node: Node<'tree>,
+    pub index: u32,
+}
+/// Captures borrow the cursor until its next advancement. Nodes borrow the tree.
+/// Copy individual nodes or collect captures to retain them while advancing.
+///
+/// ```compile_fail
+/// use tree_squatter_rust::QueryExecution;
+/// fn invalid(execution: &mut QueryExecution<'_, '_, '_, '_>) {
+///     let first = execution.next_match().unwrap();
+///     execution.next_match();
+///     println!("{}", first.captures.len()); // Still borrows the cursor.
+/// }
+/// ```
+pub struct QueryMatch<'cursor, 'tree> {
+    pub id: u32,
+    pub pattern_index: usize,
+    pub captures: &'cursor [QueryCapture<'tree>],
+}
+impl<'tree> QueryMatch<'_, 'tree> {
+    pub fn nodes_for_capture_index(&self, index: u32) -> impl Iterator<Item = Node<'tree>> + '_ {
+        self.captures
+            .iter()
+            .filter(move |capture| capture.index == index)
+            .map(|capture| capture.node)
+    }
+    pub(crate) fn satisfies(&self, query: &Query, source: &[u8]) -> bool {
+        let text = |node: Node<'tree>| source.get(node.byte_range()).unwrap_or_default();
+        // Preserve mainline Rust's quantifier and empty-capture behavior.
+        query.predicates[self.pattern_index]
+            .iter()
+            .all(|predicate| match predicate {
+                Predicate::EqualCapture(first, second, positive, all) => {
+                    let mut left = self.nodes_for_capture_index(*first).peekable();
+                    let mut right = self.nodes_for_capture_index(*second).peekable();
+                    while left.peek().is_some() && right.peek().is_some() {
+                        let equal = text(left.next().unwrap()) == text(right.next().unwrap());
+                        if equal != *positive && *all {
+                            return false;
+                        }
+                        if equal == *positive && !*all {
+                            return true;
+                        }
+                    }
+                    left.next().is_none() && right.next().is_none()
+                }
+                Predicate::EqualString(capture, value, positive, all) => {
+                    for node in self.nodes_for_capture_index(*capture) {
+                        let equal = text(node) == value;
+                        if equal != *positive && *all {
+                            return false;
+                        }
+                        if equal == *positive && !*all {
+                            return true;
+                        }
+                    }
+                    true
+                }
+                Predicate::Match(capture, regex, positive, all) => {
+                    for node in self.nodes_for_capture_index(*capture) {
+                        let matches = regex.is_match(text(node));
+                        if matches != *positive && *all {
+                            return false;
+                        }
+                        if matches == *positive && !*all {
+                            return true;
+                        }
+                    }
+                    true
+                }
+                Predicate::AnyOf(capture, values, positive) => self
+                    .nodes_for_capture_index(*capture)
+                    .all(|node| values.iter().any(|value| value == text(node)) == *positive),
+            })
     }
 }
