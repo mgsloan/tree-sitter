@@ -70,11 +70,30 @@ impl IdSet {
     pub fn new(ids: impl IntoIterator<Item = u16>) -> Self {
         ids.into_iter().collect()
     }
+
+    /// Construct a reusable set containing the IDs present in both sets.
+    pub fn intersection(&self, other: &Self) -> Self {
+        let (smaller, larger) = if self.ids.len() <= other.ids.len() {
+            (self, other)
+        } else {
+            (other, self)
+        };
+
+        Self::new(
+            smaller
+                .ids
+                .iter()
+                .copied()
+                .filter(|&id| larger.contains(id)),
+        )
+    }
+
     pub fn contains(&self, id: u16) -> bool {
         self.words
             .get(id as usize / 64)
             .is_some_and(|word| word & (1u64 << (id % 64)) != 0)
     }
+
     pub fn is_empty(&self) -> bool {
         self.ids.is_empty()
     }
