@@ -374,6 +374,14 @@ in either direction, bounded by the remaining range and subtree. Each symbol's
 entry is either a descending exact slot list or a group bitmap. Sparse entries
 also supply the matching slot mask, intersected with the live candidates. A union
 containing a bitmap still checks the group's symbol column for exact membership.
+Sparse lookups retain a posting position per target and reuse it for both group
+jumps and slot masks. The position is a hint: each lookup checks the boundary,
+probes at most four nearby entries, then binary-searches the remaining interval.
+This supports clipped scans, skipped subtrees, and reversal without resets or
+long linear walks. Fixed arrays have one cursor per ID; dynamic sets keep cursors
+for the first sixteen valid targets and binary-search any remaining targets.
+Cursors live in the predicate, without allocations or changes to the slab.
+Index callbacks borrow predicates mutably; scans retain `Send` and `Sync`.
 Indexed filters pass composed predicates to the source; the first indexed
 predicate controls jumps, while all predicates refine the returned candidates.
 Forward byte scans try subtree rejection at the current boundary before bitmap

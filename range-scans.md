@@ -95,7 +95,9 @@ root.preorder()
    possible group within the remaining bounds. Before bitmap jumps, forward byte
    scans try subtree rejection at the current boundary; otherwise the jump could
    bypass a useful ancestor span. Sparse entries jump directly and supply exact
-   slot masks; bitmap entries require a symbol-column comparison.
+   slot masks. Per-target cursors reuse sparse posting positions across groups,
+   with bounded local probing and binary search after large jumps. Bitmap entries
+   require a symbol-column comparison.
    Forward preorder byte scans check whether the selected group's end bound excludes
    its subtrees. Preorder passes a deferred mask constructor to the selection, so
    rejected groups need no waste lookup or subtree clipping. Other traversals
