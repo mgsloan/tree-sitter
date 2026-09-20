@@ -66,6 +66,9 @@ struct Case {
     field: u16,
     field_matches: usize,
     range_matches: usize,
+    within_matches: usize,
+    starting_in_matches: usize,
+    starting_at_matches: usize,
     supertype: u16,
     supertype_matches: usize,
     flags_matches: usize,
@@ -424,6 +427,16 @@ fn workloads() -> Vec<(&'static str, Operation)> {
                     .nodes(),
             )
         }),
+        ("range.reverse_nodes", |case| {
+            consume(
+                case.tree
+                    .root_node()
+                    .preorder()
+                    .rev()
+                    .overlapping_bytes(case.range.clone())
+                    .nodes(),
+            )
+        }),
         ("range.scalar", |case| {
             consume(scalar_preorder(&case.tree).filter(|&node| overlaps(node, &case.range)))
         }),
@@ -452,6 +465,16 @@ fn workloads() -> Vec<(&'static str, Operation)> {
                     .nodes(),
             )
         }),
+        ("point_range.reverse_nodes", |case| {
+            consume(
+                case.tree
+                    .root_node()
+                    .preorder()
+                    .rev()
+                    .overlapping_points(case.point_range.clone())
+                    .nodes(),
+            )
+        }),
         ("point_range.scalar", |case| {
             consume(
                 scalar_preorder(&case.tree)
@@ -459,6 +482,43 @@ fn workloads() -> Vec<(&'static str, Operation)> {
             )
         }),
     ];
+    macro_rules! range_workloads {
+        ($name:literal, $method:ident, $case:ident, $value:expr) => {
+            let selected: [(&'static str, Operation); 3] = [
+                (concat!($name, ".nodes"), |$case| {
+                    consume($case.tree.root_node().all().$method($value).nodes())
+                }),
+                (concat!($name, ".count"), |$case| {
+                    $case.tree.root_node().all().$method($value).count()
+                }),
+                (concat!($name, ".fold"), |$case| {
+                    consume_fold($case.tree.root_node().all().$method($value).nodes())
+                }),
+            ];
+            workloads.extend(selected);
+        };
+    }
+    range_workloads!("within", within_bytes, case, case.range.clone());
+    range_workloads!("starting_in", starting_in_bytes, case, case.range.clone());
+    range_workloads!("starting_at", starting_at_byte, case, case.range.start);
+    range_workloads!(
+        "point_within",
+        within_points,
+        case,
+        case.point_range.clone()
+    );
+    range_workloads!(
+        "point_starting_in",
+        starting_in_points,
+        case,
+        case.point_range.clone()
+    );
+    range_workloads!(
+        "point_starting_at",
+        starting_at_point,
+        case,
+        case.point_range.start
+    );
     workloads.extend(sized_kind_workloads::<1>([
         "fixed_1.nodes",
         "fixed_1.count",
@@ -629,6 +689,51 @@ fn validate(case: &Case) {
             .filter(|&node| overlaps(node, &case.range))
             .collect::<Vec<_>>()
     );
+    macro_rules! validate_range {
+        ($byte_method:ident, $point_method:ident, $byte_value:expr, $point_value:expr, $predicate:expr) => {
+            let expected = preorder
+                .iter()
+                .copied()
+                .filter($predicate)
+                .collect::<Vec<_>>();
+            assert_eq!(
+                root.all()
+                    .$byte_method($byte_value)
+                    .nodes()
+                    .collect::<Vec<_>>(),
+                expected
+            );
+            assert_eq!(
+                root.all()
+                    .$point_method($point_value)
+                    .nodes()
+                    .collect::<Vec<_>>(),
+                expected
+            );
+        };
+    }
+    validate_range!(
+        within_bytes,
+        within_points,
+        case.range.clone(),
+        case.point_range.clone(),
+        |node: &Node<'_>| case.range.start <= node.start_byte()
+            && node.end_byte() <= case.range.end
+    );
+    validate_range!(
+        starting_in_bytes,
+        starting_in_points,
+        case.range.clone(),
+        case.point_range.clone(),
+        |node: &Node<'_>| case.range.contains(&node.start_byte())
+    );
+    validate_range!(
+        starting_at_byte,
+        starting_at_point,
+        case.range.start,
+        case.point_range.start,
+        |node: &Node<'_>| node.start_byte() == case.range.start
+    );
     let point_matches = preorder
         .iter()
         .copied()
@@ -797,6 +902,15 @@ fn main() -> Result<()> {
         let kind_matches = scalar_preorder(&tree)
             .filter(|node| kinds.contains(node.kind_id()))
             .count();
+        let within_matches = scalar_preorder(&tree)
+            .filter(|node| range.start <= node.start_byte() && node.end_byte() <= range.end)
+            .count();
+        let starting_in_matches = scalar_preorder(&tree)
+            .filter(|node| range.contains(&node.start_byte()))
+            .count();
+        let starting_at_matches = scalar_preorder(&tree)
+            .filter(|node| node.start_byte() == range.start)
+            .count();
         let range_matches = scalar_preorder(&tree)
             .filter(|&node| overlaps(node, &range))
             .count();
@@ -845,6 +959,9 @@ fn main() -> Result<()> {
             field,
             field_matches,
             range_matches,
+            within_matches,
+            starting_in_matches,
+            starting_at_matches,
             supertype,
             supertype_matches,
             flags_matches,
@@ -903,6 +1020,14 @@ fn main() -> Result<()> {
                     case.kind_matches
                 } else if name.starts_with("field.") || name.contains(".field.") {
                     case.field_matches
+                } else if name.starts_with("within.") || name.starts_with("point_within.") {
+                    case.within_matches
+                } else if name.starts_with("starting_in.") || name.starts_with("point_starting_in.")
+                {
+                    case.starting_in_matches
+                } else if name.starts_with("starting_at.") || name.starts_with("point_starting_at.")
+                {
+                    case.starting_at_matches
                 } else if name.starts_with("range.") || name.starts_with("point_range.") {
                     case.range_matches
                 } else if name.starts_with("supertype.") {

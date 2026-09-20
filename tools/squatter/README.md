@@ -121,6 +121,12 @@ Byte and point queries cover the same interval. Use repeated `--workload NAME`
 arguments to time selected operations. Results describe this selected corpus
 and cache behavior, not parsing performance.
 
+`range` and `point_range` workloads measure overlap. `within`, `starting_in`,
+and `starting_at` (also prefixed with `point_`) provide `.nodes`, `.fold`, and
+`.count` consumers. Exact-start queries use the range's start. Overlap also has
+`.reverse_nodes` workloads. Setup validates selected nodes against scalar
+accessors before timing.
+
 Forward/reverse fold and grouped-fold workloads also consume every node with `black_box`.
 `flags.count` excludes extra and missing nodes; `combined.count` additionally
 intersects the selected kind and field. Supertype workloads select the grammar's
