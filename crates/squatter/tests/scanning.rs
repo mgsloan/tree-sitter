@@ -413,6 +413,114 @@ macro_rules! check_selection {
     }};
 }
 
+#[test]
+fn range_seeks_across_subtrees() {
+    let source = format!(
+        "[{}[{}0{}],\n{}[1,2]]",
+        format!("[{}0],\n", "[1,2],".repeat(100)).repeat(8),
+        "[".repeat(80),
+        "]".repeat(80),
+        " ".repeat(700),
+    );
+    for points in [false, true] {
+        let (_, tree) = parse(
+            &json_language(),
+            &source,
+            PackOptions {
+                points,
+                initial_group_capacity: 1,
+                ..Default::default()
+            },
+        );
+        let all = reference_preorder(tree.root_node());
+        for root in all.iter().copied().step_by(all.len() / 5) {
+            let preorder = reference_preorder(root);
+            let postorder = root.postorder().nodes().collect::<Vec<_>>();
+            for node in all.iter().step_by(all.len() / 7) {
+                let range = node.start_byte()..node.end_byte();
+                check_selection!(
+                    root,
+                    preorder,
+                    postorder,
+                    overlapping_bytes,
+                    range.clone(),
+                    |node: &Node<'_>| {
+                        !range.is_empty()
+                            && node.start_byte() < range.end
+                            && (node.end_byte() > range.start || node.start_byte() >= range.start)
+                    }
+                );
+                check_selection!(
+                    root,
+                    preorder,
+                    postorder,
+                    within_bytes,
+                    range.clone(),
+                    |node: &Node<'_>| {
+                        range.start <= node.start_byte() && node.end_byte() <= range.end
+                    }
+                );
+                check_selection!(
+                    root,
+                    preorder,
+                    postorder,
+                    starting_in_bytes,
+                    range.clone(),
+                    |node: &Node<'_>| { range.contains(&node.start_byte()) }
+                );
+                check_selection!(
+                    root,
+                    preorder,
+                    postorder,
+                    starting_at_byte,
+                    range.start,
+                    |node: &Node<'_>| { node.start_byte() == range.start }
+                );
+                let range = node.start_position()..node.end_position();
+                check_selection!(
+                    root,
+                    preorder,
+                    postorder,
+                    overlapping_points,
+                    range.clone(),
+                    |node: &Node<'_>| {
+                        !range.is_empty()
+                            && node.start_position() < range.end
+                            && (node.end_position() > range.start
+                                || node.start_position() >= range.start)
+                    }
+                );
+                check_selection!(
+                    root,
+                    preorder,
+                    postorder,
+                    within_points,
+                    range.clone(),
+                    |node: &Node<'_>| {
+                        range.start <= node.start_position() && node.end_position() <= range.end
+                    }
+                );
+                check_selection!(
+                    root,
+                    preorder,
+                    postorder,
+                    starting_in_points,
+                    range.clone(),
+                    |node: &Node<'_>| { range.contains(&node.start_position()) }
+                );
+                check_selection!(
+                    root,
+                    preorder,
+                    postorder,
+                    starting_at_point,
+                    range.start,
+                    |node: &Node<'_>| { node.start_position() == range.start }
+                );
+            }
+        }
+    }
+}
+
 fn check_position_selections(root: Node<'_>) {
     let preorder = reference_preorder(root);
     let postorder = root.postorder().nodes().collect::<Vec<_>>();

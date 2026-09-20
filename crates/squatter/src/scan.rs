@@ -502,7 +502,7 @@ mod sealed {
         fn is_empty(&self) -> bool {
             false
         }
-        fn start_bound(&self) -> Bound<T>;
+        fn start_bounds(&self) -> (Bound<T>, Bound<T>);
         fn retain<P: Positions<Position = T>>(
             &self,
             positions: P,
@@ -1610,20 +1610,20 @@ pub struct StartingAt<T>(T);
 pub struct EndingAt<T>(T);
 
 macro_rules! range_relation {
-    ($name:ident, $reject:tt, $bound:ident, $endpoint:ident, $this:ident, $positions:ident, $candidates:ident, $body:block) => {
+    ($name:ident, $reject:tt, $lower:expr, $upper:expr, $this:ident, $positions:ident, $candidates:ident, $body:block) => {
         impl<T: Copy + Ord> Relation<T> for $name<T> {
             type Mapped<U: Copy + Ord> = $name<U>;
             fn try_map<U: Copy + Ord>(&self, convert: impl Fn(T) -> Option<U>) -> Option<Self::Mapped<U>> {
                 Some($name(convert(self.0.start)?..convert(self.0.end)?))
             }
             fn is_empty(&self) -> bool { self.0.start $reject self.0.end }
-            fn start_bound(&self) -> Bound<T> { Bound::$bound(self.0.$endpoint) }
+            fn start_bounds(&$this) -> (Bound<T>, Bound<T>) { ($lower, $upper) }
             #[inline(always)]
             fn retain<P: Positions<Position = T>>(&$this, $positions: P, $candidates: impl FnOnce() -> Mask) -> Mask $body
         }
     };
 }
-range_relation!(Overlapping, >=, Excluded, end, self, positions, candidates, {
+range_relation!(Overlapping, >=, Unbounded, Excluded(self.0.end), self, positions, candidates, {
     let starts = positions.start();
     let ends = positions.end();
     if starts.minimum() >= self.0.end || ends.maximum() < self.0.start {
@@ -1647,7 +1647,7 @@ range_relation!(Overlapping, >=, Excluded, end, self, positions, candidates, {
     }
     Mask(matches.0 | starts.retain(remaining, (Included(self.0.start), Unbounded)).0)
 });
-range_relation!(Within, >, Included, end, self, positions, candidates, {
+range_relation!(Within, >, Included(self.0.start), Included(self.0.end), self, positions, candidates, {
     retain_pair(
         candidates,
         positions.start(),
@@ -1656,7 +1656,7 @@ range_relation!(Within, >, Included, end, self, positions, candidates, {
         (Unbounded, Included(self.0.end)),
     )
 });
-range_relation!(Containing, >, Included, start, self, positions, candidates, {
+range_relation!(Containing, >, Unbounded, Included(self.0.start), self, positions, candidates, {
     retain_pair(
         candidates,
         positions.start(),
@@ -1665,47 +1665,62 @@ range_relation!(Containing, >, Included, start, self, positions, candidates, {
         (Included(self.0.end), Unbounded),
     )
 });
-range_relation!(StartingIn, >=, Excluded, end, self, positions, candidates, {
+range_relation!(StartingIn, >=, Included(self.0.start), Excluded(self.0.end), self, positions, candidates, {
     retain_interval(candidates, positions.start(), &self.0)
 });
-range_relation!(EndingIn, >=, Excluded, end, self, positions, candidates, {
+range_relation!(EndingIn, >=, Unbounded, Excluded(self.0.end), self, positions, candidates, {
     retain_interval(candidates, positions.end(), &self.0)
 });
 macro_rules! position_relation {
-    ($name:ident, $this:ident, $positions:ident, $candidates:ident, $body:block) => {
+    ($name:ident, $lower:expr, $this:ident, $positions:ident, $candidates:ident, $body:block) => {
         impl<T: Copy + Ord> Relation<T> for $name<T> {
             type Mapped<U: Copy + Ord> = $name<U>;
             fn try_map<U: Copy + Ord>(&self, convert: impl Fn(T) -> Option<U>) -> Option<Self::Mapped<U>> {
                 Some($name(convert(self.0)?))
             }
-            fn start_bound(&self) -> Bound<T> { Bound::Included(self.0) }
+            fn start_bounds(&$this) -> (Bound<T>, Bound<T>) { ($lower, Included($this.0)) }
             #[inline(always)]
             fn retain<P: Positions<Position = T>>(&$this, $positions: P, $candidates: impl FnOnce() -> Mask) -> Mask $body
         }
     };
 }
-position_relation!(ContainingPosition, self, positions, candidates, {
-    retain_pair(
-        candidates,
-        positions.start(),
-        positions.end(),
-        (Unbounded, Included(self.0)),
-        (Excluded(self.0), Unbounded),
-    )
-});
-position_relation!(StartingAt, self, positions, candidates, {
+position_relation!(
+    ContainingPosition,
+    Unbounded,
+    self,
+    positions,
+    candidates,
+    {
+        retain_pair(
+            candidates,
+            positions.start(),
+            positions.end(),
+            (Unbounded, Included(self.0)),
+            (Excluded(self.0), Unbounded),
+        )
+    }
+);
+position_relation!(StartingAt, Included(self.0), self, positions, candidates, {
     retain_equal(candidates, positions.start(), self.0)
 });
-position_relation!(EndingAt, self, positions, candidates, {
+position_relation!(EndingAt, Unbounded, self, positions, candidates, {
     retain_equal(candidates, positions.end(), self.0)
 });
 
 /// Sources that still permit range restriction; filters do not implement this trait.
 pub trait UnrestrictedScan: sealed::Source {
-    fn restrict<C: Coordinates>(&mut self, coordinates: &C, bound: Bound<C::Position>);
+    fn restrict<C: Coordinates>(
+        &mut self,
+        coordinates: &C,
+        bounds: (Bound<C::Position>, Bound<C::Position>),
+    );
 }
 impl UnrestrictedScan for Preorder<'_> {
-    fn restrict<C: Coordinates>(&mut self, coordinates: &C, bound: Bound<C::Position>) {
+    fn restrict<C: Coordinates>(
+        &mut self,
+        coordinates: &C,
+        bounds: (Bound<C::Position>, Bound<C::Position>),
+    ) {
         // Start minima decrease with physical group index. All relations supply
         // an upper bound on node starts, including those that only test ends.
         let mut lower = self.groups.start;
@@ -1713,7 +1728,7 @@ impl UnrestrictedScan for Preorder<'_> {
         while lower < upper {
             let middle = lower + (upper - lower) / 2;
             let start = coordinates.start_minimum(&self.group.columns.group(middle));
-            let beyond = match bound {
+            let beyond = match bounds.1 {
                 Bound::Included(limit) => start > limit,
                 Bound::Excluded(limit) => start >= limit,
                 Bound::Unbounded => false,
@@ -1725,18 +1740,42 @@ impl UnrestrictedScan for Preorder<'_> {
             }
         }
         self.groups.start = lower;
+        if let Included(limit) | Excluded(limit) = bounds.0 {
+            upper = self.groups.end;
+            while lower < upper {
+                let middle = lower + (upper - lower) / 2;
+                let start = coordinates.start_minimum(&self.group.columns.group(middle));
+                let within = match bounds.0 {
+                    Included(_) => start >= limit,
+                    Excluded(_) => start > limit,
+                    Unbounded => unreachable!(),
+                };
+                if within {
+                    lower = middle + 1;
+                } else {
+                    upper = middle;
+                }
+            }
+            // The first group with an earlier minimum may still contain starts
+            // inside the query. Keep that boundary group for slot comparisons.
+            self.groups.end = self.groups.end.min(lower.saturating_add(1));
+        }
     }
 }
 impl UnrestrictedScan for ReversePreorder<'_> {
-    fn restrict<C: Coordinates>(&mut self, coordinates: &C, bound: Bound<C::Position>) {
-        self.0.restrict(coordinates, bound);
+    fn restrict<C: Coordinates>(
+        &mut self,
+        coordinates: &C,
+        bounds: (Bound<C::Position>, Bound<C::Position>),
+    ) {
+        self.0.restrict(coordinates, bounds);
     }
 }
 impl UnrestrictedScan for Postorder<'_> {
-    fn restrict<C: Coordinates>(&mut self, _: &C, _: Bound<C::Position>) {}
+    fn restrict<C: Coordinates>(&mut self, _: &C, _: (Bound<C::Position>, Bound<C::Position>)) {}
 }
 impl UnrestrictedScan for ReversePostorder<'_> {
-    fn restrict<C: Coordinates>(&mut self, _: &C, _: Bound<C::Position>) {}
+    fn restrict<C: Coordinates>(&mut self, _: &C, _: (Bound<C::Position>, Bound<C::Position>)) {}
 }
 
 /// A coordinate system and a statically selected position relation.
@@ -1776,7 +1815,7 @@ impl<'tree, S: UnrestrictedScan + GroupScan<'tree>> Scan<'tree, S> {
     ) -> Scan<'tree, Restricted<S, Selection<C, R>>> {
         let coordinates = C::new(self.source.group());
         if !relation.is_empty() {
-            self.source.restrict(&coordinates, relation.start_bound());
+            self.source.restrict(&coordinates, relation.start_bounds());
         }
         Scan::new(Restricted {
             source: self.source,
