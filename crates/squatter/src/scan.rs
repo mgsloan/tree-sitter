@@ -465,6 +465,7 @@ mod sealed {
         type Position: Copy + Ord;
         fn new(group: &GroupRef<'_>) -> Self;
         fn start_minimum(&self, group: &GroupRef<'_>) -> Self::Position;
+        fn end_before(&self, group: &GroupRef<'_>, bound: Bound<Self::Position>) -> bool;
         fn retain<R: Relation<Self::Position>>(
             &self,
             group: &GroupRef<'_>,
@@ -503,6 +504,7 @@ mod sealed {
             false
         }
         fn start_bounds(&self) -> (Bound<T>, Bound<T>);
+        fn end_lower_bound(&self) -> Bound<T>;
         fn retain<P: Positions<Position = T>>(
             &self,
             positions: P,
@@ -784,6 +786,22 @@ impl<'tree> Preorder<'tree> {
             } else {
                 self.groups.next_back()?
             };
+            if !REVERSE && predicate.excludes_subtrees(&self.group) {
+                // The last node in preorder occupies the group's first slot.
+                // Its descendants end no later, so their whole groups can be skipped.
+                let span = self
+                    .group
+                    .columns
+                    .word(self.group.columns.layout.span_base, self.group.index);
+                if span != 0 {
+                    // The base alone is a conservative span; avoid delta loads
+                    // and short jumps when all spans fit in a byte.
+                    let end =
+                        (self.group.first_slot() - span).div_ceil(self.group.columns.group_size());
+                    self.groups.end = self.groups.end.min(end).max(self.groups.start);
+                }
+                continue;
+            }
             let matches = predicate.retain_group(&self.group, || self.mask());
             if !matches.is_empty() {
                 return Some(matches);
@@ -862,6 +880,10 @@ impl<'tree> GroupScan<'tree> for ReversePreorder<'tree> {
     #[inline]
     fn count(self) -> usize {
         self.0.count()
+    }
+    #[inline]
+    fn count_matches<P: Predicate>(self, predicate: P) -> usize {
+        self.0.count_matches(predicate)
     }
     #[inline]
     fn group(&self) -> &GroupRef<'tree> {
@@ -1461,6 +1483,10 @@ impl Coordinates for Bytes {
             .columns
             .word(group.columns.layout.start_byte_base, group.index) as usize
     }
+    #[inline]
+    fn end_before(&self, group: &GroupRef<'_>, bound: Bound<usize>) -> bool {
+        before_bound(BytePositions(group).end().maximum(), bound)
+    }
     #[inline(always)]
     fn retain<R: Relation<usize>>(
         &self,
@@ -1499,6 +1525,30 @@ impl Coordinates for Points {
                 .start()
                 .get(group.used() - 1),
             )
+        }
+    }
+    #[inline]
+    fn end_before(&self, group: &GroupRef<'_>, bound: Bound<Point>) -> bool {
+        let end = if self.end_base == 0 {
+            BytePositions(group).end().maximum() as u64
+        } else {
+            point_base(group, self.end_base)
+        };
+        match bound {
+            Included(limit) | Excluded(limit) => {
+                if let Some(limit) = point_key(limit) {
+                    before_bound(
+                        end,
+                        match bound {
+                            Included(_) => Included(limit),
+                            _ => Excluded(limit),
+                        },
+                    )
+                } else {
+                    before_bound(point_from_key(end), bound)
+                }
+            }
+            Unbounded => false,
         }
     }
     #[inline(always)]
@@ -1541,6 +1591,15 @@ fn retain_points<R: Relation<Point>, P: Positions<Position = u64>>(
         packed.retain(positions, candidates)
     } else {
         relation.retain(UnpackedPositions(positions), candidates)
+    }
+}
+
+#[inline(always)]
+fn before_bound<T: Ord>(position: T, bound: Bound<T>) -> bool {
+    match bound {
+        Included(limit) => position < limit,
+        Excluded(limit) => position <= limit,
+        Unbounded => false,
     }
 }
 
@@ -1610,7 +1669,7 @@ pub struct StartingAt<T>(T);
 pub struct EndingAt<T>(T);
 
 macro_rules! range_relation {
-    ($name:ident, $reject:tt, $lower:expr, $upper:expr, $this:ident, $positions:ident, $candidates:ident, $body:block) => {
+    ($name:ident, $reject:tt, $lower:expr, $upper:expr, $end:expr, $this:ident, $positions:ident, $candidates:ident, $body:block) => {
         impl<T: Copy + Ord> Relation<T> for $name<T> {
             type Mapped<U: Copy + Ord> = $name<U>;
             fn try_map<U: Copy + Ord>(&self, convert: impl Fn(T) -> Option<U>) -> Option<Self::Mapped<U>> {
@@ -1618,12 +1677,13 @@ macro_rules! range_relation {
             }
             fn is_empty(&self) -> bool { self.0.start $reject self.0.end }
             fn start_bounds(&$this) -> (Bound<T>, Bound<T>) { ($lower, $upper) }
+            fn end_lower_bound(&$this) -> Bound<T> { $end }
             #[inline(always)]
             fn retain<P: Positions<Position = T>>(&$this, $positions: P, $candidates: impl FnOnce() -> Mask) -> Mask $body
         }
     };
 }
-range_relation!(Overlapping, >=, Unbounded, Excluded(self.0.end), self, positions, candidates, {
+range_relation!(Overlapping, >=, Unbounded, Excluded(self.0.end), Included(self.0.start), self, positions, candidates, {
     let starts = positions.start();
     let ends = positions.end();
     if starts.minimum() >= self.0.end || ends.maximum() < self.0.start {
@@ -1647,7 +1707,7 @@ range_relation!(Overlapping, >=, Unbounded, Excluded(self.0.end), self, position
     }
     Mask(matches.0 | starts.retain(remaining, (Included(self.0.start), Unbounded)).0)
 });
-range_relation!(Within, >, Included(self.0.start), Included(self.0.end), self, positions, candidates, {
+range_relation!(Within, >, Included(self.0.start), Included(self.0.end), Unbounded, self, positions, candidates, {
     retain_pair(
         candidates,
         positions.start(),
@@ -1656,7 +1716,7 @@ range_relation!(Within, >, Included(self.0.start), Included(self.0.end), self, p
         (Unbounded, Included(self.0.end)),
     )
 });
-range_relation!(Containing, >, Unbounded, Included(self.0.start), self, positions, candidates, {
+range_relation!(Containing, >, Unbounded, Included(self.0.start), Included(self.0.end), self, positions, candidates, {
     retain_pair(
         candidates,
         positions.start(),
@@ -1665,20 +1725,21 @@ range_relation!(Containing, >, Unbounded, Included(self.0.start), self, position
         (Included(self.0.end), Unbounded),
     )
 });
-range_relation!(StartingIn, >=, Included(self.0.start), Excluded(self.0.end), self, positions, candidates, {
+range_relation!(StartingIn, >=, Included(self.0.start), Excluded(self.0.end), Unbounded, self, positions, candidates, {
     retain_interval(candidates, positions.start(), &self.0)
 });
-range_relation!(EndingIn, >=, Unbounded, Excluded(self.0.end), self, positions, candidates, {
+range_relation!(EndingIn, >=, Unbounded, Excluded(self.0.end), Included(self.0.start), self, positions, candidates, {
     retain_interval(candidates, positions.end(), &self.0)
 });
 macro_rules! position_relation {
-    ($name:ident, $lower:expr, $this:ident, $positions:ident, $candidates:ident, $body:block) => {
+    ($name:ident, $lower:expr, $end:expr, $this:ident, $positions:ident, $candidates:ident, $body:block) => {
         impl<T: Copy + Ord> Relation<T> for $name<T> {
             type Mapped<U: Copy + Ord> = $name<U>;
             fn try_map<U: Copy + Ord>(&self, convert: impl Fn(T) -> Option<U>) -> Option<Self::Mapped<U>> {
                 Some($name(convert(self.0)?))
             }
             fn start_bounds(&$this) -> (Bound<T>, Bound<T>) { ($lower, Included($this.0)) }
+            fn end_lower_bound(&$this) -> Bound<T> { $end }
             #[inline(always)]
             fn retain<P: Positions<Position = T>>(&$this, $positions: P, $candidates: impl FnOnce() -> Mask) -> Mask $body
         }
@@ -1687,6 +1748,7 @@ macro_rules! position_relation {
 position_relation!(
     ContainingPosition,
     Unbounded,
+    Excluded(self.0),
     self,
     positions,
     candidates,
@@ -1700,12 +1762,24 @@ position_relation!(
         )
     }
 );
-position_relation!(StartingAt, Included(self.0), self, positions, candidates, {
-    retain_equal(candidates, positions.start(), self.0)
-});
-position_relation!(EndingAt, Unbounded, self, positions, candidates, {
-    retain_equal(candidates, positions.end(), self.0)
-});
+position_relation!(
+    StartingAt,
+    Included(self.0),
+    Unbounded,
+    self,
+    positions,
+    candidates,
+    { retain_equal(candidates, positions.start(), self.0) }
+);
+position_relation!(
+    EndingAt,
+    Unbounded,
+    Included(self.0),
+    self,
+    positions,
+    candidates,
+    { retain_equal(candidates, positions.end(), self.0) }
+);
 
 /// Sources that still permit range restriction; filters do not implement this trait.
 pub trait UnrestrictedScan: sealed::Source {
@@ -1942,6 +2016,13 @@ impl<S: sealed::Source, P> sealed::Source for Restricted<S, P> {}
 impl<C, R> sealed::Predicate for Selection<C, R> {}
 impl<C: Coordinates, R: Relation<C::Position>> Predicate for Selection<C, R> {
     #[inline(always)]
+    fn excludes_subtrees(&self, group: &GroupRef<'_>) -> bool {
+        match self.relation.end_lower_bound() {
+            Unbounded => false,
+            bound => self.coordinates.end_before(group, bound),
+        }
+    }
+    #[inline(always)]
     fn retain_matches(&self, group: &GroupRef<'_>, candidates: Mask) -> Mask {
         self.retain_group(group, || candidates)
     }
@@ -1998,6 +2079,11 @@ impl<'tree, S: GroupScan<'tree>, C: Coordinates, R: Relation<C::Position>> Group
 }
 
 pub trait Predicate: sealed::Predicate {
+    /// Whether every node in this group and all its descendants must fail.
+    #[inline(always)]
+    fn excludes_subtrees(&self, _group: &GroupRef<'_>) -> bool {
+        false
+    }
     /// Called once when the predicate is attached to a scan.
     fn prepare(&mut self, _group: &GroupRef<'_>) {}
     fn retain_matches(&self, group: &GroupRef<'_>, candidates: Mask) -> Mask;
@@ -2018,6 +2104,10 @@ impl Predicate for Identity {
 struct And<P, Q>(P, Q);
 impl<P: Predicate, Q: Predicate> sealed::Predicate for And<P, Q> {}
 impl<P: Predicate, Q: Predicate> Predicate for And<P, Q> {
+    #[inline(always)]
+    fn excludes_subtrees(&self, group: &GroupRef<'_>) -> bool {
+        self.0.excludes_subtrees(group)
+    }
     #[inline(always)]
     fn retain_matches(&self, group: &GroupRef<'_>, candidates: Mask) -> Mask {
         self.retain_group(group, || candidates)
