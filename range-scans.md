@@ -131,6 +131,11 @@ Dynamic sets of up to sixteen IDs prepare their stored symbol values once and
 share the fixed-array SIMD kernel. With three or more targets, dense groups load
 each symbol chunk once for all comparisons; sparse candidate masks retain their
 membership shortcut.
+Standalone filtered counts preserve the predicate type when forwarding to the
+source. For flat symbol scans, this selects the singleton, two-ID, or four-ID
+kernel before the group loop. Adding an identity predicate here would hide that
+specialization behind the generic conjunction kernel. Composed filters retain
+their conjunction and call order.
 The [index and sparse-mask measurements](iteration-optimization-findings.md#indexed-symbol-filters-and-sparse-candidate-masks-2026-09-20)
 cover rare/absent IDs, dense-scan regressions, and filter combinations at all three
 group sizes.
