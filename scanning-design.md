@@ -109,6 +109,13 @@ slot iterators with a static extraction direction.
 Predicates must return a subset of their input mask. Built-in predicates are
 pure; custom callbacks with observable side effects are outside the interface.
 
+Preorder's `next_matching` lets a predicate inspect group bounds before building
+the live-slot mask. `Predicate::retain_group` receives a deferred mask constructor;
+range selections invoke it only for groups that survive conservative rejection.
+Other predicates default to constructing the mask immediately. Counts use this
+same path, and composition keeps the first predicate's opportunity to reject
+before mask construction. Postorder retains its ordinary fragments.
+
 Generic composition permits inlining and specialization without dynamic dispatch
 or allocations for adapters. It does not guarantee SIMD. The hot column reads
 and predicate kernels must be visible to the optimizer; per-node opaque C calls
@@ -240,6 +247,10 @@ needs only its corresponding endpoint column; overlap and containment need both.
 Use group bases and packed deltas directly. Where possible, translate an absolute
 bound into a comparison against stored deltas, handling bounds outside the
 representable interval before narrowing. Do not unpack coordinates into a cache.
+
+Delta columns retain their slab slice, offset, and length until decoding or
+comparison is required. Group rejection and acceptance use only bases, avoiding
+delta-slice bounds checks on those paths. Reads still use checked slices.
 
 Preorder restrictions use a binary search over group start minima to remove
 groups beyond the relation's upper bound on node starts. Point bases store
