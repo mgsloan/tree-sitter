@@ -863,6 +863,32 @@ fn zero_width_overlap_boundaries() {
 }
 
 #[test]
+fn id_set_intersection() {
+    let cases: &[(&[u16], &[u16], &[u16])] = &[
+        (&[], &[], &[]),
+        (&[], &[1], &[]),
+        (&[1, 2], &[3], &[]),
+        (&[0, 63, 64, 65], &[0, 63, 64, 65], &[0, 63, 64, 65]),
+        (
+            &[u16::MAX, 64, 63, 64, 0],
+            &[64, 65, u16::MAX],
+            &[64, u16::MAX],
+        ),
+    ];
+    for &(first, second, expected) in cases {
+        let first = IdSet::new(first.iter().copied());
+        let second = IdSet::new(second.iter().copied());
+        for intersection in [first.intersection(&second), second.intersection(&first)] {
+            assert_eq!(intersection.is_empty(), expected.is_empty());
+            let actual = (0..=u16::MAX)
+                .filter(|&id| intersection.contains(id))
+                .collect::<Vec<_>>();
+            assert_eq!(actual, expected);
+        }
+    }
+}
+
+#[test]
 fn dense_id_filters() {
     let source = format!(
         "{{\"items\": [{}null], \"bad\": invalid}}",

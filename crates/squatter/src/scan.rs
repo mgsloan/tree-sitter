@@ -1195,7 +1195,7 @@ impl<'tree> GroupScan<'tree> for Preorder<'tree> {
     #[inline(always)]
     fn count_matches<P: Predicate>(self, mut predicate: P) -> usize {
         if !predicate.has_group_index() {
-            self.count_flat(predicate)
+            predicate.count_flat(self)
         } else if predicate.has_subtree_bound() {
             self.count_indexed::<true, _>(&mut predicate)
         } else {
@@ -2481,6 +2481,25 @@ impl<'tree, S: GroupScan<'tree>, C: Coordinates, R: Relation<C::Position>> Group
 }
 
 pub trait Predicate: sealed::Predicate {
+    /// Comparison state without mutable index cursors.
+    #[inline(always)]
+    fn flat(&self) -> impl Predicate {
+        self
+    }
+    #[inline(always)]
+    fn into_flat(self) -> impl Predicate
+    where
+        Self: Sized,
+    {
+        self
+    }
+    #[inline(always)]
+    fn count_flat(self, source: Preorder<'_>) -> usize
+    where
+        Self: Sized,
+    {
+        source.count_flat(self.into_flat())
+    }
     #[inline(always)]
     fn has_bitmap_index(&self) -> bool {
         false
@@ -2531,8 +2550,31 @@ pub trait Predicate: sealed::Predicate {
         self.retain_matches(group, candidates())
     }
 }
+impl<P: Predicate + ?Sized> sealed::Predicate for &P {}
+impl<P: Predicate + ?Sized> Predicate for &P {
+    #[inline(always)]
+    fn has_subtree_bound(&self) -> bool {
+        P::has_subtree_bound(self)
+    }
+    #[inline(always)]
+    fn excludes_subtrees(&self, group: &GroupRef<'_>) -> bool {
+        P::excludes_subtrees(self, group)
+    }
+    #[inline(always)]
+    fn retain_matches(&self, group: &GroupRef<'_>, candidates: Mask) -> Mask {
+        P::retain_matches(self, group, candidates)
+    }
+    #[inline(always)]
+    fn retain_group(&self, group: &GroupRef<'_>, candidates: impl FnOnce() -> Mask) -> Mask {
+        P::retain_group(self, group, candidates)
+    }
+}
 impl<P: Predicate> sealed::Predicate for &mut P {}
 impl<P: Predicate> Predicate for &mut P {
+    #[inline(always)]
+    fn flat(&self) -> impl Predicate {
+        P::flat(self)
+    }
     #[inline(always)]
     fn has_bitmap_index(&self) -> bool {
         P::has_bitmap_index(self)
@@ -2582,6 +2624,14 @@ impl Predicate for Identity {
 struct And<P, Q>(P, Q);
 impl<P: Predicate, Q: Predicate> sealed::Predicate for And<P, Q> {}
 impl<P: Predicate, Q: Predicate> Predicate for And<P, Q> {
+    #[inline(always)]
+    fn flat(&self) -> impl Predicate {
+        And(self.0.flat(), self.1.flat())
+    }
+    #[inline(always)]
+    fn into_flat(self) -> impl Predicate {
+        And(self.0.into_flat(), self.1.into_flat())
+    }
     #[inline(always)]
     fn has_bitmap_index(&self) -> bool {
         if self.0.has_group_index() {
@@ -2671,11 +2721,10 @@ impl<'tree, S: GroupScan<'tree>, P: Predicate> GroupScan<'tree> for Filtered<S, 
         if self.predicate.has_group_index() {
             return self.source.next_matching(&mut self.predicate);
         }
+        let predicate = self.predicate.flat();
         loop {
             let candidates = self.source.next_mask()?;
-            let matches = self
-                .predicate
-                .retain_matches(self.source.group(), candidates);
+            let matches = predicate.retain_matches(self.source.group(), candidates);
             if !matches.is_empty() {
                 return Some(matches);
             }
@@ -2688,6 +2737,7 @@ impl<'tree, S: GroupScan<'tree>, P: Predicate> GroupScan<'tree> for Filtered<S, 
                 .source
                 .next_matching(&mut And(&mut self.predicate, predicate));
         }
+        let predicate = predicate.flat();
         loop {
             let candidates = self.next_mask()?;
             let matches = predicate.retain_matches(self.group(), candidates);
@@ -2717,7 +2767,7 @@ impl<'ids> IdSelection for &'ids crate::IdSet {
         KindIds {
             strategy: KindStrategy::Multiple(self),
             index: SymbolIndex::default(),
-            cursors: [0; 16],
+            cursors: KindCursors::None,
         }
     }
     #[inline]
@@ -2740,10 +2790,12 @@ impl<const N: usize> IdSelection for [u16; N] {
     #[inline]
     fn into_kind_predicate(self) -> Self::KindPredicate {
         FixedKindIds {
-            ids: self,
-            empty: N == 0,
+            values: FixedKindValues {
+                ids: self,
+                empty: N == 0,
+            },
             index: SymbolIndex::default(),
-            cursors: [0; N],
+            cursors: None,
         }
     }
     #[inline]
@@ -2782,13 +2834,54 @@ impl<const N: usize> IdSelection for &[u16; N] {
 }
 
 pub struct FixedKindIds<const N: usize> {
+    values: FixedKindValues<N>,
+    index: SymbolIndex,
+    cursors: Option<[u32; N]>,
+}
+struct FixedKindValues<const N: usize> {
     ids: [u16; N],
     empty: bool,
-    index: SymbolIndex,
-    cursors: [u32; N],
+}
+struct KindId(u16);
+impl sealed::Predicate for KindId {}
+impl Predicate for KindId {
+    #[inline(always)]
+    fn retain_matches(&self, group: &GroupRef<'_>, candidates: Mask) -> Mask {
+        let layout = group.columns.layout;
+        group.equal_ids(layout.symbol, layout.symbol_shift, self.0, candidates)
+    }
+}
+impl<const N: usize> sealed::Predicate for FixedKindValues<N> {}
+impl<const N: usize> Predicate for FixedKindValues<N> {
+    #[inline(always)]
+    fn retain_matches(&self, group: &GroupRef<'_>, candidates: Mask) -> Mask {
+        if self.empty {
+            return Mask::default();
+        }
+        let layout = group.columns.layout;
+        group.equal_id_set(layout.symbol, layout.symbol_shift, &self.ids, candidates)
+    }
 }
 impl<const N: usize> sealed::Predicate for FixedKindIds<N> {}
 impl<const N: usize> Predicate for FixedKindIds<N> {
+    #[inline(always)]
+    fn count_flat(self, source: Preorder<'_>) -> usize {
+        if self.values.empty {
+            0
+        } else if N == 1 {
+            source.count_flat(KindId(self.values.ids[0]))
+        } else {
+            source.count_flat(self.values)
+        }
+    }
+    #[inline(always)]
+    fn flat(&self) -> impl Predicate {
+        &self.values
+    }
+    #[inline(always)]
+    fn into_flat(self) -> impl Predicate {
+        self.values
+    }
     #[inline(always)]
     fn has_bitmap_index(&self) -> bool {
         self.index.entry_bytes & SymbolIndex::BITMAP != 0
@@ -2807,8 +2900,10 @@ impl<const N: usize> Predicate for FixedKindIds<N> {
     ) -> Option<u32> {
         self.index.next_group(
             group,
-            self.ids.iter().copied(),
-            &mut self.cursors,
+            self.values.ids.iter().copied(),
+            self.cursors
+                .as_mut()
+                .map_or(&mut [], |cursors| cursors.as_mut_slice()),
             groups,
             reverse,
         )
@@ -2817,24 +2912,33 @@ impl<const N: usize> Predicate for FixedKindIds<N> {
     fn prepare(&mut self, group: &GroupRef<'_>) {
         let layout = group.columns.layout;
         let encode = |kind| encode_kind(layout, kind);
-        let Some(first) = self.ids.iter().copied().find_map(encode) else {
-            self.empty = true;
+        let Some(first) = self.values.ids.iter().copied().find_map(encode) else {
+            self.values.empty = true;
             return;
         };
         // Repeating a valid target preserves membership and a fixed comparison
         // count, without needing an impossible u16 sentinel for invalid IDs.
-        for kind in &mut self.ids {
+        for kind in &mut self.values.ids {
             *kind = encode(*kind).unwrap_or(first);
         }
-        self.index = SymbolIndex::new(group, self.ids.iter().copied());
+        self.index = SymbolIndex::new(group, self.values.ids.iter().copied());
+        self.cursors = if self.index.enabled() {
+            Some([0; N])
+        } else {
+            None
+        };
     }
     #[inline(always)]
     fn retain_indexed(&mut self, group: &GroupRef<'_>, candidates: impl FnOnce() -> Mask) -> Mask {
         let candidates = candidates();
         if self.index.enabled()
-            && let Some(matches) =
-                self.index
-                    .sparse_mask(group, self.ids.iter().copied(), &mut self.cursors)
+            && let Some(matches) = self.index.sparse_mask(
+                group,
+                self.values.ids.iter().copied(),
+                self.cursors
+                    .as_mut()
+                    .map_or(&mut [], |cursors| cursors.as_mut_slice()),
+            )
         {
             return candidates.intersection(matches);
         }
@@ -2842,18 +2946,29 @@ impl<const N: usize> Predicate for FixedKindIds<N> {
     }
     #[inline(always)]
     fn retain_matches(&self, group: &GroupRef<'_>, candidates: Mask) -> Mask {
-        if self.empty {
-            return Mask::default();
-        }
-        let layout = group.columns.layout;
-        group.equal_id_set(layout.symbol, layout.symbol_shift, &self.ids, candidates)
+        self.values.retain_matches(group, candidates)
     }
 }
 
 pub struct KindIds<'kinds> {
     strategy: KindStrategy<'kinds>,
     index: SymbolIndex,
-    cursors: [u32; 16],
+    cursors: KindCursors,
+}
+enum KindCursors {
+    None,
+    Single(u32),
+    Multiple([u32; 16]),
+}
+impl KindCursors {
+    #[inline(always)]
+    fn as_mut_slice(&mut self) -> &mut [u32] {
+        match self {
+            Self::None => &mut [],
+            Self::Single(cursor) => std::slice::from_mut(cursor),
+            Self::Multiple(cursors) => cursors,
+        }
+    }
 }
 enum KindStrategy<'kinds> {
     Empty,
@@ -2894,6 +3009,33 @@ fn encode_kind(layout: ColumnLayout, kind: u16) -> Option<u16> {
 }
 impl sealed::Predicate for KindIds<'_> {}
 impl Predicate for KindIds<'_> {
+    // Select the small count kernel once, outside the group loop.
+    #[inline(always)]
+    fn count_flat(self, source: Preorder<'_>) -> usize {
+        match &self.strategy {
+            KindStrategy::Empty => 0,
+            KindStrategy::Single(target) => source.count_flat(KindId(*target)),
+            KindStrategy::Small { ids, length: 2, .. } => source.count_flat(FixedKindValues {
+                ids: [ids[0], ids[1]],
+                empty: false,
+            }),
+            KindStrategy::Small {
+                ids, length: 3..=4, ..
+            } => source.count_flat(FixedKindValues {
+                ids: [ids[0], ids[1], ids[2], ids[3]],
+                empty: false,
+            }),
+            _ => source.count_flat(self),
+        }
+    }
+    #[inline(always)]
+    fn flat(&self) -> impl Predicate {
+        &self.strategy
+    }
+    #[inline(always)]
+    fn into_flat(self) -> impl Predicate {
+        self.strategy
+    }
     #[inline(always)]
     fn has_bitmap_index(&self) -> bool {
         self.index.entry_bytes & SymbolIndex::BITMAP != 0
@@ -2913,7 +3055,7 @@ impl Predicate for KindIds<'_> {
         self.index.next_group(
             group,
             self.strategy.targets(group.columns.layout),
-            &mut self.cursors,
+            self.cursors.as_mut_slice(),
             groups,
             reverse,
         )
@@ -2955,6 +3097,15 @@ impl Predicate for KindIds<'_> {
             _ => KindStrategy::Multiple(kinds),
         };
         self.index = SymbolIndex::new(group, self.strategy.targets(layout));
+        self.cursors = if !self.index.enabled() {
+            KindCursors::None
+        } else {
+            match self.strategy {
+                KindStrategy::Empty => KindCursors::None,
+                KindStrategy::Single(_) => KindCursors::Single(0),
+                _ => KindCursors::Multiple([0; 16]),
+            }
+        };
     }
     #[inline(always)]
     fn retain_indexed(&mut self, group: &GroupRef<'_>, candidates: impl FnOnce() -> Mask) -> Mask {
@@ -2963,18 +3114,25 @@ impl Predicate for KindIds<'_> {
             && let Some(matches) = self.index.sparse_mask(
                 group,
                 self.strategy.targets(group.columns.layout),
-                &mut self.cursors,
+                self.cursors.as_mut_slice(),
             )
         {
             return candidates.intersection(matches);
         }
         self.retain_matches(group, candidates)
     }
+    #[inline(always)]
+    fn retain_matches(&self, group: &GroupRef<'_>, candidates: Mask) -> Mask {
+        self.strategy.retain_matches(group, candidates)
+    }
+}
+impl sealed::Predicate for KindStrategy<'_> {}
+impl Predicate for KindStrategy<'_> {
     // Inlining lets node consumers discard unused group metadata.
     #[inline(always)]
     fn retain_matches(&self, group: &GroupRef<'_>, candidates: Mask) -> Mask {
         let layout = group.columns.layout;
-        match &self.strategy {
+        match self {
             KindStrategy::Empty => Mask::default(),
             KindStrategy::Single(target) => {
                 group.equal_ids(layout.symbol, layout.symbol_shift, *target, candidates)
