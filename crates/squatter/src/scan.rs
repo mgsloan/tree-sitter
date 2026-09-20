@@ -2712,6 +2712,11 @@ impl<'tree, S: GroupScan<'tree>, P: Predicate> GroupScan<'tree> for Filtered<S, 
     fn group(&self) -> &GroupRef<'tree> {
         self.source.group()
     }
+    // Preserve the predicate type for its specialized count kernel.
+    #[inline(always)]
+    fn count(self) -> usize {
+        self.source.count_matches(self.predicate)
+    }
     #[inline(always)]
     fn count_matches<Q: Predicate>(self, predicate: Q) -> usize {
         self.source.count_matches(And(self.predicate, predicate))
