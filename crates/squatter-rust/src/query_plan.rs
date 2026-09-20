@@ -131,6 +131,48 @@ impl Program {
         result
     }
 
+    pub fn disable_pattern(&mut self, compiled: &CompiledQuery, pattern: usize) {
+        if let Some(plan) = &mut self.direct {
+            let keep = !(1 << pattern);
+            for roots in &mut plan.roots {
+                *roots &= keep;
+            }
+        }
+
+        // Native removal compacts entries, so their indexed ranges must change.
+        // Remaining step/entry annotations and direct-plan topology still hold.
+        // Scan filters may retain removed roots: extra candidates are harmless,
+        // and keeping them matches the reference's mutation behavior.
+        self.pattern_map.fill(Range {
+            offset: 0,
+            length: 0,
+        });
+        for (index, entry) in compiled
+            .entries()
+            .iter()
+            .enumerate()
+            .skip(compiled.view.wildcard_root_pattern_count as usize)
+        {
+            let symbol = compiled.steps()[entry.step_index as usize].symbol;
+            let symbol = if symbol == u16::MAX {
+                compiled.view.symbol_count as usize
+            } else {
+                symbol as usize
+            };
+            let range = &mut self.pattern_map[symbol];
+            if range.length == 0 {
+                range.offset = index as u32;
+            }
+            range.length += 1;
+        }
+        if !self.supports_ranges && compiled.entries().iter().all(|entry| entry.flags & 1 != 0) {
+            self.supports_ranges = compiled
+                .steps()
+                .iter()
+                .all(|step| step.alternative_index == u16::MAX);
+        }
+    }
+
     fn prepare_scan(&mut self, compiled: &CompiledQuery) {
         // Root ?/* alternatives include an empty wildcard branch; every node
         // can start such a match, so symbol skipping would lose empty matches.

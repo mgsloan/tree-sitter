@@ -108,6 +108,51 @@ fn queries_match_reference_with_and_without_plans() {
 }
 
 #[test]
+fn disabling_non_rooted_pattern_enables_ranges() {
+    let language =
+        unsafe { tree_sitter::Language::from_raw(tree_sitter_c::LANGUAGE.into_raw()().cast()) };
+    let grammar = Grammar::new(&language).unwrap();
+    let reference_grammar = tree_squatter::Grammar::new(&language).unwrap();
+    let mut parser = tree_sitter::Parser::new();
+    parser.set_language(&language).unwrap();
+    let source = "int value = 1;";
+    let native = parser.parse(source, None).unwrap();
+    let tree = Tree::pack(&grammar, &native).unwrap();
+    let reference = tree_squatter::Tree::pack(&reference_grammar, &native).unwrap();
+    let pattern = "((identifier) @name (number_literal) @value)\n(identifier) @other";
+
+    for optimized in [false, true] {
+        let mut query = Query::new(&language, pattern).unwrap();
+        let mut reference_query = tree_squatter::Query::new(&language, pattern).unwrap();
+        let mut cursor = QueryCursor::new();
+        let mut reference_cursor = tree_squatter::QueryCursor::new();
+        cursor.set_optimized(optimized);
+        reference_cursor.set_optimized(optimized);
+        assert!(cursor.set_byte_range(4..9));
+        assert!(reference_cursor.set_byte_range(4..9));
+
+        let mut execution = cursor.execute(&query, tree.root_node(), source.as_bytes());
+        assert!(execution.next_match().is_none());
+        assert_eq!(
+            execution.error(),
+            Some(tree_squatter_rust::QueryExecutionError::UnsupportedRange)
+        );
+        drop(execution);
+
+        // Removing the only non-rooted entry changes range eligibility, even
+        // though its compiled steps and the other plans remain in storage.
+        for _ in 0..2 {
+            query.disable_pattern(0);
+            reference_query.disable_pattern(0);
+            assert_eq!(
+                matches!(&mut cursor, &query, tree, source),
+                matches!(&mut reference_cursor, &reference_query, reference, source),
+            );
+        }
+    }
+}
+
+#[test]
 fn cancellation_limits_ranges_and_reuse() {
     let language =
         unsafe { tree_sitter::Language::from_raw(tree_sitter_c::LANGUAGE.into_raw()().cast()) };

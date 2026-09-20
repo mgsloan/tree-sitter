@@ -189,12 +189,13 @@ impl Query {
             "pattern index out of bounds"
         );
         self.compiled.disable_pattern(pattern as u32);
-        self.program = crate::query_plan::Program::new(&mut self.compiled);
+        self.program.disable_pattern(&self.compiled, pattern);
     }
 
     pub fn disable_capture(&mut self, name: &str) {
         self.compiled.disable_capture(name);
-        self.program = crate::query_plan::Program::new(&mut self.compiled);
+        // Plans read capture IDs from the compiled steps at execution time;
+        // removing an ID leaves their topology and eligibility unchanged.
     }
 }
 
