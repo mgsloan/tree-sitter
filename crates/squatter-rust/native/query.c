@@ -9,6 +9,25 @@
 #include "unicode.h"
 #include <wctype.h>
 
+// Keep upstream names in the compiler while giving exported symbols a private namespace.
+// These aliases must follow the headers so Tree-sitter's declarations remain unchanged.
+#define TSQuery SQQuery
+#define TSQueryPredicateStep QueryPredicateStep
+
+#define ts_query_new sq_native_query_new
+#define ts_query_delete sq_native_query_delete
+#define ts_query_pattern_count sq_native_query_pattern_count
+#define ts_query_capture_count sq_native_query_capture_count
+#define ts_query_string_count sq_native_query_string_count
+#define ts_query_capture_name_for_id sq_native_query_capture_name_for_id
+#define ts_query_capture_quantifier_for_id sq_native_query_capture_quantifier_for_id
+#define ts_query_string_value_for_id sq_native_query_string_value_for_id
+#define ts_query_predicates_for_pattern sq_native_query_predicates_for_pattern
+#define ts_query_start_byte_for_pattern sq_native_query_start_byte_for_pattern
+#define ts_query_end_byte_for_pattern sq_native_query_end_byte_for_pattern
+#define ts_query_disable_capture sq_native_query_disable_capture
+#define ts_query_disable_pattern sq_native_query_disable_pattern
+
 #define MAX_STEP_CAPTURE_COUNT 3
 #define MAX_NEGATED_FIELD_COUNT 8
 #define MAX_STATE_PREDECESSOR_COUNT 256
@@ -111,14 +130,14 @@ typedef struct {
  * itself is immutable. The mutable state used in the process of executing the
  * query is stored in a `TSQueryCursor`.
  */
-struct SQQuery {
+struct TSQuery {
   SymbolTable captures;
   SymbolTable predicate_values;
   Array(CaptureQuantifiers) capture_quantifiers;
   Array(NativeView) quantifier_views;
   Array(QueryStep) steps;
   Array(PatternEntry) pattern_map;
-  Array(QueryPredicateStep) predicate_steps;
+  Array(TSQueryPredicateStep) predicate_steps;
   Array(QueryPattern) patterns;
   Array(StepOffset) step_offsets;
   Array(TSFieldId) negated_fields;
@@ -802,8 +821,8 @@ static inline int analysis_subgraph_node__compare(const AnalysisSubgraphNode *se
 // This returns `true` if the symbol is present and `false` otherwise.
 // If the symbol is not present `*result` is set to the index where the
 // symbol should be inserted.
-static inline bool sq_native_query__pattern_map_search(
-  const SQQuery *self,
+static inline bool ts_query__pattern_map_search(
+  const TSQuery *self,
   TSSymbol needle,
   uint32_t *result
 ) {
@@ -842,13 +861,13 @@ static inline bool sq_native_query__pattern_map_search(
 
 // Insert a new pattern's start index into the pattern map, maintaining
 // the pattern map's ordering invariant.
-static inline void sq_native_query__pattern_map_insert(
-  SQQuery *self,
+static inline void ts_query__pattern_map_insert(
+  TSQuery *self,
   TSSymbol symbol,
   PatternEntry new_entry
 ) {
   uint32_t index;
-  sq_native_query__pattern_map_search(self, symbol, &index);
+  ts_query__pattern_map_search(self, symbol, &index);
 
   // Ensure that the entries are sorted not only by symbol, but also
   // by pattern_index. This way, states for earlier patterns will be
@@ -871,8 +890,8 @@ static inline void sq_native_query__pattern_map_insert(
 
 // Walk the subgraph for this non-terminal, tracking all of the possible
 // sequences of progress within the pattern.
-static void sq_native_query__perform_analysis(
-  SQQuery *self,
+static void ts_query__perform_analysis(
+  TSQuery *self,
   const AnalysisSubgraphArray *subgraphs,
   QueryAnalysis *analysis
 ) {
@@ -1180,7 +1199,7 @@ static void sq_native_query__perform_analysis(
 }
 
 #ifdef DEBUG_DUMP_STEPS
-static void sq_native_query__dump_steps(const SQQuery *self, const char *label) {
+static void ts_query__dump_steps(const TSQuery *self, const char *label) {
   printf("=== STEPS (%s) ===\n", label);
   for (unsigned i = 0; i < self->steps.size; i++) {
     const QueryStep *s = array_get(&self->steps, i);
@@ -1217,7 +1236,7 @@ static void sq_native_query__dump_steps(const SQQuery *self, const char *label) 
 }
 #endif
 
-static bool sq_native_query__analyze_patterns(SQQuery *self, unsigned *error_offset) {
+static bool ts_query__analyze_patterns(TSQuery *self, unsigned *error_offset) {
   Array(uint16_t) non_rooted_pattern_start_steps = array_new();
   for (unsigned i = 0; i < self->pattern_map.size; i++) {
     PatternEntry *pattern = array_get(&self->pattern_map, i);
@@ -1524,7 +1543,7 @@ static bool sq_native_query__analyze_patterns(SQQuery *self, unsigned *error_off
     #endif
 
     analysis.did_abort = false;
-    sq_native_query__perform_analysis(self, &subgraphs, &analysis);
+    ts_query__perform_analysis(self, &subgraphs, &analysis);
 
     // If this pattern could not be fully analyzed, then every step should
     // be considered fallible.
@@ -1589,7 +1608,7 @@ static bool sq_native_query__analyze_patterns(SQQuery *self, unsigned *error_off
       end = start + pattern->predicate_steps.length,
       j = start; j < end; j++
     ) {
-      QueryPredicateStep *step = array_get(&self->predicate_steps, j);
+      TSQueryPredicateStep *step = array_get(&self->predicate_steps, j);
       if (step->type == TSQueryPredicateStepTypeCapture) {
         uint16_t value_id = step->value_id;
         array_insert_sorted_by(&predicate_capture_ids, , value_id);
@@ -1654,7 +1673,7 @@ static bool sq_native_query__analyze_patterns(SQQuery *self, unsigned *error_off
   }
 
   #ifdef DEBUG_ANALYZE_QUERY
-    sq_native_query__dump_steps(self, "analysis");
+    ts_query__dump_steps(self, "analysis");
   #endif
 
   // Determine which repetition symbols in this language have the possibility
@@ -1695,7 +1714,7 @@ static bool sq_native_query__analyze_patterns(SQQuery *self, unsigned *error_off
       printf("\nWalk states for rootless pattern step %u:\n", pattern_entry->step_index);
     #endif
 
-    sq_native_query__perform_analysis(
+    ts_query__perform_analysis(
       self,
       &subgraphs,
       &analysis
@@ -1741,8 +1760,8 @@ supertype_cleanup:
   return all_patterns_are_valid;
 }
 
-static void sq_native_query__add_negated_fields(
-  SQQuery *self,
+static void ts_query__add_negated_fields(
+  TSQuery *self,
   uint16_t step_index,
   TSFieldId *field_ids,
   uint16_t field_count
@@ -1793,8 +1812,8 @@ static void sq_native_query__add_negated_fields(
   array_push(&self->negated_fields, 0);
 }
 
-static TSQueryError sq_native_query__parse_string_literal(
-  SQQuery *self,
+static TSQueryError ts_query__parse_string_literal(
+  TSQuery *self,
   Stream *stream
 ) {
   const char *string_start = stream->input;
@@ -1852,8 +1871,8 @@ static TSQueryError sq_native_query__parse_string_literal(
 // a higher level of abstraction, such as the Rust/JavaScript bindings. They
 // can contain '@'-prefixed capture names, double-quoted strings, and bare
 // symbols, which also represent strings.
-static TSQueryError sq_native_query__parse_predicate(
-  SQQuery *self,
+static TSQueryError ts_query__parse_predicate(
+  TSQuery *self,
   Stream *stream
 ) {
   if (!stream_is_ident_start(stream)) return TSQueryErrorSyntax;
@@ -1869,7 +1888,7 @@ static TSQueryError sq_native_query__parse_predicate(
     predicate_name,
     length
   );
-  array_push(&self->predicate_steps, ((QueryPredicateStep) {
+  array_push(&self->predicate_steps, ((TSQueryPredicateStep) {
     .type = TSQueryPredicateStepTypeString,
     .value_id = id,
   }));
@@ -1879,7 +1898,7 @@ static TSQueryError sq_native_query__parse_predicate(
     if (stream->next == ')') {
       stream_advance(stream);
       stream_skip_whitespace(stream);
-      array_push(&self->predicate_steps, ((QueryPredicateStep) {
+      array_push(&self->predicate_steps, ((TSQueryPredicateStep) {
         .type = TSQueryPredicateStepTypeDone,
         .value_id = 0,
       }));
@@ -1907,7 +1926,7 @@ static TSQueryError sq_native_query__parse_predicate(
         return TSQueryErrorCapture;
       }
 
-      array_push(&self->predicate_steps, ((QueryPredicateStep) {
+      array_push(&self->predicate_steps, ((TSQueryPredicateStep) {
         .type = TSQueryPredicateStepTypeCapture,
         .value_id = capture_id,
       }));
@@ -1915,14 +1934,14 @@ static TSQueryError sq_native_query__parse_predicate(
 
     // Parse a string literal
     else if (stream->next == '"') {
-      TSQueryError e = sq_native_query__parse_string_literal(self, stream);
+      TSQueryError e = ts_query__parse_string_literal(self, stream);
       if (e) return e;
       uint16_t query_id = symbol_table_insert_name(
         &self->predicate_values,
         self->string_buffer.contents,
         self->string_buffer.size
       );
-      array_push(&self->predicate_steps, ((QueryPredicateStep) {
+      array_push(&self->predicate_steps, ((TSQueryPredicateStep) {
         .type = TSQueryPredicateStepTypeString,
         .value_id = query_id,
       }));
@@ -1938,7 +1957,7 @@ static TSQueryError sq_native_query__parse_predicate(
         symbol_start,
         symbol_length
       );
-      array_push(&self->predicate_steps, ((QueryPredicateStep) {
+      array_push(&self->predicate_steps, ((TSQueryPredicateStep) {
         .type = TSQueryPredicateStepTypeString,
         .value_id = query_id,
       }));
@@ -1960,8 +1979,8 @@ static TSQueryError sq_native_query__parse_predicate(
 //
 // The caller is responsible for passing in a dedicated CaptureQuantifiers.
 // These should not be shared between different calls to ts_query__parse_pattern!
-static TSQueryError sq_native_query__parse_pattern(
-  SQQuery *self,
+static TSQueryError ts_query__parse_pattern(
+  TSQuery *self,
   Stream *stream,
   uint32_t depth,
   bool is_immediate,
@@ -1994,7 +2013,7 @@ static TSQueryError sq_native_query__parse_pattern(
     CaptureQuantifiers branch_capture_quantifiers = capture_quantifiers_new();
     for (;;) {
       uint32_t start_index = self->steps.size;
-      TSQueryError e = sq_native_query__parse_pattern(
+      TSQueryError e = ts_query__parse_pattern(
         self,
         stream,
         depth,
@@ -2070,7 +2089,7 @@ static TSQueryError sq_native_query__parse_pattern(
             return TSQueryErrorSyntax;
           }
         }
-        TSQueryError e = sq_native_query__parse_pattern(
+        TSQueryError e = ts_query__parse_pattern(
           self,
           stream,
           depth,
@@ -2101,7 +2120,7 @@ static TSQueryError sq_native_query__parse_pattern(
     // A dot/pound character indicates the start of a predicate.
     else if (stream->next == '.' || stream->next == '#') {
       stream_advance(stream);
-      return sq_native_query__parse_predicate(self, stream);
+      return ts_query__parse_predicate(self, stream);
     }
 
     // Otherwise, this parenthesis is the start of a named node.
@@ -2140,7 +2159,7 @@ static TSQueryError sq_native_query__parse_pattern(
 
           else if (stream->next == '"') {
             const char *string_start = stream->input;
-            TSQueryError e = sq_native_query__parse_string_literal(self, stream);
+            TSQueryError e = ts_query__parse_string_literal(self, stream);
             if (e) return e;
 
             symbol = ts_language_symbol_for_name(
@@ -2216,7 +2235,7 @@ static TSQueryError sq_native_query__parse_pattern(
             true
           );
         } else if (stream->next == '"') { // Anonymous leaf node
-          TSQueryError e = sq_native_query__parse_string_literal(self, stream);
+          TSQueryError e = ts_query__parse_string_literal(self, stream);
           if (e) return e;
           step->symbol = ts_language_symbol_for_name(
             self->language,
@@ -2309,7 +2328,7 @@ static TSQueryError sq_native_query__parse_pattern(
         }
 
         uint16_t step_index = self->steps.size;
-        TSQueryError e = sq_native_query__parse_pattern(
+        TSQueryError e = ts_query__parse_pattern(
           self,
           stream,
           depth + 1,
@@ -2347,7 +2366,7 @@ static TSQueryError sq_native_query__parse_pattern(
             }
 
             if (negated_field_count) {
-              sq_native_query__add_negated_fields(
+              ts_query__add_negated_fields(
                 self,
                 starting_step_index,
                 negated_field_ids,
@@ -2387,7 +2406,7 @@ static TSQueryError sq_native_query__parse_pattern(
   // Parse a double-quoted anonymous leaf node expression
   else if (stream->next == '"') {
     const char *string_start = stream->input;
-    TSQueryError e = sq_native_query__parse_string_literal(self, stream);
+    TSQueryError e = ts_query__parse_string_literal(self, stream);
     if (e) return e;
 
     // Add a step for the node
@@ -2421,7 +2440,7 @@ static TSQueryError sq_native_query__parse_pattern(
 
     // Parse the pattern
     CaptureQuantifiers field_capture_quantifiers = capture_quantifiers_new();
-    TSQueryError e = sq_native_query__parse_pattern(
+    TSQueryError e = ts_query__parse_pattern(
       self,
       stream,
       depth,
@@ -2584,7 +2603,7 @@ static TSQueryError sq_native_query__parse_pattern(
   return 0;
 }
 
-SQQuery *sq_native_query_new(
+TSQuery *ts_query_new(
   const TSLanguage *language,
   const char *source,
   uint32_t source_len,
@@ -2600,8 +2619,8 @@ SQQuery *sq_native_query_new(
     return NULL;
   }
 
-  SQQuery *self = ts_malloc(sizeof(SQQuery));
-  *self = (SQQuery) {
+  TSQuery *self = ts_malloc(sizeof(TSQuery));
+  *self = (TSQuery) {
     .steps = array_new(),
     .pattern_map = array_new(),
     .captures = symbol_table_new(),
@@ -2633,7 +2652,7 @@ SQQuery *sq_native_query_new(
       .flags = (false ? SQ_PATTERN_IS_NON_LOCAL : 0),
     }));
     CaptureQuantifiers capture_quantifiers = capture_quantifiers_new();
-    *error_type = sq_native_query__parse_pattern(self, &stream, 0, false, false, &capture_quantifiers);
+    *error_type = ts_query__parse_pattern(self, &stream, 0, false, false, &capture_quantifiers);
     array_push(&self->steps, query_step__new(0, PATTERN_DONE_MARKER, false));
 
     QueryPattern *pattern = array_back(&self->patterns);
@@ -2647,7 +2666,7 @@ SQQuery *sq_native_query_new(
       if (*error_type == PARENT_DONE) *error_type = TSQueryErrorSyntax;
       *error_offset = stream_offset(&stream);
       capture_quantifiers_delete(&capture_quantifiers);
-      sq_native_query_delete(self);
+      ts_query_delete(self);
       return NULL;
     }
 
@@ -2687,7 +2706,7 @@ SQQuery *sq_native_query_new(
         }
       }
 
-      sq_native_query__pattern_map_insert(self, step->symbol, (PatternEntry) {
+      ts_query__pattern_map_insert(self, step->symbol, (PatternEntry) {
         .step_index = start_step_index,
         .pattern_index = pattern_index,
         .flags = (is_rooted ? SQ_PATTERN_IS_ROOTED : 0)
@@ -2757,17 +2776,17 @@ SQQuery *sq_native_query_new(
   }
 
   #ifdef DEBUG_DUMP_STEPS
-    sq_native_query__dump_steps(self, "post-parse");
+    ts_query__dump_steps(self, "post-parse");
   #endif
 
-  if (!sq_native_query__analyze_patterns(self, error_offset)) {
+  if (!ts_query__analyze_patterns(self, error_offset)) {
     *error_type = TSQueryErrorStructure;
-    sq_native_query_delete(self);
+    ts_query_delete(self);
     return NULL;
   }
 
   #ifdef DEBUG_DUMP_STEPS
-    sq_native_query__dump_steps(self, "post-analysis");
+    ts_query__dump_steps(self, "post-analysis");
   #endif
 
   array_delete(&self->string_buffer);
@@ -2784,7 +2803,7 @@ SQQuery *sq_native_query_new(
 }
 
 // Release the program owner, including nested capture arrays and partial compilation state.
-void sq_native_query_delete(SQQuery *self) {
+void ts_query_delete(TSQuery *self) {
   if (!self) return;
 
   array_delete(&self->steps);
@@ -2832,28 +2851,28 @@ void sq_native_query_view(const SQQuery *self, SQQueryView *view) {
 #undef VIEW
 }
 
-uint32_t sq_native_query_pattern_count(const SQQuery *self) {
+uint32_t ts_query_pattern_count(const TSQuery *self) {
   return self->patterns.size;
 }
 
-uint32_t sq_native_query_capture_count(const SQQuery *self) {
+uint32_t ts_query_capture_count(const TSQuery *self) {
   return self->captures.slices.size;
 }
 
-uint32_t sq_native_query_string_count(const SQQuery *self) {
+uint32_t ts_query_string_count(const TSQuery *self) {
   return self->predicate_values.slices.size;
 }
 
-const char *sq_native_query_capture_name_for_id(
-  const SQQuery *self,
+const char *ts_query_capture_name_for_id(
+  const TSQuery *self,
   uint32_t index,
   uint32_t *length
 ) {
   return symbol_table_name_for_id(&self->captures, index, length);
 }
 
-TSQuantifier sq_native_query_capture_quantifier_for_id(
-  const SQQuery *self,
+TSQuantifier ts_query_capture_quantifier_for_id(
+  const TSQuery *self,
   uint32_t pattern_index,
   uint32_t capture_index
 ) {
@@ -2861,16 +2880,16 @@ TSQuantifier sq_native_query_capture_quantifier_for_id(
   return capture_quantifier_for_id(capture_quantifiers, capture_index);
 }
 
-const char *sq_native_query_string_value_for_id(
-  const SQQuery *self,
+const char *ts_query_string_value_for_id(
+  const TSQuery *self,
   uint32_t index,
   uint32_t *length
 ) {
   return symbol_table_name_for_id(&self->predicate_values, index, length);
 }
 
-const QueryPredicateStep *sq_native_query_predicates_for_pattern(
-  const SQQuery *self,
+const TSQueryPredicateStep *ts_query_predicates_for_pattern(
+  const TSQuery *self,
   uint32_t pattern_index,
   uint32_t *step_count
 ) {
@@ -2880,22 +2899,22 @@ const QueryPredicateStep *sq_native_query_predicates_for_pattern(
   return array_get(&self->predicate_steps, slice.offset);
 }
 
-uint32_t sq_native_query_start_byte_for_pattern(
-  const SQQuery *self,
+uint32_t ts_query_start_byte_for_pattern(
+  const TSQuery *self,
   uint32_t pattern_index
 ) {
   return array_get(&self->patterns, pattern_index)->start_byte;
 }
 
-uint32_t sq_native_query_end_byte_for_pattern(
-  const SQQuery *self,
+uint32_t ts_query_end_byte_for_pattern(
+  const TSQuery *self,
   uint32_t pattern_index
 ) {
   return array_get(&self->patterns, pattern_index)->end_byte;
 }
 
-void sq_native_query_disable_capture(
-  SQQuery *self,
+void ts_query_disable_capture(
+  TSQuery *self,
   const char *name,
   uint32_t length
 ) {
@@ -2911,8 +2930,8 @@ void sq_native_query_disable_capture(
 }
 
 // Remove every entry point while keeping pattern IDs and compiled steps stable.
-void sq_native_query_disable_pattern(
-  SQQuery *self,
+void ts_query_disable_pattern(
+  TSQuery *self,
   uint32_t pattern_index
 ) {
   for (uint32_t index = 0; index < self->pattern_map.size;) {
