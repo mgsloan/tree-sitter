@@ -183,11 +183,12 @@ For a nonempty node `start..end` and nonempty query `from..to`:
 | `starting_in_bytes` | `starting_in_points` | `from <= start && start < to` |
 | `ending_in_bytes` | `ending_in_points` | `from <= end && end < to` |
 
-Reversed query ranges match nothing for every relation. Empty queries match
-nothing except for `containing_*`: `position..position` matches when
-`start <= position && position <= end`, including a node's end boundary and a
-zero-width node at that position. Containment includes equality: a node with the
-query's exact nonempty span qualifies for both `within_*` and `containing_*`.
+Reversed query ranges match nothing for every relation. For empty queries,
+`within_*` matches zero-width nodes at the query position, and `containing_*`
+matches when `start <= position && position <= end`, including a node's end
+boundary and a zero-width node at that position. Other relations match nothing.
+Containment includes equality: a node with the query's exact span qualifies for
+both `within_*` and `containing_*`.
 All matching nodes are returned, including nested nodes; `within_*` does not
 select only the outermost qualifying nodes.
 
@@ -195,7 +196,7 @@ Zero-width nodes at `position` follow these rules:
 
 - `overlapping_*`, `starting_in_*`, and `ending_in_*` match when
   `from <= position && position < to`.
-- `within_*` matches nonempty queries when `from <= position && position <= to`,
+- `within_*` matches when `from <= position && position <= to`,
   including both boundaries under endpoint containment.
 - `containing_*` matches only the empty query `position..position`.
 

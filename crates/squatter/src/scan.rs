@@ -1410,7 +1410,7 @@ range_relation!(Overlapping, >=, Excluded, end, self, positions, candidates, {
             && (all_end || ends.get(slot) > self.0.start || start >= self.0.start)
     })
 });
-range_relation!(Within, >=, Included, end, self, positions, candidates, {
+range_relation!(Within, >, Included, end, self, positions, candidates, {
     retain_pair(
         candidates,
         positions.start(),
@@ -1561,7 +1561,7 @@ impl<'tree, S: UnrestrictedScan + GroupScan<'tree>> Scan<'tree, S> {
         Bytes,
         Within,
         Range<usize>,
-        "Match spans wholly within a nonempty range. Zero-width nodes at either boundary qualify."
+        "Match spans wholly within a byte range. Zero-width nodes at either boundary qualify, including for empty queries."
     );
     selection_method!(
         containing_bytes,

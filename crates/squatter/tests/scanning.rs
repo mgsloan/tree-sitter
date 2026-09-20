@@ -481,7 +481,7 @@ fn check_position_selections(root: Node<'_>) {
             |node: &Node<'_>| {
                 let start = node.start_byte();
                 let end = node.end_byte();
-                !range.is_empty() && (range.start <= start && end <= range.end)
+                range.start <= range.end && range.start <= start && end <= range.end
             }
         );
         check_selection!(
@@ -571,7 +571,7 @@ fn check_position_selections(root: Node<'_>) {
             |node: &Node<'_>| {
                 let start = node.start_position();
                 let end = node.end_position();
-                !range.is_empty() && (range.start <= start && end <= range.end)
+                range.start <= range.end && range.start <= start && end <= range.end
             }
         );
         check_selection!(
@@ -703,6 +703,20 @@ fn zero_width_overlap_boundaries() {
                 .containing_points(point..point)
                 .nodes()
                 .any(|node| node == root)
+        );
+        assert_eq!(
+            root.all()
+                .within_bytes(position..position)
+                .nodes()
+                .collect::<Vec<_>>(),
+            vec![empty]
+        );
+        assert_eq!(
+            root.all()
+                .within_points(point..point)
+                .nodes()
+                .collect::<Vec<_>>(),
+            vec![empty]
         );
         assert!(
             root.all()
