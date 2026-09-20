@@ -8,13 +8,15 @@
 
 - [ ] Document Send+Sync for scans
 
-- [ ] Write blog post
-
 - [ ] Separate viz branch for visualizer
 
 - [ ] Can query compilation code be similar to upstream with a minimized diff?
 
 - [ ] Port core to Rust.  Use the scan iterators to reduce code complexity
+
+- [ ] Decide how much to use newtypes.
+
+- [ ] Remove has_error / make it part of a side cache?
 
 ## Performance
 
@@ -25,6 +27,9 @@
       * [ ] Relatedly, also have a postorder representation?!
 
 - [ ] Try adding sibling / parent jump columns
+
+- [ ] slot count and field widths. Range scan benchmarks suggest 32 slots might
+  be better for both space and time.
 
 ## Query
 
@@ -81,6 +86,8 @@
 
 - [ ] Skip caching when frequently edited? (reduce churn)
 
+- [ ] Make sure that the DB isn't trusted - no exploits via DB contents.
+
 ## Use in ast-grep / similar tools
 
 Parse only the needed info.
@@ -89,8 +96,6 @@ Parse only the needed info.
 
 - [ ] try eliminating / reducing the conversion arena by storing post-order? Or modifying tree-feller?
 
-- [ ] slot count and field widths
-
 - [ ] threshold between scan and parent walk
 
 - [ ] symbol presence cache threshold
@@ -98,6 +103,8 @@ Parse only the needed info.
 - [ ] scan window
 
 - [ ] Try pure Rust impl for better LTO - or just have Rust-side implementations for small ops
+
+- [ ] tune iterator code - could shorter impls inline more for more complex pipelines?
 
 
 # Backburner
