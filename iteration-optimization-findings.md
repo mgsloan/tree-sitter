@@ -792,3 +792,49 @@ build/comparison/profile scripts, and extracted assembly. Its downloaded
 per-run benchmark data, summaries, and binaries. Local and downloaded binary
 hashes agree with the build manifest, as do the committed scan and harness
 sources. The instance was returned to its previous stopped state.
+
+## Direct supertype SIMD (2026-09-19)
+
+`filter_supertype_id` now tests direct `u16` membership masks with SSE2 for at
+least three candidates. Smaller masks and dictionary membership remain scalar.
+The implementation and operations table are in `c62c35cb9`.
+
+The cloud comparison used `squatter-benchmark` in
+`mgsloan-compute/us-central1-a`, an `e2-standard-4` running on **AMD EPYC 7B12**.
+Baseline `542b37ce3` and candidate `c62c35cb9` were built in the same isolated
+checkout path with rustc 1.95.0, portable release settings, 16-slot groups, and
+the same harness. Only the ELF interpreter path was patched for the cloud host.
+
+The harness now records each grammar's supertype count. Selecting grammars with
+1–8 supertypes from the existing corpora leaves 17 files per corpus across Bash,
+C, Go, Python, TSX, and TypeScript. Tuning has 319,370 nodes and 11,488 matches;
+holdout has 195,274 nodes and 30,345 matches. Each query uses the grammar's first
+supertype. Grammars without supertypes are excluded; neither corpus contains a
+dictionary-backed grammar.
+
+Runs held the activity and benchmark locks and pinned measurement to CPU 1.
+Each rate is the median of 14 samples from two processes, targeting 80 ms per
+sample; binary and workload order reverse on the second pass. Scan construction
+is timed; parsing, packing, and validation are excluded. Source/grammar hashes,
+input descriptions, and match counts agree across variants. The harness also
+checks each scan against scalar traversal before timing.
+
+Rates are **million input nodes/s**:
+
+| Operation | Tuning, before → after | Holdout, before → after |
+| --- | ---: | ---: |
+| Supertype nodes | 588.2 → 1,956.3 (+232.6%) | 486.4 → 1,285.9 (+164.4%) |
+| Supertype count | 610.3 → 2,121.0 (+247.5%) | 598.1 → 1,906.7 (+218.8%) |
+| Preorder nodes control | 1,358.5 → 1,368.4 (+0.7%) | 1,311.4 → 1,326.0 (+1.1%) |
+| Preorder fold control | 1,756.8 → 1,762.4 (+0.3%) | 1,676.3 → 1,675.7 (−0.03%) |
+
+Direct-supertype enumeration improves 2.64–3.33× and counting 3.19–3.48×, with
+little change in traversal controls. These results cover full preorder scans,
+not sparse filter combinations or dictionary performance. Unit tests cover all
+eight membership bits and 16/32/64-lane inputs; integration tests cover direct
+JSON and dictionary-backed C# membership, including postorder and reversal.
+
+Artifacts are in `build/supertype-bench/`: the build script and logs, source and
+binary hashes in `cloud/build.json`, and downloaded reports, manifests, scripts,
+source snapshots, binaries, and `summary.json` in `supertype-simd-20260919/`.
+Downloaded binary hashes and current scan/harness hashes match the build record.
