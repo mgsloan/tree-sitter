@@ -587,8 +587,8 @@ pub struct QueryCursor {
     comparison_blocks: Vec<ComparisonBlock>,
     finished: Vec<State>,
     finished_heap_size: usize,
-    parents: Vec<u32>,
-    position: u32,
+    parents: Vec<SlotIx>,
+    position: SlotIx,
     ascending: bool,
     halted: bool,
     error: Option<QueryExecutionError>,
@@ -638,7 +638,7 @@ impl QueryCursor {
             finished: Vec::with_capacity(8),
             finished_heap_size: 0,
             parents: Vec::new(),
-            position: 0,
+            position: SlotIx::new(0),
             ascending: false,
             halted: false,
             error: None,
@@ -741,7 +741,7 @@ impl QueryCursor {
             None
         };
         self.halted = self.error.is_some();
-        self.position = root.slot().get();
+        self.position = root.slot();
         self.ascending = false;
         self.exceeded_limit = false;
         self.cancelled = false;
@@ -891,14 +891,11 @@ impl<'query, 'tree> QueryExecution<'_, 'query, 'tree, '_> {
     }
 
     fn current(&self) -> Node<'tree> {
-        self.root.at(SlotIx::new(self.cursor.position))
+        self.root.at(self.cursor.position)
     }
 
     fn parent(&self) -> Option<Node<'tree>> {
-        self.cursor
-            .parents
-            .last()
-            .map(|slot| self.root.at(SlotIx::new(*slot)))
+        self.cursor.parents.last().map(|slot| self.root.at(*slot))
     }
 
     fn poll(&mut self) -> bool {
@@ -1281,7 +1278,7 @@ impl<'query, 'tree> QueryExecution<'_, 'query, 'tree, '_> {
             return false;
         };
         self.cursor.parents.push(self.cursor.position);
-        self.cursor.position = child.slot().get();
+        self.cursor.position = child.slot();
         true
     }
 
@@ -1292,7 +1289,7 @@ impl<'query, 'tree> QueryExecution<'_, 'query, 'tree, '_> {
         let Some(next) = self.current().next_sibling_including_empty() else {
             return false;
         };
-        self.cursor.position = next.slot().get();
+        self.cursor.position = next.slot();
         true
     }
 
@@ -1474,7 +1471,7 @@ impl<'query, 'tree> QueryExecution<'_, 'query, 'tree, '_> {
     }
 
     fn scan_seek(&mut self) -> bool {
-        let current_position = self.total_slots() - 1 - self.cursor.position;
+        let current_position = self.total_slots() - 1 - self.cursor.position.get();
         let end = self.node_end(self.root);
         let target = self.find_symbols(current_position, end);
         if self.cursor.halted {
@@ -1497,7 +1494,7 @@ impl<'query, 'tree> QueryExecution<'_, 'query, 'tree, '_> {
 
         // With no partial states, skipped enter/exit events cannot affect a
         // match. Restore only the ancestor path needed by the next root.
-        while self.total_slots() - 1 - self.cursor.position != target {
+        while self.total_slots() - 1 - self.cursor.position.get() != target {
             if target < self.node_end(self.current()) && self.goto_first_child() {
                 continue;
             }
