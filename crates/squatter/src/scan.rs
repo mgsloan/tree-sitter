@@ -459,9 +459,12 @@ impl<'tree> GroupRef<'tree> {
     #[inline]
     fn equal_ids(&self, offset: u32, shift: u32, target: u16, candidates: Mask) -> Mask {
         if candidates.0.is_power_of_two() {
-            return candidates.retain(|slot| {
-                self.columns.short(offset, self.first_slot() + slot) >> shift == target
-            });
+            let slot = self.first_slot() + candidates.0.trailing_zeros();
+            return if self.columns.short(offset, slot) >> shift == target {
+                candidates
+            } else {
+                Mask::default()
+            };
         }
         let start = offset as usize + self.first_slot() as usize * 2;
         let bytes = &self.columns.data[start..start + self.columns.group_size() as usize * 2];
@@ -499,29 +502,27 @@ impl<'tree> GroupRef<'tree> {
         candidates.intersection(Mask(matches))
     }
     #[inline(always)]
-    fn equal_id_set<const N: usize>(
-        &self,
-        offset: u32,
-        shift: u32,
-        targets: &[u16; N],
-        candidates: Mask,
-    ) -> Mask {
-        if N == 0 {
+    fn equal_id_set(&self, offset: u32, shift: u32, targets: &[u16], candidates: Mask) -> Mask {
+        if targets.is_empty() {
             return Mask::default();
         }
-        if N == 1 {
+        if targets.len() == 1 {
             return self.equal_ids(offset, shift, targets[0], candidates);
         }
-        if N == 2 {
+        if targets.len() == 2 {
             return Mask(
                 self.equal_ids(offset, shift, targets[0], candidates).0
                     | self.equal_ids(offset, shift, targets[1], candidates).0,
             );
         }
         if candidates.0.is_power_of_two() {
-            return candidates.retain(|slot| {
-                targets.contains(&(self.columns.short(offset, self.first_slot() + slot) >> shift))
-            });
+            let slot = self.first_slot() + candidates.0.trailing_zeros();
+            let value = self.columns.short(offset, slot) >> shift;
+            return if targets.contains(&value) {
+                candidates
+            } else {
+                Mask::default()
+            };
         }
         #[cfg(target_arch = "x86_64")]
         {
@@ -530,16 +531,16 @@ impl<'tree> GroupRef<'tree> {
             let bytes = &self.columns.data[start..start + self.columns.group_size() as usize * 2];
             let mut matches = 0;
             // SSE2 is baseline. Each checked chunk contains both vector loads;
-            // the const-sized target loop can unroll independently of group size.
+            // fixed-array callers expose the target count for loop unrolling.
             unsafe {
-                let targets = targets.map(|target| _mm_set1_epi16(target as i16));
                 let shift = _mm_cvtsi32_si128(shift as i32);
                 for (index, bytes) in bytes.chunks_exact(32).enumerate() {
                     let low = _mm_srl_epi16(_mm_loadu_si128(bytes.as_ptr().cast()), shift);
                     let high = _mm_srl_epi16(_mm_loadu_si128(bytes.as_ptr().add(16).cast()), shift);
                     let mut low_matches = _mm_setzero_si128();
                     let mut high_matches = _mm_setzero_si128();
-                    for target in targets {
+                    for &target in targets {
+                        let target = _mm_set1_epi16(target as i16);
                         low_matches = _mm_or_si128(low_matches, _mm_cmpeq_epi16(low, target));
                         high_matches = _mm_or_si128(high_matches, _mm_cmpeq_epi16(high, target));
                     }
@@ -2723,19 +2724,16 @@ impl<const N: usize> Predicate for FixedKindIds<N> {
     #[inline(always)]
     fn prepare(&mut self, group: &GroupRef<'_>) {
         let layout = group.columns.layout;
-        let encode = |kind| match kind {
-            u16::MAX => Some((layout.symbol_count - 2) as u16),
-            value if value == u16::MAX - 1 => Some((layout.symbol_count - 1) as u16),
-            value if u32::from(value) < layout.symbol_count - 2 => Some(value),
-            _ => None,
-        };
+        let encode = |kind| encode_kind(layout, kind);
         let Some(first) = self.ids.iter().copied().find_map(encode) else {
             self.empty = true;
             return;
         };
         // Repeating a valid target preserves membership and a fixed comparison
         // count, without needing an impossible u16 sentinel for invalid IDs.
-        self.ids = self.ids.map(|kind| encode(kind).unwrap_or(first));
+        for kind in &mut self.ids {
+            *kind = encode(*kind).unwrap_or(first);
+        }
         self.index = SymbolIndex::new(group, self.ids.iter().copied());
     }
     #[inline(always)]
@@ -2765,6 +2763,12 @@ pub struct KindIds<'kinds> {
 enum KindStrategy<'kinds> {
     Empty,
     Single(u16),
+    // Retain the public-ID set for sparse candidate masks.
+    Small {
+        ids: [u16; 16],
+        length: u8,
+        kinds: &'kinds KindSet,
+    },
     Multiple(&'kinds KindSet),
 }
 impl KindIds<'_> {
@@ -2772,20 +2776,25 @@ impl KindIds<'_> {
         let (ids, encoded): (&[u16], bool) = match &self.strategy {
             KindStrategy::Empty => (&[], true),
             KindStrategy::Single(target) => (std::slice::from_ref(target), true),
+            KindStrategy::Small { ids, length, .. } => (&ids[..usize::from(*length)], true),
             KindStrategy::Multiple(kinds) => (&kinds.ids, false),
         };
         ids.iter().copied().filter_map(move |kind| {
             if encoded {
                 Some(kind)
             } else {
-                match kind {
-                    u16::MAX => Some((layout.symbol_count - 2) as u16),
-                    value if value == u16::MAX - 1 => Some((layout.symbol_count - 1) as u16),
-                    value if u32::from(value) < layout.symbol_count - 2 => Some(value),
-                    _ => None,
-                }
+                encode_kind(layout, kind)
             }
         })
+    }
+}
+#[inline]
+fn encode_kind(layout: ColumnLayout, kind: u16) -> Option<u16> {
+    match kind {
+        u16::MAX => Some((layout.symbol_count - 2) as u16),
+        value if value == u16::MAX - 1 => Some((layout.symbol_count - 1) as u16),
+        value if u32::from(value) < layout.symbol_count - 2 => Some(value),
+        _ => None,
     }
 }
 impl sealed::Predicate for KindIds<'_> {}
@@ -2812,14 +2821,28 @@ impl Predicate for KindIds<'_> {
         let layout = group.columns.layout;
         self.strategy = match kinds.ids.as_slice() {
             [] => KindStrategy::Empty,
-            &[kind] => match kind {
-                u16::MAX => KindStrategy::Single((layout.symbol_count - 2) as u16),
-                value if value == u16::MAX - 1 => {
-                    KindStrategy::Single((layout.symbol_count - 1) as u16)
+            &[kind] => encode_kind(layout, kind).map_or(KindStrategy::Empty, KindStrategy::Single),
+            targets if targets.len() <= 16 => {
+                let mut ids = [0; 16];
+                let mut length = 0;
+                for target in targets
+                    .iter()
+                    .copied()
+                    .filter_map(|kind| encode_kind(layout, kind))
+                {
+                    ids[length] = target;
+                    length += 1;
                 }
-                value if u32::from(value) < layout.symbol_count - 2 => KindStrategy::Single(value),
-                _ => KindStrategy::Empty,
-            },
+                match length {
+                    0 => KindStrategy::Empty,
+                    1 => KindStrategy::Single(ids[0]),
+                    _ => KindStrategy::Small {
+                        ids,
+                        length: length as u8,
+                        kinds,
+                    },
+                }
+            }
             _ => KindStrategy::Multiple(kinds),
         };
         self.index = SymbolIndex::new(group, self.targets(layout));
@@ -2839,33 +2862,36 @@ impl Predicate for KindIds<'_> {
     // Inlining lets node consumers discard unused group metadata.
     #[inline(always)]
     fn retain_matches(&self, group: &GroupRef<'_>, candidates: Mask) -> Mask {
-        let kinds = match self.strategy {
-            KindStrategy::Empty => return Mask::default(),
+        let layout = group.columns.layout;
+        match &self.strategy {
+            KindStrategy::Empty => Mask::default(),
             KindStrategy::Single(target) => {
-                let layout = group.columns.layout;
-                return group.equal_ids(layout.symbol, layout.symbol_shift, target, candidates);
+                group.equal_ids(layout.symbol, layout.symbol_shift, *target, candidates)
             }
-            KindStrategy::Multiple(kinds) => kinds,
-        };
-        #[cfg(target_arch = "x86_64")]
-        if kinds.ids.len() <= 4 && !candidates.0.is_power_of_two() {
-            let layout = group.columns.layout;
-            let mut matches = Mask::default();
-            for &kind in &kinds.ids {
-                let target = match kind {
-                    u16::MAX => (layout.symbol_count - 2) as u16,
-                    value if value == u16::MAX - 1 => (layout.symbol_count - 1) as u16,
-                    value if u32::from(value) < layout.symbol_count - 2 => value,
-                    _ => continue,
-                };
-                matches.0 |= group
-                    .equal_ids(layout.symbol, layout.symbol_shift, target, candidates)
-                    .0;
+            #[cfg(target_arch = "x86_64")]
+            KindStrategy::Small { ids, length, kinds } => {
+                retain_small_kind_set(group, candidates, &ids[..usize::from(*length)], kinds)
             }
-            return matches;
+            #[cfg(not(target_arch = "x86_64"))]
+            KindStrategy::Small { kinds, .. } => retain_kind_set(group, candidates, kinds),
+            KindStrategy::Multiple(kinds) => retain_kind_set(group, candidates, kinds),
         }
-        retain_kind_set(group, candidates, kinds)
     }
+}
+// Keep variable-length SIMD out of the singleton scan's register allocation.
+#[cfg(target_arch = "x86_64")]
+#[inline(never)]
+fn retain_small_kind_set(
+    group: &GroupRef<'_>,
+    candidates: Mask,
+    ids: &[u16],
+    kinds: &KindSet,
+) -> Mask {
+    if ids.len() > 4 && candidates.at_most::<4>() {
+        return candidates.retain(|slot| kinds.contains(group.kind(slot)));
+    }
+    let layout = group.columns.layout;
+    group.equal_id_set(layout.symbol, layout.symbol_shift, ids, candidates)
 }
 // Isolate the scalar membership loop from SIMD and index traversal state.
 #[inline(never)]

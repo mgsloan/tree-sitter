@@ -965,6 +965,75 @@ fn sparse_kind_filters() {
 }
 
 #[test]
+fn prepared_kind_sets() {
+    let language = json_language();
+    let source = format!(
+        "{{\"items\": [{}null], \"bad\": invalid}}",
+        "[1,true,false,\"text\"],".repeat(25)
+    );
+    for symbol_presence in [false, true] {
+        let (_, tree) = parse(
+            &language,
+            &source,
+            PackOptions {
+                symbol_presence,
+                ..Default::default()
+            },
+        );
+        let root = tree.root_node();
+        let nodes = reference_preorder(root);
+        let other = KindSet::new(nodes.iter().step_by(3).map(|node| node.kind_id()));
+        for length in [0, 1, 2, 3, 4, 5, 7, 8, 9, 15, 16, 17, 23] {
+            for start in [0, 32768, u16::MAX - 23] {
+                let kinds = KindSet::new((start..start + length).chain([u16::MAX, u16::MAX - 1]));
+                let plain = KindSet::new(start..start + length);
+                for kinds in [&plain, &kinds] {
+                    let expected = nodes
+                        .iter()
+                        .copied()
+                        .filter(|node| kinds.contains(node.kind_id()))
+                        .collect::<Vec<_>>();
+                    check_pipeline(|| root.all().filter_kind_ids(kinds), &expected);
+                    let range = 10..source.len() - 10;
+                    let expected = expected
+                        .into_iter()
+                        .filter(|node| {
+                            range.start <= node.start_byte()
+                                && node.end_byte() <= range.end
+                                && node.field_id() == 0
+                                && !node.is_extra()
+                                && other.contains(node.kind_id())
+                        })
+                        .collect::<Vec<_>>();
+                    check_pipeline(
+                        || {
+                            root.all()
+                                .within_bytes(range.clone())
+                                .filter_field_id(0)
+                                .filter_extra(false)
+                                .filter_kind_ids(kinds)
+                                .filter_kind_ids(&other)
+                        },
+                        &expected,
+                    );
+                    check_pipeline(
+                        || {
+                            root.all()
+                                .within_bytes(range.clone())
+                                .filter_kind_ids(&other)
+                                .filter_kind_ids(kinds)
+                                .filter_extra(false)
+                                .filter_field_id(0)
+                        },
+                        &expected,
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn indexed_kind_filters() {
     let language = json_language();
     let grammar = Grammar::new(&language).unwrap();
