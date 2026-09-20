@@ -41,6 +41,8 @@ pub fn run(command: Command) -> Result<()> {
                         "-p",
                         "tree-squatter",
                         "-p",
+                        "tree-squatter-rust",
+                        "-p",
                         "tree-squatter-persistence",
                         "-p",
                         "corpus-analysis",

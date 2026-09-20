@@ -1,3 +1,6 @@
+#[cfg(feature = "rust-core")]
+extern crate tree_squatter_rust as tree_squatter;
+
 mod compare;
 mod measure;
 mod pressure;
@@ -20,6 +23,12 @@ use std::{
 };
 use tree_sitter::Point;
 use tree_squatter::{PackContext, PackOptions, Tree};
+
+pub const BACKEND: &str = if cfg!(feature = "rust-core") {
+    "rust"
+} else {
+    "c"
+};
 
 const BENCHMARKS: &[&str] = &[
     "query-matches",
@@ -1156,7 +1165,7 @@ pub fn run(check_only: bool) -> Result<()> {
                     .map(|bytes| digest(&bytes))}, "code_corpora": git_identity(&arguments.code_corpora),
         "machine": {"architecture": std::env::consts::ARCH, "os": std::env::consts::OS,
                     "cpuinfo": fs::read_to_string("/proc/cpuinfo").ok().and_then(|text| text.lines().find(|line| line.starts_with("model name")).map(str::to_owned))},
-        "build": {"debug_assertions": cfg!(debug_assertions), "package_version": env!("CARGO_PKG_VERSION")},
+        "build": {"debug_assertions": cfg!(debug_assertions), "package_version": env!("CARGO_PKG_VERSION"), "squatter_backend": BACKEND},
         "pressure": pressure_report(&pressure, &batches),
         "field_contract": "field API differences expected only when squat agrees with mainline visible-child fields; ERROR parents have no fields",
         "timing_contract": "v4: cold-parse includes fresh parser and grammar preparation; warm-parse reuses independent parsers and scratch after one untimed warmup per source; direct output validated by compact slab equality; exact validation and snapshots outside timing; read kernels consume results with black_box; no identity lookups or result collections in timed reads",

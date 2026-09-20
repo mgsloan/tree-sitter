@@ -2182,6 +2182,7 @@ dependencies = [
  "tree-sitter-c",
  "tree-sitter-json",
  "tree-squatter",
+ "tree-squatter-rust",
 ]
 
 [[package]]
@@ -2591,6 +2592,7 @@ dependencies = [
  "tree-sitter-c-sharp",
  "tree-sitter-json",
  "tree-squatter",
+ "tree-squatter-rust",
 ]
 
 [[package]]

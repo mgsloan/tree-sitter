@@ -5,6 +5,17 @@ edition.workspace = true
 license.workspace = true
 publish = false
 
+[features]
+default = ["reference"]
+reference = ["dep:tree-squatter"]
+rust-core = ["dep:tree-squatter-rust"]
+core-comparison = ["dep:tree-squatter", "dep:tree-squatter-rust"]
+
+[[bin]]
+name = "core-query-bench"
+path = "src/bin/core-query-bench.rs"
+required-features = ["core-comparison"]
+
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
@@ -13,7 +24,9 @@ libc = "0.2.182"
 serde.workspace = true
 serde_json.workspace = true
 tree-sitter.workspace = true
-tree-squatter = { path = "../squatter", default-features = false }
+tree-squatter = { path = "../squatter", default-features = false, optional = true }
+
+tree-squatter-rust = { path = "../squatter-rust", optional = true }
 
 [dev-dependencies]
 tree-sitter-c = "=0.24.2"

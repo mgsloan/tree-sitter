@@ -1,4 +1,7 @@
 //! Corpus throughput for the group-scan prototype; parsing and packing are setup.
+#[cfg(feature = "rust-core")]
+extern crate tree_squatter_rust as tree_squatter;
+
 use anyhow::{Result, ensure};
 use clap::Parser;
 use corpus_analysis::{LoadedGrammar, Registry, digest, parse};
@@ -974,6 +977,7 @@ fn main() -> Result<()> {
         );
     }
     let report = serde_json::json!({
+        "squatter_backend": squatter_bench::BACKEND,
         "arguments": arguments, "inputs": descriptions, "results": results,
         "grammar_sha256": grammars.iter().map(|(name, grammar)| (name, &grammar.sha256)).collect::<BTreeMap<_, _>>(),
         "cpuinfo": fs::read_to_string("/proc/cpuinfo").ok(),

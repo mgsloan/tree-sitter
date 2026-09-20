@@ -14,6 +14,9 @@ use walkdir::WalkDir;
 
 #[derive(Args)]
 pub struct Options {
+    /// Use the Rust core for Rust corpus checks and benchmarks.
+    #[arg(long)]
+    rust_core: bool,
     /// Fresh directory for staged inputs, logs, and results.
     #[arg(long)]
     output: Option<PathBuf>,
@@ -365,6 +368,7 @@ pub fn run(options: Options, test: Option<TestLevel>) -> Result<()> {
         timeout: options.timeout,
         manifest: json!({"schema":3,"partial":true,"image":image,"tool_sha":git(&root,&["rev-parse","HEAD"])?,
             "tool_dirty":!git(&root,&["status","--porcelain"])?.is_empty(),"source_sha256":digest(&serde_json::to_vec(&hashes)?),
+            "squatter_backend":if options.rust_core { "rust" } else { "c" },
             "matrix_sha256":digest(&matrix_bytes),"code_corpora_sha":registry.code_corpora_sha,"inputs":staged,
             "coverage":coverage,"repositories":repositories,"seed":options.seed,"selection":"seed_for(staging), per split/grammar/size",
             "missing_repositories":repositories.iter().filter(|name| !["train","training","test"].iter().any(|split|corpus.join(split).join(name).is_dir())).collect::<Vec<_>>(),
@@ -506,6 +510,9 @@ pub fn run(options: Options, test: Option<TestLevel>) -> Result<()> {
                 "--target-dir",
             ])
             .arg(run.output.join("target"));
+        if options.rust_core {
+            build.args(["--no-default-features", "--features", "rust-core"]);
+        }
         run.execute("build-rust", &mut build)?;
         for profile in profiles {
             for mutated in [false, true] {

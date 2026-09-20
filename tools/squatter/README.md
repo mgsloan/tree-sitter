@@ -27,6 +27,36 @@ Rust checks and benchmarks include original and deterministically mutated inputs
 omits the latter. Structural sampling remains a separate `corpus-analysis sample`
 command and is not run automatically.
 
+## Rust core comparison
+
+The default backend remains the C core. Pass `--rust-core` to `cargo xtask squat
+bench` or `test corpus` to select the Rust candidate. Both use the same workloads,
+validation, staged inputs, and pressure settings; manifests identify the backend.
+The reference native checks still run during corpus checks.
+
+For existing staged inputs, build separate executables with:
+
+```sh
+cargo build --release -p squatter-bench
+cargo build --release -p squatter-bench --no-default-features --features rust-core
+```
+
+Copy the first build's executables before the second build replaces them.
+Alternate process order and repeat reference runs to estimate measurement noise.
+`scanning-bench` uses the same feature selection.
+
+The focused `core-query-bench` links both cores and measures individual queries
+against one shared mainline tree. It checks completed matches before timing,
+warms both cores, alternates their order, and retains raw samples. Use external
+CPU pinning (`taskset` on Linux). `--baseline` compares the reference with itself.
+
+```sh
+cargo run --release -p squatter-bench --features core-comparison \
+  --bin core-query-bench -- --registry build/registry.json \
+  --output build/query-comparison.json path/to/source.c
+cargo test -p tree-squatter-persistence --no-default-features --features rust-core
+```
+
 ## Measurement contract
 
 Eight workloads are available:

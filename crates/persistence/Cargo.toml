@@ -5,12 +5,19 @@ edition.workspace = true
 license.workspace = true
 publish = false
 
+[features]
+default = ["reference"]
+reference = ["dep:tree-sitter-squatter"]
+rust-core = ["dep:tree-squatter-rust"]
+
 [dependencies]
 tree-sitter.workspace = true
-tree-sitter-squatter = { package = "tree-squatter", path = "../squatter" }
+tree-sitter-squatter = { package = "tree-squatter", path = "../squatter", optional = true }
 blake3 = "1.8"
 heed = { version = "=0.22.1", default-features = false }
 libc = "0.2"
+
+tree-squatter-rust = { path = "../squatter-rust", optional = true }
 
 [build-dependencies]
 blake3 = "1.8"
