@@ -67,9 +67,8 @@ impl Tree {
     }
 
     pub fn node_at_slot(&self, slot: SlotIx) -> Option<Node<'_>> {
-        let slot = slot.get();
-        (slot < self.slot_count() && slot < self.data().group_end(slot / GROUP_SIZE))
-            .then(|| self.root_node().at(SlotIx::new(slot)))
+        (slot.get() < self.slot_count() && slot.get() < self.data().group_end(slot.group().get()))
+            .then(|| self.root_node().at(slot))
     }
 }
 
@@ -153,37 +152,47 @@ impl<'tree> Node<'tree> {
     #[inline]
     pub fn start_byte(self) -> usize {
         let data = self.data();
-        (data.word(data.layout.start_byte_base, self.slot().get() / GROUP_SIZE)
+        (data.word(data.layout.start_byte_base, self.slot().group().get())
             + data.byte(data.layout.start_byte_delta, self.slot().get()) as u32) as usize
     }
 
     #[inline]
     pub fn end_byte(self) -> usize {
         let data = self.data();
-        (data.word(data.layout.end_byte_base, self.slot().get() / GROUP_SIZE)
+        (data.word(data.layout.end_byte_base, self.slot().group().get())
             - data.short(data.layout.end_byte_delta, self.slot().get()) as u32) as usize
     }
 
     pub fn start_position(self) -> Point {
-        let data = self.data();
-        if !data.has_points() {
-            return Point::new(0, self.start_byte());
-        }
-
-        let base = data.long(data.layout.start_point_base, self.slot().get() / GROUP_SIZE);
-        let delta = data.short(data.layout.start_point, self.slot().get());
-        (PackedPoint(base) + expand_point(delta)).point()
+        self.packed_start_point().point()
     }
 
     pub fn end_position(self) -> Point {
+        self.packed_end_point().point()
+    }
+
+    #[inline]
+    pub(crate) fn packed_start_point(self) -> PackedPoint {
         let data = self.data();
         if !data.has_points() {
-            return Point::new(0, self.end_byte());
+            return PackedPoint(self.start_byte() as u64);
         }
 
-        let base = data.long(data.layout.end_point_base, self.slot().get() / GROUP_SIZE);
+        let base = data.long(data.layout.start_point_base, self.slot().group().get());
+        let delta = data.short(data.layout.start_point, self.slot().get());
+        PackedPoint(base) + expand_point(delta)
+    }
+
+    #[inline]
+    pub(crate) fn packed_end_point(self) -> PackedPoint {
+        let data = self.data();
+        if !data.has_points() {
+            return PackedPoint(self.end_byte() as u64);
+        }
+
+        let base = data.long(data.layout.end_point_base, self.slot().group().get());
         let delta = data.short(data.layout.end_point, self.slot().get());
-        (PackedPoint(base) - expand_point(delta)).point()
+        PackedPoint(base) - expand_point(delta)
     }
 
     #[inline]
@@ -204,7 +213,7 @@ impl<'tree> Node<'tree> {
     }
 
     pub fn is_error(self) -> bool {
-        self.kind_id().get() == u16::MAX
+        self.kind_id() == KindId::ERROR
     }
 
     /// May be true for an error-free node sharing a block with an erroneous node.
@@ -212,7 +221,7 @@ impl<'tree> Node<'tree> {
         self.data().flags() & ERRORS != 0
             && self
                 .data()
-                .bit(self.data().layout.error, self.slot().get() / GROUP_SIZE)
+                .bit(self.data().layout.error, self.slot().group().get())
     }
 
     pub fn has_changes(self) -> bool {
@@ -254,7 +263,7 @@ impl<'tree> Node<'tree> {
 
     pub fn descendant_count(self) -> usize {
         let first = self.first_slot();
-        let waste: u32 = (first / GROUP_SIZE..self.slot().get() / GROUP_SIZE)
+        let waste: u32 = (first / GROUP_SIZE..self.slot().group().get())
             .map(|group| self.data().waste(group))
             .sum();
         (self.slot().get() - first + 1 - waste) as usize
@@ -273,10 +282,10 @@ impl<'tree> Node<'tree> {
 
     fn previous_preorder_slot(self) -> u32 {
         let slot = self.slot().get() + 1;
-        if slot < self.data().group_end(self.slot().get() / GROUP_SIZE) {
+        if slot < self.data().group_end(self.slot().group().get()) {
             slot
         } else {
-            (self.slot().get() / GROUP_SIZE + 1) * GROUP_SIZE
+            (self.slot().group().get() + 1) * GROUP_SIZE
         }
     }
 
@@ -379,7 +388,7 @@ impl<'tree> Node<'tree> {
 
     pub fn child_with_descendant(self, descendant: Self) -> Option<Self> {
         if self.raw.tree != descendant.raw.tree
-            || descendant.slot().get() >= self.slot().get()
+            || descendant.slot() >= self.slot()
             || descendant.slot().get() < self.first_slot()
         {
             return None;
@@ -487,9 +496,7 @@ impl<'tree> Node<'tree> {
     #[inline]
     fn start_key<const POINTS: bool>(self) -> u64 {
         if POINTS {
-            PackedPoint::from_point(self.start_position())
-                .unwrap()
-                .get()
+            self.packed_start_point().get()
         } else {
             self.start_byte() as u64
         }
@@ -498,7 +505,7 @@ impl<'tree> Node<'tree> {
     #[inline]
     fn end_key<const POINTS: bool>(self) -> u64 {
         if POINTS {
-            PackedPoint::from_point(self.end_position()).unwrap().get()
+            self.packed_end_point().get()
         } else {
             self.end_byte() as u64
         }
@@ -551,7 +558,7 @@ impl<'tree> Node<'tree> {
         // need not coincide, so a tied row uses the earliest live node's point.
         let first = self.first_slot();
         let mut low = first / GROUP_SIZE;
-        let mut high = self.slot().get() / GROUP_SIZE;
+        let mut high = self.slot().group().get();
         while low < high {
             let middle = low + (high - low) / 2;
             let after = if POINTS {
@@ -620,9 +627,7 @@ impl<'tree> Node<'tree> {
         let mut candidate = self.at(SlotIx::new(slot));
         if start == end {
             let mut previous = candidate;
-            while previous.slot().get() <= self.slot().get()
-                && previous.start_key::<POINTS>() == start
-            {
+            while previous.slot() <= self.slot() && previous.start_key::<POINTS>() == start {
                 if previous.end_key::<POINTS>() == start {
                     return Some(self.seek_descent::<POINTS>(start, end, named));
                 }
@@ -633,7 +638,7 @@ impl<'tree> Node<'tree> {
         // Point end scans become expensive over large distances. Parent spans
         // can skip the intervening subtrees; byte end scans remain cheap enough.
         if POINTS && self.slot().get() - candidate.slot().get() > 512 * GROUP_SIZE {
-            while candidate.slot().get() < self.slot().get() {
+            while candidate.slot() < self.slot() {
                 let candidate_end = candidate.end_key::<POINTS>();
                 if candidate_end >= end && candidate_end > start && (!named || candidate.is_named())
                 {
@@ -644,7 +649,7 @@ impl<'tree> Node<'tree> {
             return Some(self);
         }
 
-        if candidate.slot().get() < self.slot().get() {
+        if candidate.slot() < self.slot() {
             let candidate_end = candidate.end_key::<POINTS>();
             if candidate_end >= end && candidate_end > start && (!named || candidate.is_named()) {
                 return Some(candidate);
@@ -654,13 +659,13 @@ impl<'tree> Node<'tree> {
 
         // Earlier preorder siblings end before the range. The first qualifying
         // end after the selected start is an enclosing ancestor.
-        while candidate.slot().get() < self.slot().get() {
-            let group = candidate.slot().get() / GROUP_SIZE;
+        while candidate.slot() < self.slot() {
+            let group = candidate.slot().group().get();
             let limit = data.group_end(group).min(self.slot().get());
             #[cfg(feature = "typed-seek")]
             {
                 let view = scan::GroupRef::new(self).at_group(GroupIx(group));
-                let first = candidate.slot().get() % GROUP_SIZE;
+                let first = candidate.slot().in_group().get();
                 let mut mask = view.ends_after::<POINTS>(start, end).bits() >> first;
                 while mask != 0 {
                     let slot = group * GROUP_SIZE + first + mask.trailing_zeros();

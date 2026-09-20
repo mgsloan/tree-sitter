@@ -466,20 +466,17 @@ impl QueryRange {
         (node.end_byte() > self.start_byte as usize
             || (empty && node.end_byte() == self.start_byte as usize))
             && node.start_byte() < self.end_byte as usize
-            && (PackedPoint::from_point(node.end_position()).unwrap() > self.start_point
-                || (empty
-                    && PackedPoint::from_point(node.end_position()).unwrap() == self.start_point))
-            && PackedPoint::from_point(node.start_position()).unwrap() < self.end_point
+            && (node.packed_end_point() > self.start_point
+                || (empty && node.packed_end_point() == self.start_point))
+            && node.packed_start_point() < self.end_point
     }
 
     fn precedes(self, node: Node<'_>) -> bool {
-        node.end_byte() <= self.start_byte as usize
-            || PackedPoint::from_point(node.end_position()).unwrap() <= self.start_point
+        node.end_byte() <= self.start_byte as usize || node.packed_end_point() <= self.start_point
     }
 
     fn follows(self, node: Node<'_>) -> bool {
-        node.start_byte() >= self.end_byte as usize
-            || PackedPoint::from_point(node.start_position()).unwrap() >= self.end_point
+        node.start_byte() >= self.end_byte as usize || node.packed_start_point() >= self.end_point
     }
 }
 
@@ -1592,18 +1589,19 @@ impl<'query, 'tree> QueryExecution<'_, 'query, 'tree, '_> {
                 let mut hits = u64::MAX;
                 if requirement.symbol != 0 {
                     let shift = data.tables().symbol_shift;
-                    let symbol = data
+                    hits = data
                         .tables()
                         .remap_kind(KindId::new(requirement.symbol))
-                        .get();
-                    hits = equal_column(
-                        data,
-                        data.layout.symbol,
-                        physical_group,
-                        symbol << shift,
-                        u16::MAX << shift,
-                    )
-                    .reverse_bits()
+                        .map_or(0, |symbol| {
+                            equal_column(
+                                data,
+                                data.layout.symbol,
+                                physical_group,
+                                symbol.get() << shift,
+                                u16::MAX << shift,
+                            )
+                        })
+                        .reverse_bits()
                         >> (64 - group_size);
                 }
                 if requirement.field != 0 {
@@ -2413,8 +2411,8 @@ impl<'query, 'tree> QueryExecution<'_, 'query, 'tree, '_> {
         if captures.last_end != NONE {
             return captures.last_end;
         }
-        let slot = self.cursor.pool.get(id).last().unwrap().node.slot.get();
-        let end = self.root.at(SlotIx::new(slot)).end_byte() as u32;
+        let slot = self.cursor.pool.get(id).last().unwrap().node.slot;
+        let end = self.root.at(slot).end_byte() as u32;
         self.cursor.pool.lists[id as usize].last_end = end;
         end
     }

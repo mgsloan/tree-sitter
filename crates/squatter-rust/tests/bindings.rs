@@ -29,7 +29,7 @@ fn check_shared_navigation<'tree, N: NodeLike<'tree>>(
             node.kind_id(),
             root.kind_id(),
             node.kind_id(),
-            KindId::new(u16::MAX),
+            KindId::ERROR,
         ]);
         let filtered: Vec<_> = expected
             .iter()

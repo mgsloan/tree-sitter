@@ -78,20 +78,16 @@ impl GrammarView {
         display: RemappedKindId,
         original: RemappedGrammarKindId,
     ) -> Option<SymbolCode> {
-        self.symbol_code_raw(display.get(), original.get())
-            .map(SymbolCode)
-    }
-
-    fn symbol_code_raw(&self, display: u16, original: u16) -> Option<u16> {
+        let (display, original) = (display.get(), original.get());
         unsafe {
             if *self.public_symbols.add(original as usize) == display {
-                return Some(*self.default_codes.add(original as usize));
+                return Some(SymbolCode(*self.default_codes.add(original as usize)));
             }
             if self.separate != 0 {
-                return Some(display);
+                return Some(SymbolCode(display));
             }
             if self.encoding == 2 {
-                return Some((display << 8) | original);
+                return Some(SymbolCode((display << 8) | original));
             }
             let count = *self.counts.add(display as usize);
             if self.encoding == 1 {
@@ -104,18 +100,21 @@ impl GrammarView {
                 {
                     return None;
                 }
-                return Some((display << self.symbol_shift) | variant);
+                return Some(SymbolCode((display << self.symbol_shift) | variant));
             }
             let start = display << self.symbol_shift;
             (0..count)
                 .find(|variant| *self.grammar_ids.add((start + variant) as usize) == original)
-                .map(|variant| start + variant)
+                .map(|variant| SymbolCode(start + variant))
         }
     }
 
     #[inline]
-    pub fn remap_kind(&self, symbol: KindId) -> RemappedKindId {
-        RemappedKindId(self.encode_id(symbol.get()) as u16)
+    pub fn remap_kind(&self, symbol: KindId) -> Option<RemappedKindId> {
+        let symbol = symbol.get();
+        // Values just past the public symbol table are reserved for remapped errors.
+        (u32::from(symbol) < self.symbol_count || symbol >= u16::MAX - 1)
+            .then(|| RemappedKindId(self.encode_id(symbol) as u16))
     }
 
     pub fn decode_kind(&self, symbol: RemappedKindId) -> KindId {

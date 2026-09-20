@@ -24,7 +24,7 @@
 //! # }
 //! ```
 use crate::{
-    FieldId, FieldSet, GrammarKindId, KindId, KindSet, Node, RawNode,
+    FieldId, FieldSet, GrammarKindId, KindId, KindSet, Node, SlotIx,
     native::GrammarView,
     storage::{GROUP_SIZE, Layout, PRESENCE, TreeData, bit_bytes},
     types::{GroupIx, GroupSlotIx, PackedPoint, RemappedKindId, SlabOffset},
@@ -65,15 +65,7 @@ impl<'tree> Columns<'tree> {
 
     #[inline]
     fn encode_kind(self, kind: KindId) -> Option<RemappedKindId> {
-        let tables = self.tables();
-        match kind.get() {
-            u16::MAX => Some(RemappedKindId(tables.symbol_count as u16)),
-            value if value == u16::MAX - 1 => {
-                Some(RemappedKindId((tables.symbol_count + 1) as u16))
-            }
-            value if u32::from(value) < tables.symbol_count => Some(RemappedKindId(value)),
-            _ => None,
-        }
+        self.tables().remap_kind(kind)
     }
 
     #[inline]
@@ -102,10 +94,10 @@ impl<'tree> Columns<'tree> {
     }
 
     #[inline]
-    fn group(self, index: u32) -> GroupRef<'tree> {
+    fn group(self, index: GroupIx) -> GroupRef<'tree> {
         GroupRef {
             columns: self,
-            index: GroupIx(index),
+            index,
         }
     }
 
@@ -121,13 +113,7 @@ impl<'tree> Columns<'tree> {
 
     #[inline]
     fn node(self, slot: u32) -> Node<'tree> {
-        Node {
-            raw: RawNode {
-                tree: self.root.raw.tree,
-                slot: crate::SlotIx::new(slot),
-            },
-            lifetime: std::marker::PhantomData,
-        }
+        self.root.at(SlotIx::new(slot))
     }
 }
 
@@ -457,7 +443,7 @@ impl<'tree> GroupRef<'tree> {
     ))]
     pub(crate) fn new(root: Node<'tree>) -> Self {
         let columns = Columns::new(root);
-        columns.group(root.slot().group().get())
+        columns.group(root.slot().group())
     }
 
     #[cfg(any(
@@ -524,10 +510,7 @@ impl<'tree> GroupRef<'tree> {
     }
     /// Resolve a group-relative physical slot; waste and out-of-group slots fail.
     pub fn node(self, slot: u32) -> Option<Node<'tree>> {
-        self.node_in_group(GroupSlotIx(slot))
-    }
-    fn node_in_group(self, slot: GroupSlotIx) -> Option<Node<'tree>> {
-        (slot.get() < self.used()).then(|| self.columns.node(self.index.slot(slot).get()))
+        (slot < self.used()).then(|| self.columns.root.at(self.index.slot(GroupSlotIx(slot))))
     }
     #[inline]
     fn used(self) -> u32 {
@@ -696,11 +679,9 @@ pub struct GroupNodes<'tree> {
 impl<'tree> GroupNodes<'tree> {
     #[inline]
     fn pop(&mut self, back: bool) -> Option<Node<'tree>> {
-        self.matches.pop(self.descending ^ back).map(|slot| {
-            let mut node = self.base;
-            node.raw.slot = crate::SlotIx::new(node.raw.slot.get() + slot.get());
-            node
-        })
+        self.matches
+            .pop(self.descending ^ back)
+            .map(|slot| self.base.at(self.base.slot().group().slot(slot)))
     }
 }
 impl<'tree> Iterator for GroupNodes<'tree> {
@@ -1057,7 +1038,7 @@ impl<'tree> Preorder<'tree> {
         let root = columns.root;
         let first = columns.first_slot(root.slot().get());
         Self {
-            group: columns.group(root.slot().group().get()),
+            group: columns.group(root.slot().group()),
             groups: (first >> GROUP_SIZE.trailing_zeros())
                 ..(root.slot().get() >> GROUP_SIZE.trailing_zeros()) + 1,
             slots: first..root.slot().get() + 1,
@@ -1194,7 +1175,7 @@ impl<'tree> Preorder<'tree> {
             self.slots.clone(),
             predicate,
         );
-        self.group.index = GroupIx(index);
+        self.group.index = index;
         matches
     }
 }
@@ -1206,7 +1187,7 @@ fn indexed_group<const REVERSE: bool, const SUBTREES: bool, P: Predicate>(
     groups: &mut Range<u32>,
     slots: Range<u32>,
     predicate: &mut P,
-) -> (u32, Option<Mask>) {
+) -> (GroupIx, Option<Mask>) {
     let mut source = Preorder {
         group: *group,
         groups: groups.clone(),
@@ -1214,7 +1195,7 @@ fn indexed_group<const REVERSE: bool, const SUBTREES: bool, P: Predicate>(
     };
     let matches = source.next_matching_group::<REVERSE, SUBTREES, true, _>(predicate);
     *groups = source.groups;
-    (source.group.index.get(), matches)
+    (source.group.index, matches)
 }
 impl sealed::Source for Preorder<'_> {}
 impl<'tree> GroupScan<'tree> for Preorder<'tree> {
@@ -1238,7 +1219,7 @@ impl<'tree> GroupScan<'tree> for Preorder<'tree> {
     fn count(self) -> usize {
         self.groups
             .map(|index| {
-                let group = self.group.columns.group(index);
+                let group = self.group.columns.group(GroupIx(index));
                 let first = self.slots.start.saturating_sub(group.first_slot());
                 let end = (self.slots.end - group.first_slot()).min(group.used());
                 end.saturating_sub(first) as usize
@@ -1380,7 +1361,7 @@ impl<'tree> Postorder<'tree> {
     }
     fn new(columns: Columns<'tree>) -> Self {
         Self {
-            group: columns.group(columns.root.slot().get() >> GROUP_SIZE.trailing_zeros()),
+            group: columns.group(columns.root.slot().group()),
             traversal: ForwardPostorder::default(),
         }
     }
@@ -1428,7 +1409,7 @@ impl<'tree> GroupScan<'tree> for Postorder<'tree> {
     fn next_mask(&mut self) -> Option<Mask> {
         let slot = self.traversal.next(&self.group.columns)?;
         self.group.index = GroupIx(slot >> GROUP_SIZE.trailing_zeros());
-        Some(Mask(1u64 << crate::SlotIx::new(slot).in_group().get()))
+        Some(Mask(1u64 << SlotIx::new(slot).in_group().get()))
     }
 }
 
@@ -1503,7 +1484,7 @@ impl<'tree> GroupScan<'tree> for ReversePostorder<'tree> {
         };
         self.expand = Some(slot);
         self.group.index = GroupIx(slot >> GROUP_SIZE.trailing_zeros());
-        Some(Mask(1u64 << crate::SlotIx::new(slot).in_group().get()))
+        Some(Mask(1u64 << SlotIx::new(slot).in_group().get()))
     }
 }
 
@@ -2204,7 +2185,7 @@ impl UnrestrictedScan for Preorder<'_> {
         let mut upper = self.groups.end;
         while lower < upper {
             let middle = lower + (upper - lower) / 2;
-            let start = coordinates.start_minimum(&self.group.columns.group(middle));
+            let start = coordinates.start_minimum(&self.group.columns.group(GroupIx(middle)));
             let beyond = match bounds.1 {
                 Bound::Included(limit) => start > limit,
                 Bound::Excluded(limit) => start >= limit,
@@ -2224,7 +2205,7 @@ impl UnrestrictedScan for Preorder<'_> {
             upper = self.groups.end;
             while lower < upper {
                 let middle = lower + (upper - lower) / 2;
-                let start = coordinates.start_minimum(&self.group.columns.group(middle));
+                let start = coordinates.start_minimum(&self.group.columns.group(GroupIx(middle)));
                 let within = match bounds.0 {
                     Included(_) => start >= limit,
                     Excluded(_) => start > limit,
@@ -3506,7 +3487,7 @@ mod tests {
         let tree = crate::Tree::pack(&grammar, &native).unwrap();
         let root = tree.root_node();
         let columns = Columns::new(root);
-        let group = columns.group(0);
+        let group = columns.group(GroupIx(0));
 
         // A root-only symbol has a sparse index, even for 64-slot groups. Both
         // preparation paths must produce its exact mask in every physical group.
@@ -3517,7 +3498,7 @@ mod tests {
         assert!(indexed.has_group_index());
 
         for index in 0..tree.group_count() {
-            let group = columns.group(index);
+            let group = columns.group(GroupIx(index));
             let expected = group
                 .valid_mask()
                 .retain(|slot| group.kind(slot) == root.kind_id());

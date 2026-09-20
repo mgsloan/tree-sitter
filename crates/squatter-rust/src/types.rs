@@ -187,6 +187,9 @@ impl From<SlotIx> for u32 {
 }
 
 impl KindId {
+    /// The grammar-independent kind of a visible `ERROR` node.
+    pub const ERROR: Self = Self(u16::MAX);
+
     /// Wrap a raw ID without checking membership in a grammar.
     #[inline]
     pub const fn new(value: u16) -> Self {

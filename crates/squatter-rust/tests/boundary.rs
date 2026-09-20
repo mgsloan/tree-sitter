@@ -1,4 +1,38 @@
-use tree_squatter_rust::{FieldId, FieldSet, Grammar, Query, Tree};
+use tree_squatter_rust::{FieldId, FieldSet, Grammar, KindId, PackOptions, Query, Tree};
+
+#[test]
+fn invalid_kinds_are_rejected() {
+    let language =
+        unsafe { tree_sitter::Language::from_raw(tree_sitter_json::LANGUAGE.into_raw()().cast()) };
+    let grammar = Grammar::new(&language).unwrap();
+    let mut parser = tree_sitter::Parser::new();
+    parser.set_language(&language).unwrap();
+    let native = parser.parse("?", None).unwrap();
+    let error = KindId::ERROR;
+    let symbol_count = language.node_kind_count() as u16;
+    assert_eq!(grammar.kind_id_for_name("ERROR", true), Some(error));
+    for symbol_presence in [false, true] {
+        let tree = Tree::pack_with_options(
+            &grammar,
+            &native,
+            PackOptions {
+                symbol_presence,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let root = tree.root_node();
+        assert!(root.all().filter_kind_ids([error]).count() > 0);
+        assert!((0..tree.group_count()).any(|group| tree.group_has_symbol(group, error)));
+        for raw in [symbol_count, symbol_count + 1, 32768, u16::MAX - 2] {
+            let invalid = KindId::new(raw);
+            assert_eq!(root.all().filter_kind_ids([invalid]).count(), 0);
+            for group in 0..tree.group_count() {
+                assert!(!tree.group_has_symbol(group, invalid));
+            }
+        }
+    }
+}
 
 #[test]
 fn typed_fields_and_slot_lookup() {

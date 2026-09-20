@@ -333,33 +333,29 @@ impl TreeData {
 
     #[inline]
     pub fn grammar_index(&self, slot: u32) -> RemappedGrammarKindId {
-        RemappedGrammarKindId(self.grammar_index_raw(slot) as u16)
-    }
-
-    fn grammar_index_raw(&self, slot: u32) -> u32 {
         let tables = self.tables();
         let code = self.symbol_code(slot).get() as u32;
-        if self.flags() & SEPARATE_GRAMMAR != 0 {
-            return self.short(self.layout.grammar, slot) as u32;
-        }
-        if tables.separate != 0 {
-            return code;
-        }
-        if tables.encoding == 2 {
-            return code & 255;
-        }
-        let selector = code & ((1 << tables.symbol_shift) - 1);
-        unsafe {
-            if tables.encoding == 1 {
-                if selector == 0 {
-                    *tables.defaults.add((code >> tables.symbol_shift) as usize) as u32
+        let kind = if self.flags() & SEPARATE_GRAMMAR != 0 {
+            self.short(self.layout.grammar, slot)
+        } else if tables.separate != 0 {
+            code as u16
+        } else if tables.encoding == 2 {
+            (code & 255) as u16
+        } else {
+            let selector = code & ((1 << tables.symbol_shift) - 1);
+            unsafe {
+                if tables.encoding == 1 {
+                    if selector == 0 {
+                        *tables.defaults.add((code >> tables.symbol_shift) as usize)
+                    } else {
+                        *tables.grammar_ids.add(selector as usize)
+                    }
                 } else {
-                    *tables.grammar_ids.add(selector as usize) as u32
+                    *tables.grammar_ids.add(code as usize)
                 }
-            } else {
-                *tables.grammar_ids.add(code as usize) as u32
             }
-        }
+        };
+        RemappedGrammarKindId(kind)
     }
 
     pub fn has_points(&self) -> bool {
@@ -884,14 +880,17 @@ impl Tree {
 
 impl TreeData {
     pub fn group_has_symbol(&self, group: u32, symbol: KindId) -> bool {
-        let symbol = u32::from(self.tables().remap_kind(symbol).get());
-        if group >= self.groups() || symbol >= self.tables().symbol_count + 2 {
+        let Some(symbol) = self.tables().remap_kind(symbol) else {
+            return false;
+        };
+        if group >= self.groups() {
             return false;
         }
         if self.flags() & PRESENCE == 0 {
             return (group * GROUP_SIZE..self.group_end(group))
-                .any(|slot| u32::from(self.symbol_index(slot).get()) == symbol);
+                .any(|slot| self.symbol_index(slot) == symbol);
         }
+        let symbol = u32::from(symbol.get());
         let entry_bytes = self.groups().div_ceil(32) * 4;
         let entry = self.layout.end
             + bit_bytes(self.tables().symbol_count + 2) as u32
