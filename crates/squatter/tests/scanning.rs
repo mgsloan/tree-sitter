@@ -973,8 +973,9 @@ fn field_sets() {
 
 #[test]
 fn supertype_membership() {
+    let json_source = format!("{{\"a\": [{}null]}}", "[1,true,null],".repeat(40));
     let languages = [
-        (json_language(), "{\"a\": [1, true, null]}"),
+        (json_language(), json_source.as_str()),
         (
             unsafe {
                 tree_sitter::Language::from_raw(tree_sitter_c_sharp::LANGUAGE.into_raw()().cast())
@@ -982,13 +983,16 @@ fn supertype_membership() {
             "class Example { int field = 1; int Method(int value) { return value + field; } }",
         ),
     ];
+    let mut exercised_direct = false;
     let mut exercised_dictionary = false;
     for (language, source) in languages {
         let (_, tree) = parse(&language, source, PackOptions::default());
         let nodes = reference_preorder(tree.root_node());
+        let postorder = tree.root_node().postorder().nodes().collect::<Vec<_>>();
         let supertypes = (0..language.node_kind_count() as u16)
             .filter(|&id| language.node_kind_is_supertype(id))
             .collect::<Vec<_>>();
+        exercised_direct |= !supertypes.is_empty() && supertypes.len() <= 8;
         exercised_dictionary |= supertypes.len() > 8;
         let mut matches = 0;
         for supertype in supertypes.into_iter().chain([u16::MAX]) {
@@ -1002,10 +1006,19 @@ fn supertype_membership() {
                 || tree.root_node().preorder().filter_supertype_id(supertype),
                 &expected,
             );
+            let expected = postorder
+                .iter()
+                .copied()
+                .filter(|node| node.has_supertype(supertype))
+                .collect::<Vec<_>>();
+            check_pipeline(
+                || tree.root_node().postorder().filter_supertype_id(supertype),
+                &expected,
+            );
         }
         assert!(matches > 0);
     }
-    assert!(exercised_dictionary);
+    assert!(exercised_direct && exercised_dictionary);
 }
 
 #[test]
