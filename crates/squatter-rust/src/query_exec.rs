@@ -1367,7 +1367,7 @@ impl<'query, 'tree> QueryExecution<'_, 'query, 'tree, '_> {
         let total = self.total_slots();
         let groups = GroupRef::new(self.root);
         let mut predicate = targets.into_kind_predicate();
-        predicate.prepare(&groups);
+        predicate.prepare_columns(&groups);
 
         while start < end {
             if self.poll() {
@@ -1543,10 +1543,10 @@ impl<'query, 'tree> QueryExecution<'_, 'query, 'tree, '_> {
 
         #[cfg(feature = "typed-presence-scan")]
         let (groups, symbol_predicate, field_predicate) = {
-            use crate::scan::{GroupRef, IdSelection, Predicate};
+            use crate::scan::{GroupRef, IdSelection};
             let groups = GroupRef::new(root);
             let mut symbol = [requirement.symbol].into_kind_predicate();
-            symbol.prepare(&groups);
+            symbol.prepare_columns(&groups);
             (groups, symbol, [requirement.field].into_field_predicate())
         };
 

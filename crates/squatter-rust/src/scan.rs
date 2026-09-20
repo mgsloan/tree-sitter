@@ -26,7 +26,7 @@
 use crate::{
     KindSet, Node, RawNode,
     native::GrammarView,
-    storage::{GROUP_SIZE, Layout, TreeData},
+    storage::{GROUP_SIZE, Layout, PRESENCE, TreeData, bit_bytes},
 };
 use std::{
     iter::FusedIterator,
@@ -128,6 +128,256 @@ impl<'tree> Columns<'tree> {
     }
 }
 
+#[derive(Clone, Copy, Default)]
+struct SymbolIndex {
+    modes: u32,
+    entries: u32,
+    entry_bytes: u32,
+}
+impl SymbolIndex {
+    // Group counts fit in the u32 slot space, so entry lengths use at most 26 bits.
+    const BITMAP: u32 = 1 << 31;
+    #[inline(always)]
+    fn new(group: &GroupRef<'_>, targets: impl Iterator<Item = u16>) -> Self {
+        let tree = group.columns.tree();
+        if tree.flags() & PRESENCE == 0 {
+            return Self::default();
+        }
+
+        // The optional index follows the columns and includes both error symbols.
+        // Keep offsets only; entries borrow the tree's existing slab allocation.
+        let modes = tree.layout.end;
+        let mut index = Self {
+            modes,
+            entries: modes + bit_bytes(tree.tables().symbol_count + 2) as u32,
+            entry_bytes: tree.groups().div_ceil(32) * 4,
+        };
+        let mut bitmap = false;
+        let mut occupied = 0;
+        for target in targets {
+            let entry = index.entry(group, target);
+            if entry.bitmap {
+                bitmap = true;
+                let words = entry.bytes.len() / 4;
+                occupied += [0, words / 2, words - 1]
+                    .into_iter()
+                    .map(|position| entry.word(position).count_ones())
+                    .sum::<u32>();
+                // Estimate the union conservatively, allowing repeated bits.
+                // Bitmap probes only pay when most groups can be skipped.
+                if occupied > 12 {
+                    return Self::default();
+                }
+            }
+        }
+        if bitmap {
+            index.entry_bytes |= Self::BITMAP;
+        }
+        index
+    }
+    #[inline]
+    fn enabled(self) -> bool {
+        self.entry_bytes != 0
+    }
+    #[inline]
+    fn entry<'tree>(self, group: &GroupRef<'tree>, target: u16) -> SymbolEntry<'tree> {
+        let length = (self.entry_bytes & !Self::BITMAP) as usize;
+        let start = self.entries as usize + usize::from(target) * length;
+        SymbolEntry {
+            bytes: &group.columns.data()[start..start + length],
+            bitmap: group.columns.byte(self.modes, u32::from(target) / 8) & (1 << (target % 8))
+                != 0,
+            shift: GROUP_SIZE.trailing_zeros(),
+        }
+    }
+    #[inline(always)]
+    fn next_group(
+        self,
+        group: &GroupRef<'_>,
+        targets: impl Iterator<Item = u16>,
+        cursors: &mut [u32],
+        groups: Range<u32>,
+        reverse: bool,
+    ) -> Option<u32> {
+        if groups.is_empty() {
+            return None;
+        }
+        let nearest = if reverse {
+            groups.start
+        } else {
+            groups.end - 1
+        };
+        let mut next = None;
+        for (position, target) in targets.enumerate() {
+            if let Some(candidate) = self.entry(group, target).next_group(
+                groups.clone(),
+                reverse,
+                cursors.get_mut(position),
+            ) {
+                if candidate == nearest {
+                    return Some(candidate);
+                }
+                next = Some(next.map_or(candidate, |previous: u32| {
+                    if reverse {
+                        previous.min(candidate)
+                    } else {
+                        previous.max(candidate)
+                    }
+                }));
+            }
+        }
+        next
+    }
+    #[inline(always)]
+    fn sparse_mask(
+        self,
+        group: &GroupRef<'_>,
+        targets: impl Iterator<Item = u16>,
+        cursors: &mut [u32],
+    ) -> Option<Mask> {
+        if !self.enabled() || self.entry_bytes & Self::BITMAP != 0 {
+            return None;
+        }
+        let mut matches = 0;
+        for (position, target) in targets.enumerate() {
+            let entry = self.entry(group, target);
+            let mut position = entry.seek_before(group.index + 1, cursors.get_mut(position));
+            while position < entry.bytes.len() / 4 {
+                let slot = entry.word(position);
+                if slot == u32::MAX || slot >> entry.shift != group.index {
+                    break;
+                }
+                matches |= 1 << (slot & (group.columns.group_size() - 1));
+                position += 1;
+            }
+        }
+        Some(Mask(matches))
+    }
+}
+struct SymbolEntry<'tree> {
+    bytes: &'tree [u8],
+    bitmap: bool,
+    shift: u32,
+}
+impl SymbolEntry<'_> {
+    #[inline]
+    fn word(&self, position: usize) -> u32 {
+        u32::from_le_bytes(
+            self.bytes[position * 4..position * 4 + 4]
+                .try_into()
+                .unwrap(),
+        )
+    }
+    // Sparse slots descend in physical order, followed by u32::MAX padding.
+    #[inline(always)]
+    fn before(&self, group: u32) -> usize {
+        self.before_in(group, 0..self.bytes.len() / 4)
+    }
+    #[inline]
+    fn precedes(&self, position: usize, group: u32) -> bool {
+        let slot = self.word(position);
+        slot != u32::MAX && slot >> self.shift >= group
+    }
+    #[inline(always)]
+    fn before_in(&self, group: u32, positions: Range<usize>) -> usize {
+        let (mut start, mut end) = (positions.start, positions.end);
+        while start < end {
+            let middle = start + (end - start) / 2;
+            if self.precedes(middle, group) {
+                start = middle + 1;
+            } else {
+                end = middle;
+            }
+        }
+        start
+    }
+    // A cursor is a verified search hint, so clipping, skipped groups, and
+    // direction changes do not require resetting it. Bound local probing to
+    // avoid walking a long posting prefix after a subtree or range jump.
+    #[inline(always)]
+    fn seek_before(&self, group: u32, cursor: Option<&mut u32>) -> usize {
+        let Some(cursor) = cursor else {
+            return self.before(group);
+        };
+
+        let length = self.bytes.len() / 4;
+        let mut position = (*cursor as usize).min(length);
+
+        if position != 0 && !self.precedes(position - 1, group) {
+            position -= 1;
+            for _ in 0..3 {
+                if position == 0 || self.precedes(position - 1, group) {
+                    *cursor = position as u32;
+                    return position;
+                }
+                position -= 1;
+            }
+            position = self.before_in(group, 0..position);
+        } else {
+            for _ in 0..4 {
+                if position == length || !self.precedes(position, group) {
+                    *cursor = position as u32;
+                    return position;
+                }
+                position += 1;
+            }
+            position = self.before_in(group, position..length);
+        }
+
+        *cursor = position as u32;
+        position
+    }
+    #[inline(always)]
+    fn next_group(
+        &self,
+        mut groups: Range<u32>,
+        reverse: bool,
+        cursor: Option<&mut u32>,
+    ) -> Option<u32> {
+        if self.bitmap {
+            while !groups.is_empty() {
+                let position = if reverse {
+                    groups.start / 32
+                } else {
+                    (groups.end - 1) / 32
+                };
+                let first = groups.start.saturating_sub(position * 32);
+                let end = (groups.end - position * 32).min(32);
+                let bits =
+                    self.word(position as usize) & (u32::MAX << first) & (u32::MAX >> (32 - end));
+                if bits != 0 {
+                    return Some(
+                        position * 32
+                            + if reverse {
+                                bits.trailing_zeros()
+                            } else {
+                                31 - bits.leading_zeros()
+                            },
+                    );
+                }
+                if reverse {
+                    groups.start = (position + 1) * 32;
+                } else {
+                    groups.end = position * 32;
+                }
+            }
+            None
+        } else {
+            let position = if reverse {
+                self.seek_before(groups.start, cursor).checked_sub(1)?
+            } else {
+                self.seek_before(groups.end, cursor)
+            };
+            if position >= self.bytes.len() / 4 {
+                return None;
+            }
+            let slot = self.word(position);
+            let group = slot >> self.shift;
+            (slot != u32::MAX && groups.contains(&group)).then_some(group)
+        }
+    }
+}
+
 /// Bits address physical slots within a group; unused slots are always clear.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct Mask(u64);
@@ -143,6 +393,14 @@ impl Mask {
     }
     pub fn intersection(self, other: Self) -> Self {
         Self(self.0 & other.0)
+    }
+    #[inline]
+    fn at_most<const LIMIT: usize>(self) -> bool {
+        let mut remaining = self.0;
+        for _ in 0..LIMIT {
+            remaining &= remaining.wrapping_sub(1);
+        }
+        remaining == 0
     }
     pub fn contains(self, slot: u32) -> bool {
         slot < 64 && self.0 & (1u64 << slot) != 0
@@ -317,29 +575,27 @@ impl<'tree> GroupRef<'tree> {
         candidates.intersection(Mask(matches))
     }
     #[inline(always)]
-    fn equal_id_set<const N: usize>(
-        &self,
-        offset: u32,
-        shift: u32,
-        targets: &[u16; N],
-        candidates: Mask,
-    ) -> Mask {
-        if N == 0 {
+    fn equal_id_set(&self, offset: u32, shift: u32, targets: &[u16], candidates: Mask) -> Mask {
+        if targets.is_empty() {
             return Mask::default();
         }
-        if N == 1 {
+        if targets.len() == 1 {
             return self.equal_ids(offset, shift, targets[0], candidates);
         }
-        if N == 2 {
+        if targets.len() == 2 {
             return Mask(
                 self.equal_ids(offset, shift, targets[0], candidates).0
                     | self.equal_ids(offset, shift, targets[1], candidates).0,
             );
         }
         if candidates.0.is_power_of_two() {
-            return candidates.retain(|slot| {
-                targets.contains(&(self.columns.short(offset, self.first_slot() + slot) >> shift))
-            });
+            let slot = self.first_slot() + candidates.0.trailing_zeros();
+            let value = self.columns.short(offset, slot) >> shift;
+            return if targets.contains(&value) {
+                candidates
+            } else {
+                Mask::default()
+            };
         }
         #[cfg(target_arch = "x86_64")]
         {
@@ -348,16 +604,16 @@ impl<'tree> GroupRef<'tree> {
             let bytes = &self.columns.data()[start..start + self.columns.group_size() as usize * 2];
             let mut matches = 0;
             // SSE2 is baseline. Each checked chunk contains both vector loads;
-            // the const-sized target loop can unroll independently of group size.
+            // fixed-array callers expose the target count for loop unrolling.
             unsafe {
-                let targets = targets.map(|target| _mm_set1_epi16(target as i16));
                 let shift = _mm_cvtsi32_si128(shift as i32);
                 for (index, bytes) in bytes.chunks_exact(32).enumerate() {
                     let low = _mm_srl_epi16(_mm_loadu_si128(bytes.as_ptr().cast()), shift);
                     let high = _mm_srl_epi16(_mm_loadu_si128(bytes.as_ptr().add(16).cast()), shift);
                     let mut low_matches = _mm_setzero_si128();
                     let mut high_matches = _mm_setzero_si128();
-                    for target in targets {
+                    for &target in targets {
+                        let target = _mm_set1_epi16(target as i16);
                         low_matches = _mm_or_si128(low_matches, _mm_cmpeq_epi16(low, target));
                         high_matches = _mm_or_si128(high_matches, _mm_cmpeq_epi16(high, target));
                     }
@@ -482,8 +738,11 @@ mod sealed {
 
     pub trait Coordinates: Sized {
         type Position: Copy + Ord;
+        const MINIMUM: Self::Position;
+        const PRUNE_SUBTREES: bool;
         fn new(group: &GroupRef<'_>) -> Self;
         fn start_minimum(&self, group: &GroupRef<'_>) -> Self::Position;
+        fn end_before(&self, group: &GroupRef<'_>, bound: Bound<Self::Position>) -> bool;
         fn retain<R: Relation<Self::Position>>(
             &self,
             group: &GroupRef<'_>,
@@ -521,7 +780,8 @@ mod sealed {
         fn is_empty(&self) -> bool {
             false
         }
-        fn start_bound(&self) -> Bound<T>;
+        fn start_bounds(&self) -> (Bound<T>, Bound<T>);
+        fn end_lower_bound(&self) -> Bound<T>;
         fn retain<P: Positions<Position = T>>(
             &self,
             positions: P,
@@ -547,7 +807,7 @@ pub trait GroupScan<'tree>: sealed::Source + Sized {
     /// Advance the current group and return its nonempty matching mask.
     fn next_mask(&mut self) -> Option<Mask>;
     #[inline]
-    fn next_matching<P: Predicate>(&mut self, predicate: &P) -> Option<Mask> {
+    fn next_matching<P: Predicate>(&mut self, predicate: &mut P) -> Option<Mask> {
         loop {
             let candidates = self.next_mask()?;
             let matches = predicate.retain_matches(self.group(), candidates);
@@ -570,9 +830,12 @@ pub trait GroupScan<'tree>: sealed::Source + Sized {
     }
 }
 #[inline(always)]
-fn count_groups<'tree, S: GroupScan<'tree>, P: Predicate>(mut source: S, predicate: P) -> usize {
+fn count_groups<'tree, S: GroupScan<'tree>, P: Predicate>(
+    mut source: S,
+    mut predicate: P,
+) -> usize {
     let mut count = 0;
-    while let Some(matches) = source.next_matching(&predicate) {
+    while let Some(matches) = source.next_matching(&mut predicate) {
         count += matches.count_ones() as usize;
     }
     count
@@ -614,6 +877,7 @@ impl<'tree, S: GroupScan<'tree>> Scan<'tree, S> {
     }
     /// Match public kind IDs. Arrays preserve their length for kernel specialization;
     /// borrowed `KindSet`s support dynamically sized sets.
+    #[inline(always)]
     pub fn filter_kind_ids<K: IdSelection>(
         self,
         kinds: K,
@@ -644,6 +908,7 @@ impl<'tree, S: GroupScan<'tree>> Scan<'tree, S> {
     pub fn filter_missing(self, value: bool) -> Scan<'tree, Filtered<S, Missing>> {
         self.filtered(Missing(value))
     }
+    #[inline(always)]
     fn filtered<P: Predicate>(self, mut predicate: P) -> Scan<'tree, Filtered<S, P>> {
         predicate.prepare(self.source.group());
         Scan::new(Filtered {
@@ -793,22 +1058,136 @@ impl<'tree> Preorder<'tree> {
         }
     }
     #[inline(always)]
-    fn next_matching_group<const REVERSE: bool, P: Predicate>(
+    fn next_matching_group<
+        const REVERSE: bool,
+        const SUBTREES: bool,
+        const INDEXED: bool,
+        P: Predicate,
+    >(
         &mut self,
-        predicate: &P,
+        predicate: &mut P,
     ) -> Option<Mask> {
         loop {
-            self.group.index = if REVERSE {
+            // Bitmap jumps can bypass the ancestor that rejects a whole subtree.
+            // Exact slot lists already skip those groups without reading ranges.
+            if INDEXED && SUBTREES && predicate.has_bitmap_index() {
+                if self.groups.is_empty() {
+                    return None;
+                }
+                self.group.index = self.groups.end - 1;
+                if predicate.excludes_subtrees(&self.group) {
+                    let span = self
+                        .group
+                        .columns
+                        .word(self.group.columns.layout().span_base, self.group.index);
+                    self.groups.end = if span == 0 {
+                        self.group.index
+                    } else {
+                        (self.group.first_slot() - span)
+                            .div_ceil(self.group.columns.group_size())
+                            .min(self.group.index)
+                            .max(self.groups.start)
+                    };
+                    continue;
+                }
+            }
+            self.group.index = if INDEXED {
+                let Some(index) = predicate.next_group(&self.group, self.groups.clone(), REVERSE)
+                else {
+                    self.groups.end = self.groups.start;
+                    return None;
+                };
+                if REVERSE {
+                    self.groups.start = index + 1;
+                } else {
+                    self.groups.end = index;
+                }
+                index
+            } else if REVERSE {
                 self.groups.next()?
             } else {
                 self.groups.next_back()?
             };
-            let matches = predicate.retain_group(&self.group, || self.mask());
+            if SUBTREES && predicate.excludes_subtrees(&self.group) {
+                // The last node in preorder occupies the group's first slot.
+                // Its descendants end no later, so their whole groups can be skipped.
+                let span = self
+                    .group
+                    .columns
+                    .word(self.group.columns.layout().span_base, self.group.index);
+                if span != 0 {
+                    // The base alone is a conservative span; avoid delta loads
+                    // and short jumps when all spans fit in a byte.
+                    let end =
+                        (self.group.first_slot() - span).div_ceil(self.group.columns.group_size());
+                    self.groups.end = self.groups.end.min(end).max(self.groups.start);
+                }
+                continue;
+            }
+            let matches = if INDEXED {
+                predicate.retain_indexed(&self.group, || self.mask())
+            } else {
+                predicate.retain_group(&self.group, || self.mask())
+            };
             if !matches.is_empty() {
                 return Some(matches);
             }
         }
     }
+    #[inline(always)]
+    fn count_indexed<const SUBTREES: bool, P: Predicate>(mut self, predicate: &mut P) -> usize {
+        let mut count = 0;
+        while let Some(matches) = self.next_matching_group::<false, SUBTREES, true, _>(predicate) {
+            count += matches.count_ones() as usize;
+        }
+        count
+    }
+    // Own the predicate and isolate the loop from index setup so column metadata
+    // can stay in registers. The call is paid once per flat scan.
+    #[inline(never)]
+    fn count_flat<P: Predicate>(mut self, mut predicate: P) -> usize {
+        let mut count = 0;
+        while let Some(matches) = if predicate.has_subtree_bound() {
+            self.next_matching_group::<false, true, false, _>(&mut predicate)
+        } else {
+            self.next_matching_group::<false, false, false, _>(&mut predicate)
+        } {
+            count += matches.count_ones() as usize;
+        }
+        count
+    }
+    #[inline(always)]
+    fn next_indexed<const REVERSE: bool, const SUBTREES: bool, P: Predicate>(
+        &mut self,
+        predicate: &mut P,
+    ) -> Option<Mask> {
+        let (index, matches) = indexed_group::<REVERSE, SUBTREES, _>(
+            &self.group,
+            &mut self.groups,
+            self.slots.clone(),
+            predicate,
+        );
+        self.group.index = index;
+        matches
+    }
+}
+// Only the remaining group interval is mutable across this call. Flat scan
+// kernels can keep their column metadata in registers between matching groups.
+#[inline(always)]
+fn indexed_group<const REVERSE: bool, const SUBTREES: bool, P: Predicate>(
+    group: &GroupRef<'_>,
+    groups: &mut Range<u32>,
+    slots: Range<u32>,
+    predicate: &mut P,
+) -> (u32, Option<Mask>) {
+    let mut source = Preorder {
+        group: *group,
+        groups: groups.clone(),
+        slots,
+    };
+    let matches = source.next_matching_group::<REVERSE, SUBTREES, true, _>(predicate);
+    *groups = source.groups;
+    (source.group.index, matches)
 }
 impl sealed::Source for Preorder<'_> {}
 impl<'tree> GroupScan<'tree> for Preorder<'tree> {
@@ -839,13 +1218,28 @@ impl<'tree> GroupScan<'tree> for Preorder<'tree> {
             })
             .sum()
     }
+    #[inline(always)]
+    fn count_matches<P: Predicate>(self, mut predicate: P) -> usize {
+        if !predicate.has_group_index() {
+            self.count_flat(predicate)
+        } else if predicate.has_subtree_bound() {
+            self.count_indexed::<true, _>(&mut predicate)
+        } else {
+            self.count_indexed::<false, _>(&mut predicate)
+        }
+    }
     #[inline]
     fn group(&self) -> &GroupRef<'tree> {
         &self.group
     }
     #[inline(always)]
-    fn next_matching<P: Predicate>(&mut self, predicate: &P) -> Option<Mask> {
-        self.next_matching_group::<false, _>(predicate)
+    fn next_matching<P: Predicate>(&mut self, predicate: &mut P) -> Option<Mask> {
+        match (predicate.has_group_index(), predicate.has_subtree_bound()) {
+            (true, true) => self.next_indexed::<false, true, _>(predicate),
+            (true, false) => self.next_indexed::<false, false, _>(predicate),
+            (false, true) => self.next_matching_group::<false, true, false, _>(predicate),
+            (false, false) => self.next_matching_group::<false, false, false, _>(predicate),
+        }
     }
     #[inline(always)]
     fn next_mask(&mut self) -> Option<Mask> {
@@ -883,12 +1277,22 @@ impl<'tree> GroupScan<'tree> for ReversePreorder<'tree> {
         self.0.count()
     }
     #[inline]
+    fn count_matches<P: Predicate>(self, predicate: P) -> usize {
+        self.0.count_matches(predicate)
+    }
+    #[inline]
     fn group(&self) -> &GroupRef<'tree> {
         &self.0.group
     }
     #[inline(always)]
-    fn next_matching<P: Predicate>(&mut self, predicate: &P) -> Option<Mask> {
-        self.0.next_matching_group::<true, _>(predicate)
+    fn next_matching<P: Predicate>(&mut self, predicate: &mut P) -> Option<Mask> {
+        if predicate.has_group_index() {
+            self.0
+                .next_matching_group::<true, false, true, _>(predicate)
+        } else {
+            self.0
+                .next_matching_group::<true, false, false, _>(predicate)
+        }
     }
     #[inline(always)]
     fn next_mask(&mut self) -> Option<Mask> {
@@ -1467,6 +1871,8 @@ impl<'tree, const STORED: bool> Positions for PointPositions<'_, 'tree, STORED> 
 }
 impl Coordinates for Bytes {
     type Position = usize;
+    const MINIMUM: usize = 0;
+    const PRUNE_SUBTREES: bool = true;
     fn new(_: &GroupRef<'_>) -> Self {
         Self
     }
@@ -1475,6 +1881,10 @@ impl Coordinates for Bytes {
         group
             .columns
             .word(group.columns.layout().start_byte_base, group.index) as usize
+    }
+    #[inline]
+    fn end_before(&self, group: &GroupRef<'_>, bound: Bound<usize>) -> bool {
+        before_bound(BytePositions(group).end().maximum(), bound)
     }
     #[inline(always)]
     fn retain<R: Relation<usize>>(
@@ -1488,12 +1898,14 @@ impl Coordinates for Bytes {
 }
 impl Coordinates for Points {
     type Position = Point;
+    const MINIMUM: Point = Point::new(0, 0);
+    const PRUNE_SUBTREES: bool = false;
     fn new(group: &GroupRef<'_>) -> Self {
         Self {
             stored: group.columns.tree().has_points(),
         }
     }
-    #[inline]
+    #[inline(always)]
     fn start_minimum(&self, group: &GroupRef<'_>) -> Point {
         if !self.stored {
             Point::new(0, Bytes.start_minimum(group))
@@ -1505,6 +1917,30 @@ impl Coordinates for Points {
                     .start()
                     .get(group.used() - 1),
             )
+        }
+    }
+    #[inline]
+    fn end_before(&self, group: &GroupRef<'_>, bound: Bound<Point>) -> bool {
+        let end = if !self.stored {
+            BytePositions(group).end().maximum() as u64
+        } else {
+            point_base(group, group.columns.layout().end_point_base)
+        };
+        match bound {
+            Included(limit) | Excluded(limit) => {
+                if let Some(limit) = point_key(limit) {
+                    before_bound(
+                        end,
+                        match bound {
+                            Included(_) => Included(limit),
+                            _ => Excluded(limit),
+                        },
+                    )
+                } else {
+                    before_bound(point_from_key(end), bound)
+                }
+            }
+            Unbounded => false,
         }
     }
     #[inline(always)]
@@ -1533,6 +1969,15 @@ fn retain_points<R: Relation<Point>, P: Positions<Position = u64>>(
         packed.retain(positions, candidates)
     } else {
         relation.retain(UnpackedPositions(positions), candidates)
+    }
+}
+
+#[inline(always)]
+fn before_bound<T: Ord>(position: T, bound: Bound<T>) -> bool {
+    match bound {
+        Included(limit) => position < limit,
+        Excluded(limit) => position <= limit,
+        Unbounded => false,
     }
 }
 
@@ -1602,20 +2047,21 @@ pub struct StartingAt<T>(T);
 pub struct EndingAt<T>(T);
 
 macro_rules! range_relation {
-    ($name:ident, $reject:tt, $bound:ident, $endpoint:ident, $this:ident, $positions:ident, $candidates:ident, $body:block) => {
+    ($name:ident, $reject:tt, $lower:expr, $upper:expr, $end:expr, $this:ident, $positions:ident, $candidates:ident, $body:block) => {
         impl<T: Copy + Ord> Relation<T> for $name<T> {
             type Mapped<U: Copy + Ord> = $name<U>;
             fn try_map<U: Copy + Ord>(&self, convert: impl Fn(T) -> Option<U>) -> Option<Self::Mapped<U>> {
                 Some($name(convert(self.0.start)?..convert(self.0.end)?))
             }
             fn is_empty(&self) -> bool { self.0.start $reject self.0.end }
-            fn start_bound(&self) -> Bound<T> { Bound::$bound(self.0.$endpoint) }
+            fn start_bounds(&$this) -> (Bound<T>, Bound<T>) { ($lower, $upper) }
+            fn end_lower_bound(&$this) -> Bound<T> { $end }
             #[inline(always)]
             fn retain<P: Positions<Position = T>>(&$this, $positions: P, $candidates: impl FnOnce() -> Mask) -> Mask $body
         }
     };
 }
-range_relation!(Overlapping, >=, Excluded, end, self, positions, candidates, {
+range_relation!(Overlapping, >=, Unbounded, Excluded(self.0.end), Included(self.0.start), self, positions, candidates, {
     let starts = positions.start();
     let ends = positions.end();
     if starts.minimum() >= self.0.end || ends.maximum() < self.0.start {
@@ -1639,7 +2085,7 @@ range_relation!(Overlapping, >=, Excluded, end, self, positions, candidates, {
     }
     Mask(matches.0 | starts.retain(remaining, (Included(self.0.start), Unbounded)).0)
 });
-range_relation!(Within, >, Included, end, self, positions, candidates, {
+range_relation!(Within, >, Included(self.0.start), Included(self.0.end), Unbounded, self, positions, candidates, {
     retain_pair(
         candidates,
         positions.start(),
@@ -1648,7 +2094,7 @@ range_relation!(Within, >, Included, end, self, positions, candidates, {
         (Unbounded, Included(self.0.end)),
     )
 });
-range_relation!(Containing, >, Included, start, self, positions, candidates, {
+range_relation!(Containing, >, Unbounded, Included(self.0.start), Included(self.0.end), self, positions, candidates, {
     retain_pair(
         candidates,
         positions.start(),
@@ -1657,47 +2103,78 @@ range_relation!(Containing, >, Included, start, self, positions, candidates, {
         (Included(self.0.end), Unbounded),
     )
 });
-range_relation!(StartingIn, >=, Excluded, end, self, positions, candidates, {
+range_relation!(StartingIn, >=, Included(self.0.start), Excluded(self.0.end), Unbounded, self, positions, candidates, {
     retain_interval(candidates, positions.start(), &self.0)
 });
-range_relation!(EndingIn, >=, Excluded, end, self, positions, candidates, {
+range_relation!(EndingIn, >=, Unbounded, Excluded(self.0.end), Included(self.0.start), self, positions, candidates, {
     retain_interval(candidates, positions.end(), &self.0)
 });
 macro_rules! position_relation {
-    ($name:ident, $this:ident, $positions:ident, $candidates:ident, $body:block) => {
+    ($name:ident, $lower:expr, $end:expr, $this:ident, $positions:ident, $candidates:ident, $body:block) => {
         impl<T: Copy + Ord> Relation<T> for $name<T> {
             type Mapped<U: Copy + Ord> = $name<U>;
             fn try_map<U: Copy + Ord>(&self, convert: impl Fn(T) -> Option<U>) -> Option<Self::Mapped<U>> {
                 Some($name(convert(self.0)?))
             }
-            fn start_bound(&self) -> Bound<T> { Bound::Included(self.0) }
+            fn start_bounds(&$this) -> (Bound<T>, Bound<T>) { ($lower, Included($this.0)) }
+            fn end_lower_bound(&$this) -> Bound<T> { $end }
             #[inline(always)]
             fn retain<P: Positions<Position = T>>(&$this, $positions: P, $candidates: impl FnOnce() -> Mask) -> Mask $body
         }
     };
 }
-position_relation!(ContainingPosition, self, positions, candidates, {
-    retain_pair(
-        candidates,
-        positions.start(),
-        positions.end(),
-        (Unbounded, Included(self.0)),
-        (Excluded(self.0), Unbounded),
-    )
-});
-position_relation!(StartingAt, self, positions, candidates, {
-    retain_equal(candidates, positions.start(), self.0)
-});
-position_relation!(EndingAt, self, positions, candidates, {
-    retain_equal(candidates, positions.end(), self.0)
-});
+position_relation!(
+    ContainingPosition,
+    Unbounded,
+    Excluded(self.0),
+    self,
+    positions,
+    candidates,
+    {
+        retain_pair(
+            candidates,
+            positions.start(),
+            positions.end(),
+            (Unbounded, Included(self.0)),
+            (Excluded(self.0), Unbounded),
+        )
+    }
+);
+position_relation!(
+    StartingAt,
+    Included(self.0),
+    Unbounded,
+    self,
+    positions,
+    candidates,
+    { retain_equal(candidates, positions.start(), self.0) }
+);
+position_relation!(
+    EndingAt,
+    Unbounded,
+    Included(self.0),
+    self,
+    positions,
+    candidates,
+    { retain_equal(candidates, positions.end(), self.0) }
+);
 
 /// Sources that still permit range restriction; filters do not implement this trait.
 pub trait UnrestrictedScan: sealed::Source {
-    fn restrict<C: Coordinates>(&mut self, coordinates: &C, bound: Bound<C::Position>);
+    fn restrict<C: Coordinates>(
+        &mut self,
+        coordinates: &C,
+        bounds: (Bound<C::Position>, Bound<C::Position>),
+    );
 }
 impl UnrestrictedScan for Preorder<'_> {
-    fn restrict<C: Coordinates>(&mut self, coordinates: &C, bound: Bound<C::Position>) {
+    // Specialize constant bound variants before entering either search.
+    #[inline(always)]
+    fn restrict<C: Coordinates>(
+        &mut self,
+        coordinates: &C,
+        bounds: (Bound<C::Position>, Bound<C::Position>),
+    ) {
         // Start minima decrease with physical group index. All relations supply
         // an upper bound on node starts, including those that only test ends.
         let mut lower = self.groups.start;
@@ -1705,7 +2182,7 @@ impl UnrestrictedScan for Preorder<'_> {
         while lower < upper {
             let middle = lower + (upper - lower) / 2;
             let start = coordinates.start_minimum(&self.group.columns.group(middle));
-            let beyond = match bound {
+            let beyond = match bounds.1 {
                 Bound::Included(limit) => start > limit,
                 Bound::Excluded(limit) => start >= limit,
                 Bound::Unbounded => false,
@@ -1717,18 +2194,46 @@ impl UnrestrictedScan for Preorder<'_> {
             }
         }
         self.groups.start = lower;
+        if matches!(bounds.0, Included(limit) if limit == C::MINIMUM) {
+            return;
+        }
+        if let Included(limit) | Excluded(limit) = bounds.0 {
+            upper = self.groups.end;
+            while lower < upper {
+                let middle = lower + (upper - lower) / 2;
+                let start = coordinates.start_minimum(&self.group.columns.group(middle));
+                let within = match bounds.0 {
+                    Included(_) => start >= limit,
+                    Excluded(_) => start > limit,
+                    Unbounded => unreachable!(),
+                };
+                if within {
+                    lower = middle + 1;
+                } else {
+                    upper = middle;
+                }
+            }
+            // The first group with an earlier minimum may still contain starts
+            // inside the query. Keep that boundary group for slot comparisons.
+            self.groups.end = self.groups.end.min(lower.saturating_add(1));
+        }
     }
 }
 impl UnrestrictedScan for ReversePreorder<'_> {
-    fn restrict<C: Coordinates>(&mut self, coordinates: &C, bound: Bound<C::Position>) {
-        self.0.restrict(coordinates, bound);
+    #[inline(always)]
+    fn restrict<C: Coordinates>(
+        &mut self,
+        coordinates: &C,
+        bounds: (Bound<C::Position>, Bound<C::Position>),
+    ) {
+        self.0.restrict(coordinates, bounds);
     }
 }
 impl UnrestrictedScan for Postorder<'_> {
-    fn restrict<C: Coordinates>(&mut self, _: &C, _: Bound<C::Position>) {}
+    fn restrict<C: Coordinates>(&mut self, _: &C, _: (Bound<C::Position>, Bound<C::Position>)) {}
 }
 impl UnrestrictedScan for ReversePostorder<'_> {
-    fn restrict<C: Coordinates>(&mut self, _: &C, _: Bound<C::Position>) {}
+    fn restrict<C: Coordinates>(&mut self, _: &C, _: (Bound<C::Position>, Bound<C::Position>)) {}
 }
 
 /// A coordinate system and a statically selected position relation.
@@ -1768,7 +2273,7 @@ impl<'tree, S: UnrestrictedScan + GroupScan<'tree>> Scan<'tree, S> {
     ) -> Scan<'tree, Restricted<S, Selection<C, R>>> {
         let coordinates = C::new(self.source.group());
         if !relation.is_empty() {
-            self.source.restrict(&coordinates, relation.start_bound());
+            self.source.restrict(&coordinates, relation.start_bounds());
         }
         Scan::new(Restricted {
             source: self.source,
@@ -1895,6 +2400,22 @@ impl<S: sealed::Source, P> sealed::Source for Restricted<S, P> {}
 impl<C, R> sealed::Predicate for Selection<C, R> {}
 impl<C: Coordinates, R: Relation<C::Position>> Predicate for Selection<C, R> {
     #[inline(always)]
+    fn has_subtree_bound(&self) -> bool {
+        if !C::PRUNE_SUBTREES {
+            return false;
+        }
+        match self.relation.end_lower_bound() {
+            Unbounded => false,
+            Included(limit) => limit != C::MINIMUM,
+            Excluded(_) => true,
+        }
+    }
+    #[inline(always)]
+    fn excludes_subtrees(&self, group: &GroupRef<'_>) -> bool {
+        self.coordinates
+            .end_before(group, self.relation.end_lower_bound())
+    }
+    #[inline(always)]
     fn retain_matches(&self, group: &GroupRef<'_>, candidates: Mask) -> Mask {
         self.retain_group(group, || candidates)
     }
@@ -1934,30 +2455,119 @@ impl<'tree, S: GroupScan<'tree>, C: Coordinates, R: Relation<C::Position>> Group
         }
         self.source.count_matches(self.selection)
     }
-    #[inline]
+    #[inline(always)]
     fn count_matches<P: Predicate>(self, predicate: P) -> usize {
         if self.selection.relation.is_empty() {
             return 0;
         }
         self.source.count_matches(And(self.selection, predicate))
     }
-    #[inline]
+    #[inline(always)]
     fn next_mask(&mut self) -> Option<Mask> {
         if self.selection.relation.is_empty() {
             return None;
         }
-        self.source.next_matching(&self.selection)
+        self.source.next_matching(&mut self.selection)
+    }
+    #[inline(always)]
+    fn next_matching<P: Predicate>(&mut self, predicate: &mut P) -> Option<Mask> {
+        if self.selection.relation.is_empty() {
+            return None;
+        }
+        self.source
+            .next_matching(&mut And(&mut self.selection, predicate))
     }
 }
 
 pub trait Predicate: sealed::Predicate {
+    #[inline(always)]
+    fn has_bitmap_index(&self) -> bool {
+        false
+    }
+    #[inline(always)]
+    fn has_group_index(&self) -> bool {
+        false
+    }
+    /// The nearest possible match in the remaining physical group interval.
+    #[inline(always)]
+    fn next_group(
+        &mut self,
+        _group: &GroupRef<'_>,
+        groups: Range<u32>,
+        reverse: bool,
+    ) -> Option<u32> {
+        if groups.is_empty() {
+            None
+        } else {
+            Some(if reverse {
+                groups.start
+            } else {
+                groups.end - 1
+            })
+        }
+    }
+    /// Whether this query has a nontrivial lower end bound for subtree pruning.
+    #[inline(always)]
+    fn has_subtree_bound(&self) -> bool {
+        false
+    }
+    /// Whether every node in this group and all its descendants must fail.
+    #[inline(always)]
+    fn excludes_subtrees(&self, _group: &GroupRef<'_>) -> bool {
+        false
+    }
     /// Called once when the predicate is attached to a scan.
     fn prepare(&mut self, _group: &GroupRef<'_>) {}
     fn retain_matches(&self, group: &GroupRef<'_>, candidates: Mask) -> Mask;
+    /// Kept separate so flat scans do not carry index lookups in their inner loop.
+    #[inline(always)]
+    fn retain_indexed(&mut self, group: &GroupRef<'_>, candidates: impl FnOnce() -> Mask) -> Mask {
+        self.retain_group(group, candidates)
+    }
     /// Group bounds may reject a fragment before constructing its live-slot mask.
     #[inline(always)]
     fn retain_group(&self, group: &GroupRef<'_>, candidates: impl FnOnce() -> Mask) -> Mask {
         self.retain_matches(group, candidates())
+    }
+}
+impl<P: Predicate> sealed::Predicate for &mut P {}
+impl<P: Predicate> Predicate for &mut P {
+    #[inline(always)]
+    fn has_bitmap_index(&self) -> bool {
+        P::has_bitmap_index(self)
+    }
+    #[inline(always)]
+    fn has_group_index(&self) -> bool {
+        P::has_group_index(self)
+    }
+    #[inline(always)]
+    fn next_group(
+        &mut self,
+        group: &GroupRef<'_>,
+        groups: Range<u32>,
+        reverse: bool,
+    ) -> Option<u32> {
+        P::next_group(self, group, groups, reverse)
+    }
+    #[inline(always)]
+    fn has_subtree_bound(&self) -> bool {
+        P::has_subtree_bound(self)
+    }
+    #[inline(always)]
+    fn excludes_subtrees(&self, group: &GroupRef<'_>) -> bool {
+        P::excludes_subtrees(self, group)
+    }
+    #[inline(always)]
+    fn retain_indexed(&mut self, group: &GroupRef<'_>, candidates: impl FnOnce() -> Mask) -> Mask {
+        P::retain_indexed(self, group, candidates)
+    }
+    #[inline(always)]
+    fn retain_matches(&self, group: &GroupRef<'_>, candidates: Mask) -> Mask {
+        P::retain_matches(self, group, candidates)
+    }
+    #[inline(always)]
+    fn retain_group(&self, group: &GroupRef<'_>, candidates: impl FnOnce() -> Mask) -> Mask {
+        P::retain_group(self, group, candidates)
     }
 }
 struct Identity;
@@ -1971,6 +2581,48 @@ impl Predicate for Identity {
 struct And<P, Q>(P, Q);
 impl<P: Predicate, Q: Predicate> sealed::Predicate for And<P, Q> {}
 impl<P: Predicate, Q: Predicate> Predicate for And<P, Q> {
+    #[inline(always)]
+    fn has_bitmap_index(&self) -> bool {
+        if self.0.has_group_index() {
+            self.0.has_bitmap_index()
+        } else {
+            self.1.has_bitmap_index()
+        }
+    }
+    #[inline(always)]
+    fn has_group_index(&self) -> bool {
+        self.0.has_group_index() || self.1.has_group_index()
+    }
+    #[inline(always)]
+    fn next_group(
+        &mut self,
+        group: &GroupRef<'_>,
+        groups: Range<u32>,
+        reverse: bool,
+    ) -> Option<u32> {
+        if self.0.has_group_index() {
+            self.0.next_group(group, groups, reverse)
+        } else {
+            self.1.next_group(group, groups, reverse)
+        }
+    }
+    #[inline(always)]
+    fn has_subtree_bound(&self) -> bool {
+        self.0.has_subtree_bound()
+    }
+    #[inline(always)]
+    fn excludes_subtrees(&self, group: &GroupRef<'_>) -> bool {
+        self.0.excludes_subtrees(group)
+    }
+    #[inline(always)]
+    fn retain_indexed(&mut self, group: &GroupRef<'_>, candidates: impl FnOnce() -> Mask) -> Mask {
+        let matches = self.0.retain_indexed(group, candidates);
+        if matches.is_empty() {
+            matches
+        } else {
+            self.1.retain_indexed(group, || matches)
+        }
+    }
     #[inline(always)]
     fn retain_matches(&self, group: &GroupRef<'_>, candidates: Mask) -> Mask {
         self.retain_group(group, || candidates)
@@ -2009,17 +2661,35 @@ impl<'tree, S: GroupScan<'tree>, P: Predicate> GroupScan<'tree> for Filtered<S, 
     fn group(&self) -> &GroupRef<'tree> {
         self.source.group()
     }
-    #[inline]
+    #[inline(always)]
     fn count_matches<Q: Predicate>(self, predicate: Q) -> usize {
         self.source.count_matches(And(self.predicate, predicate))
     }
-    #[inline]
+    #[inline(always)]
     fn next_mask(&mut self) -> Option<Mask> {
+        if self.predicate.has_group_index() {
+            return self.source.next_matching(&mut self.predicate);
+        }
         loop {
             let candidates = self.source.next_mask()?;
             let matches = self
                 .predicate
                 .retain_matches(self.source.group(), candidates);
+            if !matches.is_empty() {
+                return Some(matches);
+            }
+        }
+    }
+    #[inline(always)]
+    fn next_matching<Q: Predicate>(&mut self, predicate: &mut Q) -> Option<Mask> {
+        if predicate.has_group_index() {
+            return self
+                .source
+                .next_matching(&mut And(&mut self.predicate, predicate));
+        }
+        loop {
+            let candidates = self.next_mask()?;
+            let matches = predicate.retain_matches(self.group(), candidates);
             if !matches.is_empty() {
                 return Some(matches);
             }
@@ -2043,7 +2713,11 @@ impl<'ids> IdSelection for &'ids crate::IdSet {
     type FieldPredicate = FieldIds<'ids>;
     #[inline]
     fn into_kind_predicate(self) -> Self::KindPredicate {
-        KindIds(KindStrategy::Multiple(self))
+        KindIds {
+            strategy: KindStrategy::Multiple(self),
+            index: SymbolIndex::default(),
+            cursors: [0; 16],
+        }
     }
     #[inline]
     fn into_field_predicate(self) -> Self::FieldPredicate {
@@ -2067,6 +2741,8 @@ impl<const N: usize> IdSelection for [u16; N] {
         FixedKindIds {
             ids: self,
             empty: N == 0,
+            index: SymbolIndex::default(),
+            cursors: [0; N],
         }
     }
     #[inline]
@@ -2107,11 +2783,14 @@ impl<const N: usize> IdSelection for &[u16; N] {
 pub struct FixedKindIds<const N: usize> {
     ids: [u16; N],
     empty: bool,
+    index: SymbolIndex,
+    cursors: [u32; N],
 }
-impl<const N: usize> sealed::Predicate for FixedKindIds<N> {}
-impl<const N: usize> Predicate for FixedKindIds<N> {
-    #[inline]
-    fn prepare(&mut self, group: &GroupRef<'_>) {
+impl<const N: usize> FixedKindIds<N> {
+    // Query kernels visit known groups and keep their own index policy. Encoding
+    // their targets must not also sample indexes or prepare traversal state.
+    #[inline(always)]
+    pub(crate) fn prepare_columns(&mut self, group: &GroupRef<'_>) {
         let encode = |kind| group.columns.encode_kind(kind);
         let Some(first) = self.ids.iter().copied().find_map(encode) else {
             self.empty = true;
@@ -2119,7 +2798,55 @@ impl<const N: usize> Predicate for FixedKindIds<N> {
         };
         // Repeating a valid target preserves membership and a fixed comparison
         // count, without needing an impossible u16 sentinel for invalid IDs.
-        self.ids = self.ids.map(|kind| encode(kind).unwrap_or(first));
+        for kind in &mut self.ids {
+            *kind = encode(*kind).unwrap_or(first);
+        }
+    }
+}
+impl<const N: usize> sealed::Predicate for FixedKindIds<N> {}
+impl<const N: usize> Predicate for FixedKindIds<N> {
+    #[inline(always)]
+    fn has_bitmap_index(&self) -> bool {
+        self.index.entry_bytes & SymbolIndex::BITMAP != 0
+    }
+
+    #[inline(always)]
+    fn has_group_index(&self) -> bool {
+        self.index.enabled()
+    }
+    #[inline(always)]
+    fn next_group(
+        &mut self,
+        group: &GroupRef<'_>,
+        groups: Range<u32>,
+        reverse: bool,
+    ) -> Option<u32> {
+        self.index.next_group(
+            group,
+            self.ids.iter().copied(),
+            &mut self.cursors,
+            groups,
+            reverse,
+        )
+    }
+    #[inline(always)]
+    fn prepare(&mut self, group: &GroupRef<'_>) {
+        self.prepare_columns(group);
+        if !self.empty {
+            self.index = SymbolIndex::new(group, self.ids.iter().copied());
+        }
+    }
+    #[inline(always)]
+    fn retain_indexed(&mut self, group: &GroupRef<'_>, candidates: impl FnOnce() -> Mask) -> Mask {
+        let candidates = candidates();
+        if self.index.enabled()
+            && let Some(matches) =
+                self.index
+                    .sparse_mask(group, self.ids.iter().copied(), &mut self.cursors)
+        {
+            return candidates.intersection(matches);
+        }
+        self.retain_matches(group, candidates)
     }
     #[inline(always)]
     fn retain_matches(&self, group: &GroupRef<'_>, candidates: Mask) -> Mask {
@@ -2136,78 +2863,201 @@ impl<const N: usize> Predicate for FixedKindIds<N> {
     }
 }
 
-pub struct KindIds<'kinds>(KindStrategy<'kinds>);
+pub struct KindIds<'kinds> {
+    strategy: KindStrategy<'kinds>,
+    index: SymbolIndex,
+    cursors: [u32; 16],
+}
 enum KindStrategy<'kinds> {
     Empty,
-    Single(u16),
+    // Retain the prepared column parameters so singleton groups need no layout
+    // or grammar-table reads between calls to the node consumer.
+    Single {
+        target: u16,
+        offset: u32,
+        shift: u32,
+    },
+    // Retain the public-ID set for sparse candidate masks.
+    Small {
+        ids: [u16; 16],
+        length: u8,
+        kinds: &'kinds KindSet,
+    },
     Multiple(&'kinds KindSet),
+}
+impl KindStrategy<'_> {
+    fn targets<'scan>(&'scan self, columns: Columns<'scan>) -> impl Iterator<Item = u16> + 'scan {
+        let (ids, encoded): (&[u16], bool) = match self {
+            KindStrategy::Empty => (&[], true),
+            KindStrategy::Single { target, .. } => (std::slice::from_ref(target), true),
+            KindStrategy::Small { ids, length, .. } => (&ids[..usize::from(*length)], true),
+            KindStrategy::Multiple(kinds) => (&kinds.ids, false),
+        };
+        ids.iter().copied().filter_map(move |kind| {
+            if encoded {
+                Some(kind)
+            } else {
+                columns.encode_kind(kind)
+            }
+        })
+    }
 }
 impl sealed::Predicate for KindIds<'_> {}
 impl Predicate for KindIds<'_> {
-    #[inline]
+    #[inline(always)]
+    fn has_bitmap_index(&self) -> bool {
+        self.index.entry_bytes & SymbolIndex::BITMAP != 0
+    }
+
+    #[inline(always)]
+    fn has_group_index(&self) -> bool {
+        self.index.enabled()
+    }
+    #[inline(always)]
+    fn next_group(
+        &mut self,
+        group: &GroupRef<'_>,
+        groups: Range<u32>,
+        reverse: bool,
+    ) -> Option<u32> {
+        self.index.next_group(
+            group,
+            self.strategy.targets(group.columns),
+            &mut self.cursors,
+            groups,
+            reverse,
+        )
+    }
+    #[inline(always)]
     fn prepare(&mut self, group: &GroupRef<'_>) {
-        let KindStrategy::Multiple(kinds) = self.0 else {
+        let KindStrategy::Multiple(kinds) = self.strategy else {
             return;
         };
-        self.0 = match kinds.ids.as_slice() {
+        let columns = group.columns;
+        let single = |target| KindStrategy::Single {
+            target,
+            offset: columns.layout().symbol,
+            shift: columns.tables().symbol_shift as u32,
+        };
+
+        self.strategy = match kinds.ids.as_slice() {
             [] => KindStrategy::Empty,
-            &[kind] => group
-                .columns
+            &[kind] => columns
                 .encode_kind(kind)
-                .map_or(KindStrategy::Empty, KindStrategy::Single),
+                .map_or(KindStrategy::Empty, single),
+            targets if targets.len() <= 16 => {
+                let mut ids = [0; 16];
+                let mut length = 0;
+                for target in targets
+                    .iter()
+                    .copied()
+                    .filter_map(|kind| columns.encode_kind(kind))
+                {
+                    ids[length] = target;
+                    length += 1;
+                }
+                // Three targets use the four-ID kernel without adding a match.
+                if length == 3 {
+                    ids[3] = ids[0];
+                }
+                match length {
+                    0 => KindStrategy::Empty,
+                    1 => single(ids[0]),
+                    _ => KindStrategy::Small {
+                        ids,
+                        length: length as u8,
+                        kinds,
+                    },
+                }
+            }
             _ => KindStrategy::Multiple(kinds),
         };
+        self.index = SymbolIndex::new(group, self.strategy.targets(group.columns));
+    }
+    #[inline(always)]
+    fn retain_indexed(&mut self, group: &GroupRef<'_>, candidates: impl FnOnce() -> Mask) -> Mask {
+        let candidates = candidates();
+        if self.index.enabled()
+            && let Some(matches) = self.index.sparse_mask(
+                group,
+                self.strategy.targets(group.columns),
+                &mut self.cursors,
+            )
+        {
+            return candidates.intersection(matches);
+        }
+        self.retain_matches(group, candidates)
     }
     // Inlining lets node consumers discard unused group metadata.
     #[inline(always)]
     fn retain_matches(&self, group: &GroupRef<'_>, candidates: Mask) -> Mask {
-        let kinds = match self.0 {
-            KindStrategy::Empty => return Mask::default(),
-            KindStrategy::Single(target) => {
-                let layout = group.columns.layout();
-                return group.equal_ids(
+        let layout = group.columns.layout();
+        match &self.strategy {
+            KindStrategy::Empty => Mask::default(),
+            KindStrategy::Single {
+                target,
+                offset,
+                shift,
+            } => group.equal_ids(*offset, *shift, *target, candidates),
+            #[cfg(target_arch = "x86_64")]
+            KindStrategy::Small { ids, length, kinds } => match *length {
+                2 => group.equal_id_set(
                     layout.symbol,
                     group.columns.tables().symbol_shift as u32,
-                    target,
+                    &ids[..2],
                     candidates,
-                );
-            }
-            KindStrategy::Multiple(kinds) => kinds,
-        };
-        #[cfg(target_arch = "x86_64")]
-        if kinds.ids.len() <= 4 && !candidates.0.is_power_of_two() {
-            let layout = group.columns.layout();
-            let mut matches = Mask::default();
-            for &kind in &kinds.ids {
-                let Some(target) = group.columns.encode_kind(kind) else {
-                    continue;
-                };
-                matches.0 |= group
-                    .equal_ids(
-                        layout.symbol,
-                        group.columns.tables().symbol_shift as u32,
-                        target,
-                        candidates,
-                    )
-                    .0;
-            }
-            return matches;
+                ),
+                3..=4 => group.equal_id_set(
+                    layout.symbol,
+                    group.columns.tables().symbol_shift as u32,
+                    &ids[..4],
+                    candidates,
+                ),
+                _ => retain_small_kind_set(group, candidates, &ids[..usize::from(*length)], kinds),
+            },
+            #[cfg(not(target_arch = "x86_64"))]
+            KindStrategy::Small { kinds, .. } => retain_kind_set(group, candidates, kinds),
+            KindStrategy::Multiple(kinds) => retain_kind_set(group, candidates, kinds),
         }
-        if candidates.0.is_power_of_two() {
-            return candidates.retain(|slot| kinds.contains(group.kind(slot)));
-        }
-        let layout = group.columns.layout();
-        let start = layout.symbol as usize + group.first_slot() as usize * 2;
-        let bytes = &group.columns.data()[start..start + group.used() as usize * 2];
-        let mut matches = 0;
-        for (slot, bytes) in bytes.chunks_exact(2).enumerate() {
-            let symbol = u32::from(u16::from_le_bytes([bytes[0], bytes[1]]))
-                >> group.columns.tables().symbol_shift as u32;
-            let kind = group.columns.tables().decode_id(symbol);
-            matches |= u64::from(kinds.contains(kind)) << slot;
-        }
-        candidates.intersection(Mask(matches))
     }
+}
+// Keep variable-length SIMD out of the singleton scan's register allocation.
+#[cfg(target_arch = "x86_64")]
+#[inline(never)]
+fn retain_small_kind_set(
+    group: &GroupRef<'_>,
+    candidates: Mask,
+    ids: &[u16],
+    kinds: &KindSet,
+) -> Mask {
+    if ids.len() > 4 && candidates.at_most::<4>() {
+        return candidates.retain(|slot| kinds.contains(group.kind(slot)));
+    }
+    let layout = group.columns.layout();
+    group.equal_id_set(
+        layout.symbol,
+        group.columns.tables().symbol_shift as u32,
+        ids,
+        candidates,
+    )
+}
+// Isolate the scalar membership loop from SIMD and index traversal state.
+#[inline(never)]
+fn retain_kind_set(group: &GroupRef<'_>, candidates: Mask, kinds: &KindSet) -> Mask {
+    if candidates.at_most::<4>() {
+        return candidates.retain(|slot| kinds.contains(group.kind(slot)));
+    }
+    let layout = group.columns.layout();
+    let start = layout.symbol as usize + group.first_slot() as usize * 2;
+    let bytes = &group.columns.data()[start..start + group.used() as usize * 2];
+    let mut matches = 0;
+    for (slot, bytes) in bytes.chunks_exact(2).enumerate() {
+        let symbol = u32::from(u16::from_le_bytes([bytes[0], bytes[1]]))
+            >> group.columns.tables().symbol_shift as u32;
+        let kind = group.columns.tables().decode_id(symbol);
+        matches |= u64::from(kinds.contains(kind)) << slot;
+    }
+    candidates.intersection(Mask(matches))
 }
 pub struct FixedFieldIds<const N: usize>([u16; N]);
 impl<const N: usize> sealed::Predicate for FixedFieldIds<N> {}
@@ -2348,6 +3198,155 @@ impl Predicate for SupertypeId {
 mod tests {
     use super::*;
 
+    #[test]
+    fn sparse_cursor_boundaries() {
+        for shift in [4, 5, 6] {
+            let slots = (0..512u32)
+                .rev()
+                .filter(|group| group % 7 == 0)
+                .flat_map(|group| {
+                    (0..1 + group % (1 << shift))
+                        .rev()
+                        .map(move |slot| (group << shift) + slot)
+                })
+                .collect::<Vec<_>>();
+            for length in [0, 1, slots.len() / 2, slots.len()] {
+                for padding in [0, 17] {
+                    let slots = slots[..length]
+                        .iter()
+                        .copied()
+                        .chain(std::iter::repeat_n(u32::MAX, padding))
+                        .collect::<Vec<_>>();
+                    let bytes = slots
+                        .iter()
+                        .flat_map(|slot| slot.to_le_bytes())
+                        .collect::<Vec<_>>();
+                    let entry = SymbolEntry {
+                        bytes: &bytes,
+                        bitmap: false,
+                        shift,
+                    };
+                    for initial in [0, (slots.len() / 2) as u32, slots.len() as u32, u32::MAX] {
+                        let mut cursor = initial;
+                        for group in (0..=513)
+                            .chain((0..=513).rev())
+                            .chain((0..1024).map(|value| (value * 137) % 514))
+                        {
+                            let expected = slots
+                                .iter()
+                                .position(|slot| *slot == u32::MAX || *slot >> shift < group)
+                                .unwrap_or(slots.len());
+                            assert_eq!(entry.seek_before(group, Some(&mut cursor)), expected);
+                            assert_eq!(cursor as usize, expected);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn query_masks_match_indexed_masks_without_preparing_traversal() {
+        let language = unsafe {
+            tree_sitter::Language::from_raw(tree_sitter_json::LANGUAGE.into_raw()().cast())
+        };
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&language).unwrap();
+        let source = format!("[{}0]", "0,".repeat(4096));
+        let native = parser.parse(&source, None).unwrap();
+        let grammar = crate::Grammar::new(&language).unwrap();
+        let tree = crate::Tree::pack(&grammar, &native).unwrap();
+        let root = tree.root_node();
+        let columns = Columns::new(root);
+        let group = columns.group(0);
+
+        // A root-only symbol has a sparse index, even for 64-slot groups. Both
+        // preparation paths must produce its exact mask in every physical group.
+        let mut query = [root.kind_id()].into_kind_predicate();
+        query.prepare_columns(&group);
+        assert!(!query.has_group_index());
+        let mut indexed = [root.kind_id()].into_kind_predicate();
+        indexed.prepare(&group);
+        assert!(indexed.has_group_index());
+
+        for index in 0..tree.group_count() {
+            let group = columns.group(index);
+            let expected = group
+                .valid_mask()
+                .retain(|slot| group.kind(slot) == root.kind_id());
+            assert_eq!(query.retain_matches(&group, group.valid_mask()), expected);
+            assert_eq!(
+                indexed.retain_indexed(&group, || group.valid_mask()),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn symbol_entries_clip_both_directions() {
+        for shift in [4, 5, 6] {
+            let bitmap = [0x8000_0003u32, 0x8000_0001, 0x8000_0001]
+                .into_iter()
+                .flat_map(u32::to_le_bytes)
+                .collect::<Vec<_>>();
+            let slots = [
+                (95 << shift) + 3,
+                (64 << shift) + 1,
+                (32 << shift) + (1 << shift) - 1,
+                (32 << shift) + 2,
+                0,
+                u32::MAX,
+                u32::MAX,
+                u32::MAX,
+            ];
+            let sparse = slots
+                .into_iter()
+                .flat_map(u32::to_le_bytes)
+                .collect::<Vec<_>>();
+            let empty = [u32::MAX; 8]
+                .into_iter()
+                .flat_map(u32::to_le_bytes)
+                .collect::<Vec<_>>();
+            for (bytes, bitmap, present) in [
+                (bitmap.as_slice(), true, vec![0, 1, 31, 32, 63, 64, 95]),
+                (sparse.as_slice(), false, vec![0, 32, 64, 95]),
+                (empty.as_slice(), false, vec![]),
+            ] {
+                let entry = super::SymbolEntry {
+                    bytes,
+                    bitmap,
+                    shift,
+                };
+                let mut cursor = 0;
+                for start in 0..=96 {
+                    for end in start..=96 {
+                        let groups = start..end;
+                        let expected = present
+                            .iter()
+                            .copied()
+                            .filter(|group| groups.contains(group))
+                            .collect::<Vec<_>>();
+                        assert_eq!(
+                            entry.next_group(groups.clone(), true, None),
+                            expected.first().copied()
+                        );
+                        assert_eq!(
+                            entry.next_group(groups.clone(), false, None),
+                            expected.last().copied()
+                        );
+                        assert_eq!(
+                            entry.next_group(groups.clone(), true, Some(&mut cursor)),
+                            expected.first().copied()
+                        );
+                        assert_eq!(
+                            entry.next_group(groups, false, Some(&mut cursor)),
+                            expected.last().copied()
+                        );
+                    }
+                }
+            }
+        }
+    }
     #[test]
     fn direct_supertype_masks_match_scalar_membership() {
         for length in [16, 32, 64] {
