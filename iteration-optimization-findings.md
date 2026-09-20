@@ -622,3 +622,59 @@ All 12 scanning tests and strict library/test Clippy pass. Artifacts in
 reports, both current binaries and source snapshots, extracted consumers, and
 `codegen-comparison.txt`. The previous binary remains in
 `build/range-optimization/final`.
+
+## Encoded range comparisons on Google Cloud (2026-09-19)
+
+Range filters now translate byte and point bounds into intervals of stored
+deltas once per endpoint column. Dense masks use SSE2 over `u8` byte starts or
+`u16` byte ends and point deltas; masks with one or two candidates remain scalar.
+Exact endpoints use equality. Column conversion is forced inline so each
+relation's constant bound variants specialize before the kernel. Oversized point
+queries retain decoded `Point` comparisons. See [range-scans.md](range-scans.md)
+for the implementation and remaining opportunities.
+
+Compared baseline `d0108cc86` with `972f74162` on `squatter-benchmark`,
+`mgsloan-compute/us-central1-a`, `e2-standard-4`. This VM start selected an
+**AMD EPYC 7B12**, unlike the Broadwell instance used for earlier cloud results.
+Both binaries use rustc 1.95.0, portable release settings, the same benchmark
+source, and 16-slot groups. Only the ELF interpreter path was changed for the
+cloud host. Runs held the `squatter-idle` activity lock and benchmark lock, pinned
+to CPU 1, with no competing benchmark or compilation on the instance.
+
+Each corpus contains 32 files across 11 languages: 747,560 tuning input nodes
+and 503,590 holdout nodes. Byte and stored-point overlap queries cover the middle
+1% of each source, producing 9,589 and 5,196 matches. Scan construction is timed;
+parsing, packing, and validation are excluded. Each result is the median of
+14 samples from two processes, targeting 80 ms/sample. Binary and workload order
+reverse for the second pass. The harness checks source/grammar hashes and scalar
+agreement; output counts also agree across binaries.
+
+Rates are **million input nodes/s**, including nodes skipped by range pruning:
+
+| Operation | Tuning, before → after | Holdout, before → after |
+| --- | ---: | ---: |
+| Byte overlap nodes | 4,749.7 → 5,096.2 (+7.3%) | 5,602.9 → 5,981.1 (+6.8%) |
+| Byte overlap fold | 4,773.9 → 5,115.0 (+7.1%) | 5,630.7 → 6,013.8 (+6.8%) |
+| Byte overlap count | 4,019.4 → 4,116.8 (+2.4%) | 4,748.3 → 4,897.6 (+3.1%) |
+| Point overlap nodes | 4,517.2 → 4,584.2 (+1.5%) | 5,109.6 → 5,312.5 (+4.0%) |
+| Point overlap fold | 4,515.9 → 4,606.5 (+2.0%) | 5,166.7 → 5,339.1 (+3.3%) |
+| Point overlap count | 3,508.9 → 3,773.9 (+7.6%) | 4,042.9 → 4,417.9 (+9.3%) |
+| Preorder nodes | 1,345.2 → 1,350.1 (+0.4%) | 1,316.4 → 1,305.3 (-0.8%) |
+| Preorder fold | 1,747.2 → 1,797.8 (+2.9%) | 1,721.9 → 1,734.9 (+0.8%) |
+| Scalar preorder control | 64.2 → 63.2 (-1.5%) | 66.9 → 63.3 (-5.5%) |
+
+All six overlap workloads improve on both corpora. The unchanged scalar control
+slows down, particularly on holdout; code placement and VM variability remain
+possible influences. These measurements establish results for these binaries
+and overlap queries, not uniform gains across all relations or selectivities.
+
+Exhaustive delta tests, scanning tests, and example tests pass at group sizes
+16/32/64. The full `tree-squatter` suite, including bindings and doctests, passes
+at the default size; strict library/test Clippy passes. Tests compare encoded
+filtering with decoded positions across every `u16` delta, signed-lane boundaries,
+empty/sparse/dense masks, and partial groups. Existing relation tests cover
+zero-width nodes, empty queries, traversal direction, and absent/oversized points.
+
+Downloaded artifacts are in `build/delta-scans/delta-scans-20260919/`: `run.py`,
+`summary.json`, individual reports/logs, source snapshots, and both binaries with
+verified hashes. The instance was returned to its previous stopped state.
