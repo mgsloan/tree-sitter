@@ -550,3 +550,75 @@ and normal release compilation pass. Artifacts in `build/range-optimization/`
 include `confirmation.json`, the reproduction script `confirm.py`, all three
 binaries and their hashes, extracted consumers, source snapshots, and
 `final-scan-patterns.s`.
+
+## Selection API refresh (2026-09-19)
+
+The byte/point relation implementation was measured against the saved
+`5909281d9` binary above. The current code includes empty-query containment for
+both `within_*` and `containing_*`. Node enumeration and folds are the priority;
+count throughput is secondary.
+
+The benchmark now includes point overlap enumeration, folds, counts, and scalar
+navigation, plus byte overlap folds. Byte and point queries describe the same
+1%-of-source interval near each file's midpoint. Point bounds are computed
+before timing; points are stored in the slab. Validation compares point scan
+nodes with scalar point getters and checks the byte/point match counts agree.
+
+Measurements use CPU 2 of the same Intel Core Ultra 7 165U, rustc 1.95.0, default
+release settings, and 16-slot groups. Each corpus has 32 files in 11 languages:
+747,560 input nodes for tuning and 503,590 for holdout. Ten 40 ms samples are
+pooled from two processes per binary/corpus, with binary and workload order
+reversed. No builds ran during measurement. Rates are **million input nodes/s**,
+previous → current with the expanded benchmark:
+
+| Operation | Tuning corpus | Holdout corpus |
+| --- | ---: | ---: |
+| Preorder nodes | 1,919.3 → 1,965.6 | 1,871.5 → 1,832.1 |
+| Reverse preorder nodes | 1,956.7 → 1,955.3 | 1,886.7 → 1,860.4 |
+| Preorder fold | 3,070.5 → 3,095.5 | 2,896.4 → 2,950.9 |
+| Reverse preorder fold | 3,163.6 → 3,177.9 | 2,995.6 → 2,999.3 |
+| Byte overlap nodes | 7,718.5 → 8,413.2 | 9,021.7 → 9,648.7 |
+| Byte overlap count | 8,712.4 → 7,074.5 | 10,178.6 → 8,196.7 |
+
+Byte overlap enumeration improves 7–9%; preorder node/fold rates remain within
+2.5%. These figures remain sensitive to code placement. A current-code build
+using the original benchmark harness instead measures forward preorder nodes
+at 1,407.5/1,308.7 million/s, 27–30% below the previous binary, and reverse nodes
+about 9% lower. All four plain preorder node/fold consumers have identical
+instructions and registers across all three binaries after address
+normalization. The original-harness forward loop crosses a 64-byte boundary;
+the previous and expanded-harness loops do not. This supports the code-placement
+explanation from the earlier investigation, without identifying the hardware
+mechanism. Folds stay within 2.5% in both harnesses. No alignment flags or
+production traversal changes were added for this refresh.
+
+For the same queries in the expanded benchmark:
+
+| Operation | Tuning corpus | Holdout corpus |
+| --- | ---: | ---: |
+| Byte overlap nodes | 8,413.2 | 9,648.7 |
+| Point overlap nodes | 7,588.3 | 8,557.5 |
+| Byte overlap fold | 8,463.9 | 9,704.6 |
+| Point overlap fold | 7,225.5 | 8,191.5 |
+
+Point enumeration has 10–11% lower throughput than bytes; point folds are
+15–16% lower. Input-node rates include skipped nodes: the selected outputs are
+9,589/5,196 nodes per corpus pass. The previous implementation returns one fewer
+holdout node because it excluded zero-width nodes from overlap queries.
+
+Byte overlap counts regress 19–20% in both harnesses. The new consumer makes two
+152-byte state copies before calling an outlined `count_matches`; its group loop
+also checks delta-column bounds before rejecting groups by their position bases.
+These are investigation candidates, not established explanations of the full
+regression. Counting optimization is lower priority than node-value scans.
+
+Return to lower-bound seeking for `starting_in_*`, `starting_at_*`, and
+`within_*`: their start bounds can skip earlier groups as well as later ones.
+Current restriction uses only the upper start bound. Overlap and containing
+queries must preserve earlier-starting ancestors.
+
+All 12 scanning tests and strict library/test Clippy pass. Artifacts in
+`build/selection-refresh/` include `confirm.py`, `confirmation.json`, per-run
+reports, both current binaries and source snapshots, extracted consumers, and
+`codegen-comparison.txt`. The previous binary remains in
+`build/range-optimization/final`.

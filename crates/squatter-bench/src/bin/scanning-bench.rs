@@ -11,6 +11,7 @@ use std::{
     path::PathBuf,
     time::{Duration, Instant},
 };
+use tree_sitter::Point;
 use tree_squatter::{Grammar, IdSet, KindSet, Node, Tree, traits::NodeLike};
 
 #[derive(Parser, Serialize)]
@@ -52,6 +53,7 @@ struct Case {
     kinds: KindSet,
     multiple_kinds: KindSet,
     range: Range<usize>,
+    point_range: Range<Point>,
     nodes: usize,
     kind_matches: usize,
     multiple_kind_matches: usize,
@@ -103,6 +105,21 @@ fn overlaps(node: Node<'_>, range: &Range<usize>) -> bool {
     let start = node.start_byte();
     let end = node.end_byte();
     !range.is_empty() && start < range.end && (end > range.start || start >= range.start)
+}
+fn overlaps_points(node: Node<'_>, range: &Range<Point>) -> bool {
+    let start = node.start_position();
+    let end = node.end_position();
+    !range.is_empty() && start < range.end && (end > range.start || start >= range.start)
+}
+fn source_point(source: &[u8], offset: usize) -> Point {
+    let prefix = &source[..offset];
+    Point::new(
+        prefix.iter().filter(|&&byte| byte == b'\n').count(),
+        prefix
+            .iter()
+            .rposition(|&byte| byte == b'\n')
+            .map_or(offset, |newline| offset - newline - 1),
+    )
 }
 type Operation = fn(&Case) -> usize;
 fn fixed_kinds<const N: usize>(case: &Case) -> [u16; N] {
@@ -392,8 +409,48 @@ fn workloads() -> Vec<(&'static str, Operation)> {
                 .overlapping_bytes(case.range.clone())
                 .count()
         }),
+        ("range.fold", |case| {
+            consume_fold(
+                case.tree
+                    .root_node()
+                    .all()
+                    .overlapping_bytes(case.range.clone())
+                    .nodes(),
+            )
+        }),
         ("range.scalar", |case| {
             consume(scalar_preorder(&case.tree).filter(|&node| overlaps(node, &case.range)))
+        }),
+        ("point_range.nodes", |case| {
+            consume(
+                case.tree
+                    .root_node()
+                    .all()
+                    .overlapping_points(case.point_range.clone())
+                    .nodes(),
+            )
+        }),
+        ("point_range.count", |case| {
+            case.tree
+                .root_node()
+                .all()
+                .overlapping_points(case.point_range.clone())
+                .count()
+        }),
+        ("point_range.fold", |case| {
+            consume_fold(
+                case.tree
+                    .root_node()
+                    .all()
+                    .overlapping_points(case.point_range.clone())
+                    .nodes(),
+            )
+        }),
+        ("point_range.scalar", |case| {
+            consume(
+                scalar_preorder(&case.tree)
+                    .filter(|&node| overlaps_points(node, &case.point_range)),
+            )
         }),
     ];
     workloads.extend(sized_kind_workloads::<1>([
@@ -566,6 +623,19 @@ fn validate(case: &Case) {
             .filter(|&node| overlaps(node, &case.range))
             .collect::<Vec<_>>()
     );
+    let point_matches = preorder
+        .iter()
+        .copied()
+        .filter(|&node| overlaps_points(node, &case.point_range))
+        .collect::<Vec<_>>();
+    assert_eq!(point_matches.len(), case.range_matches);
+    assert_eq!(
+        root.all()
+            .overlapping_points(case.point_range.clone())
+            .nodes()
+            .collect::<Vec<_>>(),
+        point_matches
+    );
     assert_eq!(
         root.all()
             .filter_field_id(case.field)
@@ -716,6 +786,7 @@ fn main() -> Result<()> {
             .count();
         let range =
             source.len() / 2..(source.len() / 2 + (source.len() / 100).max(1)).min(source.len());
+        let point_range = source_point(&source, range.start)..source_point(&source, range.end);
         let kind_matches = scalar_preorder(&tree)
             .filter(|node| kinds.contains(node.kind_id()))
             .count();
@@ -744,6 +815,10 @@ fn main() -> Result<()> {
             "multiple_kind_matches": multiple_kind_matches,
             "field_id": field, "field_matches": field_matches,
             "range": [range.start, range.end], "range_matches": range_matches,
+            "point_range": [
+                [point_range.start.row, point_range.start.column],
+                [point_range.end.row, point_range.end.column],
+            ],
             "supertype_id": supertype, "supertype_matches": supertype_matches,
             "flags_matches": flags_matches, "combined_matches": combined_matches,
             "frequent_kind_ids": frequent_kind_ids, "sized_kind_matches": sized_kind_matches,
@@ -755,6 +830,7 @@ fn main() -> Result<()> {
             kinds,
             multiple_kinds,
             range,
+            point_range,
             nodes,
             kind_matches,
             multiple_kind_matches,
@@ -819,7 +895,7 @@ fn main() -> Result<()> {
                     case.kind_matches
                 } else if name.starts_with("field.") || name.contains(".field.") {
                     case.field_matches
-                } else if name.starts_with("range.") {
+                } else if name.starts_with("range.") || name.starts_with("point_range.") {
                     case.range_matches
                 } else if name.starts_with("supertype.") {
                     case.supertype_matches
