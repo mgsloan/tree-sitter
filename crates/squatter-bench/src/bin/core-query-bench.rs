@@ -39,9 +39,15 @@ macro_rules! backend {
             use super::*;
             use $core::{Query, QueryCursor, Tree};
 
-            pub fn snapshot(query: &Query, tree: &Tree, source: &[u8]) -> Vec<Record> {
+            pub fn snapshot(
+                query: &Query,
+                tree: &Tree,
+                source: &[u8],
+                optimized: bool,
+            ) -> Vec<Record> {
                 let mut cursor = QueryCursor::new();
                 cursor.set_timeout(Some(std::time::Duration::from_secs(30)));
+                cursor.set_optimized(optimized);
                 let mut execution = cursor.execute(query, tree.root_node(), source);
                 let mut records = Vec::new();
                 while let Some(result) = execution.next_match() {
@@ -167,8 +173,17 @@ fn main() -> Result<()> {
                 _ => anyhow::bail!("query compilation differs: {}", query_source.name),
             };
             ensure!(
-                reference::snapshot(&reference_query, &reference_tree, &source)
-                    == candidate::snapshot(&candidate_query, &candidate_tree, &source),
+                reference::snapshot(
+                    &reference_query,
+                    &reference_tree,
+                    &source,
+                    !arguments.unoptimized
+                ) == candidate::snapshot(
+                    &candidate_query,
+                    &candidate_tree,
+                    &source,
+                    !arguments.unoptimized
+                ),
                 "matches differ: {} / {}",
                 path.display(),
                 query_source.name

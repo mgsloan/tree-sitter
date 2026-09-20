@@ -152,3 +152,67 @@ fn cancellation_limits_ranges_and_reuse() {
     }
     assert!(execution.error().is_none());
 }
+
+#[test]
+fn switching_between_matches_and_captures_preserves_finished_order() {
+    let language =
+        unsafe { tree_sitter::Language::from_raw(tree_sitter_c::LANGUAGE.into_raw()().cast()) };
+    let source = "int alpha(int beta) { return gamma(beta); }\n".repeat(20);
+    let mut parser = tree_sitter::Parser::new();
+    parser.set_language(&language).unwrap();
+    let native = parser.parse(&source, None).unwrap();
+    let tree = Tree::pack(&Grammar::new(&language).unwrap(), &native).unwrap();
+    let reference =
+        tree_squatter::Tree::pack(&tree_squatter::Grammar::new(&language).unwrap(), &native)
+            .unwrap();
+    let pattern = "(identifier) @first (identifier) @second (identifier) @third";
+    let query = Query::new(&language, pattern).unwrap();
+    let reference_query = tree_squatter::Query::new(&language, pattern).unwrap();
+
+    macro_rules! record {
+        ($result:expr) => {
+            $result.map(|result| {
+                (
+                    result.pattern_index,
+                    result
+                        .captures
+                        .iter()
+                        .map(|capture| (capture.node.slot(), capture.index))
+                        .collect::<Vec<_>>(),
+                )
+            })
+        };
+    }
+
+    for optimized in [false, true] {
+        let mut cursor = QueryCursor::new();
+        let mut reference_cursor = tree_squatter::QueryCursor::new();
+        cursor.set_optimized(optimized);
+        reference_cursor.set_optimized(optimized);
+        let mut execution = cursor.execute(&query, tree.root_node(), source.as_bytes());
+        let mut reference_execution =
+            reference_cursor.execute(&reference_query, reference.root_node(), source.as_bytes());
+
+        // Multiple finished patterns per node exercise both an untouched queue
+        // and a partially consumed heap when the caller changes stream type.
+        for index in 0..source.len() {
+            let (actual, expected) = if index % 3 == 0 {
+                (
+                    record!(execution.next_capture().map(|(result, _)| result)),
+                    record!(reference_execution.next_capture().map(|(result, _)| result)),
+                )
+            } else {
+                (
+                    record!(execution.next_match()),
+                    record!(reference_execution.next_match()),
+                )
+            };
+            assert_eq!(actual, expected, "operation {index}, optimized={optimized}");
+            if actual.is_none() {
+                break;
+            }
+        }
+        assert!(execution.next_match().is_none());
+        assert!(execution.error().is_none());
+    }
+}

@@ -1,6 +1,6 @@
 use crate::{
     Node, Query, QueryCapture, QueryExecutionError, QueryMatch, RawNode,
-    native::{PatternEntry, Step, flags::*},
+    native::{Pattern, PatternEntry, Step, flags::*},
 };
 use std::{
     cmp::Ordering,
@@ -77,6 +77,7 @@ const _: () = assert!(size_of::<State>() == 24);
 
 #[derive(Clone, Copy)]
 struct CaptureList {
+    contents: *const Capture,
     length: u32,
     storage: u32,
     first_byte: u32,
@@ -88,8 +89,9 @@ struct CaptureList {
 }
 
 impl CaptureList {
-    fn empty() -> Self {
+    const fn empty() -> Self {
         Self {
+            contents: std::ptr::null(),
             length: 0,
             storage: NONE,
             first_byte: 0,
@@ -167,11 +169,12 @@ impl CapturePool {
         self.next_prefix = 0;
     }
 
-    fn list(&self, id: u32) -> CaptureList {
+    fn list(&self, id: u32) -> &CaptureList {
+        const EMPTY: CaptureList = CaptureList::empty();
         if id == NONE {
-            CaptureList::empty()
+            &EMPTY
         } else {
-            self.lists[id as usize]
+            &self.lists[id as usize]
         }
     }
 
@@ -180,7 +183,14 @@ impl CapturePool {
         if list.length == 0 {
             &[]
         } else {
-            &self.storage[list.storage as usize].values[..list.length as usize]
+            // Copy-on-write prevents shared buffers from reallocating. The
+            // unique writer refreshes this pointer after reserving capacity.
+            debug_assert_eq!(
+                list.contents,
+                self.storage[list.storage as usize].values.as_ptr()
+            );
+            debug_assert!(list.length as usize <= self.storage[list.storage as usize].values.len());
+            unsafe { std::slice::from_raw_parts(list.contents, list.length as usize) }
         }
     }
 
@@ -271,6 +281,8 @@ impl CapturePool {
                 .values
                 .reserve(additional);
         }
+        let list = &mut self.lists[id as usize];
+        list.contents = self.storage[list.storage as usize].values.as_ptr();
     }
 
     fn share(&mut self, target: u32, source: u32) {
@@ -748,6 +760,9 @@ impl QueryCursor {
         QueryExecution {
             cursor: self,
             query,
+            steps: query.compiled.steps(),
+            entries: query.compiled.entries(),
+            patterns: query.compiled.patterns(),
             root,
             source,
             started,
@@ -758,6 +773,10 @@ impl QueryCursor {
 pub struct QueryExecution<'cursor, 'query, 'tree, 'text> {
     cursor: &'cursor mut QueryCursor,
     query: &'query Query,
+    // Borrow native records once; hot transitions need no repeated view conversion.
+    steps: &'query [Step],
+    entries: &'query [PatternEntry],
+    patterns: &'query [Pattern],
     root: Node<'tree>,
     source: &'text [u8],
     started: Option<Instant>,
@@ -861,10 +880,9 @@ impl<'tree> QueryExecution<'_, '_, 'tree, '_> {
     }
 
     fn step(&self, index: u16) -> Step {
-        let steps = self.query.compiled.steps();
-        debug_assert!((index as usize) < steps.len());
+        debug_assert!((index as usize) < self.steps.len());
         // Only the trusted compiler and its control-flow edges produce indexes.
-        unsafe { *steps.get_unchecked(index as usize) }
+        unsafe { *self.steps.get_unchecked(index as usize) }
     }
 }
 
@@ -910,13 +928,6 @@ impl QueryCursor {
         }
     }
 
-    fn heapify(&mut self) {
-        while self.finished_heap_size < self.finished.len() {
-            self.sift_up(self.finished_heap_size);
-            self.finished_heap_size += 1;
-        }
-    }
-
     fn erase_finished(&mut self, index: usize) {
         if self.finished_heap_size == 0 {
             self.finished.remove(index);
@@ -953,8 +964,20 @@ impl<'tree> QueryExecution<'_, '_, 'tree, '_> {
     fn finish(&mut self, mut state: State) {
         state.order = self.cursor.next_finished_id;
         self.cursor.next_finished_id = self.cursor.next_finished_id.wrapping_add(1);
-        self.update_key(&mut state);
         self.cursor.finished.push(state);
+    }
+
+    fn heapify(&mut self) {
+        // Completed-match iteration needs discovery order only. Decode capture
+        // positions lazily when capture streaming first needs the heap.
+        while self.cursor.finished_heap_size < self.cursor.finished.len() {
+            let index = self.cursor.finished_heap_size;
+            let mut state = self.cursor.finished[index];
+            self.update_key(&mut state);
+            self.cursor.finished[index] = state;
+            self.cursor.sift_up(index);
+            self.cursor.finished_heap_size += 1;
+        }
     }
 
     fn snapshot(&mut self, state: &mut State) -> Output {
@@ -979,7 +1002,7 @@ impl<'tree> QueryExecution<'_, '_, 'tree, '_> {
         let index = if self.cursor.finished_heap_size == 0 {
             0
         } else {
-            self.cursor.heapify();
+            self.heapify();
             self.cursor
                 .finished
                 .iter()
@@ -1034,7 +1057,7 @@ impl<'tree> QueryExecution<'_, '_, 'tree, '_> {
 
     fn next_capture_output(&mut self) -> Option<Output> {
         loop {
-            self.cursor.heapify();
+            self.heapify();
             if !self.cursor.first_capture_valid {
                 self.cursor.first_capture = self.first_in_progress(false);
                 self.cursor.first_capture_valid = true;
@@ -1098,7 +1121,7 @@ impl<'tree> QueryExecution<'_, '_, 'tree, '_> {
 
     pub fn remove_match(&mut self, id: u32) {
         if self.cursor.finished_heap_size != 0 {
-            self.cursor.heapify();
+            self.heapify();
         }
         if let Some(index) = self.cursor.finished.iter().position(|state| state.id == id) {
             self.cursor
@@ -1827,25 +1850,31 @@ impl<'tree> QueryExecution<'_, '_, 'tree, '_> {
 
             let depth = self.cursor.parents.len() as u32;
             if self.cursor.ascending {
-                let mut retained = 0;
-                for index in 0..self.cursor.states.len() {
-                    let state = self.cursor.states[index];
-                    let step = self.step(state.step);
-                    if step.depth == DONE && (state.start_depth as u32 > depth || depth == 0) {
-                        self.finish(state);
-                        self.cursor.dirty_patterns |= 1 << (state.pattern % 64);
-                        did_match = true;
-                    } else if step.depth != DONE
-                        && state.start_depth as u32 + step.depth as u32 > depth
-                    {
-                        self.cursor.pool.release(state.captures);
-                        self.cursor.dirty_patterns |= 1 << (state.pattern % 64);
-                    } else {
-                        self.cursor.states[retained] = state;
-                        retained += 1;
+                // States waiting at shallower depths cannot change when a
+                // deeper node exits. The bound is refreshed during compaction.
+                if depth <= self.cursor.states_max_depth {
+                    let mut retained = 0;
+                    for index in 0..self.cursor.states.len() {
+                        let state = self.cursor.states[index];
+                        let step = self.step(state.step);
+                        if step.depth == DONE && (state.start_depth as u32 > depth || depth == 0) {
+                            self.finish(state);
+                            self.cursor.dirty_patterns |= 1 << (state.pattern % 64);
+                            did_match = true;
+                        } else if step.depth != DONE
+                            && state.start_depth as u32 + step.depth as u32 > depth
+                        {
+                            self.cursor.pool.release(state.captures);
+                            self.cursor.dirty_patterns |= 1 << (state.pattern % 64);
+                        } else {
+                            if retained != index {
+                                self.cursor.states[retained] = state;
+                            }
+                            retained += 1;
+                        }
                     }
+                    self.cursor.states.truncate(retained);
                 }
-                self.cursor.states.truncate(retained);
 
                 if self.goto_next_sibling() {
                     self.cursor.ascending = false;
@@ -1913,7 +1942,7 @@ impl<'tree> QueryExecution<'_, '_, 'tree, '_> {
                 offset: 0,
                 length: 0,
             });
-        let entries = query.compiled.entries();
+        let entries = self.entries;
         let start_depth = if patterns.length == 0 {
             0
         } else {
@@ -2005,10 +2034,7 @@ impl<'tree> QueryExecution<'_, '_, 'tree, '_> {
                 if step.capture_ids[0] != DONE {
                     self.capture(&mut state, node, step);
                 }
-                state.step = (query.compiled.patterns()[state.pattern as usize]
-                    .steps
-                    .end()
-                    - 1) as u16;
+                state.step = (self.patterns[state.pattern as usize].steps.end() - 1) as u16;
                 state.flags &= !(SEEKING_IMMEDIATE | SKIPPED_QUANTIFIER);
                 did_match |= stop_on_definite && self.step(state.step).has(ROOT_PATTERN_GUARANTEED);
                 self.cursor.states[index] = state;
@@ -2334,6 +2360,8 @@ impl<'tree> QueryExecution<'_, '_, 'tree, '_> {
         end
     }
 
+    // Keep the large comparison pass out of the per-node matcher's register set.
+    #[inline(never)]
     fn deduplicate(&mut self) -> bool {
         let dirty = self.cursor.dirty_patterns;
         if dirty == 0 {
@@ -2370,7 +2398,7 @@ impl<'tree> QueryExecution<'_, '_, 'tree, '_> {
                 unique_start = self.unique_start(index);
             }
 
-            let captures = self.cursor.pool.list(state.captures);
+            let captures = *self.cursor.pool.list(state.captures);
             let mut next_bucket = self
                 .cursor
                 .comparison_index
@@ -2451,7 +2479,7 @@ impl<'tree> QueryExecution<'_, '_, 'tree, '_> {
                         continue;
                     }
                     other.flags |= HAS_ALTERNATIVES;
-                    self.cursor.states[other_index] = other;
+                    self.cursor.states[other_index].flags = other.flags;
                 }
                 if contains_state {
                     if state.step == other.step
@@ -2476,7 +2504,7 @@ impl<'tree> QueryExecution<'_, '_, 'tree, '_> {
                 self.cursor.dirty_patterns |= 1 << (state.pattern % 64);
                 did_match = true;
             }
-            self.cursor.states[index] = state;
+            self.cursor.states[index].flags = state.flags;
         }
 
         self.cursor.states_max_depth = 0;
@@ -2494,7 +2522,9 @@ impl<'tree> QueryExecution<'_, '_, 'tree, '_> {
                     step_depth as u32
                 };
             self.cursor.states_max_depth = self.cursor.states_max_depth.max(depth);
-            self.cursor.states[retained] = state;
+            if retained != index {
+                self.cursor.states[retained] = state;
+            }
             retained += 1;
         }
         self.cursor.states.truncate(retained);
