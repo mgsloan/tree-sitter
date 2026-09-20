@@ -372,6 +372,9 @@ also supply the matching slot mask, intersected with the live candidates. A unio
 containing a bitmap still checks the group's symbol column for exact membership.
 Indexed filters pass composed predicates to the source; the first indexed
 predicate controls jumps, while all predicates refine the returned candidates.
+Forward byte scans try subtree rejection at the current boundary before bitmap
+jumps, preserving the pruning opportunity there. Sparse-only selections keep
+direct index jumps. Both paths still validate the selected group against the range.
 Dense enumeration keeps the ordinary fragment loop. Counts choose indexed or
 flat traversal once. The dynamic scalar membership kernel is kept separate from
 SIMD and index traversal to limit register pressure.
@@ -382,7 +385,8 @@ bits across those samples disables index lookup for the selection. Summing acros
 symbols overcounts shared bits. This is only a cost heuristic: exact membership is unchanged. Trees without the index
 (including trees with at most 32 groups) also use the flat kernel. Postorder
 enumeration retains its topology walk; fresh postorder counts can use preorder's
-index traversal.
+index traversal. The [index and sparse-mask measurements](iteration-optimization-findings.md#indexed-symbol-filters-and-sparse-candidate-masks-2026-09-20)
+compare selective and dense queries, including the remaining count regressions.
 
 The [16/32/64-slot cloud comparison](iteration-optimization-findings.md#symbol-filters-and-rangefilter-combinations-by-group-size-2026-09-19)
 covers symbol arrays/sets, fields, flags, supertypes, and range-plus-symbol

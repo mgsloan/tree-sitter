@@ -92,9 +92,11 @@ root.preorder()
    relation is empty, it asks the traversal to restrict its group bounds.
 3. Composed selections and filters ask their source for the next matching fragment.
    A selective kind filter uses the persisted symbol index to skip directly to a
-   possible group within the remaining bounds. Sparse symbol entries also provide
-   exact slot masks; bitmap entries require a symbol-column comparison.
-   Forward preorder byte scans first check whether the group's end bound excludes
+   possible group within the remaining bounds. Before bitmap jumps, forward byte
+   scans try subtree rejection at the current boundary; otherwise the jump could
+   bypass a useful ancestor span. Sparse entries jump directly and supply exact
+   slot masks; bitmap entries require a symbol-column comparison.
+   Forward preorder byte scans check whether the selected group's end bound excludes
    its subtrees. Preorder passes a deferred mask constructor to the selection, so
    rejected groups need no waste lookup or subtree clipping. Other traversals
    supply their ordinary fragments. Later filters refine survivors in call order.
@@ -123,6 +125,9 @@ dense selections. Missing indexes also use that fallback. This adds no slab data
 the index is already built by default for trees exceeding 32 groups. Dynamic kind
 sets with more than four IDs inspect only surviving slots when at most four remain,
 so a selective range or preceding filter avoids scanning every used slot.
+The [index and sparse-mask measurements](iteration-optimization-findings.md#indexed-symbol-filters-and-sparse-candidate-masks-2026-09-20)
+cover rare/absent IDs, dense-scan regressions, and filter combinations at all three
+group sizes.
 
 ### Coordinate columns and conservative bounds
 

@@ -1244,3 +1244,159 @@ verification scripts; source/binary hashes in `build.json`; and `analysis.txt`.
 The downloaded `filter-group-sizes-20260919/` contains all 54 reports/logs,
 source snapshots, binaries, and `summary.json`.
 The cloud instance was returned to its previous stopped state.
+
+## Indexed symbol filters and sparse candidate masks (2026-09-20)
+
+The Rust scans now use the persisted symbol index. Sparse entries provide exact
+slots; bitmap entries find candidate groups. Both directions respect the remaining
+range and subtree bounds. Before bitmap jumps, forward byte scans also try subtree
+rejection at the current boundary. Exact sparse lists keep direct jumps. Dense
+selections retain the flat kernel, using sampled bitmap occupancy as a cost
+heuristic. No slab format or default group size changes.
+
+Dynamic kind sets with more than four IDs scan only surviving candidates when at
+most four remain. Their scalar kernel is isolated from SIMD and index traversal.
+Indexed predicates compose through the source; dense enumeration retains its
+ordinary fragment loop, and counts select their traversal once.
+
+### Measurement
+
+Compare `90e30a7f9` (expanded harness, previous scan implementation) with
+`53526431f`. Portable release builds use `CFLAGS=-DSQ_GROUP_SIZE=16`, `32`, or `64`,
+without additional Rust target features. Runs use CPU 1 on the GCP Broadwell VM
+(model 79, 2.20 GHz). The 32-file tuning corpus and disjoint 32-file holdout corpus
+cover eleven languages as above.
+
+The main comparison uses two process rounds with reversed variant/workload order,
+three 25 ms samples per process, and 38 workloads: six samples per size/corpus/case.
+It covers frequent, least-frequent named, and valid-but-absent grammar IDs; arrays
+and reusable sets of 1/4/8/16 IDs; field combinations; narrow byte/point overlap;
+byte within; and traversal controls. A separate broad-range comparison uses the
+25–75% source window, one process per variant/corpus/case with three samples, and
+eight combined workloads.
+The index-disabled control uses two process rounds at 16 slots and twelve workloads.
+There are 104 final benchmark processes.
+
+Scan and predicate construction are timed; parsing, packing, reusable set
+construction, and reference validation are excluded. Each corpus pass makes one
+query per file. Larger rare-ID selections can include common kinds in grammars
+with few named kinds; arrays repeat IDs when fewer than N are available. Absent
+selections use valid grammar IDs and every symbol-filtered result is empty.
+
+Tables show final / baseline throughput at the same group size, tuning / holdout.
+Input-node throughput includes skipped nodes. Large selective-query ratios reflect
+avoided work, not a SIMD kernel examining that many nodes per second.
+
+Rare single-ID queries improve 26–95×; absent single-ID queries improve 31–117×.
+At 16 slots, a rare one-ID array count across the tuning corpus falls from
+478 µs to 5.05 µs, and holdout falls from 338 µs to 4.77 µs. Each pass includes
+32 scan constructions. Field-plus-symbol counts improve 1.54–2.27× across sizes.
+
+The result is mixed for common symbols. Single-ID set enumeration improves
+8–23%, but dense eight-/sixteen-ID set counts regress 13–20%. Narrow overlap
+plus a frequent four-ID array regresses 12–29% for count. Those regressions are
+retained explicitly below; this change is not a universal dense-scan speedup.
+Two-process median spreads reach 10.3% in the main comparison, so differences of
+a few percent should not determine a policy.
+
+### Frequent symbols
+
+| Query | 16 slots | 32 slots | 64 slots |
+| --- | ---: | ---: | ---: |
+| Array, 1 ID, nodes | 1.03× / 0.99× | 1.05× / 1.03× | 1.03× / 1.02× |
+| Array, 1 ID, count | 1.27× / 1.24× | 1.22× / 1.23× | 1.02× / 1.05× |
+| Set, 1 ID, nodes | 1.23× / 1.16× | 1.19× / 1.13× | 1.12× / 1.08× |
+| Set, 1 ID, count | 0.87× / 0.88× | 0.98× / 0.98× | 1.04× / 1.03× |
+| Array, 4 IDs, nodes | 0.96× / 0.96× | 1.00× / 0.98× | 1.02× / 1.00× |
+| Array, 4 IDs, count | 1.00× / 0.99× | 0.95× / 0.97× | 0.98× / 0.98× |
+| Set, 4 IDs, nodes | 0.97× / 0.94× | 0.95× / 0.92× | 0.96× / 0.93× |
+| Set, 4 IDs, count | 1.01× / 1.00× | 0.99× / 0.96× | 0.96× / 0.97× |
+| Array, 8 IDs, nodes | 1.24× / 1.22× | 1.16× / 1.16× | 1.12× / 1.10× |
+| Array, 8 IDs, count | 0.98× / 0.97× | 0.90× / 0.92× | 0.94× / 0.94× |
+| Set, 8 IDs, nodes | 0.95× / 0.93× | 0.91× / 0.92× | 0.89× / 0.89× |
+| Set, 8 IDs, count | 0.80× / 0.81× | 0.87× / 0.86× | 0.82× / 0.82× |
+| Array, 16 IDs, nodes | 1.09× / 1.09× | 1.06× / 1.06× | 1.06× / 1.05× |
+| Array, 16 IDs, count | 1.02× / 1.01× | 1.01× / 1.01× | 0.99× / 1.01× |
+| Set, 16 IDs, nodes | 0.96× / 0.94× | 0.93× / 0.92× | 0.90× / 0.89× |
+| Set, 16 IDs, count | 0.81× / 0.81× | 0.81× / 0.81× | 0.80× / 0.81× |
+
+### Selective symbols
+
+| Query | 16 slots | 32 slots | 64 slots |
+| --- | ---: | ---: | ---: |
+| Rare array, 1 ID, nodes | 80.76× / 61.72× | 53.39× / 42.25× | 48.70× / 35.98× |
+| Rare array, 1 ID, count | 94.79× / 70.90× | 59.85× / 48.09× | 49.73× / 37.03× |
+| Rare set, 1 ID, nodes | 51.82× / 37.08× | 36.45× / 28.35× | 35.92× / 26.36× |
+| Rare set, 4 IDs, count | 4.20× / 9.73× | 2.62× / 8.68× | 2.62× / 7.65× |
+| Rare set, 16 IDs, count | 1.41× / 1.80× | 1.40× / 1.88× | 1.42× / 1.93× |
+| Absent array, 1 ID, count | 116.80× / 87.04× | 71.73× / 58.09× | 59.05× / 43.35× |
+| Absent set, 4 IDs, count | 153.72× / 120.07× | 88.21× / 74.42× | 78.94× / 55.00× |
+| Absent set, 16 IDs, count | 186.23× / 201.32× | 127.04× / 144.85× | 122.14× / 79.51× |
+
+### Combined queries
+
+| Query | 16 slots | 32 slots | 64 slots |
+| --- | ---: | ---: | ---: |
+| Field + frequent set, 8 IDs, nodes | 1.22× / 1.18× | 1.59× / 1.45× | 1.24× / 1.14× |
+| Field + frequent set, 8 IDs, count | 1.63× / 1.54× | 2.25× / 2.06× | 1.75× / 1.59× |
+| Field + frequent set, 16 IDs, count | 1.60× / 1.54× | 2.27× / 2.10× | 1.71× / 1.63× |
+| Narrow overlap + frequent array, 1 ID, nodes | 1.35× / 1.32× | 1.30× / 1.26× | 1.22× / 1.19× |
+| Narrow overlap + frequent array, 4 IDs, count | 0.71× / 0.78× | 0.76× / 0.82× | 0.83× / 0.88× |
+| Narrow overlap + rare array, 1 ID, nodes | 14.58× / 8.09× | 8.49× / 5.11× | 5.83× / 3.93× |
+| Narrow overlap + rare array, 4 IDs, count | 1.15× / 2.68× | 1.17× / 2.02× | 1.27× / 1.76× |
+| Narrow overlap + rare set, 4 IDs, count | 1.59× / 3.26× | 1.69× / 2.32× | 1.55× / 1.92× |
+| Narrow within + rare array, 1 ID, count | 2.62× / 1.88× | 2.07× / 1.61× | 1.94× / 1.57× |
+
+Broad-window checks:
+
+| Query | 16 slots | 32 slots | 64 slots |
+| --- | ---: | ---: | ---: |
+| Overlap + frequent array, 1 ID, nodes | 1.44× / 1.43× | 1.31× / 1.33× | 1.26× / 1.24× |
+| Point overlap + frequent set, 4 IDs, nodes | 0.93× / 0.95× | 0.88× / 0.90× | 0.87× / 0.87× |
+| Overlap + rare array, 1 ID, nodes | 108.67× / 74.56× | 58.49× / 43.31× | 44.49× / 32.00× |
+| Overlap + rare set, 4 IDs, count | 3.90× / 9.98× | 2.49× / 8.43× | 2.44× / 7.16× |
+
+At 16 slots with index construction disabled, field-plus-symbol counts improve
+1.55–1.64× for eight-/sixteen-ID sets. Dense large-set counts still regress about
+20% in that control. Sparse-mask handling helps selective pipelines independently
+of the index, while the dense count kernel remains an optimization target.
+
+An initial indexed version skipped directly to bitmap candidates before trying
+byte subtree rejection. Its rare four-ID overlap count regressed 57% on tuning.
+The retained version checks the current boundary before bitmap jumps; the same
+query improves 15–27% on tuning and 76–168% on holdout across group sizes.
+Sparse slot lists keep direct jumps, preserving their single-ID gains.
+
+Assembly inspection also exposed calls and column-metadata spills in the initial
+dense paths. Preparation and fixed index kernels are inlined; large dynamic
+membership stays in a separate scalar kernel. The benchmark executable grows
+from about 2.4 MiB to 3.1 MiB, including all workload instantiations. Slab storage
+is identical to the baseline at each group size.
+
+Larger groups still help many common scans, but the index changes their relative
+value: rare/absent queries often do so little group work that setup and index
+lookup dominate. The earlier 64-slot slab-memory penalty still applies. The
+default remains 16; these measurements do not establish one size for every query.
+
+### Validation and artifacts
+
+The complete default-size Rust test suite passes. All fifteen scan integration
+tests pass at 16, 32, and 64 slots, including indexed/disabled packing, borrowed
+slabs, exact sparse masks, bitmap jumps, invalid IDs, composed filters, subtrees,
+range clipping, both directions, and counts after partial consumption. A unit
+test checks every interval over 96 groups against scalar bitmap/sparse-list
+references for all three group shifts, including sentinel padding.
+
+Library clippy passes with warnings denied. The benchmark also passes, allowing
+its pre-existing `collapsible_if` lint. No new lint suppression is in the source.
+The retained subtree-pruning change adds narrow overlap coverage for indexed
+subtrees in both traversal directions.
+
+Artifacts are under `build/symbol-index/`, with the downloaded remote directory
+`symbol-index-final-20260920/`. They retain raw reports/logs, binaries, build
+manifests and source hashes, driver scripts, assembly extracts, summaries, and
+validation logs. `verify-final.py` checks all 104 final reports, binary/source
+hashes, selected counts, group widths, slab sizes, and reconstructed sample rates.
+Earlier 40 ms confirmation runs and focused experiments are retained separately
+in `symbol-index-20260919/` and the parent directory. The GCP instance is returned
+to its original stopped state after download verification.
