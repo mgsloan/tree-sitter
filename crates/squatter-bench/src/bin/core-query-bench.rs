@@ -19,6 +19,8 @@ struct Arguments {
     /// Query names from the registry. Empty selects every query.
     #[arg(long)]
     query: Vec<String>,
+    #[arg(long, value_parser = ["query-matches", "query-captures"])]
+    workload: Vec<String>,
     #[arg(long)]
     unoptimized: bool,
     #[arg(long)]
@@ -190,6 +192,19 @@ fn main() -> Result<()> {
             );
 
             for captures in [false, true] {
+                let workload = if captures {
+                    "query-captures"
+                } else {
+                    "query-matches"
+                };
+                if !arguments.workload.is_empty()
+                    && !arguments
+                        .workload
+                        .iter()
+                        .any(|selected| selected == workload)
+                {
+                    continue;
+                }
                 let optimized = !arguments.unoptimized;
                 let run_reference = |iterations| {
                     reference::run(
@@ -241,11 +256,6 @@ fn main() -> Result<()> {
                     reference_samples.push(reference.0);
                     candidate_samples.push(candidate.0);
                 }
-                let workload = if captures {
-                    "query-captures"
-                } else {
-                    "query-matches"
-                };
                 eprintln!("{} / {} / {workload}", path.display(), query_source.name);
                 rows.push(serde_json::json!({
                     "path": path, "source_sha256": digest(&source), "grammar": name,

@@ -46,7 +46,8 @@ fn queries_match_reference_with_and_without_plans() {
     let reference_grammar = tree_squatter::Grammar::new(&language).unwrap();
     let mut parser = tree_sitter::Parser::new();
     parser.set_language(&language).unwrap();
-    let source = "// before\nint alpha(int x, int y) { int a = 1; if (x) return beta(x, y, a, b, c, d, e, f, g, h, i, j, k, l); return y; }\n// after\nint bravo = 2;\nint other() { return beta(a, b); }";
+    // Three ambiguous capture runs create enough states to exercise indexed deduplication.
+    let source = "// before\nint alpha(int x, int y) { int a = 1; if (x) return beta(x, y, a, b, c, d, e, f, g, h, i, j, k, l, m, n, o, p, q, r, s, t, u, v, w, x, y, z); return y; }\n// after\nint bravo = 2;\nint other() { return beta(a, b); }";
     let native = parser.parse(source, None).unwrap();
     let tree = Tree::pack(&grammar, &native).unwrap();
     let reference = tree_squatter::Tree::pack(&reference_grammar, &native).unwrap();

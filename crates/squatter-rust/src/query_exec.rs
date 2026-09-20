@@ -179,7 +179,10 @@ impl CapturePool {
     }
 
     fn get(&self, id: u32) -> &[Capture] {
-        let list = self.list(id);
+        self.values(self.list(id))
+    }
+
+    fn values(&self, list: &CaptureList) -> &[Capture] {
         if list.length == 0 {
             &[]
         } else {
@@ -316,7 +319,7 @@ impl CapturePool {
         self.storage[list.storage as usize].references += 1;
     }
 
-    fn append(&mut self, id: u32, node: Node<'_>, step: Step) -> bool {
+    fn append(&mut self, id: u32, node: Node<'_>, step: &Step) -> bool {
         self.make_mutable(id, 3);
         let list = &mut self.lists[id as usize];
         let first = list.length == 0;
@@ -343,9 +346,12 @@ impl CapturePool {
         first
     }
 
-    fn containment(&self, left: u32, right: u32, root: Node<'_>) -> (bool, bool) {
-        let left_list = self.list(left);
-        let right_list = self.list(right);
+    fn containment(
+        &self,
+        left_list: &CaptureList,
+        right_list: &CaptureList,
+        root: Node<'_>,
+    ) -> (bool, bool) {
         let mut contains_right = left_list.length >= right_list.length;
         let mut contains_left = right_list.length >= left_list.length;
         if left_list.storage == right_list.storage {
@@ -372,8 +378,8 @@ impl CapturePool {
             }
         }
 
-        let left = self.get(left);
-        let right = self.get(right);
+        let left = self.values(left_list);
+        let right = self.values(right_list);
         let shared = if left_list.prefix != 0 && left_list.prefix == right_list.prefix {
             left_list.prefix_size.min(right_list.prefix_size) as usize
         } else {
@@ -756,13 +762,34 @@ impl QueryCursor {
         self.direct_position = root.data().groups() * crate::storage::GROUP_SIZE - 1 - root.slot();
         self.direct_free = NONE;
 
+        // Store word-wide comparisons once, as their encoding depends on the
+        // execution tree. Root searches reuse them across all scanned groups.
+        let shift = root.data().tables().symbol_shift;
+        let scan_filter = std::array::from_fn(|index| {
+            query
+                .program
+                .scan_filter
+                .matches
+                .get(index)
+                .map_or((0, 0), |&(value, mask)| {
+                    (
+                        ((value << shift) as u64) * 0x0001_0001_0001_0001,
+                        ((mask << shift) as u64) * 0x0001_0001_0001_0001,
+                    )
+                })
+        });
         let started = self.timeout.map(|_| Instant::now());
+        let unrestricted = self.range.unrestricted();
         QueryExecution {
             cursor: self,
             query,
             steps: query.compiled.steps(),
             entries: query.compiled.entries(),
             patterns: query.compiled.patterns(),
+            scan_filter,
+            unrestricted,
+            root_has_error: root.has_error(),
+            total_slots: root.data().groups() * crate::storage::GROUP_SIZE,
             root,
             source,
             started,
@@ -777,6 +804,10 @@ pub struct QueryExecution<'cursor, 'query, 'tree, 'text> {
     steps: &'query [Step],
     entries: &'query [PatternEntry],
     patterns: &'query [Pattern],
+    scan_filter: [(u64, u64); 8],
+    unrestricted: bool,
+    root_has_error: bool,
+    total_slots: u32,
     root: Node<'tree>,
     source: &'text [u8],
     started: Option<Instant>,
@@ -793,7 +824,7 @@ impl Drop for QueryExecution<'_, '_, '_, '_> {
     }
 }
 
-impl<'tree> QueryExecution<'_, '_, 'tree, '_> {
+impl<'query, 'tree> QueryExecution<'_, 'query, 'tree, '_> {
     pub fn error(&self) -> Option<QueryExecutionError> {
         self.cursor.error
     }
@@ -817,7 +848,7 @@ impl<'tree> QueryExecution<'_, '_, 'tree, '_> {
         if self.cursor.error.is_some() {
             return None;
         }
-        if !self.cursor.range.unrestricted() && !self.query.program.supports_ranges {
+        if !self.unrestricted && !self.query.program.supports_ranges {
             self.cursor.error = Some(QueryExecutionError::UnsupportedRange);
             self.cursor.halted = true;
             return None;
@@ -879,10 +910,10 @@ impl<'tree> QueryExecution<'_, '_, 'tree, '_> {
         false
     }
 
-    fn step(&self, index: u16) -> Step {
+    fn step(&self, index: u16) -> &'query Step {
         debug_assert!((index as usize) < self.steps.len());
         // Only the trusted compiler and its control-flow edges produce indexes.
-        unsafe { *self.steps.get_unchecked(index as usize) }
+        unsafe { self.steps.get_unchecked(index as usize) }
     }
 }
 
@@ -945,7 +976,7 @@ impl QueryCursor {
     }
 }
 
-impl<'tree> QueryExecution<'_, '_, 'tree, '_> {
+impl<'query, 'tree> QueryExecution<'_, 'query, 'tree, '_> {
     fn update_key(&self, state: &mut State) {
         let captures = self.cursor.pool.get(state.captures);
         state.set(EXHAUSTED, state.consumed as usize >= captures.len());
@@ -1165,7 +1196,7 @@ impl<'tree> QueryExecution<'_, '_, 'tree, '_> {
         true
     }
 
-    fn capture(&mut self, state: &mut State, node: Node<'tree>, step: Step) {
+    fn capture(&mut self, state: &mut State, node: Node<'tree>, step: &Step) {
         if state.has(DEAD) {
             return;
         }
@@ -1266,7 +1297,7 @@ impl<'tree> QueryExecution<'_, '_, 'tree, '_> {
     }
 
     fn total_slots(&self) -> u32 {
-        self.root.data().groups() * crate::storage::GROUP_SIZE
+        self.total_slots
     }
 
     fn normalize_position(&self, position: u32) -> u32 {
@@ -1373,7 +1404,6 @@ impl<'tree> QueryExecution<'_, '_, 'tree, '_> {
         let filter = &query.program.scan_filter.matches;
         let targets = &query.program.scan_targets;
         let total = self.total_slots();
-        let shift = data.tables().symbol_shift;
 
         while start < end {
             if self.poll() {
@@ -1409,9 +1439,7 @@ impl<'tree> QueryExecution<'_, '_, 'tree, '_> {
                 for word_index in (low / 4..=(high - 1) / 4).rev() {
                     let word = data.long(data.layout.symbol, word_index);
                     let mut hits = 0;
-                    for &(value, mask) in filter {
-                        let value = ((value << shift) as u64) * 0x0001_0001_0001_0001;
-                        let mask = ((mask << shift) as u64) * 0x0001_0001_0001_0001;
+                    for &(value, mask) in &self.scan_filter[..filter.len()] {
                         let difference = (word ^ value) & mask;
                         hits |= !(((difference & 0x7fff_7fff_7fff_7fff)
                             .wrapping_add(0x7fff_7fff_7fff_7fff))
@@ -1469,7 +1497,7 @@ impl<'tree> QueryExecution<'_, '_, 'tree, '_> {
     }
 
     fn presence_matches(&mut self, requirement: u16, root: Node<'tree>) -> bool {
-        if !self.cursor.optimized || self.root.has_error() {
+        if !self.cursor.optimized || self.root_has_error {
             return true;
         }
         let index = requirement as usize - 1;
@@ -1842,7 +1870,7 @@ impl<'tree> QueryExecution<'_, '_, 'tree, '_> {
                 && self.cursor.optimized
                 && !self.query.program.scan_symbols.is_empty()
                 && self.cursor.max_start_depth == NONE
-                && self.cursor.range.unrestricted()
+                && self.unrestricted
                 && !self.scan_seek()
             {
                 return false;
@@ -1883,7 +1911,7 @@ impl<'tree> QueryExecution<'_, '_, 'tree, '_> {
                 }
             } else {
                 let node = self.current();
-                let unrestricted = self.cursor.range.unrestricted();
+                let unrestricted = self.unrestricted;
                 let parent_intersects = unrestricted
                     || self
                         .parent()
@@ -1984,7 +2012,7 @@ impl<'tree> QueryExecution<'_, '_, 'tree, '_> {
                 intersects
             } else {
                 parent_intersects
-                    && (!self.root.has_error()
+                    && (!self.root_has_error
                         || self.parent().is_none_or(|parent| !parent.is_error()))
             };
             if in_range
@@ -2185,24 +2213,28 @@ impl<'tree> QueryExecution<'_, '_, 'tree, '_> {
     fn sort_states(&mut self) {
         let pool = &self.cursor.pool;
         let states = &mut self.cursor.states;
-        let key = |state: State| {
-            let captures = pool.list(state.captures);
-            (
-                state.start_depth,
-                state.pattern,
-                captures.length != 0,
-                captures.first_byte,
-            )
+        let precedes = |left: State, right: State| {
+            if left.start_depth != right.start_depth {
+                return left.start_depth < right.start_depth;
+            }
+            if left.pattern != right.pattern {
+                return left.pattern < right.pattern;
+            }
+
+            // Different depth/pattern groups need no capture lookup.
+            let left = pool.list(left.captures);
+            let right = pool.list(right.captures);
+            (left.length != 0, left.first_byte) < (right.length != 0, right.first_byte)
         };
         // Enter events leave the array nearly sorted. Stable insertion avoids
         // allocating scratch and keeps discovery order among equal captures.
         for index in 1..states.len() {
             let state = states[index];
-            if key(state) >= key(states[index - 1]) {
+            if !precedes(state, states[index - 1]) {
                 continue;
             }
             let mut position = index;
-            while position != 0 && key(state) < key(states[position - 1]) {
+            while position != 0 && precedes(state, states[position - 1]) {
                 states[position] = states[position - 1];
                 position -= 1;
             }
@@ -2378,7 +2410,16 @@ impl<'tree> QueryExecution<'_, '_, 'tree, '_> {
             self.cursor.states_need_sort = false;
         }
         self.index_captures();
+        if self.cursor.comparison_index.is_empty() {
+            self.compare_states::<false>(dirty)
+        } else {
+            self.compare_states::<true>(dirty)
+        }
+    }
 
+    // Small state sets do not use indexes. Select that path once per pass so
+    // their inner loop carries no hash-bucket or capture-set bitmap state.
+    fn compare_states<const INDEXED: bool>(&mut self, dirty: u64) -> bool {
         let mut group = None;
         let mut unique_start = false;
         let mut did_match = false;
@@ -2399,11 +2440,11 @@ impl<'tree> QueryExecution<'_, '_, 'tree, '_> {
             }
 
             let captures = *self.cursor.pool.list(state.captures);
-            let mut next_bucket = self
-                .cursor
-                .comparison_index
-                .get(index)
-                .map_or(self.cursor.states.len(), |entry| entry.next);
+            let mut next_bucket = if INDEXED {
+                self.cursor.comparison_index[index].next
+            } else {
+                self.cursor.states.len()
+            };
             let mut comparison_block = usize::MAX;
             let mut candidates = 0;
             let mut other_index = index + 1;
@@ -2416,7 +2457,11 @@ impl<'tree> QueryExecution<'_, '_, 'tree, '_> {
                 if other.start_depth != state.start_depth || other.pattern != state.pattern {
                     break;
                 }
-                let other_entry = self.cursor.comparison_index.get(other_index).copied();
+                let other_entry = if INDEXED {
+                    Some(self.cursor.comparison_index[other_index])
+                } else {
+                    None
+                };
                 let (other_count, other_start) = if let Some(entry) = other_entry {
                     (entry.count, entry.first_byte)
                 } else {
@@ -2431,7 +2476,8 @@ impl<'tree> QueryExecution<'_, '_, 'tree, '_> {
                     break;
                 }
 
-                if !self.cursor.comparison_blocks.is_empty()
+                if INDEXED
+                    && !self.cursor.comparison_blocks.is_empty()
                     && captures.prefix != 0
                     && (self.query.program.repeated_captures || captures.length != other_count)
                 {
@@ -2464,10 +2510,11 @@ impl<'tree> QueryExecution<'_, '_, 'tree, '_> {
                     }
                 }
 
-                let (contains_other, contains_state) =
-                    self.cursor
-                        .pool
-                        .containment(state.captures, other.captures, self.root);
+                let (contains_other, contains_state) = self.cursor.pool.containment(
+                    self.cursor.pool.list(state.captures),
+                    other_captures,
+                    self.root,
+                );
                 if contains_other {
                     if state.step == other.step
                         && (other.has(SEEKING_IMMEDIATE) || !state.has(SEEKING_IMMEDIATE))

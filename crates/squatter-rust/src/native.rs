@@ -252,7 +252,7 @@ pub(crate) mod flags {
 
 impl Step {
     #[inline]
-    pub fn has(self, flag: u16) -> bool {
+    pub fn has(&self, flag: u16) -> bool {
         self.flags & flag != 0
     }
 }
