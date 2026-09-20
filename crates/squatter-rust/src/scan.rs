@@ -2854,6 +2854,7 @@ pub struct FixedKindIds<const N: usize> {
 }
 
 // Flat loops own only comparisons, so cursor arrays do not cross the count boundary.
+#[derive(Clone, Copy)]
 struct FixedKindValues<const N: usize> {
     ids: [u16; N],
     empty: bool,
@@ -2937,7 +2938,9 @@ impl<const N: usize> Predicate for FixedKindIds<N> {
 
     #[inline(always)]
     fn flat(&self) -> impl Predicate {
-        &self.values
+        // Give the loop its own encoded IDs so advancing the source cannot
+        // obscure their independence from mutable index state.
+        self.values
     }
 
     #[inline(always)]
