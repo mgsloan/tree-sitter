@@ -838,3 +838,130 @@ Artifacts are in `build/supertype-bench/`: the build script and logs, source and
 binary hashes in `cloud/build.json`, and downloaded reports, manifests, scripts,
 source snapshots, binaries, and `summary.json` in `supertype-simd-20260919/`.
 Downloaded binary hashes and current scan/harness hashes match the build record.
+
+## Two-sided range seeking and byte subtree pruning (2026-09-19)
+
+Retained two changes to reduce visited groups:
+
+- `f5a6e951f` seeks both start bounds for within, starting-in, and exact-start
+  selections, in bytes or points and either preorder direction. The lower seek
+  retains the crossing group for slot comparisons.
+- `98d8ee8e6` adds a subtree rejection proof before ordinary group evaluation.
+  The retained policy (`1f951f1df`) enables it for bytes. If all group ends are
+  too early, its span base bounds a safe jump across whole descendant groups.
+  No new index, allocation, or slab format is needed.
+
+`573c2a205` specializes bound variants and point probes before binary search and
+omits lower searches at coordinate zero. Queries without a useful subtree bound
+use a group loop without pruning checks. Reverse counts can use forward pruning
+over their remaining groups; reverse enumeration retains its group walk.
+See [range-scans.md](range-scans.md) for boundary rules and the current pipeline.
+
+### Assembly findings and rejected variants
+
+An initial implementation read exact subtree spans after ordinary rejection. It
+regressed midpoint overlap enumeration by 11–19% for bytes and 31–39% for points.
+Testing the end bound first and using only nonzero span bases avoids delta reads
+and short jumps on the common path. Zero bases cover groups whose spans all fit
+in a byte.
+
+Adding the second search changed inlining decisions. Point binary-search probes
+began copying the whole group metadata before calling `start_minimum`. Explicit
+inlining removes these copies and substantially improves short point queries.
+The larger seek routine also needs explicit specialization of its constant bound
+variants.
+
+Point subtree pruning improved narrow overlap enumeration, but its additional
+decoder path regressed broad enumeration and some counts. Splitting queries into
+pruning/non-pruning loops and outlining the pruning kernel did not remove that
+tradeoff. The retained code leaves point traversal flat after seeking. Two-sided
+point seeking remains enabled.
+
+Code placement still matters. Across intermediate binaries, plain preorder fold
+rates moved by up to 28% even though its instructions, registers, and relative
+branches were identical after address normalization. Its final control rates are
+within 0.5%. Reverse overlap has an unresolved regression described below; its
+consumer assembly also changes register allocation and inlining, so that result
+cannot be explained solely by address placement.
+
+### Cloud confirmation
+
+Compared baseline `8810c4828` with retained scan source `1f951f1df` on
+`squatter-benchmark`, `mgsloan-compute/us-central1-a`, `e2-standard-4`. This start
+selected **Intel Xeon Broadwell**, model 79, at 2.20 GHz. Both binaries use the
+same expanded harness (`a9f66edb8`), built in the same isolated worktree path with
+rustc 1.95.0, portable release settings, and 16-slot groups. Only the ELF
+interpreter path was patched for the cloud host.
+
+Runs held the activity and benchmark locks and pinned timing to CPU 1. Each
+corpus has 32 files across 11 languages: 747,560 tuning input nodes and 503,590
+holdout nodes. Queries cover the midpoint 1%, with 9,589/5,196 overlap matches.
+Exact-start queries use that interval's start. The harness validates membership
+against scalar accessors; output counts agree across binaries for every workload.
+
+Each rate is the median of 14 samples from two processes, targeting 80 ms/sample.
+Binary and workload order reverse on the second pass. Scan construction is timed;
+parsing, packing, and validation are excluded. Rates below are **million input
+nodes/s**, including skipped nodes. Large exact-start rates mostly measure seeks,
+not reading that many node records.
+
+| Operation | Tuning, before → after | Holdout, before → after |
+| --- | ---: | ---: |
+| Byte overlap nodes | 5,339.1 → 9,770.7 (+83.0%) | 6,073.4 → 12,055.0 (+98.5%) |
+| Byte overlap fold | 5,202.3 → 9,407.5 (+80.8%) | 5,947.8 → 11,693.5 (+96.6%) |
+| Byte overlap count | 6,278.0 → 10,634.0 (+69.4%) | 7,104.2 → 14,016.2 (+97.3%) |
+| Point overlap nodes | 4,376.6 → 4,401.6 (+0.6%) | 4,955.9 → 5,005.1 (+1.0%) |
+| Point overlap count | 7,501.6 → 7,589.9 (+1.2%) | 8,338.1 → 8,249.7 (-1.1%) |
+| Byte within nodes | 5,165.9 → 28,023.7 (5.43×) | 6,127.8 → 30,964.0 (5.05×) |
+| Point within nodes | 2,742.0 → 23,362.9 (8.52×) | 3,648.4 → 23,847.7 (6.54×) |
+| Byte starting-in nodes | 5,682.4 → 28,660.6 (5.04×) | 6,682.5 → 31,683.4 (4.74×) |
+| Point starting-in nodes | 2,942.0 → 20,911.7 (7.11×) | 3,488.8 → 21,665.0 (6.21×) |
+| Byte exact-start nodes | 7,692.9 → 193,337.4 (25.13×) | 8,905.2 → 131,652.8 (14.78×) |
+| Point exact-start nodes | 3,911.1 → 105,860.0 (27.07×) | 4,551.9 → 68,987.2 (15.16×) |
+| Reverse byte overlap nodes | 6,331.7 → 5,202.8 (-17.8%) | 7,333.7 → 6,023.3 (-17.9%) |
+| Reverse point overlap nodes | 6,330.7 → 5,262.5 (-16.9%) | 7,196.0 → 6,013.3 (-16.4%) |
+| Preorder nodes control | 581.7 → 580.2 (-0.3%) | 576.6 → 570.8 (-1.0%) |
+| Preorder fold control | 1,126.7 → 1,131.9 (+0.5%) | 1,081.5 → 1,085.9 (+0.4%) |
+
+Within/starting-in counts improve 5.8–16.3×, and exact-start counts 11.3–21.0×.
+The unchanged scalar traversal control stays within 0.3%. The gains chiefly
+benefit start-bounded scans and forward byte overlap. Reverse overlap is slower
+in this build and remains a follow-up, rather than an assumed improvement.
+
+Short checks use one process and three 50 ms samples per variant/corpus, with
+baseline first. Enumeration changes are:
+
+| Query | Byte overlap, tuning / holdout | Point overlap, tuning / holdout |
+| --- | ---: | ---: |
+| First 1% | +15.9% / +18.3% | +6.1% / +3.5% |
+| Last 1% | +223.6% / +183.0% | +2.5% / +3.3% |
+| Middle 50% | +5.6% / +7.3% | +0.1% / +2.3% |
+| Whole source | +18.1% / +16.7% | +0.4% / +0.2% |
+
+The middle 50% starts at 25% of source length. These checks are less conclusive
+than the midpoint confirmation. Counts have additional tradeoffs: broad point
+overlap counts regress 6–8%, and whole-source byte starting-in counts regress
+20%. Reverse byte overlap regresses about 24–25% on broad queries. Avoid treating
+the narrow-query gains as uniform improvements across consumers and selectivities.
+
+Follow-up profiles use `perf record -e cpu-clock:u -F 997` with twelve 500 ms
+samples per overlap workload, on the tuning corpus and CPU 1. Hardware PMU events
+remain unavailable. No samples were lost. `Restricted::next_mask` accounts for
+65% of sampled byte time and 71% of point time; consumer time is 14%/7%. Sampling
+includes setup and validation, so these shares are not timed-kernel speedups.
+Raw data and assembly annotations are retained.
+
+The new integration test exercises larger nested subtrees, repeated starts,
+coordinate-induced group waste, subtree clipping, both directions, and absent
+or stored points. Scanning, pattern, and unit tests pass at group sizes 16/32/64;
+the full default-size suite, including bindings and doctests, strict library/test
+Clippy, and formatting checks pass.
+
+Artifacts are in `build/range-seeking/`: source snapshots, build manifests,
+comparison/profile scripts, extracted consumer assembly, and normalized control
+comparisons. Its downloaded `range-seeking-20260919/` directory contains all
+per-run reports, summaries, experimental binaries, and perf data. The retained
+binary is `byte-pruning`; the main result is `confirm-byte-pruning-summary.json`.
+Local/downloaded binary hashes match the build manifests and confirmation report;
+the baseline parent, committed scan source, and shared harness hashes also agree.
+The cloud instance was returned to its previous stopped state.
