@@ -1,10 +1,11 @@
 # Rust core
 
 Proposal based on `main` at `0c3f79ab5`, which merges `iteration` through
-`8810c4828`. Implementation is in progress in `crates/squatter-rust`; the reference
-remains unchanged.
+`8810c4828`. The candidate implementation is in `crates/squatter-rust`; the
+reference remains unchanged. [rust-core-results.md](rust-core-results.md) records
+comparison coverage, measurements, and remaining promotion checks.
 
-[rust-core-interfaces.md](rust-core-interfaces.md) specifies the planned private
+[rust-core-interfaces.md](rust-core-interfaces.md) specifies the private
 interfaces and ownership contracts. Preserve the existing public Rust API.
 
 Move packed storage, packing, traversal, and query execution into Rust. Keep
@@ -273,9 +274,11 @@ preparation. A query and tree match by their retained native language identity,
 not by the address of independently prepared Squatter grammars. Keep native
 compiled storage uniquely owned initially. Pattern/capture disabling requires
 exclusive query access, no live borrowed views during native mutation, refreshed
-views afterward, and rebuilding affected Rust plans. Any later sharing must keep
-mutation isolated. Reset preparation fields when rebuilding so stale flags or
-indexes cannot survive disabling. Finished queries remain read-only during
+views after structural changes, and updating affected Rust plans. Capture removal
+only changes IDs read by execution. Pattern removal reindexes entries and masks
+direct roots; existing scan filters remain conservative. Any later sharing must
+keep mutation isolated. Reset preparation fields on a full rebuild so stale flags
+or indexes cannot survive. Finished queries remain read-only during
 execution, with cursor state separate. Audit the native result, retained language,
 and destructor before preserving the existing Rust query's `Send`/`Sync` contract;
 avoid execution-time locks or shared mutable caches. Preserve metadata and error

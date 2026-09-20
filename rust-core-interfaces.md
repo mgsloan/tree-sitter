@@ -1,19 +1,19 @@
 # Rust core interfaces
 
-Companion to [rust-core-design.md](rust-core-design.md). This specifies the planned
-interfaces between components, their ownership, and their error contracts. It is
-a design, not implemented API. The current source baseline is `main` at
-`0c3f79ab5`; refresh to the latest `main` before freezing the comparison baseline.
+Companion to [rust-core-design.md](rust-core-design.md). This specifies component
+boundaries, ownership, and error contracts implemented by `crates/squatter-rust`.
+The comparison baseline is `main` at `0c3f79ab5`. Later `main` commit `83d962cdd`
+only changes `todo.md`; its implementation is identical.
 
 Keep the public Rust API unchanged. The temporary `tree-squatter-rust` package
 allows comparison with `tree-squatter`; it does not introduce backend selection
 into the production API. A public C facade remains deferred.
 
-Names below are proposed private names. Rust signatures are interface sketches;
-opaque bodies and routine helpers are omitted. They describe component boundaries,
-not a requirement to create a module or allocation for each type. Existing public
-signatures are defined by the linked source, including its macros and trait
-implementations. The packing-event representation remains explicitly open.
+Rust signatures below are interface sketches; private helper names can differ.
+The native declarations live in [native](crates/squatter-rust/native), with Rust
+owners and borrowed views in [native.rs](crates/squatter-rust/src/native.rs).
+Existing public signatures remain the contract, including macros and traits.
+Packing uses batches of reverse-preorder events with visible depth.
 
 ## Public API carried over
 
@@ -413,9 +413,10 @@ void sq_native_query_disable_capture(
 ```
 
 The disable operations change compiler records only. They do not build C execution
-plans. The Rust wrapper enforces public argument behavior, refreshes descriptors,
-clears stale preparation fields, and rebuilds affected Rust plans before the
-query is executable again. No slices may remain live across native mutation.
+plans. Capture removal edits IDs in place, preserving descriptors and plans.
+Pattern removal compacts the entry array; Rust refreshes its view, masks disabled
+direct roots, reindexes entries, and updates range eligibility. Existing root scan
+filters remain conservative. No slices may remain live across native mutation.
 
 ```rust
 struct CompiledQuery { /* unique native handle and cached descriptors */ }
