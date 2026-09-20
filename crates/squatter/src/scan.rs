@@ -468,7 +468,7 @@ mod sealed {
         fn retain<R: Relation<Self::Position>>(
             &self,
             group: &GroupRef<'_>,
-            candidates: Mask,
+            candidates: impl FnOnce() -> Mask,
             relation: &R,
         ) -> Mask;
     }
@@ -503,7 +503,11 @@ mod sealed {
             false
         }
         fn start_bound(&self) -> Bound<T>;
-        fn retain<P: Positions<Position = T>>(&self, positions: P, candidates: Mask) -> Mask;
+        fn retain<P: Positions<Position = T>>(
+            &self,
+            positions: P,
+            candidates: impl FnOnce() -> Mask,
+        ) -> Mask;
     }
 }
 use sealed::{Coordinates, PositionColumn, Positions, Relation};
@@ -523,6 +527,16 @@ pub trait GroupScan<'tree>: sealed::Source + Sized {
     fn group(&self) -> &GroupRef<'tree>;
     /// Advance the current group and return its nonempty matching mask.
     fn next_mask(&mut self) -> Option<Mask>;
+    #[inline]
+    fn next_matching<P: Predicate>(&mut self, predicate: &P) -> Option<Mask> {
+        loop {
+            let candidates = self.next_mask()?;
+            let matches = predicate.retain_matches(self.group(), candidates);
+            if !matches.is_empty() {
+                return Some(matches);
+            }
+        }
+    }
     /// Advance without constructing a mask when the source can produce slots directly.
     #[inline(always)]
     fn next_slots(&mut self) -> Option<Self::Slots> {
@@ -539,10 +553,8 @@ pub trait GroupScan<'tree>: sealed::Source + Sized {
 #[inline(always)]
 fn count_groups<'tree, S: GroupScan<'tree>, P: Predicate>(mut source: S, predicate: P) -> usize {
     let mut count = 0;
-    while let Some(matches) = source.next_mask() {
-        count += predicate
-            .retain_matches(source.group(), matches)
-            .count_ones() as usize;
+    while let Some(matches) = source.next_matching(&predicate) {
+        count += matches.count_ones() as usize;
     }
     count
 }
@@ -761,6 +773,23 @@ impl<'tree> Preorder<'tree> {
             }
         }
     }
+    #[inline(always)]
+    fn next_matching_group<const REVERSE: bool, P: Predicate>(
+        &mut self,
+        predicate: &P,
+    ) -> Option<Mask> {
+        loop {
+            self.group.index = if REVERSE {
+                self.groups.next()?
+            } else {
+                self.groups.next_back()?
+            };
+            let matches = predicate.retain_group(&self.group, || self.mask());
+            if !matches.is_empty() {
+                return Some(matches);
+            }
+        }
+    }
 }
 impl sealed::Source for Preorder<'_> {}
 impl<'tree> GroupScan<'tree> for Preorder<'tree> {
@@ -794,6 +823,10 @@ impl<'tree> GroupScan<'tree> for Preorder<'tree> {
     #[inline]
     fn group(&self) -> &GroupRef<'tree> {
         &self.group
+    }
+    #[inline(always)]
+    fn next_matching<P: Predicate>(&mut self, predicate: &P) -> Option<Mask> {
+        self.next_matching_group::<false, _>(predicate)
     }
     #[inline(always)]
     fn next_mask(&mut self) -> Option<Mask> {
@@ -833,6 +866,10 @@ impl<'tree> GroupScan<'tree> for ReversePreorder<'tree> {
     #[inline]
     fn group(&self) -> &GroupRef<'tree> {
         &self.0.group
+    }
+    #[inline(always)]
+    fn next_matching<P: Predicate>(&mut self, predicate: &P) -> Option<Mask> {
+        self.0.next_matching_group::<true, _>(predicate)
     }
     #[inline(always)]
     fn next_mask(&mut self) -> Option<Mask> {
@@ -1428,7 +1465,7 @@ impl Coordinates for Bytes {
     fn retain<R: Relation<usize>>(
         &self,
         group: &GroupRef<'_>,
-        candidates: Mask,
+        candidates: impl FnOnce() -> Mask,
         relation: &R,
     ) -> Mask {
         relation.retain(BytePositions(group), candidates)
@@ -1468,7 +1505,7 @@ impl Coordinates for Points {
     fn retain<R: Relation<Point>>(
         &self,
         group: &GroupRef<'_>,
-        candidates: Mask,
+        candidates: impl FnOnce() -> Mask,
         relation: &R,
     ) -> Mask {
         // Select the decoder once per group, keeping storage checks out of slot loops.
@@ -1498,7 +1535,7 @@ impl Coordinates for Points {
 fn retain_points<R: Relation<Point>, P: Positions<Position = u64>>(
     relation: &R,
     positions: P,
-    candidates: Mask,
+    candidates: impl FnOnce() -> Mask,
 ) -> Mask {
     if let Some(packed) = relation.try_map(point_key) {
         packed.retain(positions, candidates)
@@ -1510,7 +1547,7 @@ fn retain_points<R: Relation<Point>, P: Positions<Position = u64>>(
 // Each comparison must be monotonic over its column's conservative bounds.
 #[inline(always)]
 fn retain_pair<T: Copy + Ord>(
-    candidates: Mask,
+    candidates: impl FnOnce() -> Mask,
     first: impl PositionColumn<Position = T>,
     second: impl PositionColumn<Position = T>,
     first_bounds: (Bound<T>, Bound<T>),
@@ -1523,6 +1560,7 @@ fn retain_pair<T: Copy + Ord>(
     if !(first_minimum || first_maximum) || !(second_minimum || second_maximum) {
         return Mask::default();
     }
+    let candidates = candidates();
     let all_first = first_minimum && first_maximum;
     let all_second = second_minimum && second_maximum;
     let candidates = if all_first {
@@ -1537,13 +1575,14 @@ fn retain_pair<T: Copy + Ord>(
 }
 #[inline(always)]
 fn retain_interval<T: Copy + Ord>(
-    candidates: Mask,
+    candidates: impl FnOnce() -> Mask,
     column: impl PositionColumn<Position = T>,
     range: &Range<T>,
 ) -> Mask {
     if column.maximum() < range.start || column.minimum() >= range.end {
         return Mask::default();
     }
+    let candidates = candidates();
     if range.start <= column.minimum() && column.maximum() < range.end {
         return candidates;
     }
@@ -1551,14 +1590,14 @@ fn retain_interval<T: Copy + Ord>(
 }
 #[inline(always)]
 fn retain_equal<T: Copy + Ord>(
-    candidates: Mask,
+    candidates: impl FnOnce() -> Mask,
     column: impl PositionColumn<Position = T>,
     position: T,
 ) -> Mask {
     if position < column.minimum() || position > column.maximum() {
         return Mask::default();
     }
-    column.retain(candidates, (Included(position), Included(position)))
+    column.retain(candidates(), (Included(position), Included(position)))
 }
 
 pub struct Overlapping<T>(Range<T>);
@@ -1580,7 +1619,7 @@ macro_rules! range_relation {
             fn is_empty(&self) -> bool { self.0.start $reject self.0.end }
             fn start_bound(&self) -> Bound<T> { Bound::$bound(self.0.$endpoint) }
             #[inline(always)]
-            fn retain<P: Positions<Position = T>>(&$this, $positions: P, $candidates: Mask) -> Mask $body
+            fn retain<P: Positions<Position = T>>(&$this, $positions: P, $candidates: impl FnOnce() -> Mask) -> Mask $body
         }
     };
 }
@@ -1590,6 +1629,7 @@ range_relation!(Overlapping, >=, Excluded, end, self, positions, candidates, {
     if starts.minimum() >= self.0.end || ends.maximum() < self.0.start {
         return Mask::default();
     }
+    let candidates = candidates();
     let all_start = starts.maximum() < self.0.end;
     let all_end = ends.minimum() > self.0.start || starts.minimum() >= self.0.start;
     let candidates = if all_start {
@@ -1640,7 +1680,7 @@ macro_rules! position_relation {
             }
             fn start_bound(&self) -> Bound<T> { Bound::Included(self.0) }
             #[inline(always)]
-            fn retain<P: Positions<Position = T>>(&$this, $positions: P, $candidates: Mask) -> Mask $body
+            fn retain<P: Positions<Position = T>>(&$this, $positions: P, $candidates: impl FnOnce() -> Mask) -> Mask $body
         }
     };
 }
@@ -1864,6 +1904,10 @@ impl<C, R> sealed::Predicate for Selection<C, R> {}
 impl<C: Coordinates, R: Relation<C::Position>> Predicate for Selection<C, R> {
     #[inline(always)]
     fn retain_matches(&self, group: &GroupRef<'_>, candidates: Mask) -> Mask {
+        self.retain_group(group, || candidates)
+    }
+    #[inline(always)]
+    fn retain_group(&self, group: &GroupRef<'_>, candidates: impl FnOnce() -> Mask) -> Mask {
         if self.relation.is_empty() {
             return Mask::default();
         }
@@ -1910,15 +1954,7 @@ impl<'tree, S: GroupScan<'tree>, C: Coordinates, R: Relation<C::Position>> Group
         if self.selection.relation.is_empty() {
             return None;
         }
-        loop {
-            let candidates = self.source.next_mask()?;
-            let matches = self
-                .selection
-                .retain_matches(self.source.group(), candidates);
-            if !matches.is_empty() {
-                return Some(matches);
-            }
-        }
+        self.source.next_matching(&self.selection)
     }
 }
 
@@ -1926,6 +1962,11 @@ pub trait Predicate: sealed::Predicate {
     /// Called once when the predicate is attached to a scan.
     fn prepare(&mut self, _group: &GroupRef<'_>) {}
     fn retain_matches(&self, group: &GroupRef<'_>, candidates: Mask) -> Mask;
+    /// Group bounds may reject a fragment before constructing its live-slot mask.
+    #[inline(always)]
+    fn retain_group(&self, group: &GroupRef<'_>, candidates: impl FnOnce() -> Mask) -> Mask {
+        self.retain_matches(group, candidates())
+    }
 }
 struct Identity;
 impl sealed::Predicate for Identity {}
@@ -1940,7 +1981,11 @@ impl<P: Predicate, Q: Predicate> sealed::Predicate for And<P, Q> {}
 impl<P: Predicate, Q: Predicate> Predicate for And<P, Q> {
     #[inline(always)]
     fn retain_matches(&self, group: &GroupRef<'_>, candidates: Mask) -> Mask {
-        let matches = self.0.retain_matches(group, candidates);
+        self.retain_group(group, || candidates)
+    }
+    #[inline(always)]
+    fn retain_group(&self, group: &GroupRef<'_>, candidates: impl FnOnce() -> Mask) -> Mask {
+        let matches = self.0.retain_group(group, candidates);
         if matches.is_empty() {
             matches
         } else {
