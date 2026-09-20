@@ -1,9 +1,11 @@
 # Range scans
 
-Range scans currently combine one-sided seeking with group predicates. Preorder
-can skip groups whose starts are too late, then rejects or accepts remaining
-groups using coordinate bounds. Groups that cannot be decided from their bounds
-compare stored deltas directly, using SIMD for dense candidate masks on x86_64.
+Range scans combine seeking, subtree skipping, and group predicates. Preorder
+seeks both start bounds when the relation permits it. Forward preorder byte scans
+also skip descendant groups when their ancestors end too early. Remaining groups
+are rejected or accepted using coordinate bounds. Groups that cannot be decided
+from their bounds compare stored deltas directly, using SIMD for dense candidate
+masks on x86_64.
 Postorder enumeration applies the same predicates after visiting each node,
 without range-based traversal pruning.
 
@@ -84,9 +86,10 @@ root.preorder()
 2. `Scan::selected` constructs `Selection<Coordinates, Relation>`. Unless the
    relation is empty, it asks the traversal to restrict its group bounds.
 3. `Restricted::next_mask` asks its source for the next matching fragment.
-   Preorder passes a deferred mask constructor to the selection, so rejected
-   groups need no waste lookup or subtree clipping. Other traversals supply their
-   ordinary fragments. Later filters refine survivors in call order.
+   Forward preorder byte scans first check whether the group's end bound excludes
+   its subtrees. Preorder passes a deferred mask constructor to the selection, so
+   rejected groups need no waste lookup or subtree clipping. Other traversals
+   supply their ordinary fragments. Later filters refine survivors in call order.
 4. `nodes()` extracts matching slots, `groups()` exposes matching fragments, and
    `count()` sums mask population counts without creating node handles.
 
@@ -173,7 +176,7 @@ to exclude waste and slots outside the subtree.
 The generic column implementation remains a decoded scalar fallback for query
 points with components larger than `u32`.
 
-### The existing seek
+### Seeking
 
 `Preorder::restrict` binary-searches group start minima. Since those minima
 decrease as physical group indices increase, it raises `groups.start` to exclude
@@ -195,12 +198,54 @@ start of the group's earliest preorder node, at physical slot `used - 1`.
 Independent point base minima are conservative within a group but are not
 necessarily ordered between groups, so they cannot replace that reconstruction.
 
-This is only an upper-bound seek. For a tiny query near the end of a file,
-preorder still visits nearly every earlier group, even if most masks are rejected
-immediately. A query beyond EOF can also visit the whole subtree. Forward
-preorder starts at the root and stops at the selected group boundary; reverse
-preorder begins at that boundary and proceeds toward the root. Neither jumps
-over earlier subtrees based on their end positions.
+`starting_in_*`, `starting_at_*`, and `within_*` also supply an inclusive lower
+start bound. A second binary search excludes earlier groups. It retains the
+first group whose minimum falls below the bound, since later starts in that
+group may still qualify. Slot predicates finish both boundary groups. This works
+in either preorder direction and preserves repeated starts across groups.
+An inclusive lower bound at coordinate zero needs no search. Bound variants and
+point probes are forced inline to avoid general bound handling and copies of
+column metadata inside binary search.
+
+Overlap, containment, and end-only relations have no lower start cutoff: earlier
+ancestors may still qualify. Their forward byte scans use the subtree shortcut
+below; point and reverse scans still walk the earlier groups. End maxima are not
+ordered, so they cannot be binary-searched like starts.
+
+### Skipping rejected subtrees
+
+Before constructing a forward preorder byte group's ordinary predicate, the
+selection can prove that every node in the group ends too early:
+
+| Relation | Sufficient rejection bound |
+| --- | --- |
+| Overlapping, ending in | `maximum_end < from` |
+| Containing a range | `maximum_end < to` |
+| Containing a position | `maximum_end <= position` |
+| Ending at | `maximum_end < position` |
+
+Descendants end no later than their ancestors. The group's last preorder node
+occupies its first physical slot, so its subtree extends into lower-index groups.
+Its stored span base is a conservative minimum span. Subtracting that base from
+the slot gives a safe boundary for skipping whole descendant groups, rounded up
+to retain any partially covered group and clipped to the scan's remaining bounds.
+
+Groups whose spans all fit in a byte have a zero span base. They reject without
+reading span deltas or attempting short jumps. This keeps the common path cheap;
+using exact spans after ordinary predicate evaluation was slower in cloud tests.
+No index, allocation, or format change is required.
+
+Overlap uses a strict end comparison because a parent ending at `from` can have
+zero-width descendants there. Rejection by other filters does not establish this
+subtree proof. Composed counts use the selection's proof before other predicates.
+Reverse preorder counts use forward skipping over their remaining group interval;
+reverse enumeration keeps its original group walk.
+Queries without a nontrivial lower end bound use a separate group loop without
+subtree checks, including overlap queries starting at zero.
+
+Point selections retain flat group traversal after seeking. The equivalent
+pruning kernel improved narrow overlap queries but regressed broad point scans
+and some counts. It remains disabled; two-sided point seeking is enabled.
 
 ### Group predicates
 
@@ -229,8 +274,9 @@ groups need a delta interval comparison. `StartingAt` and `EndingAt` use
 `retain_equal`, which rejects out-of-bounds positions and otherwise compares
 against a single-value delta interval, or rejects an unrepresentable position.
 
-These shortcuts avoid endpoint decoding, not group traversal. There is no
-hierarchy of range summaries or range-specific index used by the scan.
+These predicate shortcuts avoid endpoint decoding. The separate subtree proof
+above can also avoid group traversal. There is no hierarchy of range summaries
+or range-specific index used by the scan.
 `Predicate::retain_group` can use them before invoking the candidate-mask
 constructor. Preorder's `next_matching` supports this for both enumeration and
 counts; composed predicates retain their order and pass the deferred mask only
@@ -258,8 +304,9 @@ the relation cannot match: an empty within or containing query still runs.
 
 ### Cost
 
-For a subtree with `G` physical groups, let `V` be groups visited after seeking,
-`C` the candidate slots in groups needing delta comparisons, and `K` the matches.
+For a subtree with `G` physical groups, let `V` be groups visited after seeking
+and subtree skipping, `C` the candidate slots in groups needing delta comparisons,
+and `K` the matches.
 Preorder range enumeration costs O(log G + V + C + K); SIMD reduces comparison
 constants, and counting omits the output term. With fixed group size, the worst
 case remains O(nodes). A small `K` does
@@ -283,18 +330,18 @@ preorder source before counting. This can reuse the existing binary search with
 no new slab metadata. Preserve the current path for partially consumed scans.
 Avoid seeking a second time for sources already restricted during construction.
 
-### 2. Seek both sides when the relation constrains starts
+### 2. Clip slots at the seek boundaries
 
-`starting_in_*`, `starting_at_*`, and `within_*` have lower as well as upper bounds
-on starts. Binary-search the other boundary too, then clip boundary-group slots:
+`starting_in_*`, `starting_at_*`, and `within_*` now seek both group boundaries.
+They could also seek the exact slots inside the retained boundary groups:
 
 - Starting in: `from <= start < to`.
 - Starting at: `start == position`.
 - Within: `from <= start <= to`, followed by the end test.
 
 Because starts are ordered, start-only matches form a contiguous live-slot
-interval. Finding its boundaries can replace both full-prefix traversal and
-per-slot range checks. Within still needs end filtering inside that interval.
+interval. Finding its slot boundaries could replace the remaining per-slot start
+checks. Within still needs end filtering inside that interval.
 
 Overlap, containment, and end-only relations cannot use `start >= from` as a
 lower cutoff. It would discard long ancestors that start earlier and still
@@ -320,10 +367,11 @@ and specialize stored versus absent points outside the group loop. Point seeking
 can compare base rows first and reconstruct the earliest start only when rows
 tie, as the existing C descendant seek does. Keep the oversized-coordinate path.
 
-### 4. Skip subtrees that cannot contribute
+### 4. Extend subtree pruning
 
-Stored subtree spans already allow jumping across a subtree's slots. A traversal
-aware of the selection could use a node's span as a bound on all its descendants:
+Forward preorder byte scans use end bounds and span bases to skip rejected
+subtrees. Further pruning could use individual nodes, both endpoints, or whole-subtree
+acceptance. Point pruning needs a kernel that preserves broad-scan performance:
 
 - Overlap can reject a subtree ending strictly before `from` or starting at or
   after `to`.

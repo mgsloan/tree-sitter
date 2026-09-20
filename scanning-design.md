@@ -105,7 +105,9 @@ lanes. Masks with at least three candidates use SIMD; one or two use scalar bit
 tests. Larger grammars store dictionary IDs and use scalar membership lookup.
 
 One range/position restriction is allowed before other filters. Preorder seeks
-only the upper start boundary; postorder enumeration has no range pruning.
+both start boundaries for within, starting-in, and exact-start relations; other
+relations supply only an upper bound. Forward preorder byte scans can skip
+subtrees whose end bounds are too early. Postorder enumeration has no range pruning.
 Masks always exclude waste and nodes outside the selected subtree.
 
 ## Typed composition
@@ -164,6 +166,15 @@ range selections invoke it only for groups that survive conservative rejection.
 Other predicates default to constructing the mask immediately. Counts use this
 same path, and composition keeps the first predicate's opportunity to reject
 before mask construction. Postorder retains its ordinary fragments.
+
+Forward preorder byte scans also ask `Predicate::excludes_subtrees` before
+ordinary group evaluation. Byte selections prove this from their required minimum end and the
+group's maximum end. The stored span base then bounds a safe jump across whole
+descendant groups. Zero span bases avoid delta reads and short jumps. Reverse
+enumeration keeps its group walk; counts can use forward skipping over the
+remaining interval.
+Queries without a useful lower end bound, and point selections, use the ordinary
+group kernel. The point pruning prototype regressed broad scans and some counts.
 
 Generic composition permits inlining and specialization without dynamic dispatch
 or allocations for adapters. It does not guarantee SIMD. The hot column reads
@@ -301,12 +312,12 @@ Delta columns retain their slab slice, offset, and length until decoding or
 comparison is required. Group rejection and acceptance use only bases, avoiding
 delta-slice bounds checks on those paths. Reads still use checked slices.
 
-Preorder restrictions use a binary search over group start minima to remove
-groups beyond the relation's upper bound on node starts. Point bases store
-independent row and column minima; seeking reconstructs the earliest live node's
-position to obtain a bound ordered across groups. Each relation refines valid
-subtree-slot masks with conservative group bounds and endpoint comparisons.
-Further seeking and early termination require ordering guarantees.
+Preorder restrictions binary-search group start minima for the relation's upper
+start bound, and its lower bound when one exists. The lower seek retains one
+crossing group for slot comparisons. Point bases store independent row and column
+minima; seeking reconstructs the earliest live node's position to obtain a bound
+ordered across groups. Each relation refines valid subtree-slot masks with
+conservative group bounds and endpoint comparisons.
 
 Zero-width overlap changes boundary rejection. A group whose maximum end equals
 the query start may contain matching zero-width nodes, so only a maximum end
