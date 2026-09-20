@@ -272,7 +272,7 @@ impl Queries {
                     .map(|entry| {
                         (
                             entry.index,
-                            ids[&(entry.node.slot() as usize)],
+                            ids[&(u32::from(entry.node.slot()) as usize)],
                             entry.node.end_byte(),
                         )
                     })

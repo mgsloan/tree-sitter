@@ -1,7 +1,8 @@
 use crate::{
-    Error, Grammar, Tree,
+    Error, FieldId, Grammar, Tree,
     native::{Event, Events, Traversal},
     storage::*,
+    types::SlabOffset,
 };
 use std::mem::MaybeUninit;
 
@@ -294,11 +295,11 @@ impl Builder {
                 .ok_or(Error::Language)?;
             let slot = self.distance();
             let data = self.tree.data_mut();
-            data.put_short(data.layout.symbol, slot, code);
-            data.put_short(data.layout.field, slot, event.field);
+            data.put_short(data.layout.symbol, slot, code.get());
+            data.put_short(data.layout.field, slot, event.field.map_or(0, FieldId::get));
             if data.tables().separate != 0 {
-                data.put_short(data.layout.grammar, slot, event.grammar);
-                if event.grammar != code {
+                data.put_short(data.layout.grammar, slot, event.grammar.get());
+                if event.grammar.get() != code.get() {
                     self.optional |= SEPARATE_GRAMMAR;
                 }
             }
@@ -329,7 +330,7 @@ impl Builder {
         let data = self.tree.data_mut();
         let group = data.groups();
         let layout = data.layout;
-        data.put_word(0, 1, group + 1);
+        data.put_word(SlabOffset(0), 1, group + 1);
         data.put_short(layout.waste, group, (GROUP_SIZE - self.count) as u16);
         data.put_word(layout.span_base, group, self.base.span);
         data.put_word(layout.start_byte_base, group, self.base.start_byte);

@@ -1,3 +1,5 @@
+mod types;
+pub use types::{FieldId, GrammarKindId, KindId, SlotIx};
 mod node;
 use node::RawNode;
 pub use node::{Children, Cursor, Node};
@@ -60,25 +62,58 @@ impl Error {
     }
 }
 
-/// A reusable runtime-sized set of IDs, interpreted by the selected scan filter.
-#[derive(Clone, Debug, Default)]
-pub struct IdSet {
-    ids: Vec<u16>,
+/// IDs supported by reusable scan sets.
+pub trait Id: Copy + Ord + private::Id {
+    #[doc(hidden)]
+    fn raw(self) -> u16;
+}
+mod private {
+    pub trait Id {}
+}
+impl private::Id for types::RemappedKindId {}
+impl Id for types::RemappedKindId {
+    fn raw(self) -> u16 {
+        self.get()
+    }
+}
+impl private::Id for KindId {}
+impl Id for KindId {
+    fn raw(self) -> u16 {
+        self.get()
+    }
+}
+impl private::Id for Option<FieldId> {}
+impl Id for Option<FieldId> {
+    fn raw(self) -> u16 {
+        self.map_or(0, FieldId::get)
+    }
+}
+
+/// A reusable set of IDs from one domain and grammar.
+#[derive(Clone, Debug)]
+pub struct IdSet<I: Id> {
+    ids: Vec<I>,
     words: Vec<u64>,
 }
-impl IdSet {
-    pub fn new(ids: impl IntoIterator<Item = u16>) -> Self {
+impl<I: Id> Default for IdSet<I> {
+    fn default() -> Self {
+        Self {
+            ids: Vec::new(),
+            words: Vec::new(),
+        }
+    }
+}
+impl<I: Id> IdSet<I> {
+    pub fn new(ids: impl IntoIterator<Item = I>) -> Self {
         ids.into_iter().collect()
     }
 
-    /// Construct a reusable set containing the IDs present in both sets.
     pub fn intersection(&self, other: &Self) -> Self {
         let (smaller, larger) = if self.ids.len() <= other.ids.len() {
             (self, other)
         } else {
             (other, self)
         };
-
         Self::new(
             smaller
                 .ids
@@ -88,7 +123,8 @@ impl IdSet {
         )
     }
 
-    pub fn contains(&self, id: u16) -> bool {
+    pub fn contains(&self, id: I) -> bool {
+        let id = id.raw();
         self.words
             .get(id as usize / 64)
             .is_some_and(|word| word & (1u64 << (id % 64)) != 0)
@@ -98,21 +134,24 @@ impl IdSet {
         self.ids.is_empty()
     }
 }
-impl FromIterator<u16> for IdSet {
-    fn from_iter<I: IntoIterator<Item = u16>>(ids: I) -> Self {
+impl<I: Id> FromIterator<I> for IdSet<I> {
+    fn from_iter<T: IntoIterator<Item = I>>(ids: T) -> Self {
         let mut ids: Vec<_> = ids.into_iter().collect();
         ids.sort_unstable();
         ids.dedup();
-        let mut words = vec![0; ids.last().map_or(0, |&kind| kind as usize / 64 + 1)];
+        let mut words = vec![0; ids.last().map_or(0, |id| id.raw() as usize / 64 + 1)];
         for &id in &ids {
+            let id = id.raw();
             words[id as usize / 64] |= 1u64 << (id % 64);
         }
         Self { ids, words }
     }
 }
 
-/// A reusable set of public kind IDs, interpreted in the scanned tree's language.
-pub type KindSet = IdSet;
+/// Public kind IDs, interpreted in the scanned tree's grammar.
+pub type KindSet = IdSet<KindId>;
+/// Field selections; `None` selects nodes with no field.
+pub type FieldSet = IdSet<Option<FieldId>>;
 
 /// Preorder traversal filtered by public kind IDs.
 pub type KindMatches<'tree, 'kinds> =

@@ -54,14 +54,20 @@ fn navigation_and_indexed_ranges_match_reference() {
             let mut expected_cursor = expected.root_node().walk().unwrap();
 
             for node in actual.root_node().preorder() {
-                let reference = expected.node_at_slot(node.slot()).unwrap();
+                let reference = expected.node_at_slot(u32::from(node.slot())).unwrap();
+                assert_eq!(node.kind_id().get(), reference.kind_id());
+                assert_eq!(node.grammar_id().get(), reference.grammar_id());
+                assert_eq!(
+                    node.field_id().map_or(0, tree_squatter_rust::FieldId::get),
+                    reference.field_id()
+                );
                 compare_attributes!(node, reference;
-                    kind_id, kind, grammar_id, grammar_name, field_id, field_name,
+                    kind, grammar_name, field_name,
                     byte_range, start_position, end_position, is_named, is_extra,
                     is_missing, is_error, has_error, has_changes, descendant_count,
                     child_count, named_child_count);
                 macro_rules! compare_navigation {
-                    ($($method:ident),*) => { $(assert_eq!(node.$method().map(|node| node.slot()), reference.$method().map(|node| node.slot()), "{} at {node:?}", stringify!($method));)* };
+                    ($($method:ident),*) => { $(assert_eq!(node.$method().map(|node| u32::from(node.slot())), reference.$method().map(|node| u32::from(node.slot())), "{} at {node:?}", stringify!($method));)* };
                 }
                 compare_navigation!(
                     parent,
@@ -73,10 +79,12 @@ fn navigation_and_indexed_ranges_match_reference() {
                     next_preorder
                 );
                 assert_eq!(
-                    node.children().map(|node| node.slot()).collect::<Vec<_>>(),
+                    node.children()
+                        .map(|node| u32::from(node.slot()))
+                        .collect::<Vec<_>>(),
                     reference
                         .children()
-                        .map(|node| node.slot())
+                        .map(|node| u32::from(node.slot()))
                         .collect::<Vec<_>>()
                 );
 
@@ -87,7 +95,10 @@ fn navigation_and_indexed_ranges_match_reference() {
                     expected_cursor.goto_last_child()
                 );
                 loop {
-                    assert_eq!(actual_cursor.node().slot(), expected_cursor.node().slot());
+                    assert_eq!(
+                        u32::from(actual_cursor.node().slot()),
+                        u32::from(expected_cursor.node().slot())
+                    );
                     let moved = actual_cursor.goto_previous_sibling();
                     assert_eq!(moved, expected_cursor.goto_previous_sibling());
                     if !moved {
@@ -95,7 +106,10 @@ fn navigation_and_indexed_ranges_match_reference() {
                     }
                 }
                 assert_eq!(actual_cursor.goto_parent(), expected_cursor.goto_parent());
-                assert_eq!(actual_cursor.node().slot(), expected_cursor.node().slot());
+                assert_eq!(
+                    u32::from(actual_cursor.node().slot()),
+                    u32::from(expected_cursor.node().slot())
+                );
             }
 
             for root in actual
@@ -104,24 +118,24 @@ fn navigation_and_indexed_ranges_match_reference() {
                 .nodes()
                 .step_by((actual.root_node().descendant_count() / 10).max(1))
             {
-                let reference = expected.node_at_slot(root.slot()).unwrap();
+                let reference = expected.node_at_slot(u32::from(root.slot())).unwrap();
                 for start in (0..=source.len() + 1).step_by((source.len() / 40).max(1)) {
                     for length in [0, 1, 5, 1000] {
                         let end = start + length;
                         assert_eq!(
                             root.descendant_for_byte_range(start, end)
-                                .map(|node| node.slot()),
+                                .map(|node| u32::from(node.slot())),
                             reference
                                 .descendant_for_byte_range(start, end)
-                                .map(|node| node.slot()),
+                                .map(|node| u32::from(node.slot())),
                             "{root:?} {start}..{end}"
                         );
                         assert_eq!(
                             root.named_descendant_for_byte_range(start, end)
-                                .map(|node| node.slot()),
+                                .map(|node| u32::from(node.slot())),
                             reference
                                 .named_descendant_for_byte_range(start, end)
-                                .map(|node| node.slot())
+                                .map(|node| u32::from(node.slot()))
                         );
 
                         let position = |byte: usize| {
@@ -140,18 +154,18 @@ fn navigation_and_indexed_ranges_match_reference() {
                         let (start, end) = (position(start), position(end));
                         assert_eq!(
                             root.descendant_for_point_range(start, end)
-                                .map(|node| node.slot()),
+                                .map(|node| u32::from(node.slot())),
                             reference
                                 .descendant_for_point_range(start, end)
-                                .map(|node| node.slot()),
+                                .map(|node| u32::from(node.slot())),
                             "{root:?} {start:?}..{end:?}"
                         );
                         assert_eq!(
                             root.named_descendant_for_point_range(start, end)
-                                .map(|node| node.slot()),
+                                .map(|node| u32::from(node.slot())),
                             reference
                                 .named_descendant_for_point_range(start, end)
-                                .map(|node| node.slot())
+                                .map(|node| u32::from(node.slot()))
                         );
                     }
                 }

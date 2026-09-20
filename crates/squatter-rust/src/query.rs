@@ -1,5 +1,8 @@
-use crate::Node;
 pub use crate::query_exec::{QueryCursor, QueryExecution};
+use crate::{
+    Node,
+    types::{CaptureId, QueryStringId},
+};
 use regex::bytes::Regex;
 use tree_sitter::{Language, QueryPredicate, QueryPredicateArg};
 
@@ -35,10 +38,10 @@ impl std::error::Error for QueryError {}
 
 #[derive(Debug)]
 enum Predicate {
-    EqualCapture(u32, u32, bool, bool),
-    EqualString(u32, Vec<u8>, bool, bool),
-    Match(u32, Regex, bool, bool),
-    AnyOf(u32, Vec<Vec<u8>>, bool),
+    EqualCapture(CaptureId, CaptureId, bool, bool),
+    EqualString(CaptureId, Vec<u8>, bool, bool),
+    Match(CaptureId, Regex, bool, bool),
+    AnyOf(CaptureId, Vec<Vec<u8>>, bool),
 }
 
 /// Retains its language. Text predicates are compiled once; unknown predicates
@@ -65,7 +68,9 @@ impl Query {
             general: Vec::new(),
         };
         for index in 0..query.compiled.view.capture_names.entries.length {
-            query.capture_names.push(query.string(index, true));
+            query
+                .capture_names
+                .push(query.capture_name(CaptureId(index)));
         }
         for pattern in 0..query.pattern_count() {
             let range = query.compiled.patterns()[pattern].predicate_steps;
@@ -85,20 +90,20 @@ impl Query {
                 if group[0].kind != 2 {
                     return Err(invalid("predicate must start with a name"));
                 }
-                let name = query.string(group[0].value_id, false);
+                let name = query.string_value(QueryStringId(group[0].value_id));
                 let arguments = &group[1..];
-                let capture = |index: usize| -> Result<u32, QueryError> {
+                let capture = |index: usize| -> Result<CaptureId, QueryError> {
                     arguments
                         .get(index)
                         .filter(|step| step.kind == 1)
-                        .map(|step| step.value_id)
+                        .map(|step| CaptureId(step.value_id))
                         .ok_or_else(|| invalid("predicate requires a capture argument"))
                 };
                 let string = |index: usize| -> Result<String, QueryError> {
                     arguments
                         .get(index)
                         .filter(|step| step.kind == 2)
-                        .map(|step| query.string(step.value_id, false))
+                        .map(|step| query.string_value(QueryStringId(step.value_id)))
                         .ok_or_else(|| invalid("predicate requires a string argument"))
                 };
                 match name.as_str() {
@@ -143,7 +148,7 @@ impl Query {
                                     QueryPredicateArg::Capture(step.value_id)
                                 } else {
                                     QueryPredicateArg::String(
-                                        query.string(step.value_id, false).into(),
+                                        query.string_value(QueryStringId(step.value_id)).into(),
                                     )
                                 }
                             })
@@ -161,13 +166,16 @@ impl Query {
         Ok(query)
     }
 
-    fn string(&self, index: u32, capture: bool) -> String {
-        let table = if capture {
-            &self.compiled.view.capture_names
-        } else {
-            &self.compiled.view.predicate_values
-        };
-        String::from_utf8(unsafe { table.get(index as usize) }.to_vec())
+    fn capture_name(&self, id: CaptureId) -> String {
+        self.string(&self.compiled.view.capture_names, id.get() as usize)
+    }
+
+    fn string_value(&self, id: QueryStringId) -> String {
+        self.string(&self.compiled.view.predicate_values, id.get() as usize)
+    }
+
+    fn string(&self, table: &crate::native::StringTable, index: usize) -> String {
+        String::from_utf8(unsafe { table.get(index) }.to_vec())
             .expect("query strings originate in UTF-8")
     }
 
@@ -223,9 +231,13 @@ pub struct QueryMatch<'cursor, 'tree> {
 }
 impl<'tree> QueryMatch<'_, 'tree> {
     pub fn nodes_for_capture_index(&self, index: u32) -> impl Iterator<Item = Node<'tree>> + '_ {
+        self.nodes_for_capture(CaptureId(index))
+    }
+
+    fn nodes_for_capture(&self, id: CaptureId) -> impl Iterator<Item = Node<'tree>> + '_ {
         self.captures
             .iter()
-            .filter(move |capture| capture.index == index)
+            .filter(move |capture| capture.index == id.get())
             .map(|capture| capture.node)
     }
     pub(crate) fn satisfies(&self, query: &Query, source: &[u8]) -> bool {
@@ -235,8 +247,8 @@ impl<'tree> QueryMatch<'_, 'tree> {
             .iter()
             .all(|predicate| match predicate {
                 Predicate::EqualCapture(first, second, positive, all) => {
-                    let mut left = self.nodes_for_capture_index(*first).peekable();
-                    let mut right = self.nodes_for_capture_index(*second).peekable();
+                    let mut left = self.nodes_for_capture(*first).peekable();
+                    let mut right = self.nodes_for_capture(*second).peekable();
                     while left.peek().is_some() && right.peek().is_some() {
                         let equal = text(left.next().unwrap()) == text(right.next().unwrap());
                         if equal != *positive && *all {
@@ -249,7 +261,7 @@ impl<'tree> QueryMatch<'_, 'tree> {
                     left.next().is_none() && right.next().is_none()
                 }
                 Predicate::EqualString(capture, value, positive, all) => {
-                    for node in self.nodes_for_capture_index(*capture) {
+                    for node in self.nodes_for_capture(*capture) {
                         let equal = text(node) == value;
                         if equal != *positive && *all {
                             return false;
@@ -261,7 +273,7 @@ impl<'tree> QueryMatch<'_, 'tree> {
                     true
                 }
                 Predicate::Match(capture, regex, positive, all) => {
-                    for node in self.nodes_for_capture_index(*capture) {
+                    for node in self.nodes_for_capture(*capture) {
                         let matches = regex.is_match(text(node));
                         if matches != *positive && *all {
                             return false;
@@ -273,7 +285,7 @@ impl<'tree> QueryMatch<'_, 'tree> {
                     true
                 }
                 Predicate::AnyOf(capture, values, positive) => self
-                    .nodes_for_capture_index(*capture)
+                    .nodes_for_capture(*capture)
                     .all(|node| values.iter().any(|value| value == text(node)) == *positive),
             })
     }

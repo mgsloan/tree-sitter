@@ -11,7 +11,7 @@ macro_rules! matches {
                 result
                     .captures
                     .iter()
-                    .map(|capture| (capture.node.slot(), capture.index))
+                    .map(|capture| (u32::from(capture.node.slot()), capture.index))
                     .collect::<Vec<_>>(),
             ));
             assert!(results.len() < 100_000, "unexpected match explosion");
@@ -28,7 +28,11 @@ macro_rules! captures {
         let mut results = Vec::new();
         while let Some((result, index)) = execution.next_capture() {
             let capture = result.captures[index];
-            results.push((result.pattern_index, capture.node.slot(), capture.index));
+            results.push((
+                result.pattern_index,
+                u32::from(capture.node.slot()),
+                capture.index,
+            ));
             assert!(results.len() < 100_000, "unexpected capture explosion");
         }
         assert!(execution.error().is_none());
@@ -223,7 +227,7 @@ fn switching_between_matches_and_captures_preserves_finished_order() {
                     result
                         .captures
                         .iter()
-                        .map(|capture| (capture.node.slot(), capture.index))
+                        .map(|capture| (u32::from(capture.node.slot()), capture.index))
                         .collect::<Vec<_>>(),
                 )
             })

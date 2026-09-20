@@ -139,7 +139,7 @@ fn visible_child_by_field<'tree, N: NodeLike<'tree>>(parent: N, field: u16) -> R
     let mut cursor = parent.cursor()?;
     if cursor.goto_first_child() {
         loop {
-            if cursor.field_id() == Some(field) {
+            if cursor.field_id().map(u16::from) == Some(field) {
                 return Ok(Some(cursor.node()));
             }
             if !cursor.goto_next_sibling() {
@@ -250,8 +250,12 @@ pub fn relationships<'tree, A: NodeLike<'tree>, B: NodeLike<'tree>>(
                 );
             }
             for field in 1..=language.field_count() {
-                let lookup = identity_a(a.child_by_field_id(field as u16));
-                let packed = identity_b(b.child_by_field_id(field as u16));
+                #[cfg(feature = "rust-core")]
+                let field_id = tree_squatter::FieldId::new(field as u16).unwrap();
+                #[cfg(not(feature = "rust-core"))]
+                let field_id = field as u16;
+                let lookup = identity_a(a.child_by_field_id(field_id));
+                let packed = identity_b(b.child_by_field_id(field_id));
                 if lookup != packed {
                     let visible_child = identity_a(visible_child_by_field(a, field as u16)?);
                     ensure!(

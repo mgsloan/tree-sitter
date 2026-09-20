@@ -15,7 +15,7 @@ use std::{
     time::{Duration, Instant},
 };
 use tree_sitter::Point;
-use tree_squatter::{Grammar, IdSet, KindSet, Node, PackOptions, Tree, traits::NodeLike};
+use tree_squatter::{Grammar, KindSet, Node, PackOptions, Tree, traits::NodeLike};
 
 #[derive(Clone, Copy, Serialize, ValueEnum)]
 enum KindSelection {
@@ -63,6 +63,28 @@ struct Arguments {
     #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u8).range(1..=100))]
     range_percent: u8,
 }
+#[cfg(feature = "rust-core")]
+use tree_squatter::{FieldSet, GrammarKindId, KindId};
+#[cfg(feature = "rust-core")]
+type FieldSelection = Option<tree_squatter::FieldId>;
+#[cfg(not(feature = "rust-core"))]
+use tree_squatter::IdSet as FieldSet;
+#[cfg(not(feature = "rust-core"))]
+type KindId = u16;
+#[cfg(not(feature = "rust-core"))]
+type GrammarKindId = u16;
+#[cfg(not(feature = "rust-core"))]
+type FieldSelection = u16;
+
+#[cfg(feature = "rust-core")]
+fn raw_field(field: FieldSelection) -> u16 {
+    field.map_or(0, tree_squatter::FieldId::get)
+}
+#[cfg(not(feature = "rust-core"))]
+fn raw_field(field: FieldSelection) -> u16 {
+    field
+}
+
 #[derive(Deserialize, Serialize)]
 struct Input {
     path: String,
@@ -79,7 +101,7 @@ struct Case {
     nodes: usize,
     kind_matches: usize,
     multiple_kind_matches: usize,
-    field: u16,
+    field: FieldSelection,
     field_matches: usize,
     range_matches: usize,
     range_kind_matches: [usize; 5],
@@ -92,15 +114,15 @@ struct Case {
     intersection_matches: [usize; 5],
     starting_in_matches: usize,
     starting_at_matches: usize,
-    supertype: u16,
+    supertype: GrammarKindId,
     supertype_matches: usize,
     flags_matches: usize,
     combined_matches: usize,
-    selected_kind_ids: [u16; 16],
+    selected_kind_ids: [KindId; 16],
     sized_kind_sets: [KindSet; 5],
     sized_kind_matches: [usize; 5],
-    frequent_field_ids: [u16; 4],
-    sized_field_sets: [IdSet; 3],
+    frequent_field_ids: [FieldSelection; 4],
+    sized_field_sets: [FieldSet; 3],
     sized_field_matches: [usize; 3],
 }
 #[derive(Serialize)]
@@ -154,7 +176,7 @@ fn source_point(source: &[u8], offset: usize) -> Point {
     )
 }
 type Operation = fn(&Case) -> usize;
-fn fixed_kinds<const N: usize>(case: &Case) -> [u16; N] {
+fn fixed_kinds<const N: usize>(case: &Case) -> [KindId; N] {
     case.selected_kind_ids[..N].try_into().unwrap()
 }
 fn sized_kind_workloads<const N: usize>(
@@ -826,7 +848,7 @@ fn workloads(cases: &[Case]) -> Vec<(&'static str, Operation)> {
     ]));
     workloads
 }
-fn fixed_fields<const N: usize>(case: &Case) -> [u16; N] {
+fn fixed_fields<const N: usize>(case: &Case) -> [FieldSelection; N] {
     case.frequent_field_ids[..N].try_into().unwrap()
 }
 fn sized_field_workloads<const N: usize>(
@@ -1149,7 +1171,7 @@ fn main() -> Result<()> {
         for node in scalar_preorder(&tree) {
             nodes += 1;
             present_kinds.insert(node.kind_id());
-            if node.field_id() != 0 {
+            if node.field_id() != FieldSelection::default() {
                 *fields.entry(node.field_id()).or_insert(0usize) += 1;
             }
             if node.is_named() {
@@ -1174,10 +1196,10 @@ fn main() -> Result<()> {
         }
         let selected_kinds = if matches!(arguments.kind_selection, KindSelection::Absent) {
             let mut absent = (0..language.node_kind_count())
-                .filter_map(|kind| u16::try_from(kind).ok())
+                .filter_map(|kind| u16::try_from(kind).ok().map(KindId::from))
                 .filter(|kind| !present_kinds.contains(kind))
                 .collect::<Vec<_>>();
-            absent.sort_by_key(|&kind| (!language.node_kind_is_named(kind), kind));
+            absent.sort_by_key(|&kind| (!language.node_kind_is_named(u16::from(kind)), kind));
             absent
         } else {
             ranked_kinds.into_iter().map(|(&kind, _)| kind).collect()
@@ -1208,14 +1230,14 @@ fn main() -> Result<()> {
         let field = fields
             .iter()
             .max_by_key(|&(field, count)| (*count, std::cmp::Reverse(*field)))
-            .map_or(0, |(&field, _)| field);
+            .map_or(FieldSelection::default(), |(&field, _)| field);
         let mut ranked_fields = fields.iter().collect::<Vec<_>>();
         ranked_fields.sort_by_key(|&(&field, &count)| (std::cmp::Reverse(count), field));
         let frequent_field_ids = std::array::from_fn(|index| {
             ranked_fields.get(index).map_or(field, |&(&field, _)| field)
         });
         let sized_field_sets = std::array::from_fn(|index| {
-            IdSet::new(frequent_field_ids[..1 << index].iter().copied())
+            FieldSet::new(frequent_field_ids[..1 << index].iter().copied())
         });
         let mut sized_field_matches = [0; 3];
         for node in scalar_preorder(&tree) {
@@ -1268,7 +1290,8 @@ fn main() -> Result<()> {
                 }
             }
         }
-        let supertype = language.supertypes().first().copied().unwrap_or(u16::MAX);
+        let supertype =
+            GrammarKindId::from(language.supertypes().first().copied().unwrap_or(u16::MAX));
         let supertype_matches = scalar_preorder(&tree)
             .filter(|node| node.has_supertype(supertype))
             .count();
@@ -1285,28 +1308,28 @@ fn main() -> Result<()> {
             .count();
         descriptions.push(serde_json::json!({
             "input": input, "source_bytes": source.len(), "slab_bytes": tree.as_bytes().len(),
-            "nodes": nodes, "groups": tree.group_count(), "slots": tree.slot_count(), "kind_id": kind,
-            "kind": language.node_kind_for_id(kind), "kind_matches": kind_matches,
+            "nodes": nodes, "groups": tree.group_count(), "slots": tree.slot_count(), "kind_id": u16::from(kind),
+            "kind": language.node_kind_for_id(u16::from(kind)), "kind_matches": kind_matches,
             "multiple_kind_matches": multiple_kind_matches,
-            "field_id": field, "field_matches": field_matches,
+            "field_id": raw_field(field), "field_matches": field_matches,
             "range": [range.start, range.end], "range_matches": range_matches,
             "range_kind_matches": range_kind_matches, "within_kind_matches": within_kind_matches,
             "field_kind_matches": field_kind_matches,
             "flags_kind_matches": flags_kind_matches,
             "range_field_kind_matches": range_field_kind_matches,
-            "intersecting_kind_ids": selected_kind_ids.iter().copied().step_by(2).collect::<Vec<_>>(),
+            "intersecting_kind_ids": selected_kind_ids.iter().copied().step_by(2).map(u16::from).collect::<Vec<_>>(),
             "intersection_matches": intersection_matches,
             "point_range": [
                 [point_range.start.row, point_range.start.column],
                 [point_range.end.row, point_range.end.column],
             ],
-            "supertype_id": supertype, "supertype_count": language.supertypes().len(),
+            "supertype_id": u16::from(supertype), "supertype_count": language.supertypes().len(),
             "supertype_matches": supertype_matches,
             "flags_matches": flags_matches, "combined_matches": combined_matches,
-            "selected_kind_ids": selected_kind_ids,
+            "selected_kind_ids": selected_kind_ids.map(u16::from),
             "selected_kind_frequencies": selected_kind_ids.map(|kind| frequencies.get(&kind).copied().unwrap_or(0)),
             "sparse_kind_limit": sparse_kind_limit, "sized_kind_matches": sized_kind_matches,
-            "frequent_field_ids": frequent_field_ids, "sized_field_matches": sized_field_matches,
+            "frequent_field_ids": frequent_field_ids.map(raw_field), "sized_field_matches": sized_field_matches,
         }));
         let case = Case {
             tree,

@@ -58,7 +58,7 @@ macro_rules! backend {
                         result
                             .captures
                             .iter()
-                            .map(|capture| (capture.node.slot(), capture.index))
+                            .map(|capture| (u32::from(capture.node.slot()), capture.index))
                             .collect(),
                     ));
                 }

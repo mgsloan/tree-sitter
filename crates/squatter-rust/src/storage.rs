@@ -1,4 +1,8 @@
-use crate::{Error, Grammar, native::GrammarView};
+use crate::{
+    Error, Grammar, KindId,
+    native::GrammarView,
+    types::{RemappedGrammarKindId, RemappedKindId, SlabOffset, SymbolCode},
+};
 use std::{
     alloc::{Layout as Allocation, alloc, alloc_zeroed, dealloc, handle_alloc_error, realloc},
     marker::PhantomData,
@@ -30,26 +34,26 @@ pub fn representation_id() -> u64 {
 
 #[derive(Clone, Copy, Default, Debug)]
 pub(crate) struct Layout {
-    pub waste: u32,
-    pub start_byte_base: u32,
-    pub start_byte_delta: u32,
-    pub end_byte_base: u32,
-    pub end_byte_delta: u32,
-    pub span_base: u32,
-    pub span_delta: u32,
-    pub symbol: u32,
-    pub field: u32,
-    pub supertype: u32,
-    pub last: u32,
-    pub start_point_base: u32,
-    pub start_point: u32,
-    pub end_point_base: u32,
-    pub end_point: u32,
-    pub extra: u32,
-    pub missing: u32,
-    pub error: u32,
-    pub grammar: u32,
-    pub end: u32,
+    pub waste: SlabOffset,
+    pub start_byte_base: SlabOffset,
+    pub start_byte_delta: SlabOffset,
+    pub end_byte_base: SlabOffset,
+    pub end_byte_delta: SlabOffset,
+    pub span_base: SlabOffset,
+    pub span_delta: SlabOffset,
+    pub symbol: SlabOffset,
+    pub field: SlabOffset,
+    pub supertype: SlabOffset,
+    pub last: SlabOffset,
+    pub start_point_base: SlabOffset,
+    pub start_point: SlabOffset,
+    pub end_point_base: SlabOffset,
+    pub end_point: SlabOffset,
+    pub extra: SlabOffset,
+    pub missing: SlabOffset,
+    pub error: SlabOffset,
+    pub grammar: SlabOffset,
+    pub end: SlabOffset,
 }
 
 #[inline]
@@ -64,7 +68,7 @@ pub(crate) fn bit_bytes(count: u32) -> u64 {
 
 impl Layout {
     // The first column follows the fixed header, independent of capacity and flags.
-    const WASTE: u32 = ((16 + ALIGNMENT - 1) & !(ALIGNMENT - 1)) as u32;
+    const WASTE: SlabOffset = SlabOffset(((16 + ALIGNMENT - 1) & !(ALIGNMENT - 1)) as u32);
 
     pub fn new(capacity: u32, flags: u32) -> Result<Self, Error> {
         let slots = capacity
@@ -72,9 +76,9 @@ impl Layout {
             .filter(|_| capacity != 0)
             .ok_or(Error::Overflow)?;
         let points = flags & NO_POINTS == 0;
-        let mut next = Self::WASTE as u64;
+        let mut next = Self::WASTE.get() as u64;
         let mut column = |length: u64| {
-            let offset = next as u32;
+            let offset = SlabOffset(next as u32);
             next = (next + length + ALIGNMENT as u64 - 1) & !(ALIGNMENT as u64 - 1);
             offset
         };
@@ -122,13 +126,13 @@ impl Layout {
             } else {
                 0
             }),
-            end: 0,
+            end: SlabOffset(0),
         };
-        result.end = u32::try_from(next).map_err(|_| Error::Overflow)?;
+        result.end = SlabOffset(u32::try_from(next).map_err(|_| Error::Overflow)?);
         Ok(result)
     }
 
-    fn columns(self, groups: u32, flags: u32) -> [(u32, usize); 19] {
+    fn columns(self, groups: u32, flags: u32) -> [(SlabOffset, usize); 19] {
         let slots = groups * GROUP_SIZE;
         let points = flags & NO_POINTS == 0;
         [
@@ -229,61 +233,66 @@ impl TreeData {
 
     // Offsets are established by the encoder or loader before a descriptor is published.
     #[inline]
-    pub fn byte(&self, offset: u32, index: u32) -> u8 {
-        unsafe { *self.bytes.as_ptr().add(offset as usize + index as usize) }
+    pub fn byte(&self, offset: SlabOffset, index: u32) -> u8 {
+        unsafe {
+            *self
+                .bytes
+                .as_ptr()
+                .add(offset.get() as usize + index as usize)
+        }
     }
 
     #[inline]
-    pub fn short(&self, offset: u32, index: u32) -> u16 {
+    pub fn short(&self, offset: SlabOffset, index: u32) -> u16 {
         u16::from_le(unsafe {
             self.bytes
                 .as_ptr()
-                .add(offset as usize + index as usize * 2)
+                .add(offset.get() as usize + index as usize * 2)
                 .cast::<u16>()
                 .read_unaligned()
         })
     }
 
     #[inline]
-    pub fn word(&self, offset: u32, index: u32) -> u32 {
+    pub fn word(&self, offset: SlabOffset, index: u32) -> u32 {
         u32::from_le(unsafe {
             self.bytes
                 .as_ptr()
-                .add(offset as usize + index as usize * 4)
+                .add(offset.get() as usize + index as usize * 4)
                 .cast::<u32>()
                 .read_unaligned()
         })
     }
 
     #[inline]
-    pub fn long(&self, offset: u32, index: u32) -> u64 {
+    pub fn long(&self, offset: SlabOffset, index: u32) -> u64 {
         u64::from_le(unsafe {
             self.bytes
                 .as_ptr()
-                .add(offset as usize + index as usize * 8)
+                .add(offset.get() as usize + index as usize * 8)
                 .cast::<u64>()
                 .read_unaligned()
         })
     }
 
     #[inline]
-    pub fn bit(&self, offset: u32, index: u32) -> bool {
+    pub fn bit(&self, offset: SlabOffset, index: u32) -> bool {
         self.byte(offset, index / 8) & (1 << (index % 8)) != 0
     }
 
     #[inline]
     pub fn flags(&self) -> u32 {
-        self.word(0, 0)
+        self.word(SlabOffset(0), 0)
     }
 
     #[inline]
     pub fn groups(&self) -> u32 {
-        self.word(0, 1)
+        self.word(SlabOffset(0), 1)
     }
 
     #[inline]
     pub fn capacity(&self) -> u32 {
-        self.word(0, 2)
+        self.word(SlabOffset(0), 2)
     }
 
     #[inline]
@@ -313,14 +322,23 @@ impl TreeData {
     }
 
     #[inline]
-    pub fn symbol_index(&self, slot: u32) -> u32 {
-        (self.short(self.layout.symbol, slot) >> self.tables().symbol_shift) as u32
+    pub fn symbol_code(&self, slot: u32) -> SymbolCode {
+        SymbolCode(self.short(self.layout.symbol, slot))
     }
 
     #[inline]
-    pub fn grammar_index(&self, slot: u32) -> u32 {
+    pub fn symbol_index(&self, slot: u32) -> RemappedKindId {
+        RemappedKindId(self.symbol_code(slot).get() >> self.tables().symbol_shift)
+    }
+
+    #[inline]
+    pub fn grammar_index(&self, slot: u32) -> RemappedGrammarKindId {
+        RemappedGrammarKindId(self.grammar_index_raw(slot) as u16)
+    }
+
+    fn grammar_index_raw(&self, slot: u32) -> u32 {
         let tables = self.tables();
-        let code = self.short(self.layout.symbol, slot) as u32;
+        let code = self.symbol_code(slot).get() as u32;
         if self.flags() & SEPARATE_GRAMMAR != 0 {
             return self.short(self.layout.grammar, slot) as u32;
         }
@@ -352,43 +370,46 @@ impl TreeData {
         unsafe { std::slice::from_raw_parts(self.bytes.as_ptr(), self.length as usize) }
     }
 
-    pub(crate) fn put_byte(&mut self, offset: u32, index: u32, value: u8) {
+    pub(crate) fn put_byte(&mut self, offset: SlabOffset, index: u32, value: u8) {
         unsafe {
-            *self.bytes.as_ptr().add(offset as usize + index as usize) = value;
+            *self
+                .bytes
+                .as_ptr()
+                .add(offset.get() as usize + index as usize) = value;
         }
     }
 
-    pub(crate) fn put_short(&mut self, offset: u32, index: u32, value: u16) {
+    pub(crate) fn put_short(&mut self, offset: SlabOffset, index: u32, value: u16) {
         unsafe {
             self.bytes
                 .as_ptr()
-                .add(offset as usize + index as usize * 2)
+                .add(offset.get() as usize + index as usize * 2)
                 .cast::<u16>()
                 .write_unaligned(value.to_le());
         }
     }
 
-    pub(crate) fn put_word(&mut self, offset: u32, index: u32, value: u32) {
+    pub(crate) fn put_word(&mut self, offset: SlabOffset, index: u32, value: u32) {
         unsafe {
             self.bytes
                 .as_ptr()
-                .add(offset as usize + index as usize * 4)
+                .add(offset.get() as usize + index as usize * 4)
                 .cast::<u32>()
                 .write_unaligned(value.to_le());
         }
     }
 
-    pub(crate) fn put_long(&mut self, offset: u32, index: u32, value: u64) {
+    pub(crate) fn put_long(&mut self, offset: SlabOffset, index: u32, value: u64) {
         unsafe {
             self.bytes
                 .as_ptr()
-                .add(offset as usize + index as usize * 8)
+                .add(offset.get() as usize + index as usize * 8)
                 .cast::<u64>()
                 .write_unaligned(value.to_le());
         }
     }
 
-    pub(crate) fn put_bit(&mut self, offset: u32, index: u32, value: bool) {
+    pub(crate) fn put_bit(&mut self, offset: SlabOffset, index: u32, value: bool) {
         let mask = 1 << (index % 8);
         self.put_byte(
             offset,
@@ -492,12 +513,12 @@ impl Tree {
             }
             | if points { 0 } else { NO_POINTS };
         let layout = Layout::new(capacity, flags)?;
-        let mut tree = Self::allocate(grammar, layout, layout.end, None, true)?;
+        let mut tree = Self::allocate(grammar, layout, layout.end.get(), None, true)?;
         let data = tree.data_mut();
-        data.put_word(0, 0, flags);
-        data.put_word(0, 1, 0);
-        data.put_word(0, 2, capacity);
-        data.put_word(0, 3, grammar.tables().dictionary_count);
+        data.put_word(SlabOffset(0), 0, flags);
+        data.put_word(SlabOffset(0), 1, 0);
+        data.put_word(SlabOffset(0), 2, capacity);
+        data.put_word(SlabOffset(0), 3, grammar.tables().dictionary_count);
         Ok(tree)
     }
 
@@ -553,8 +574,8 @@ impl Tree {
 
     pub fn compact_size(&self) -> usize {
         let data = self.data();
-        Layout::new(data.groups(), data.flags()).unwrap().end as usize
-            + (data.length - data.layout.end) as usize
+        Layout::new(data.groups(), data.flags()).unwrap().end.get() as usize
+            + (data.length - data.layout.end.get()) as usize
     }
 
     pub fn copy_compact_into<'bytes>(
@@ -570,9 +591,9 @@ impl Tree {
             let destination = destination.as_mut_ptr().cast::<u8>();
             self.copy_columns(destination, layout, data.flags(), true);
             ptr::copy_nonoverlapping(
-                data.bytes.as_ptr().add(data.layout.end as usize),
-                destination.add(layout.end as usize),
-                (data.length - data.layout.end) as usize,
+                data.bytes.as_ptr().add(data.layout.end.get() as usize),
+                destination.add(layout.end.get() as usize),
+                (data.length - data.layout.end.get()) as usize,
             );
             destination
                 .add(8)
@@ -598,19 +619,27 @@ impl Tree {
         {
             unsafe {
                 if padding {
-                    ptr::write_bytes(destination.add(previous), 0, target as usize - previous);
+                    ptr::write_bytes(
+                        destination.add(previous),
+                        0,
+                        target.get() as usize - previous,
+                    );
                 }
                 ptr::copy_nonoverlapping(
-                    data.bytes.as_ptr().add(offset as usize),
-                    destination.add(target as usize),
+                    data.bytes.as_ptr().add(offset.get() as usize),
+                    destination.add(target.get() as usize),
                     length,
                 );
             }
-            previous = target as usize + length;
+            previous = target.get() as usize + length;
         }
         if padding {
             unsafe {
-                ptr::write_bytes(destination.add(previous), 0, next.end as usize - previous);
+                ptr::write_bytes(
+                    destination.add(previous),
+                    0,
+                    next.end.get() as usize - previous,
+                );
             }
         }
     }
@@ -624,20 +653,28 @@ impl Tree {
     ) -> Result<(), Error> {
         let data = self.data();
         let layout = Layout::new(capacity, flags)?;
-        let length = layout.end.checked_add(trailing).ok_or(Error::Overflow)?;
+        let length = layout
+            .end
+            .get()
+            .checked_add(trailing)
+            .ok_or(Error::Overflow)?;
         let mut replacement = Self::allocate(&data.grammar, layout, length, None, true)?;
         unsafe {
             self.copy_columns(replacement.data().bytes.as_ptr(), layout, flags, false);
             if preserve {
                 ptr::copy_nonoverlapping(
-                    data.bytes.as_ptr().add(data.layout.end as usize),
-                    replacement.data().bytes.as_ptr().add(layout.end as usize),
+                    data.bytes.as_ptr().add(data.layout.end.get() as usize),
+                    replacement
+                        .data()
+                        .bytes
+                        .as_ptr()
+                        .add(layout.end.get() as usize),
                     trailing as usize,
                 );
             }
         }
-        replacement.data_mut().put_word(0, 0, flags);
-        replacement.data_mut().put_word(0, 2, capacity);
+        replacement.data_mut().put_word(SlabOffset(0), 0, flags);
+        replacement.data_mut().put_word(SlabOffset(0), 2, capacity);
         *self = replacement;
         Ok(())
     }
@@ -652,7 +689,11 @@ impl Tree {
             return self.resize(capacity, flags, trailing, false);
         }
         let next = Layout::new(capacity, flags)?;
-        let length = next.end.checked_add(trailing).ok_or(Error::Overflow)?;
+        let length = next
+            .end
+            .get()
+            .checked_add(trailing)
+            .ok_or(Error::Overflow)?;
         let data = self.data_mut();
         let previous = data.layout;
 
@@ -666,16 +707,16 @@ impl Tree {
             if flags & flag != 0 {
                 unsafe {
                     ptr::copy(
-                        data.bytes.as_ptr().add(source as usize),
-                        data.bytes.as_ptr().add(destination as usize),
-                        (end - destination) as usize,
+                        data.bytes.as_ptr().add(source.get() as usize),
+                        data.bytes.as_ptr().add(destination.get() as usize),
+                        (end.get() - destination.get()) as usize,
                     );
                 }
             }
         }
         data.layout = next;
         data.length = length;
-        data.put_word(0, 0, flags);
+        data.put_word(SlabOffset(0), 0, flags);
         let allocated = data.allocation_length;
 
         if length > allocated || allocated - length >= 256 {
@@ -794,20 +835,20 @@ impl Tree {
         let entries = offset + bit_bytes(symbols) as u32;
         unsafe {
             ptr::write_bytes(
-                data.bytes.as_ptr().add(offset as usize),
+                data.bytes.as_ptr().add(offset.get() as usize),
                 0,
                 data.presence_size() as usize,
             );
             ptr::write_bytes(
-                data.bytes.as_ptr().add(entries as usize),
+                data.bytes.as_ptr().add(entries.get() as usize),
                 255,
                 symbols as usize * entry_bytes as usize,
             );
         }
-        data.put_word(0, 0, data.flags() | PRESENCE);
+        data.put_word(SlabOffset(0), 0, data.flags() | PRESENCE);
         for group in (0..groups).rev() {
             for slot in (group * GROUP_SIZE..data.group_end(group)).rev() {
-                let symbol = data.symbol_index(slot);
+                let symbol = u32::from(data.symbol_index(slot).get());
                 let entry = entries + symbol * entry_bytes;
                 let count = &mut scratch.counts[symbol as usize];
                 if *count > entry_slots {
@@ -825,7 +866,7 @@ impl Tree {
                     unsafe {
                         ptr::copy_nonoverlapping(
                             scratch.bitmap.as_ptr(),
-                            data.bytes.as_ptr().add(entry as usize),
+                            data.bytes.as_ptr().add(entry.get() as usize),
                             entry_bytes as usize,
                         );
                     }
@@ -836,20 +877,20 @@ impl Tree {
         }
     }
 
-    pub fn group_has_symbol(&self, group: u32, symbol: u16) -> bool {
+    pub fn group_has_symbol(&self, group: u32, symbol: KindId) -> bool {
         self.data().group_has_symbol(group, symbol)
     }
 }
 
 impl TreeData {
-    pub fn group_has_symbol(&self, group: u32, symbol: u16) -> bool {
-        let symbol = self.tables().encode_id(symbol);
+    pub fn group_has_symbol(&self, group: u32, symbol: KindId) -> bool {
+        let symbol = u32::from(self.tables().remap_kind(symbol).get());
         if group >= self.groups() || symbol >= self.tables().symbol_count + 2 {
             return false;
         }
         if self.flags() & PRESENCE == 0 {
             return (group * GROUP_SIZE..self.group_end(group))
-                .any(|slot| self.symbol_index(slot) == symbol);
+                .any(|slot| u32::from(self.symbol_index(slot).get()) == symbol);
         }
         let entry_bytes = self.groups().div_ceil(32) * 4;
         let entry = self.layout.end
@@ -903,7 +944,7 @@ impl Tree {
         } else {
             0
         };
-        if layout.end as u64 + trailing != bytes.len() as u64 {
+        if layout.end.get() as u64 + trailing != bytes.len() as u64 {
             return Err(Error::InvalidSlab);
         }
         let tree = Self::allocate(
@@ -986,7 +1027,7 @@ impl Tree {
                     return Err(Error::InvalidSlab);
                 }
                 if tables.separate != 0 || tables.encoding == 2 {
-                    if data.grammar_index(slot) >= symbols {
+                    if u32::from(data.grammar_index(slot).get()) >= symbols {
                         return Err(Error::InvalidSlab);
                     }
                 } else {
@@ -1065,7 +1106,7 @@ impl Tree {
         };
         for group in (0..data.groups()).rev() {
             for slot in (group * GROUP_SIZE..data.group_end(group)).rev() {
-                let symbol = data.symbol_index(slot);
+                let symbol = u32::from(data.symbol_index(slot).get());
                 let entry = entries + symbol * entry_bytes;
                 let count = &mut counts[symbol as usize];
                 if data.bit(modes, symbol) {

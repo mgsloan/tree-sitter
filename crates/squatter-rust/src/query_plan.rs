@@ -203,7 +203,7 @@ impl Program {
 
 fn local_alternative(compiled: &CompiledQuery, entry: PatternEntry) -> bool {
     let step = compiled.steps()[entry.step_index as usize];
-    let pattern = compiled.patterns()[entry.pattern_index as usize];
+    let pattern = compiled.patterns()[entry.pattern_index.get() as usize];
     let end = pattern.steps.end() - 1;
     if step.depth != 0
         || step.field != 0
@@ -244,7 +244,7 @@ fn presence_requirement(
     }
 
     let mut required = None;
-    let pattern = compiled.patterns()[entry.pattern_index as usize];
+    let pattern = compiled.patterns()[entry.pattern_index.get() as usize];
     for step in &compiled.steps()[entry.step_index as usize + 1..pattern.steps.end()] {
         if step.depth == 0
             || step.depth == u16::MAX
@@ -285,16 +285,16 @@ impl DirectPlan {
             if entry.flags & 1 == 0 {
                 return None;
             }
-            let pattern = compiled.patterns()[entry.pattern_index as usize];
-            let bit = 1 << entry.pattern_index;
+            let pattern = compiled.patterns()[entry.pattern_index.get() as usize];
+            let bit = 1 << entry.pattern_index.get();
             let end = pattern.steps.end() - 1;
-            plan.end_steps[entry.pattern_index as usize] = end as u16;
+            plan.end_steps[entry.pattern_index.get() as usize] = end as u16;
 
             let root = compiled.steps()[entry.step_index as usize];
             if root.symbol != 0 && local_alternative(compiled, entry) {
                 if patterns & bit != 0 {
-                    let first =
-                        compiled.steps()[plan.start_steps[entry.pattern_index as usize] as usize];
+                    let first = compiled.steps()
+                        [plan.start_steps[entry.pattern_index.get() as usize] as usize];
                     if plan.local_patterns & bit == 0
                         || first.capture_ids != root.capture_ids
                         || compiled.entries()[..index].iter().any(|other| {
@@ -305,7 +305,7 @@ impl DirectPlan {
                         return None;
                     }
                 } else {
-                    plan.start_steps[entry.pattern_index as usize] = entry.step_index;
+                    plan.start_steps[entry.pattern_index.get() as usize] = entry.step_index;
                 }
                 patterns |= bit;
                 plan.local_patterns |= bit;
@@ -320,7 +320,7 @@ impl DirectPlan {
                 return None;
             }
             patterns |= bit;
-            plan.start_steps[entry.pattern_index as usize] = entry.step_index;
+            plan.start_steps[entry.pattern_index.get() as usize] = entry.step_index;
 
             for step_index in pattern.steps.offset as usize..end {
                 let step = compiled.steps()[step_index];
@@ -385,7 +385,7 @@ impl DirectPlan {
                 } else {
                     !step.has(IS_NAMED) || language.node_kind_is_named(symbol as u16)
                 } {
-                    plan.roots[symbol] |= 1 << entry.pattern_index;
+                    plan.roots[symbol] |= 1 << entry.pattern_index.get();
                 }
             }
         }
