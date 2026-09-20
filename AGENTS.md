@@ -14,6 +14,8 @@
 
 * Prefer implementing functionality in existing files unless it is a new logical component. Avoid creating many small files.
 
+* Concise code should still be easy to scan. Use blank lines to separate logical groups, avoid packing multiple statements onto one line, and run `cargo fmt` for Rust changes.
+
 * Avoid creative additions unless explicitly requested
 
 * Use full words for variable names (no abbreviations like "q" for "queue")
