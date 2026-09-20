@@ -463,6 +463,7 @@ mod sealed {
 
     pub trait Coordinates: Sized {
         type Position: Copy + Ord;
+        const MINIMUM: Self::Position;
         fn new(group: &GroupRef<'_>) -> Self;
         fn start_minimum(&self, group: &GroupRef<'_>) -> Self::Position;
         fn end_before(&self, group: &GroupRef<'_>, bound: Bound<Self::Position>) -> bool;
@@ -776,7 +777,7 @@ impl<'tree> Preorder<'tree> {
         }
     }
     #[inline(always)]
-    fn next_matching_group<const REVERSE: bool, P: Predicate>(
+    fn next_matching_group<const REVERSE: bool, const SUBTREES: bool, P: Predicate>(
         &mut self,
         predicate: &P,
     ) -> Option<Mask> {
@@ -786,7 +787,7 @@ impl<'tree> Preorder<'tree> {
             } else {
                 self.groups.next_back()?
             };
-            if !REVERSE && predicate.excludes_subtrees(&self.group) {
+            if SUBTREES && predicate.excludes_subtrees(&self.group) {
                 // The last node in preorder occupies the group's first slot.
                 // Its descendants end no later, so their whole groups can be skipped.
                 let span = self
@@ -844,7 +845,11 @@ impl<'tree> GroupScan<'tree> for Preorder<'tree> {
     }
     #[inline(always)]
     fn next_matching<P: Predicate>(&mut self, predicate: &P) -> Option<Mask> {
-        self.next_matching_group::<false, _>(predicate)
+        if predicate.has_subtree_bound() {
+            self.next_matching_group::<false, true, _>(predicate)
+        } else {
+            self.next_matching_group::<false, false, _>(predicate)
+        }
     }
     #[inline(always)]
     fn next_mask(&mut self) -> Option<Mask> {
@@ -891,7 +896,7 @@ impl<'tree> GroupScan<'tree> for ReversePreorder<'tree> {
     }
     #[inline(always)]
     fn next_matching<P: Predicate>(&mut self, predicate: &P) -> Option<Mask> {
-        self.0.next_matching_group::<true, _>(predicate)
+        self.0.next_matching_group::<true, false, _>(predicate)
     }
     #[inline(always)]
     fn next_mask(&mut self) -> Option<Mask> {
@@ -1474,6 +1479,7 @@ impl<'tree, const STORED: bool> Positions for PointPositions<'_, 'tree, STORED> 
 }
 impl Coordinates for Bytes {
     type Position = usize;
+    const MINIMUM: usize = 0;
     fn new(_: &GroupRef<'_>) -> Self {
         Self
     }
@@ -1499,6 +1505,7 @@ impl Coordinates for Bytes {
 }
 impl Coordinates for Points {
     type Position = Point;
+    const MINIMUM: Point = Point::new(0, 0);
     fn new(group: &GroupRef<'_>) -> Self {
         unsafe extern "C" {
             fn sq_tree_scan_point_layout(tree: *const c_void, layout: *mut Points);
@@ -1510,7 +1517,7 @@ impl Coordinates for Points {
             layout.assume_init()
         }
     }
-    #[inline]
+    #[inline(always)]
     fn start_minimum(&self, group: &GroupRef<'_>) -> Point {
         if self.start_base == 0 {
             Point::new(0, Bytes.start_minimum(group))
@@ -1790,6 +1797,8 @@ pub trait UnrestrictedScan: sealed::Source {
     );
 }
 impl UnrestrictedScan for Preorder<'_> {
+    // Specialize constant bound variants before entering either search.
+    #[inline(always)]
     fn restrict<C: Coordinates>(
         &mut self,
         coordinates: &C,
@@ -1814,6 +1823,9 @@ impl UnrestrictedScan for Preorder<'_> {
             }
         }
         self.groups.start = lower;
+        if matches!(bounds.0, Included(limit) if limit == C::MINIMUM) {
+            return;
+        }
         if let Included(limit) | Excluded(limit) = bounds.0 {
             upper = self.groups.end;
             while lower < upper {
@@ -1837,6 +1849,7 @@ impl UnrestrictedScan for Preorder<'_> {
     }
 }
 impl UnrestrictedScan for ReversePreorder<'_> {
+    #[inline(always)]
     fn restrict<C: Coordinates>(
         &mut self,
         coordinates: &C,
@@ -2016,11 +2029,17 @@ impl<S: sealed::Source, P> sealed::Source for Restricted<S, P> {}
 impl<C, R> sealed::Predicate for Selection<C, R> {}
 impl<C: Coordinates, R: Relation<C::Position>> Predicate for Selection<C, R> {
     #[inline(always)]
-    fn excludes_subtrees(&self, group: &GroupRef<'_>) -> bool {
+    fn has_subtree_bound(&self) -> bool {
         match self.relation.end_lower_bound() {
             Unbounded => false,
-            bound => self.coordinates.end_before(group, bound),
+            Included(limit) => limit != C::MINIMUM,
+            Excluded(_) => true,
         }
+    }
+    #[inline(always)]
+    fn excludes_subtrees(&self, group: &GroupRef<'_>) -> bool {
+        self.coordinates
+            .end_before(group, self.relation.end_lower_bound())
     }
     #[inline(always)]
     fn retain_matches(&self, group: &GroupRef<'_>, candidates: Mask) -> Mask {
@@ -2079,6 +2098,11 @@ impl<'tree, S: GroupScan<'tree>, C: Coordinates, R: Relation<C::Position>> Group
 }
 
 pub trait Predicate: sealed::Predicate {
+    /// Whether this query has a nontrivial lower end bound for subtree pruning.
+    #[inline(always)]
+    fn has_subtree_bound(&self) -> bool {
+        false
+    }
     /// Whether every node in this group and all its descendants must fail.
     #[inline(always)]
     fn excludes_subtrees(&self, _group: &GroupRef<'_>) -> bool {
@@ -2104,6 +2128,10 @@ impl Predicate for Identity {
 struct And<P, Q>(P, Q);
 impl<P: Predicate, Q: Predicate> sealed::Predicate for And<P, Q> {}
 impl<P: Predicate, Q: Predicate> Predicate for And<P, Q> {
+    #[inline(always)]
+    fn has_subtree_bound(&self) -> bool {
+        self.0.has_subtree_bound()
+    }
     #[inline(always)]
     fn excludes_subtrees(&self, group: &GroupRef<'_>) -> bool {
         self.0.excludes_subtrees(group)
