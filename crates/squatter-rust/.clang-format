@@ -1,0 +1,14 @@
+# Separate functions and logical phases with blank lines; use // prose comments.
+# Compact guards are fine, while longer control-flow bodies stay expanded.
+BasedOnStyle: LLVM
+IndentWidth: 2
+ColumnLimit: 100
+AllowShortFunctionsOnASingleLine: None
+AllowShortIfStatementsOnASingleLine: AllIfsAndElse
+AllowShortLoopsOnASingleLine: true
+AllowShortBlocksOnASingleLine: Never
+InsertBraces: false
+ReflowComments: false
+SeparateDefinitionBlocks: Always
+SortIncludes: Never
+PointerAlignment: Right
