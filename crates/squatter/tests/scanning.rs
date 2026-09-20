@@ -965,6 +965,83 @@ fn sparse_kind_filters() {
 }
 
 #[test]
+fn sparse_cursor_pipelines() {
+    let language = json_language();
+    let source = format!(
+        "[{}0]",
+        format!("[{}true,false,null],", "1,".repeat(1400)).repeat(12)
+    );
+    let [truth, falsity, null] =
+        ["true", "false", "null"].map(|kind| language.id_for_node_kind(kind, true));
+    let ids = [truth, falsity, null, truth];
+    let kinds = KindSet::new(ids);
+    let other = KindSet::new([truth, null]);
+    for symbol_presence in [false, true] {
+        let (_, tree) = parse(
+            &language,
+            &source,
+            PackOptions {
+                symbol_presence,
+                ..Default::default()
+            },
+        );
+        assert!(tree.group_count().div_ceil(32) >= 12);
+        let nodes = reference_preorder(tree.root_node());
+        let subtree = nodes
+            .iter()
+            .copied()
+            .find(|node| node.kind() == "array" && node.start_byte() > source.len() / 3)
+            .unwrap();
+        for root in [tree.root_node(), subtree] {
+            let nodes = reference_preorder(root);
+            let expected = nodes
+                .iter()
+                .copied()
+                .filter(|node| kinds.contains(node.kind_id()))
+                .collect::<Vec<_>>();
+            check_pipeline(|| root.all().filter_kind_ids(ids), &expected);
+            check_pipeline(|| root.all().filter_kind_ids(&kinds), &expected);
+            for range in [
+                0..source.len(),
+                source.len() / 4..source.len() * 3 / 4,
+                source.len() / 2..source.len() / 2 + 7,
+            ] {
+                let expected = nodes
+                    .iter()
+                    .copied()
+                    .filter(|node| {
+                        node.start_byte() < range.end
+                            && (node.end_byte() > range.start || node.start_byte() >= range.start)
+                            && kinds.contains(node.kind_id())
+                            && other.contains(node.kind_id())
+                    })
+                    .collect::<Vec<_>>();
+                check_pipeline(
+                    || {
+                        root.all()
+                            .overlapping_bytes(range.clone())
+                            .filter_kind_ids(ids)
+                            .filter_extra(false)
+                            .filter_kind_ids(&other)
+                    },
+                    &expected,
+                );
+                check_pipeline(
+                    || {
+                        root.all()
+                            .overlapping_bytes(range.clone())
+                            .filter_kind_ids(&other)
+                            .filter_extra(false)
+                            .filter_kind_ids(&kinds)
+                    },
+                    &expected,
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn prepared_kind_sets() {
     let language = json_language();
     let source = format!(

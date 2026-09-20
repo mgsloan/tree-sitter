@@ -18,6 +18,7 @@ use tree_squatter::{Grammar, IdSet, KindSet, Node, PackOptions, Tree, traits::No
 enum KindSelection {
     Frequent,
     Rare,
+    Sparse,
     Absent,
 }
 
@@ -47,7 +48,7 @@ struct Arguments {
     /// Number of frequent named kinds selected by multi_kind workloads.
     #[arg(long, default_value_t = 4)]
     kind_count: usize,
-    /// Select frequent/rare named IDs or valid IDs absent from each input.
+    /// Select frequent, rare, sparse, or absent kind IDs.
     #[arg(long, value_enum, default_value = "frequent")]
     kind_selection: KindSelection,
     #[arg(long)]
@@ -154,8 +155,40 @@ fn fixed_kinds<const N: usize>(case: &Case) -> [u16; N] {
     case.selected_kind_ids[..N].try_into().unwrap()
 }
 fn sized_kind_workloads<const N: usize>(
-    names: [&'static str; 6],
+    cases: &[Case],
+    names: [&'static str; 8],
 ) -> Vec<(&'static str, Operation)> {
+    for case in cases {
+        let kinds = &case.sized_kind_sets[N.ilog2() as usize];
+        let mut expected = scalar_preorder(&case.tree)
+            .filter(|node| kinds.contains(node.kind_id()))
+            .collect::<Vec<_>>();
+        expected.reverse();
+        assert_eq!(
+            case.tree
+                .root_node()
+                .all()
+                .filter_kind_ids(fixed_kinds::<N>(case))
+                .rev()
+                .nodes()
+                .collect::<Vec<_>>(),
+            expected,
+            "{}",
+            names[6]
+        );
+        assert_eq!(
+            case.tree
+                .root_node()
+                .all()
+                .filter_kind_ids(kinds)
+                .rev()
+                .nodes()
+                .collect::<Vec<_>>(),
+            expected,
+            "{}",
+            names[7]
+        );
+    }
     vec![
         (names[0], |case| {
             consume(
@@ -204,6 +237,26 @@ fn sized_kind_workloads<const N: usize>(
                     .root_node()
                     .all()
                     .filter_kind_ids(&case.sized_kind_sets[N.ilog2() as usize])
+                    .nodes(),
+            )
+        }),
+        (names[6], |case| {
+            consume(
+                case.tree
+                    .root_node()
+                    .all()
+                    .filter_kind_ids(fixed_kinds::<N>(case))
+                    .rev()
+                    .nodes(),
+            )
+        }),
+        (names[7], |case| {
+            consume(
+                case.tree
+                    .root_node()
+                    .all()
+                    .filter_kind_ids(&case.sized_kind_sets[N.ilog2() as usize])
+                    .rev()
                     .nodes(),
             )
         }),
@@ -682,46 +735,71 @@ fn workloads(cases: &[Case]) -> Vec<(&'static str, Operation)> {
         )+};
     }
     combined_kind_sizes!(2, 4, 8, 16);
-    workloads.extend(sized_kind_workloads::<1>([
-        "fixed_1.nodes",
-        "fixed_1.count",
-        "fixed_1.fold",
-        "dynamic_1.nodes",
-        "dynamic_1.count",
-        "dynamic_1.fold",
-    ]));
-    workloads.extend(sized_kind_workloads::<2>([
-        "fixed_2.nodes",
-        "fixed_2.count",
-        "fixed_2.fold",
-        "dynamic_2.nodes",
-        "dynamic_2.count",
-        "dynamic_2.fold",
-    ]));
-    workloads.extend(sized_kind_workloads::<4>([
-        "fixed_4.nodes",
-        "fixed_4.count",
-        "fixed_4.fold",
-        "dynamic_4.nodes",
-        "dynamic_4.count",
-        "dynamic_4.fold",
-    ]));
-    workloads.extend(sized_kind_workloads::<8>([
-        "fixed_8.nodes",
-        "fixed_8.count",
-        "fixed_8.fold",
-        "dynamic_8.nodes",
-        "dynamic_8.count",
-        "dynamic_8.fold",
-    ]));
-    workloads.extend(sized_kind_workloads::<16>([
-        "fixed_16.nodes",
-        "fixed_16.count",
-        "fixed_16.fold",
-        "dynamic_16.nodes",
-        "dynamic_16.count",
-        "dynamic_16.fold",
-    ]));
+    workloads.extend(sized_kind_workloads::<1>(
+        cases,
+        [
+            "fixed_1.nodes",
+            "fixed_1.count",
+            "fixed_1.fold",
+            "dynamic_1.nodes",
+            "dynamic_1.count",
+            "dynamic_1.fold",
+            "fixed_1.reverse_nodes",
+            "dynamic_1.reverse_nodes",
+        ],
+    ));
+    workloads.extend(sized_kind_workloads::<2>(
+        cases,
+        [
+            "fixed_2.nodes",
+            "fixed_2.count",
+            "fixed_2.fold",
+            "dynamic_2.nodes",
+            "dynamic_2.count",
+            "dynamic_2.fold",
+            "fixed_2.reverse_nodes",
+            "dynamic_2.reverse_nodes",
+        ],
+    ));
+    workloads.extend(sized_kind_workloads::<4>(
+        cases,
+        [
+            "fixed_4.nodes",
+            "fixed_4.count",
+            "fixed_4.fold",
+            "dynamic_4.nodes",
+            "dynamic_4.count",
+            "dynamic_4.fold",
+            "fixed_4.reverse_nodes",
+            "dynamic_4.reverse_nodes",
+        ],
+    ));
+    workloads.extend(sized_kind_workloads::<8>(
+        cases,
+        [
+            "fixed_8.nodes",
+            "fixed_8.count",
+            "fixed_8.fold",
+            "dynamic_8.nodes",
+            "dynamic_8.count",
+            "dynamic_8.fold",
+            "fixed_8.reverse_nodes",
+            "dynamic_8.reverse_nodes",
+        ],
+    ));
+    workloads.extend(sized_kind_workloads::<16>(
+        cases,
+        [
+            "fixed_16.nodes",
+            "fixed_16.count",
+            "fixed_16.fold",
+            "dynamic_16.nodes",
+            "dynamic_16.count",
+            "dynamic_16.fold",
+            "fixed_16.reverse_nodes",
+            "dynamic_16.reverse_nodes",
+        ],
+    ));
     workloads.extend(sized_field_workloads::<1>([
         "fixed_field_1.nodes",
         "fixed_field_1.count",
@@ -1064,7 +1142,7 @@ fn main() -> Result<()> {
         let mut frequencies = BTreeMap::new();
         let mut present_kinds = std::collections::BTreeSet::new();
         let mut fields = BTreeMap::new();
-        let mut nodes = 0;
+        let mut nodes = 0usize;
         for node in scalar_preorder(&tree) {
             nodes += 1;
             present_kinds.insert(node.kind_id());
@@ -1075,9 +1153,18 @@ fn main() -> Result<()> {
                 *frequencies.entry(node.kind_id()).or_insert(0usize) += 1;
             }
         }
-        let mut ranked_kinds = frequencies.iter().collect::<Vec<_>>();
+        // This bound fits sparse entries at every supported group size, keeping
+        // the selected IDs identical in the 16/32/64-slot comparison.
+        let sparse_kind_limit = nodes.div_ceil(64 * 32);
+        let mut ranked_kinds = frequencies
+            .iter()
+            .filter(|&(_, count)| {
+                !matches!(arguments.kind_selection, KindSelection::Sparse)
+                    || *count <= sparse_kind_limit
+            })
+            .collect::<Vec<_>>();
         match arguments.kind_selection {
-            KindSelection::Frequent => {
+            KindSelection::Frequent | KindSelection::Sparse => {
                 ranked_kinds.sort_by_key(|&(&kind, &count)| (std::cmp::Reverse(count), kind))
             }
             _ => ranked_kinds.sort_by_key(|&(&kind, &count)| (count, kind)),
@@ -1213,7 +1300,9 @@ fn main() -> Result<()> {
             "supertype_id": supertype, "supertype_count": language.supertypes().len(),
             "supertype_matches": supertype_matches,
             "flags_matches": flags_matches, "combined_matches": combined_matches,
-            "selected_kind_ids": selected_kind_ids, "sized_kind_matches": sized_kind_matches,
+            "selected_kind_ids": selected_kind_ids,
+            "selected_kind_frequencies": selected_kind_ids.map(|kind| frequencies.get(&kind).copied().unwrap_or(0)),
+            "sparse_kind_limit": sparse_kind_limit, "sized_kind_matches": sized_kind_matches,
             "frequent_field_ids": frequent_field_ids, "sized_field_matches": sized_field_matches,
         }));
         let case = Case {
