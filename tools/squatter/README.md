@@ -154,3 +154,19 @@ preferring named IDs. `--no-symbol-index` disables index construction during
 packing. `field.{fixed,dynamic}_N.{nodes,count}` filters by field before 8/16
 selected kind IDs; `range.{fixed,dynamic}_8.{nodes,count}` covers byte overlap
 followed by eight IDs. These combinations exercise sparse candidate masks.
+
+Composed workloads use 2/4/8/16 IDs, arrays and sets, and `.nodes`/`.count`:
+
+| Prefix | Filter order |
+| --- | --- |
+| `field` / `kind_field` | Field then symbols / symbols then field |
+| `flags` | Exclude extra and missing nodes, then symbols |
+| `range_field` / `range_kind_field` | Byte overlap, then both field/symbol orders |
+| `intersection` / `intersection_reverse` | Two symbol filters, in both orders |
+
+The second symbol set selects alternate entries from the sixteen selected IDs;
+its intersection with the first set varies with cardinality. Per-file IDs and
+counts are recorded. Setup checks each composed enumeration against scalar node
+accessors, and every timed count must match the scalar total. Use both narrow and
+broad byte windows and `--no-symbol-index` to distinguish sparse-mask, SIMD, and
+index effects.

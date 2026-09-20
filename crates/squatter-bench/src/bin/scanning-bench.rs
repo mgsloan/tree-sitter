@@ -82,6 +82,10 @@ struct Case {
     within_matches: usize,
     within_kind_matches: [usize; 5],
     field_kind_matches: [usize; 5],
+    flags_kind_matches: [usize; 5],
+    range_field_kind_matches: [usize; 5],
+    intersecting_kinds: KindSet,
+    intersection_matches: [usize; 5],
     starting_in_matches: usize,
     starting_at_matches: usize,
     supertype: u16,
@@ -205,7 +209,7 @@ fn sized_kind_workloads<const N: usize>(
         }),
     ]
 }
-fn workloads() -> Vec<(&'static str, Operation)> {
+fn workloads(cases: &[Case]) -> Vec<(&'static str, Operation)> {
     let mut workloads: Vec<(&'static str, Operation)> = vec![
         ("preorder.fold", |case| {
             consume_fold(case.tree.root_node().preorder().nodes())
@@ -588,8 +592,6 @@ fn workloads() -> Vec<(&'static str, Operation)> {
     range_kind_workloads!("range", overlapping_bytes, case, case.range.clone(), 1);
     range_kind_workloads!("range", overlapping_bytes, case, case.range.clone(), 4);
     range_kind_workloads!("range", overlapping_bytes, case, case.range.clone(), 8);
-    range_kind_workloads!("field", filter_field_id, case, case.field, 8);
-    range_kind_workloads!("field", filter_field_id, case, case.field, 16);
     range_kind_workloads!(
         "point_range",
         overlapping_points,
@@ -620,6 +622,66 @@ fn workloads() -> Vec<(&'static str, Operation)> {
         case.point_range.clone(),
         4
     );
+    // Keep each composed query and its scalar membership check together.
+    macro_rules! combined_kind_workloads {
+        ($name:literal, $length:literal, $case:ident, $ids:ident, $scan:expr, $node:ident, $reference:expr) => {
+            for $case in cases {
+                let kinds = &$case.sized_kind_sets[($length as usize).ilog2() as usize];
+                let expected = scalar_preorder(&$case.tree)
+                    .filter(|$node| kinds.contains($node.kind_id()) && $reference)
+                    .collect::<Vec<_>>();
+                let $ids = fixed_kinds::<$length>($case);
+                assert_eq!($scan.nodes().collect::<Vec<_>>(), expected, $name);
+                let $ids = kinds;
+                assert_eq!($scan.nodes().collect::<Vec<_>>(), expected, $name);
+            }
+            let selected: [(&'static str, Operation); 4] = [
+                (concat!($name, ".fixed_", $length, ".nodes"), |$case| {
+                    let $ids = fixed_kinds::<$length>($case);
+                    consume($scan.nodes())
+                }),
+                (concat!($name, ".fixed_", $length, ".count"), |$case| {
+                    let $ids = fixed_kinds::<$length>($case);
+                    $scan.count()
+                }),
+                (concat!($name, ".dynamic_", $length, ".nodes"), |$case| {
+                    let $ids = &$case.sized_kind_sets[($length as usize).ilog2() as usize];
+                    consume($scan.nodes())
+                }),
+                (concat!($name, ".dynamic_", $length, ".count"), |$case| {
+                    let $ids = &$case.sized_kind_sets[($length as usize).ilog2() as usize];
+                    $scan.count()
+                }),
+            ];
+            workloads.extend(selected);
+        };
+    }
+    macro_rules! combined_kind_sizes {
+        ($($length:literal),+) => {$(
+            range_kind_workloads!("field", filter_field_id, case, case.field, $length);
+            combined_kind_workloads!("kind_field", $length, case, ids,
+                case.tree.root_node().all().filter_kind_ids(ids).filter_field_id(case.field),
+                node, node.field_id() == case.field);
+            combined_kind_workloads!("flags", $length, case, ids,
+                case.tree.root_node().all().filter_extra(false).filter_missing(false).filter_kind_ids(ids),
+                node, !node.is_extra() && !node.is_missing());
+            combined_kind_workloads!("range_field", $length, case, ids,
+                case.tree.root_node().all().overlapping_bytes(case.range.clone())
+                    .filter_field_id(case.field).filter_kind_ids(ids),
+                node, overlaps(*node, &case.range) && node.field_id() == case.field);
+            combined_kind_workloads!("range_kind_field", $length, case, ids,
+                case.tree.root_node().all().overlapping_bytes(case.range.clone())
+                    .filter_kind_ids(ids).filter_field_id(case.field),
+                node, overlaps(*node, &case.range) && node.field_id() == case.field);
+            combined_kind_workloads!("intersection", $length, case, ids,
+                case.tree.root_node().all().filter_kind_ids(ids).filter_kind_ids(&case.intersecting_kinds),
+                node, case.intersecting_kinds.contains(node.kind_id()));
+            combined_kind_workloads!("intersection_reverse", $length, case, ids,
+                case.tree.root_node().all().filter_kind_ids(&case.intersecting_kinds).filter_kind_ids(ids),
+                node, case.intersecting_kinds.contains(node.kind_id()));
+        )+};
+    }
+    combined_kind_sizes!(2, 4, 8, 16);
     workloads.extend(sized_kind_workloads::<1>([
         "fixed_1.nodes",
         "fixed_1.count",
@@ -1048,6 +1110,7 @@ fn main() -> Result<()> {
                 *count += usize::from(kinds.contains(node.kind_id()));
             }
         }
+        let intersecting_kinds = KindSet::new(selected_kind_ids.iter().copied().step_by(2));
         let multiple_kinds = KindSet::new(selected_kinds.into_iter().take(arguments.kind_count));
         let multiple_kind_matches = scalar_preorder(&tree)
             .filter(|node| multiple_kinds.contains(node.kind_id()))
@@ -1095,6 +1158,9 @@ fn main() -> Result<()> {
         let mut range_kind_matches = [0; 5];
         let mut within_kind_matches = [0; 5];
         let mut field_kind_matches = [0; 5];
+        let mut flags_kind_matches = [0; 5];
+        let mut range_field_kind_matches = [0; 5];
+        let mut intersection_matches = [0; 5];
         for node in scalar_preorder(&tree) {
             let overlapping = overlaps(node, &range);
             let within = range.start <= node.start_byte() && node.end_byte() <= range.end;
@@ -1104,6 +1170,11 @@ fn main() -> Result<()> {
                     range_kind_matches[index] += usize::from(overlapping);
                     within_kind_matches[index] += usize::from(within);
                     field_kind_matches[index] += usize::from(selected_field);
+                    flags_kind_matches[index] +=
+                        usize::from(!node.is_extra() && !node.is_missing());
+                    range_field_kind_matches[index] += usize::from(overlapping && selected_field);
+                    intersection_matches[index] +=
+                        usize::from(intersecting_kinds.contains(node.kind_id()));
                 }
             }
         }
@@ -1131,6 +1202,10 @@ fn main() -> Result<()> {
             "range": [range.start, range.end], "range_matches": range_matches,
             "range_kind_matches": range_kind_matches, "within_kind_matches": within_kind_matches,
             "field_kind_matches": field_kind_matches,
+            "flags_kind_matches": flags_kind_matches,
+            "range_field_kind_matches": range_field_kind_matches,
+            "intersecting_kind_ids": selected_kind_ids.iter().copied().step_by(2).collect::<Vec<_>>(),
+            "intersection_matches": intersection_matches,
             "point_range": [
                 [point_range.start.row, point_range.start.column],
                 [point_range.end.row, point_range.end.column],
@@ -1158,6 +1233,10 @@ fn main() -> Result<()> {
             within_matches,
             within_kind_matches,
             field_kind_matches,
+            flags_kind_matches,
+            range_field_kind_matches,
+            intersecting_kinds,
+            intersection_matches,
             starting_in_matches,
             starting_at_matches,
             supertype,
@@ -1181,7 +1260,7 @@ fn main() -> Result<()> {
         grammars.len(),
         input_nodes
     );
-    let mut workloads = workloads();
+    let mut workloads = workloads(&cases);
     for name in &arguments.workload {
         ensure!(
             workloads.iter().any(|(candidate, _)| candidate == name),
@@ -1207,7 +1286,10 @@ fn main() -> Result<()> {
                     let matches = match selection {
                         "range" | "point_range" => &case.range_kind_matches,
                         "within" | "point_within" => &case.within_kind_matches,
-                        "field" => &case.field_kind_matches,
+                        "field" | "kind_field" => &case.field_kind_matches,
+                        "flags" => &case.flags_kind_matches,
+                        "range_field" | "range_kind_field" => &case.range_field_kind_matches,
+                        "intersection" | "intersection_reverse" => &case.intersection_matches,
                         _ => unreachable!("unknown kind selection: {selection}"),
                     };
                     matches[length.ilog2() as usize]
