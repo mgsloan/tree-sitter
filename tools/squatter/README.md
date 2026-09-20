@@ -57,6 +57,12 @@ cargo run --release -p squatter-bench --features core-comparison \
 cargo test -p tree-squatter-persistence --no-default-features --features rust-core
 ```
 
+The candidate's `typed-query-scan` and `typed-presence-scan` features independently
+replace small root-union searches and bounded descendant-presence checks with the
+typed scan kernels. They are off by default. Forward them through `squatter-bench`
+when measuring either runner; paired reports record both selections. Presence
+indexes, scan budgets, caches, and cancellation remain active in each variant.
+
 ## Measurement contract
 
 Eight workloads are available:

@@ -226,6 +226,19 @@ pub struct GroupRef<'tree> {
     index: u32,
 }
 impl<'tree> GroupRef<'tree> {
+    #[cfg(any(feature = "typed-query-scan", feature = "typed-presence-scan"))]
+    pub(crate) fn new(root: Node<'tree>) -> Self {
+        let columns = Columns::new(root);
+        columns.group(root.slot() >> columns.layout.group_shift)
+    }
+
+    #[cfg(any(feature = "typed-query-scan", feature = "typed-presence-scan"))]
+    pub(crate) fn at(mut self, index: u32) -> Self {
+        debug_assert!(index < self.columns.root.data().groups());
+        self.index = index;
+        self
+    }
+
     pub fn index(self) -> u32 {
         self.index
     }

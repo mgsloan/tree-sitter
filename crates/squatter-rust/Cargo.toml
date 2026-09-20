@@ -6,6 +6,10 @@ license.workspace = true
 publish = false
 build = "build.rs"
 
+[features]
+typed-query-scan = []
+typed-presence-scan = []
+
 [dependencies]
 tree-sitter.workspace = true
 regex.workspace = true

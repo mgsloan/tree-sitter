@@ -109,6 +109,7 @@ fn main() -> Result<()> {
         "samples must be positive"
     );
     ensure!(!arguments.output.exists(), "output already exists");
+    let binary_sha256 = digest(&fs::read(std::env::current_exe()?)?);
     let registry = Registry::read(&arguments.registry)?;
     let mut rows = Vec::new();
 
@@ -247,7 +248,9 @@ fn main() -> Result<()> {
         &arguments.output,
         serde_json::to_vec_pretty(&serde_json::json!({
             "schema": 1, "arguments": arguments, "results": rows,
-        "binary_sha256": digest(&fs::read(std::env::current_exe()?)?),
+        "typed_query_scan": cfg!(feature = "typed-query-scan"),
+        "typed_presence_scan": cfg!(feature = "typed-presence-scan"),
+        "binary_sha256": binary_sha256,
         "revision": std::process::Command::new("git").args(["rev-parse", "HEAD"])
             .output().ok().map(|output| String::from_utf8_lossy(&output.stdout).trim().to_owned()),
         "patch_sha256": std::process::Command::new("git").args(["diff", "HEAD"])

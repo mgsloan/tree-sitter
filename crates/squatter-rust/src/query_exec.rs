@@ -1267,7 +1267,83 @@ impl<'tree> QueryExecution<'_, '_, 'tree, '_> {
         self.total_slots() - node.first_slot()
     }
 
-    fn find_symbols(&mut self, mut start: u32, end: u32) -> u32 {
+    fn find_symbols(&mut self, start: u32, end: u32) -> u32 {
+        #[cfg(feature = "typed-query-scan")]
+        {
+            let targets = &self.query.program.scan_targets;
+            let decode = |symbol| self.root.data().tables().decode_id(symbol as u32);
+            // Fixed cardinalities keep comparison counts visible to the scan
+            // compiler. Larger unions retain the packed-word control kernel.
+            match targets.as_slice() {
+                &[first] => return self.find_symbols_typed(start, end, [decode(first)]),
+                &[first, second] => {
+                    return self.find_symbols_typed(start, end, [decode(first), decode(second)]);
+                }
+                &[first, second, third] => {
+                    return self.find_symbols_typed(
+                        start,
+                        end,
+                        [decode(first), decode(second), decode(third)],
+                    );
+                }
+                &[first, second, third, fourth] => {
+                    return self.find_symbols_typed(
+                        start,
+                        end,
+                        [decode(first), decode(second), decode(third), decode(fourth)],
+                    );
+                }
+                _ => {}
+            }
+        }
+        self.find_symbols_control(start, end)
+    }
+
+    #[cfg(feature = "typed-query-scan")]
+    fn find_symbols_typed<const N: usize>(
+        &mut self,
+        mut start: u32,
+        end: u32,
+        targets: [u16; N],
+    ) -> u32 {
+        use crate::scan::{GroupRef, IdSelection, Predicate};
+        use crate::storage::{GROUP_SIZE, PRESENCE};
+
+        let data = self.root.data();
+        let total = self.total_slots();
+        let groups = GroupRef::new(self.root);
+        let mut predicate = targets.into_kind_predicate();
+        predicate.prepare(&groups);
+
+        while start < end {
+            if self.poll() {
+                return end;
+            }
+            let index = (total - 1 - start) / GROUP_SIZE;
+            let group_end = ((start / GROUP_SIZE + 1) * GROUP_SIZE).min(end);
+            if data.flags() & PRESENCE == 0
+                || targets
+                    .iter()
+                    .any(|&symbol| data.group_has_symbol(index, symbol))
+            {
+                let group = groups.at(index);
+                let mut hits = predicate.retain_matches(&group, group.valid_mask()).bits();
+                let first = total - group_end - group.first_slot();
+                let last = total - start - group.first_slot();
+                hits &= u64::MAX << first;
+                if last < 64 {
+                    hits &= (1 << last) - 1;
+                }
+                if hits != 0 {
+                    return total - 1 - (group.first_slot() + 63 - hits.leading_zeros());
+                }
+            }
+            start = self.normalize_position(group_end);
+        }
+        end
+    }
+
+    fn find_symbols_control(&mut self, mut start: u32, end: u32) -> u32 {
         use crate::storage::{GROUP_SIZE, PRESENCE};
         let query = self.query;
         let data = self.root.data();
@@ -1413,36 +1489,64 @@ impl<'tree> QueryExecution<'_, '_, 'tree, '_> {
         let mut position = begin;
         let data = root.data();
         let group_size = crate::storage::GROUP_SIZE;
+
+        #[cfg(feature = "typed-presence-scan")]
+        let (groups, symbol_predicate, field_predicate) = {
+            use crate::scan::{GroupRef, IdSelection, Predicate};
+            let groups = GroupRef::new(root);
+            let mut symbol = [requirement.symbol].into_kind_predicate();
+            symbol.prepare(&groups);
+            (groups, symbol, [requirement.field].into_field_predicate())
+        };
+
         while position < scanned_end {
             let group = position / group_size;
             let group_start = group * group_size;
             let end = (group_start + group_size).min(scanned_end);
             let physical_group = data.groups() - 1 - group;
-            let mut hits = u64::MAX;
-            if requirement.symbol != 0 {
-                let shift = data.tables().symbol_shift;
-                let symbol = data.tables().encode_id(requirement.symbol) as u16;
-                hits = equal_column(
-                    data,
-                    data.layout.symbol,
-                    physical_group,
-                    symbol << shift,
-                    u16::MAX << shift,
-                )
-                .reverse_bits()
-                    >> (64 - group_size);
-            }
-            if requirement.field != 0 {
-                hits &= equal_column(
-                    data,
-                    data.layout.field,
-                    physical_group,
-                    requirement.field,
-                    u16::MAX,
-                )
-                .reverse_bits()
-                    >> (64 - group_size);
-            }
+            #[cfg(feature = "typed-presence-scan")]
+            let mut hits = {
+                use crate::scan::Predicate;
+                let group = groups.at(physical_group);
+                let mut hits = group.valid_mask();
+                if requirement.symbol != 0 {
+                    hits = symbol_predicate.retain_matches(&group, hits);
+                }
+                if requirement.field != 0 {
+                    hits = field_predicate.retain_matches(&group, hits);
+                }
+                hits.bits().reverse_bits() >> (64 - group_size)
+            };
+
+            #[cfg(not(feature = "typed-presence-scan"))]
+            let mut hits = {
+                let mut hits = u64::MAX;
+                if requirement.symbol != 0 {
+                    let shift = data.tables().symbol_shift;
+                    let symbol = data.tables().encode_id(requirement.symbol) as u16;
+                    hits = equal_column(
+                        data,
+                        data.layout.symbol,
+                        physical_group,
+                        symbol << shift,
+                        u16::MAX << shift,
+                    )
+                    .reverse_bits()
+                        >> (64 - group_size);
+                }
+                if requirement.field != 0 {
+                    hits &= equal_column(
+                        data,
+                        data.layout.field,
+                        physical_group,
+                        requirement.field,
+                        u16::MAX,
+                    )
+                    .reverse_bits()
+                        >> (64 - group_size);
+                }
+                hits
+            };
             hits &= u64::MAX << (position - group_start);
             if end - group_start < 64 {
                 hits &= (1 << (end - group_start)) - 1;
@@ -2398,6 +2502,7 @@ impl<'tree> QueryExecution<'_, '_, 'tree, '_> {
     }
 }
 
+#[cfg(not(feature = "typed-presence-scan"))]
 fn equal_column(
     data: &crate::storage::TreeData,
     offset: u32,

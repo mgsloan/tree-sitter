@@ -10,6 +10,8 @@ default = ["reference"]
 reference = ["dep:tree-squatter"]
 rust-core = ["dep:tree-squatter-rust"]
 core-comparison = ["dep:tree-squatter", "dep:tree-squatter-rust"]
+typed-query-scan = ["rust-core", "tree-squatter-rust/typed-query-scan"]
+typed-presence-scan = ["rust-core", "tree-squatter-rust/typed-presence-scan"]
 
 [[bin]]
 name = "core-query-bench"
