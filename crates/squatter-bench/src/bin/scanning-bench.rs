@@ -931,7 +931,7 @@ fn main() -> Result<()> {
             .count();
         descriptions.push(serde_json::json!({
             "input": input, "source_bytes": source.len(), "slab_bytes": tree.as_bytes().len(),
-            "nodes": nodes, "groups": tree.group_count(), "kind_id": kind,
+            "nodes": nodes, "groups": tree.group_count(), "slots": tree.slot_count(), "kind_id": kind,
             "kind": language.node_kind_for_id(kind), "kind_matches": kind_matches,
             "multiple_kind_matches": multiple_kind_matches,
             "field_id": field, "field_matches": field_matches,
@@ -1100,6 +1100,7 @@ fn main() -> Result<()> {
     }
     let report = serde_json::json!({
         "arguments": arguments, "inputs": descriptions, "results": results,
+        "representation_id": tree_squatter::representation_id(),
         "grammar_sha256": grammars.iter().map(|(name, grammar)| (name, &grammar.sha256)).collect::<BTreeMap<_, _>>(),
         "cpuinfo": fs::read_to_string("/proc/cpuinfo").ok(),
         "contract": "release build; cyclic corpus; scan construction included; parsing, packing and validation excluded; black_box each enumerated node; count consumes only aggregate; input nodes/s includes nodes skipped by group/range operations; median wall-clock throughput; workload order rotates each sample",
