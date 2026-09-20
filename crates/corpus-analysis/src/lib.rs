@@ -6,6 +6,7 @@ use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
     fs,
+    io::Read,
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
@@ -13,6 +14,23 @@ use tree_sitter::{Language, ParseOptions, Parser, Tree};
 
 pub fn digest(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
+}
+
+/// Hash artifacts without making their size part of the benchmark's peak heap.
+pub fn digest_file(path: impl AsRef<Path>) -> std::io::Result<String> {
+    let mut file = fs::File::open(path)?;
+    let mut hash = Sha256::new();
+    let mut buffer = [0; 8192];
+    loop {
+        let length = match file.read(&mut buffer) {
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            result => result?,
+        };
+        if length == 0 {
+            return Ok(format!("{:x}", hash.finalize()));
+        }
+        hash.update(&buffer[..length]);
+    }
 }
 
 /// A domain and key get their own deterministic stream, independent of callers.
@@ -202,7 +220,7 @@ impl LoadedGrammar {
     /// Keep this owner alive until every derived language, parser, tree, and
     /// query has been dropped: cloning Language does not retain a native DSO.
     pub unsafe fn open(grammar: &Grammar) -> Result<Self> {
-        let sha256 = digest(&fs::read(&grammar.library)?);
+        let sha256 = digest_file(&grammar.library)?;
         ensure!(
             grammar.library_sha256.is_empty() || sha256 == grammar.library_sha256,
             "grammar checksum mismatch: {}",

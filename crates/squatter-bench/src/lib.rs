@@ -9,8 +9,8 @@ mod queries;
 use anyhow::{Context, Result, bail, ensure};
 use clap::Parser;
 use corpus_analysis::{
-    Input, LoadedGrammar, Random, Registry, digest, inventory, mutate, parse, read_sampling,
-    seed_for, select,
+    Input, LoadedGrammar, Random, Registry, digest, digest_file, inventory, mutate, parse,
+    read_sampling, seed_for, select,
 };
 use measure::{Meter, Metrics, percentile};
 use serde::Serialize;
@@ -1160,9 +1160,8 @@ pub fn run(check_only: bool) -> Result<()> {
         "tool": {"checkout": git_identity(Path::new(".")), "container_revision": std::env::var("SQUAT_TOOL_SHA").ok(), "source_sha256": std::env::var("SQUAT_SOURCE_SHA256").ok(),
                  // When explicitly invoked through ld-linux, current_exe points
                  // at the loader. argv[0] still names the benchmark executable.
-                 "binary_sha256": std::env::args_os().next().and_then(|path| fs::read(path).ok())
-                    .or_else(|| std::env::current_exe().ok().and_then(|path| fs::read(path).ok()))
-                    .map(|bytes| digest(&bytes))}, "code_corpora": git_identity(&arguments.code_corpora),
+                 "binary_sha256": std::env::args_os().next().and_then(|path| digest_file(path).ok())
+                    .or_else(|| std::env::current_exe().ok().and_then(|path| digest_file(path).ok()))}, "code_corpora": git_identity(&arguments.code_corpora),
         "machine": {"architecture": std::env::consts::ARCH, "os": std::env::consts::OS,
                     "cpuinfo": fs::read_to_string("/proc/cpuinfo").ok().and_then(|text| text.lines().find(|line| line.starts_with("model name")).map(str::to_owned))},
         "build": {"debug_assertions": cfg!(debug_assertions), "package_version": env!("CARGO_PKG_VERSION"), "squatter_backend": BACKEND, "typed_query_scan": cfg!(feature = "typed-query-scan"), "typed_presence_scan": cfg!(feature = "typed-presence-scan"), "typed_seek": cfg!(feature = "typed-seek")},

@@ -1,7 +1,7 @@
 //! Paired query timings with both cores consuming the same compiled grammar and input tree.
 use anyhow::{Context, Result, ensure};
 use clap::Parser;
-use corpus_analysis::{LoadedGrammar, Registry, digest};
+use corpus_analysis::{LoadedGrammar, Registry, digest, digest_file};
 use std::{fs, hint::black_box, path::PathBuf, time::Instant};
 
 #[derive(Parser, serde::Serialize)]
@@ -117,7 +117,7 @@ fn main() -> Result<()> {
         "samples must be positive"
     );
     ensure!(!arguments.output.exists(), "output already exists");
-    let binary_sha256 = digest(&fs::read(std::env::current_exe()?)?);
+    let binary_sha256 = digest_file(std::env::current_exe()?)?;
     let registry = Registry::read(&arguments.registry)?;
     let mut rows = Vec::new();
 

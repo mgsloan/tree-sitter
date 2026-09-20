@@ -4,7 +4,7 @@ extern crate tree_squatter_rust as tree_squatter;
 
 use anyhow::{Context, Result, ensure};
 use clap::Parser;
-use corpus_analysis::{LoadedGrammar, Registry, digest};
+use corpus_analysis::{LoadedGrammar, Registry, digest, digest_file};
 use std::{fs, hint::black_box, mem::MaybeUninit, path::PathBuf, sync::Arc, time::Instant};
 use tree_squatter::{Grammar, PackContext, PackOptions, Query, StableSlab, Tree};
 
@@ -172,7 +172,7 @@ fn main() -> Result<()> {
         );
     }
     let registry = Registry::read(&arguments.registry)?;
-    let binary_sha256 = digest(&fs::read(std::env::current_exe()?)?);
+    let binary_sha256 = digest_file(std::env::current_exe()?)?;
     let mut rows = Vec::new();
 
     for path in &arguments.inputs {
