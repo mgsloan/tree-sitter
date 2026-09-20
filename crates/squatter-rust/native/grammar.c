@@ -1,12 +1,14 @@
 #include "internal.h"
 #include <tree_feller.h>
 
+// Require a supported private language layout and room for the two built-in error IDs.
 bool sq_native_language_compatible(const TSLanguage *language) {
   return language && language->abi_version >= TREE_SITTER_MIN_COMPATIBLE_LANGUAGE_VERSION &&
          language->abi_version <= TREE_SITTER_LANGUAGE_VERSION &&
          (uint64_t)language->symbol_count + language->alias_count <= ts_builtin_sym_error_repeat;
 }
 
+// Prepare shared symbol, field, and supertype tables, then publish their borrowed view.
 static SQGrammar *grammar_new(const TSLanguage *language, const void *grammar_cache,
                               size_t grammar_cache_length, SQError *error) {
   sq_native_fail(error, SQ_OK);
@@ -19,8 +21,10 @@ static SQGrammar *grammar_new(const TSLanguage *language, const void *grammar_ca
     sq_native_fail(error, SQ_ERROR_LANGUAGE);
     return NULL;
   }
+
   SQGrammar *grammar = calloc(1, sizeof(SQGrammar));
   if (!grammar) goto allocation;
+
   atomic_init(&grammar->references, 1);
   atomic_init(&grammar->direct_language, NULL);
   grammar->language = ts_language_copy(language);
@@ -28,6 +32,7 @@ static SQGrammar *grammar_new(const TSLanguage *language, const void *grammar_ca
     sq_native_grammar_delete(grammar);
     return NULL;
   }
+
   uint32_t symbols = language->symbol_count + language->alias_count;
   size_t space = (size_t)symbols + 2;
   // All four tables have the same lifetime. Share their allocation and collect
@@ -40,6 +45,7 @@ static SQGrammar *grammar_new(const TSLanguage *language, const void *grammar_ca
   grammar->supertype_indexes = grammar->supertypes + space;
   grammar->public_index = grammar->supertypes + 2 * space;
   grammar->symbol_flags = (uint8_t *)(grammar->supertypes + 3 * space);
+
   for (uint32_t symbol = 0; symbol < symbols; symbol++) {
     TSSymbolMetadata metadata = language->symbol_metadata[symbol];
     grammar->symbol_flags[symbol] =
@@ -48,11 +54,14 @@ static SQGrammar *grammar_new(const TSLanguage *language, const void *grammar_ca
       grammar->supertypes[grammar->supertype_count++] = (TSSymbol)symbol;
       grammar->supertype_indexes[symbol] = (uint16_t)grammar->supertype_count;
     }
+
     TSSymbol public = ts_language_public_symbol(language, (TSSymbol)symbol);
     grammar->public_index[symbol] = public == ts_builtin_sym_error          ? symbols
                                     : public == ts_builtin_sym_error_repeat ? symbols + 1
                                                                             : public;
   }
+
+  // Up to eight supertypes fit directly in the event code, without a dictionary.
   if (grammar->supertype_count > 8) {
     grammar->supertype_grammar =
         grammar_cache
@@ -68,11 +77,16 @@ static SQGrammar *grammar_new(const TSLanguage *language, const void *grammar_ca
     sq_native_fail(error, SQ_ERROR_INVALID_SLAB);
     return NULL;
   }
+
   grammar->public_index[symbols] = (uint16_t)symbols;
   grammar->public_index[symbols + 1] = (uint16_t)(symbols + 1);
+
+  // Flatten direct fields by production so traversal can index them by child.
+  // Inherited fields are carried through hidden nodes during traversal instead.
   if (language->field_count && language->production_id_count) {
     grammar->production_fields = calloc(language->production_id_count, sizeof(DirectFieldSlice));
     if (!grammar->production_fields) goto grammar_allocation;
+
     uint64_t total = 0;
     for (uint32_t id = 0; id < language->production_id_count; id++) {
       const TSFieldMapEntry *map, *end;
@@ -82,13 +96,16 @@ static SQGrammar *grammar_new(const TSLanguage *language, const void *grammar_ca
         if (!map->inherited && (uint32_t)map->child_index + 1 > length)
           length = (uint32_t)map->child_index + 1;
       }
+
       grammar->production_fields[id] = (DirectFieldSlice){(uint32_t)total, length};
       total += length;
       if (total > UINT32_MAX || total > SIZE_MAX / sizeof(TSFieldId)) goto grammar_allocation;
     }
+
     if (total) {
       grammar->direct_fields = calloc((size_t)total, sizeof(TSFieldId));
       if (!grammar->direct_fields) goto grammar_allocation;
+
       for (uint32_t id = 0; id < language->production_id_count; id++) {
         const TSFieldMapEntry *map, *end;
         ts_language_field_map(language, id, &map, &end);
@@ -100,12 +117,15 @@ static SQGrammar *grammar_new(const TSLanguage *language, const void *grammar_ca
       }
     }
   }
+
+  // Error symbols live outside the grammar's metadata arrays.
   for (uint32_t symbol = symbols; symbol < space; symbol++) {
     TSSymbol actual = symbol == symbols ? ts_builtin_sym_error : ts_builtin_sym_error_repeat;
     TSSymbolMetadata metadata = ts_language_symbol_metadata(language, actual);
     grammar->symbol_flags[symbol] =
         metadata.named | (metadata.visible << 1) | (metadata.supertype << 2);
   }
+
   grammar->view = (SQGrammarView){
       .language = grammar->language,
       .symbol_names = language->symbol_names,
@@ -131,36 +151,45 @@ static SQGrammar *grammar_new(const TSLanguage *language, const void *grammar_ca
       .separate = grammar->symbols.separate,
   };
   return grammar;
+
 grammar_allocation:
   sq_native_grammar_delete(grammar);
+
 allocation:
   sq_native_fail(error, SQ_ERROR_ALLOCATION);
   return NULL;
 }
 
+// Prepare a grammar by deriving its supertype dictionary from the parse tables.
 SQGrammar *sq_native_grammar_new(const TSLanguage *language, SQError *error) {
   return grammar_new(language, NULL, 0, error);
 }
 
+// Copy a serialized supertype dictionary; no pointer into bytes is retained.
 SQGrammar *sq_native_grammar_new_with_cache(const TSLanguage *language, const void *bytes,
                                             size_t length, SQError *error) {
   if (!bytes) {
     sq_native_fail(error, SQ_ERROR_INVALID_SLAB);
     return NULL;
   }
+
   return grammar_new(language, bytes, length, error);
 }
 
+// Retain the shared owner. Abort before reference-count overflow could free it early.
 SQGrammar *sq_native_grammar_copy(SQGrammar *grammar) {
   if (grammar &&
       atomic_fetch_add_explicit(&grammar->references, 1, memory_order_relaxed) >= SIZE_MAX / 2)
     abort();
+
   return grammar;
 }
 
+// Release all prepared tables only when the last user drops its reference.
 void sq_native_grammar_delete(SQGrammar *grammar) {
   if (!grammar || atomic_fetch_sub_explicit(&grammar->references, 1, memory_order_acq_rel) != 1)
     return;
+
   tf_language_free(atomic_load_explicit(&grammar->direct_language, memory_order_relaxed));
   sq_native_supertype_grammar_delete(grammar->supertype_grammar);
   ts_language_delete(grammar->language);
@@ -171,29 +200,35 @@ void sq_native_grammar_delete(SQGrammar *grammar) {
   free(grammar);
 }
 
+// Return metadata borrowed for the retained grammar's lifetime.
 const SQGrammarView *sq_native_grammar_view(const SQGrammar *grammar) {
   return &grammar->view;
 }
 
+// Borrow the retained Tree-sitter language, including its private parse tables.
 const TSLanguage *sq_native_grammar_language(const SQGrammar *grammar) {
   return grammar ? grammar->language : NULL;
 }
 
+// Zero means there is no dictionary, or its serialized size cannot fit the API.
 uint32_t sq_native_grammar_cache_size(const SQGrammar *grammar) {
   size_t size = grammar ? sq_native_supertype_grammar_cache_size(grammar->supertype_grammar) : 0;
   return size <= UINT32_MAX ? (uint32_t)size : 0;
 }
 
+// Serialize into an exactly sized caller buffer; the grammar retains its dictionary.
 bool sq_native_grammar_copy_cache(const SQGrammar *grammar, void *destination, size_t length,
                                   SQError *error) {
   if (!grammar) {
     sq_native_fail(error, SQ_ERROR_ARGUMENT);
     return false;
   }
+
   return sq_native_supertype_grammar_copy_cache(grammar->supertype_grammar, destination, length,
                                                 error);
 }
 
+// static messages shared by native failures and direct-parser diagnostics
 const char *sq_native_error_string(SQError error) {
   switch (error) {
   case SQ_OK:

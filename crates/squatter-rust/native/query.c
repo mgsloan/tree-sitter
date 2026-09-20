@@ -2,42 +2,44 @@
 #ifndef _DEFAULT_SOURCE
 #define _DEFAULT_SOURCE 1
 #endif
+
 #include "query.h"
 #include "point.h"
 #include "unicode.h"
 #include <wctype.h>
+
 #define MAX_STEP_CAPTURE_COUNT 3
 #define MAX_NEGATED_FIELD_COUNT 8
 #define MAX_STATE_PREDECESSOR_COUNT 256
 #define MAX_ANALYSIS_STATE_DEPTH 8
 #define MAX_ANALYSIS_ITERATION_COUNT 256
 
-// Stream - A sequence of unicode characters derived from a UTF8 string.
-// This struct is used in parsing queries from S-expressions.
+// borrowed UTF-8 query text with one decoded character of lookahead
 typedef struct {
   const char *input;
   const char *start;
   const char *end;
+
   int32_t next;
   uint8_t next_size;
 } Stream;
 
-// SymbolTable - a two-way mapping of strings to ids.
+// owns interned strings; slice indexes are stable IDs even when the bytes move
 typedef struct {
   Array(char) characters;
   Array(Slice) slices;
 } SymbolTable;
 
-// CaptureQuantifiers - a data structure holding the quantifiers of pattern captures.
+// per-pattern capture counts, indexed by capture ID; absent entries mean zero
 typedef Array(uint8_t) CaptureQuantifiers;
 
+// maps compiled steps back to source bytes for structural error diagnostics
 typedef struct {
   uint32_t byte_offset;
   uint16_t step_index;
 } StepOffset;
 
-// AnalysisState - The state needed for walking the parse table when analyzing
-// a query pattern, to determine at which steps the pattern might fail to match.
+// hypothetical grammar frame while checking whether query steps can match
 typedef struct {
   TSStateId parse_state;
   TSSymbol parent_symbol;
@@ -46,29 +48,33 @@ typedef struct {
   bool done : 1;
 } AnalysisStateEntry;
 
+// bounded stack of grammar frames and the current step in a query pattern
 typedef struct {
   AnalysisStateEntry stack[MAX_ANALYSIS_STATE_DEPTH];
+
   uint16_t depth;
   uint16_t step_index;
   TSSymbol root_symbol;
 } AnalysisState;
 
+// owns states in analysis_state__compare order; state_pool uses the same container type
 typedef Array(AnalysisState *) AnalysisStateSet;
 
+// worklists and scratch for one analysis
+// Hitting a limit clears guarantees so execution cannot assume that a step must match.
 typedef struct {
   AnalysisStateSet states;
   AnalysisStateSet next_states;
   AnalysisStateSet deeper_states;
   AnalysisStateSet state_pool;
+
   Array(uint16_t) final_step_indices;
   Array(TSSymbol) finished_parent_symbols;
+
   bool did_abort;
 } QueryAnalysis;
 
-// AnalysisSubgraph - A subset of the states in the parse table that are used
-// in constructing nodes with a certain symbol. Each state is accompanied by
-// some information about the possible node that could be produced in
-// downstream states.
+// parse state and production context on a path that can construct a given symbol
 typedef struct {
   TSStateId state;
   uint16_t production_id;
@@ -76,42 +82,52 @@ typedef struct {
   bool done : 1;
 } AnalysisSubgraphNode;
 
+// grammar paths for one symbol, including states where its construction can start
 typedef struct {
   TSSymbol symbol;
+
   Array(TSStateId) start_states;
   Array(AnalysisSubgraphNode) nodes;
 } AnalysisSubgraph;
 
 typedef Array(AnalysisSubgraph) AnalysisSubgraphArray;
 
-// StatePredecessorMap - A map that stores the predecessors of each parse state.
-// This is used during query analysis to determine which parse states can lead
-// to which reduce actions.
+// fixed-width rows: count first, then up to MAX_STATE_PREDECESSOR_COUNT predecessors
+// Analysis walks these backward from reductions to reconstruct possible children.
 typedef struct {
   TSStateId *contents;
 } StatePredecessorMap;
 
+// owns the compiled program and retained language
+// Rust borrows the finished arrays; step_offsets and string_buffer are compilation
+// scratch released before publication.
 struct SQQuery {
   SymbolTable captures, predicate_values;
   Array(CaptureQuantifiers) capture_quantifiers;
   Array(NativeView) quantifier_views;
+
   Array(QueryStep) steps;
   Array(PatternEntry) pattern_map;
   Array(QueryPredicateStep) predicate_steps;
   Array(QueryPattern) patterns;
+
   Array(StepOffset) step_offsets;
   Array(TSFieldId) negated_fields;
   Array(char) string_buffer;
   Array(TSSymbol) repeat_symbols_with_rootless_patterns;
+
   const TSLanguage *language;
   uint16_t wildcard_root_pattern_count;
 };
 
+// Closing delimiters return to the caller without becoming a syntax error.
 static const TSQueryError PARENT_DONE = -1;
+
 static const uint16_t PATTERN_DONE_MARKER = UINT16_MAX;
 static const uint16_t NONE = UINT16_MAX;
 static const TSSymbol WILDCARD_SYMBOL = 0;
 
+// Consume the current lookahead and decode the next character within the input bounds.
 static bool stream_advance(Stream *self) {
   self->input += self->next_size;
   if (self->input < self->end) {
@@ -129,14 +145,14 @@ static bool stream_advance(Stream *self) {
   return false;
 }
 
-// Reset the stream to the given input position, represented as a pointer
-// into the input string.
+// Rewind lookahead to a source position, usually the start of an invalid construct.
 static void stream_reset(Stream *self, const char *input) {
   self->input = input;
   self->next_size = 0;
   stream_advance(self);
 }
 
+// Initialize lookahead without copying or requiring a NUL-terminated source string.
 static Stream stream_new(const char *string, uint32_t length) {
   Stream self = {
       .next = 0,
@@ -144,10 +160,12 @@ static Stream stream_new(const char *string, uint32_t length) {
       .start = string,
       .end = string + length,
   };
+
   stream_advance(&self);
   return self;
 }
 
+// Semicolon comments consume the rest of the line and act as whitespace.
 static void stream_skip_whitespace(Stream *self) {
   for (;;) {
     if (iswspace(self->next)) {
@@ -166,10 +184,12 @@ static void stream_skip_whitespace(Stream *self) {
   }
 }
 
+// Dots are allowed within identifiers, but cannot start one because they mark anchors.
 static bool stream_is_ident_start(Stream *self) {
   return iswalnum(self->next) || self->next == '_' || self->next == '-';
 }
 
+// Consume an identifier, leaving its delimiter in lookahead.
 static void stream_scan_identifier(Stream *stream) {
   do {
     stream_advance(stream);
@@ -177,10 +197,12 @@ static void stream_scan_identifier(Stream *stream) {
            stream->next == '.');
 }
 
+// Diagnostics report byte offsets even though lookahead uses decoded characters.
 static uint32_t stream_offset(Stream *self) {
   return (uint32_t)(self->input - self->start);
 }
 
+// Compose capture counts with an enclosing repetition.
 static TSQuantifier quantifier_mul(TSQuantifier left, TSQuantifier right) {
   switch (left) {
   case TSQuantifierZero:
@@ -224,9 +246,10 @@ static TSQuantifier quantifier_mul(TSQuantifier left, TSQuantifier right) {
     break;
   }
 
-  return TSQuantifierZero; // to make compiler happy, but all cases should be covered above!
+  return TSQuantifierZero; // unreachable for valid quantifiers
 }
 
+// Union the possible capture counts from alternative branches.
 static TSQuantifier quantifier_join(TSQuantifier left, TSQuantifier right) {
   switch (left) {
   case TSQuantifierZero:
@@ -282,9 +305,10 @@ static TSQuantifier quantifier_join(TSQuantifier left, TSQuantifier right) {
     break;
   }
 
-  return TSQuantifierZero; // to make compiler happy, but all cases should be covered above!
+  return TSQuantifierZero; // unreachable for valid quantifiers
 }
 
+// Sum capture counts from consecutive patterns in a sequence.
 static TSQuantifier quantifier_add(TSQuantifier left, TSQuantifier right) {
   switch (left) {
   case TSQuantifierZero:
@@ -328,7 +352,7 @@ static TSQuantifier quantifier_add(TSQuantifier left, TSQuantifier right) {
     return TSQuantifierOneOrMore;
   }
 
-  return TSQuantifierZero; // to make compiler happy, but all cases should be covered above!
+  return TSQuantifierZero; // unreachable for valid quantifiers
 }
 
 // Create new capture quantifiers structure
@@ -352,12 +376,12 @@ static void capture_quantifiers_replace(CaptureQuantifiers *self, CaptureQuantif
   array_push_all(self, quantifiers);
 }
 
-// Return capture quantifier for the given capture id
+// Captures absent from this pattern have an implicit zero count.
 static TSQuantifier capture_quantifier_for_id(const CaptureQuantifiers *self, uint16_t id) {
   return (self->size <= id) ? TSQuantifierZero : (TSQuantifier)*array_get(self, id);
 }
 
-// Add the given quantifier to the current value for id
+// Accumulate a capture's count, filling skipped capture IDs with zeros.
 static void capture_quantifiers_add_for_id(CaptureQuantifiers *self, uint16_t id,
                                            TSQuantifier quantifier) {
   if (self->size <= id) {
@@ -382,7 +406,7 @@ static void capture_quantifiers_add_all(CaptureQuantifiers *self, CaptureQuantif
   }
 }
 
-// Join the given quantifier with the current values
+// Apply an enclosing repetition to every capture in the pattern.
 static void capture_quantifiers_mul(CaptureQuantifiers *self, TSQuantifier quantifier) {
   for (uint16_t id = 0; id < (uint16_t)self->size; id++) {
     uint8_t *own_quantifier = array_get(self, id);
@@ -410,8 +434,7 @@ static void capture_quantifiers_join_all(CaptureQuantifiers *self,
   }
 }
 
-// SymbolTable
-
+// Create an empty string owner; allocations grow as names are interned.
 static SymbolTable symbol_table_new(void) {
   return (SymbolTable){
       .characters = array_new(),
@@ -419,11 +442,13 @@ static SymbolTable symbol_table_new(void) {
   };
 }
 
+// Release both string bytes and the slices that identify them.
 static void symbol_table_delete(SymbolTable *self) {
   array_delete(&self->characters);
   array_delete(&self->slices);
 }
 
+// Find an existing name without modifying its ID table; -1 means absent.
 static int symbol_table_id_for_name(const SymbolTable *self, const char *name, uint32_t length) {
   for (unsigned i = 0; i < self->slices.size; i++) {
     Slice slice = *array_get(&self->slices, i);
@@ -436,6 +461,7 @@ static int symbol_table_id_for_name(const SymbolTable *self, const char *name, u
   return -1;
 }
 
+// Borrow an interned string until the table grows or is deleted; id must be valid.
 static const char *symbol_table_name_for_id(const SymbolTable *self, uint16_t id,
                                             uint32_t *length) {
   Slice slice = *(array_get(&self->slices, id));
@@ -443,6 +469,7 @@ static const char *symbol_table_name_for_id(const SymbolTable *self, uint16_t id
   return array_get(&self->characters, slice.offset);
 }
 
+// Reuse an existing ID or append a terminated string; slices exclude the terminator.
 static uint16_t symbol_table_insert_name(SymbolTable *self, const char *name, uint32_t length) {
   int id = symbol_table_id_for_name(self, name, length);
   if (id >= 0) {
@@ -460,8 +487,7 @@ static uint16_t symbol_table_insert_name(SymbolTable *self, const char *name, ui
   return self->slices.size - 1;
 }
 
-// QueryStep
-
+// Initialize a match step with no captures or alternative transition.
 static QueryStep query_step__new(TSSymbol symbol, uint16_t depth, bool is_immediate) {
   QueryStep step = {
       .symbol = symbol,
@@ -476,6 +502,7 @@ static QueryStep query_step__new(TSSymbol symbol, uint16_t depth, bool is_immedi
   return step;
 }
 
+// Append within the fixed capture slots; NONE marks the unused suffix.
 static void query_step__add_capture(QueryStep *self, uint16_t capture_id) {
   for (unsigned i = 0; i < MAX_STEP_CAPTURE_COUNT; i++) {
     if (self->capture_ids[i] == NONE) {
@@ -485,6 +512,7 @@ static void query_step__add_capture(QueryStep *self, uint16_t capture_id) {
   }
 }
 
+// Compact remaining captures so NONE still terminates the occupied prefix.
 static void query_step__remove_capture(QueryStep *self, uint16_t capture_id) {
   for (unsigned i = 0; i < MAX_STEP_CAPTURE_COUNT; i++) {
     if (self->capture_ids[i] == capture_id) {
@@ -504,8 +532,7 @@ static void query_step__remove_capture(QueryStep *self, uint16_t capture_id) {
   }
 }
 
-// StatePredecessorMap
-
+// Allocate one zeroed count-and-predecessor row per parse state.
 static inline StatePredecessorMap state_predecessor_map_new(const TSLanguage *language) {
   return (StatePredecessorMap){
       .contents = ts_calloc((size_t)language->state_count * (MAX_STATE_PREDECESSOR_COUNT + 1),
@@ -513,14 +540,17 @@ static inline StatePredecessorMap state_predecessor_map_new(const TSLanguage *la
   };
 }
 
+// All predecessor rows share one allocation.
 static inline void state_predecessor_map_delete(StatePredecessorMap *self) {
   ts_free(self->contents);
 }
 
+// Predecessors arrive in state order, so comparing the last entry removes duplicates.
 static inline void state_predecessor_map_add(StatePredecessorMap *self, TSStateId state,
                                              TSStateId predecessor) {
   size_t index = (size_t)state * (MAX_STATE_PREDECESSOR_COUNT + 1);
   TSStateId *count = &self->contents[index];
+
   if (*count == 0 ||
       (*count < MAX_STATE_PREDECESSOR_COUNT && self->contents[index + *count] != predecessor)) {
     (*count)++;
@@ -528,6 +558,7 @@ static inline void state_predecessor_map_add(StatePredecessorMap *self, TSStateI
   }
 }
 
+// Borrow the populated portion of a row, excluding its leading count.
 static inline const TSStateId *state_predecessor_map_get(const StatePredecessorMap *self,
                                                          TSStateId state, unsigned *count) {
   size_t index = (size_t)state * (MAX_STATE_PREDECESSOR_COUNT + 1);
@@ -535,8 +566,7 @@ static inline const TSStateId *state_predecessor_map_get(const StatePredecessorM
   return &self->contents[index + 1];
 }
 
-// AnalysisState
-
+// Count repeated parent symbols to limit recursive grammar expansion.
 static unsigned analysis_state__recursion_depth(const AnalysisState *self) {
   unsigned result = 0;
   for (unsigned i = 0; i < self->depth; i++) {
@@ -552,6 +582,7 @@ static unsigned analysis_state__recursion_depth(const AnalysisState *self) {
   return result;
 }
 
+// Order by position in the hypothetical tree, then query step, to merge equivalent work.
 static inline int analysis_state__compare(AnalysisState *const *self, AnalysisState *const *other) {
   if ((*self)->depth < (*other)->depth) {
     return 1;
@@ -608,6 +639,7 @@ static inline int analysis_state__compare(AnalysisState *const *self, AnalysisSt
   return 0;
 }
 
+// Keep the root entry accessible after its frame is marked complete at depth zero.
 static inline AnalysisStateEntry *analysis_state__top(AnalysisState *self) {
   if (self->depth == 0) {
     return &self->stack[0];
@@ -616,6 +648,7 @@ static inline AnalysisStateEntry *analysis_state__top(AnalysisState *self) {
   return &self->stack[self->depth - 1];
 }
 
+// Hidden ancestor frames supply the supertype context for the current child.
 static inline bool analysis_state__has_supertype(AnalysisState *self, TSSymbol symbol) {
   for (unsigned i = 0; i < self->depth; i++) {
     if (self->stack[i].parent_symbol == symbol) {
@@ -626,10 +659,7 @@ static inline bool analysis_state__has_supertype(AnalysisState *self, TSSymbol s
   return false;
 }
 
-// AnalysisStateSet
-
-// Obtains an `AnalysisState` instance, either by consuming one from this set's object pool, or by
-// cloning one from scratch.
+// Clone into a recycled state allocation when one is available.
 static inline AnalysisState *analysis_state_pool__clone_or_reuse(AnalysisStateSet *self,
                                                                  AnalysisState *borrowed_item) {
   AnalysisState *new_item;
@@ -643,12 +673,8 @@ static inline AnalysisState *analysis_state_pool__clone_or_reuse(AnalysisStateSe
   return new_item;
 }
 
-// Inserts a clone of the passed-in item at the appropriate position to maintain ordering in this
-// set. The set does not contain duplicates, so if the item is already present, it will not be
-// inserted, and no clone will be made.
-//
-// The caller retains ownership of the passed-in memory. However, the clone that is created by this
-// function will be managed by the state set.
+// Insert an owned clone in sorted order unless an equivalent state already exists.
+// The caller retains borrowed_item.
 static inline void analysis_state_set__insert_sorted(AnalysisStateSet *self, AnalysisStateSet *pool,
                                                      AnalysisState *borrowed_item) {
   unsigned index, exists;
@@ -659,28 +685,21 @@ static inline void analysis_state_set__insert_sorted(AnalysisStateSet *self, Ana
   }
 }
 
-// Inserts a clone of the passed-in item at the end position of this list.
-//
-// IMPORTANT: The caller MUST ENSURE that this item is larger (by the comparison function
-// `analysis_state__compare`) than largest item already in this set. If items are inserted in the
-// wrong order, the set will not function properly for future use.
-//
-// The caller retains ownership of the passed-in memory. However, the clone that is created by this
-// function will be managed by the state set.
+// Append an owned clone. The caller must ensure it sorts after every existing entry
+// according to analysis_state__compare; otherwise later set lookups are invalid.
 static inline void analysis_state_set__push(AnalysisStateSet *self, AnalysisStateSet *pool,
                                             AnalysisState *borrowed_item) {
   AnalysisState *new_item = analysis_state_pool__clone_or_reuse(pool, borrowed_item);
   array_push(self, new_item);
 }
 
-// Removes all items from this set, returning it to an empty state.
+// Return state allocations to the pool while retaining this worklist's pointer array.
 static inline void analysis_state_set__clear(AnalysisStateSet *self, AnalysisStateSet *pool) {
   array_push_all(pool, self);
   array_clear(self);
 }
 
-// Releases all memory that is managed with this state set, including any items currently present.
-// After calling this function, the set is no longer suitable for use.
+// Release both owned states and their pointer array.
 static inline void analysis_state_set__delete(AnalysisStateSet *self) {
   for (unsigned i = 0; i < self->size; i++) {
     ts_free(self->contents[i]);
@@ -689,8 +708,7 @@ static inline void analysis_state_set__delete(AnalysisStateSet *self) {
   array_delete(self);
 }
 
-// QueryAnalyzer
-
+// Create empty worklists; state allocations are reused across pattern analyses.
 static inline QueryAnalysis query_analysis__new(void) {
   return (QueryAnalysis){
       .states = array_new(),
@@ -703,6 +721,7 @@ static inline QueryAnalysis query_analysis__new(void) {
   };
 }
 
+// Each state belongs to exactly one worklist or the pool, so each is freed once.
 static inline void query_analysis__delete(QueryAnalysis *self) {
   analysis_state_set__delete(&self->states);
   analysis_state_set__delete(&self->next_states);
@@ -712,8 +731,7 @@ static inline void query_analysis__delete(QueryAnalysis *self) {
   array_delete(&self->finished_parent_symbols);
 }
 
-// AnalysisSubgraphNode
-
+// Keep production variants adjacent for each parse state and child position.
 static inline int analysis_subgraph_node__compare(const AnalysisSubgraphNode *self,
                                                   const AnalysisSubgraphNode *other) {
   if (self->state < other->state) {
@@ -751,22 +769,8 @@ static inline int analysis_subgraph_node__compare(const AnalysisSubgraphNode *se
   return 0;
 }
 
-// Query
-
-// The `pattern_map` contains a mapping from TSSymbol values to indices in the
-// `steps` array. For a given syntax node, the `pattern_map` makes it possible
-// to quickly find the starting steps of all of the patterns whose root matches
-// that node. Each entry has two fields: a `pattern_index`, which identifies one
-// of the patterns in the query, and a `step_index`, which indicates the start
-// offset of that pattern's steps within the `steps` array.
-//
-// The entries are sorted by the patterns' root symbols, and lookups use a
-// binary search. This ensures that the cost of this initial lookup step
-// scales logarithmically with the number of patterns in the query.
-//
-// This returns `true` if the symbol is present and `false` otherwise.
-// If the symbol is not present `*result` is set to the index where the
-// symbol should be inserted.
+// Search entry points by root symbol after the wildcard prefix. Entries are sorted
+// by symbol, then pattern ID; result is the insertion position if no symbol matches.
 static inline bool sq_native_query__pattern_map_search(const SQQuery *self, TSSymbol needle,
                                                        uint32_t *result) {
   uint32_t base_index = self->wildcard_root_pattern_count;
@@ -1134,6 +1138,7 @@ static void sq_native_query__perform_analysis(SQQuery *self, const AnalysisSubgr
 }
 
 #ifdef DEBUG_DUMP_STEPS
+// Inspect compiler output before and after grammar analysis.
 static void sq_native_query__dump_steps(const SQQuery *self, const char *label) {
   printf("=== STEPS (%s) ===\n", label);
   for (unsigned i = 0; i < self->steps.size; i++) {
@@ -1208,6 +1213,8 @@ static void sq_native_query__dump_steps(const SQQuery *self, const char *label) 
 }
 #endif
 
+// Reject structurally impossible patterns and annotate where matching can fail.
+// Grammar walks are bounded; incomplete walks leave conservative execution flags.
 static bool sq_native_query__analyze_patterns(SQQuery *self, unsigned *error_offset) {
   Array(uint16_t) non_rooted_pattern_start_steps = array_new();
   for (unsigned i = 0; i < self->pattern_map.size; i++) {
@@ -1713,7 +1720,6 @@ static bool sq_native_query__analyze_patterns(SQQuery *self, unsigned *error_off
   }
 #endif
 
-  // Cleanup
   for (unsigned i = 0; i < subgraphs.size; i++) {
     array_delete(&array_get(&subgraphs, i)->start_states);
     array_delete(&array_get(&subgraphs, i)->nodes);
@@ -1732,6 +1738,7 @@ supertype_cleanup:
   return all_patterns_are_valid;
 }
 
+// Intern a zero-terminated field list and store its starting index in the step.
 static void sq_native_query__add_negated_fields(SQQuery *self, uint16_t step_index,
                                                 TSFieldId *field_ids, uint16_t field_count) {
   QueryStep *step = array_get(&self->steps, step_index);
@@ -1777,6 +1784,7 @@ static void sq_native_query__add_negated_fields(SQQuery *self, uint16_t step_ind
   array_push(&self->negated_fields, 0);
 }
 
+// Decode escapes into reusable scratch; malformed literals report their opening quote.
 static TSQueryError sq_native_query__parse_string_literal(SQQuery *self, Stream *stream) {
   const char *string_start = stream->input;
   if (stream->next != '"') {
@@ -1834,12 +1842,8 @@ static TSQueryError sq_native_query__parse_string_literal(SQQuery *self, Stream 
   }
 }
 
-// Parse a single predicate associated with a pattern, adding it to the
-// query's internal `predicate_steps` array. Predicates are arbitrary
-// S-expressions associated with a pattern which are meant to be handled at
-// a higher level of abstraction, such as the Rust/JavaScript bindings. They
-// can contain '@'-prefixed capture names, double-quoted strings, and bare
-// symbols, which also represent strings.
+// Compile a predicate into capture and string tokens, ending with a Done marker.
+// Evaluation belongs to the Rust layer; this compiler only resolves its arguments.
 static TSQueryError sq_native_query__parse_predicate(SQQuery *self, Stream *stream) {
   if (!stream_is_ident_start(stream)) {
     return TSQueryErrorSyntax;
@@ -1935,12 +1939,8 @@ static TSQueryError sq_native_query__parse_predicate(SQQuery *self, Stream *stre
   return 0;
 }
 
-// Read one S-expression pattern from the stream, and incorporate it into
-// the query's internal state machine representation. For nested patterns,
-// this function calls itself recursively.
-//
-// The caller is responsible for passing in a dedicated CaptureQuantifiers.
-// These should not be shared between different calls to sq_native_query__parse_pattern!
+// Recursively compile one pattern into match steps and alternative transitions.
+// Each recursive call needs its own capture quantifiers, merged by the caller.
 static TSQueryError sq_native_query__parse_pattern(SQQuery *self, Stream *stream, uint32_t depth,
                                                    bool is_immediate, bool is_inside_alternation,
                                                    CaptureQuantifiers *capture_quantifiers) {
@@ -2248,7 +2248,7 @@ static TSQueryError sq_native_query__parse_pattern(SQQuery *self, Stream *stream
             return TSQueryErrorField;
           }
 
-          // Keep the field ids sorted.
+          // Keep at most the fixed number of negated fields per step.
           if (negated_field_count < MAX_NEGATED_FIELD_COUNT) {
             negated_field_ids[negated_field_count] = field_id;
             negated_field_count++;
@@ -2417,7 +2417,7 @@ static TSQueryError sq_native_query__parse_pattern(SQQuery *self, Stream *stream
 
   stream_skip_whitespace(stream);
 
-  // Parse suffixes modifiers for this pattern
+  // Parse suffix modifiers for this pattern.
   TSQuantifier quantifier = TSQuantifierOne;
   for (;;) {
     // Parse the one-or-more operator.
@@ -2481,6 +2481,7 @@ static TSQueryError sq_native_query__parse_pattern(SQQuery *self, Stream *stream
     }
   }
 
+  // Lower repetition into explicit loop and skip transitions for the executor.
   QueryStep repeat_step;
   QueryStep *step;
   switch (quantifier) {
@@ -2533,6 +2534,8 @@ static TSQueryError sq_native_query__parse_pattern(SQQuery *self, Stream *stream
   return 0;
 }
 
+// Compile and analyze a query, retaining its language and all arrays borrowed by Rust.
+// Compilation scratch is discarded before the result is exposed.
 SQQuery *sq_native_query_new(const TSLanguage *language, const char *source, uint32_t source_len,
                              uint32_t *error_offset, TSQueryError *error_type) {
   if (!language || language->abi_version > TREE_SITTER_LANGUAGE_VERSION ||
@@ -2567,6 +2570,7 @@ SQQuery *sq_native_query_new(const TSLanguage *language, const char *source, uin
     uint32_t pattern_index = self->patterns.size;
     uint32_t start_step_index = self->steps.size;
     uint32_t start_predicate_step_index = self->predicate_steps.size;
+
     array_push(&self->patterns,
                ((QueryPattern){
                    .steps = (Slice){.offset = start_step_index},
@@ -2574,6 +2578,7 @@ SQQuery *sq_native_query_new(const TSLanguage *language, const char *source, uin
                    .start_byte = stream_offset(&stream),
                    .flags = (false ? SQ_PATTERN_IS_NON_LOCAL : 0),
                }));
+
     CaptureQuantifiers capture_quantifiers = capture_quantifiers_new();
     *error_type =
         sq_native_query__parse_pattern(self, &stream, 0, false, false, &capture_quantifiers);
@@ -2659,14 +2664,8 @@ SQQuery *sq_native_query_new(const TSLanguage *language, const char *source, uin
       }
     }
 
-    // Fix up quantifier loop-backs within alternations. When a branch of an
-    // alternation has a + or * quantifier, the quantifier's pass_through step
-    // loops back to the branch's first step. However, the alternation linking
-    // assigns that same step's `alternative_index` to point to the _next_ branch.
-    // This causes the quantifier loop to incorrectly explore other alternation branches,
-    // when a quantified branch matches, loops back, and then fails to match. To correct
-    // this, we create "clean" copies of the branches' first steps without the link to the
-    // next branch. After a quantified branch matches, it loops back to the cleaned copy.
+    // A quantified branch must loop to its own start without taking the next branch's
+    // alternative. Clone the first step without that link and redirect the loop there.
     {
       uint32_t pat_start = pattern->steps.offset;
       uint32_t pat_end = pat_start + pattern->steps.length - 1; // exclude DONE
@@ -2730,16 +2729,21 @@ SQQuery *sq_native_query_new(const TSLanguage *language, const char *source, uin
 
   array_delete(&self->string_buffer);
   array_delete(&self->step_offsets);
+
+  // Quantifier arrays can no longer grow, so their borrowed views are now stable.
   array_reserve(&self->quantifier_views, self->capture_quantifiers.size);
   for (uint32_t index = 0; index < self->capture_quantifiers.size; index++) {
     CaptureQuantifiers *quantifiers = &self->capture_quantifiers.contents[index];
     array_push(&self->quantifier_views, ((NativeView){quantifiers->contents, quantifiers->size}));
   }
+
   return self;
 }
 
+// Release the program owner, including nested capture arrays and partial compilation state.
 void sq_native_query_delete(SQQuery *self) {
   if (!self) return;
+
   array_delete(&self->steps);
   array_delete(&self->pattern_map);
   array_delete(&self->predicate_steps);
@@ -2748,16 +2752,21 @@ void sq_native_query_delete(SQQuery *self) {
   array_delete(&self->negated_fields);
   array_delete(&self->string_buffer);
   array_delete(&self->repeat_symbols_with_rootless_patterns);
+
   symbol_table_delete(&self->captures);
   symbol_table_delete(&self->predicate_values);
+
   for (uint32_t index = 0; index < self->capture_quantifiers.size; index++)
     capture_quantifiers_delete(&self->capture_quantifiers.contents[index]);
   array_delete(&self->capture_quantifiers);
   array_delete(&self->quantifier_views);
+
   ts_language_delete(self->language);
   ts_free(self);
 }
 
+// Publish borrowed pointer/length pairs without copying the compiled program.
+// Recreate the view after disabling patterns, which can change pattern_map's length.
 void sq_native_query_view(const SQQuery *self, SQQueryView *view) {
 #define VIEW(array) ((NativeView){(array).contents, (array).size})
   *view = (SQQueryView){
@@ -2780,6 +2789,7 @@ void sq_native_query_view(const SQQuery *self, SQQueryView *view) {
 #undef VIEW
 }
 
+// Counts describe the original ID spaces, including disabled patterns and captures.
 uint32_t sq_native_query_pattern_count(const SQQuery *self) {
   return self->patterns.size;
 }
@@ -2792,22 +2802,26 @@ uint32_t sq_native_query_string_count(const SQQuery *self) {
   return self->predicate_values.slices.size;
 }
 
+// Borrow a capture name by its stable ID; length excludes the stored terminator.
 const char *sq_native_query_capture_name_for_id(const SQQuery *self, uint32_t index,
                                                 uint32_t *length) {
   return symbol_table_name_for_id(&self->captures, index, length);
 }
 
+// Captures not present in the selected pattern have quantifier Zero.
 TSQuantifier sq_native_query_capture_quantifier_for_id(const SQQuery *self, uint32_t pattern_index,
                                                        uint32_t capture_index) {
   CaptureQuantifiers *capture_quantifiers = array_get(&self->capture_quantifiers, pattern_index);
   return capture_quantifier_for_id(capture_quantifiers, capture_index);
 }
 
+// Borrow a predicate string by ID; embedded NUL bytes are included in length.
 const char *sq_native_query_string_value_for_id(const SQQuery *self, uint32_t index,
                                                 uint32_t *length) {
   return symbol_table_name_for_id(&self->predicate_values, index, length);
 }
 
+// Borrow one pattern's predicate token range; an empty range returns NULL.
 const QueryPredicateStep *sq_native_query_predicates_for_pattern(const SQQuery *self,
                                                                  uint32_t pattern_index,
                                                                  uint32_t *step_count) {
@@ -2820,17 +2834,18 @@ const QueryPredicateStep *sq_native_query_predicates_for_pattern(const SQQuery *
   return array_get(&self->predicate_steps, slice.offset);
 }
 
+// Source offsets refer to the original query text, even after patterns are disabled.
 uint32_t sq_native_query_start_byte_for_pattern(const SQQuery *self, uint32_t pattern_index) {
   return array_get(&self->patterns, pattern_index)->start_byte;
 }
 
+// The source range's end is exclusive.
 uint32_t sq_native_query_end_byte_for_pattern(const SQQuery *self, uint32_t pattern_index) {
   return array_get(&self->patterns, pattern_index)->end_byte;
 }
 
+// Remove capture emissions without renumbering names or predicate references.
 void sq_native_query_disable_capture(SQQuery *self, const char *name, uint32_t length) {
-  // Remove capture information for any pattern step that previously
-  // captured with the given name.
   int id = symbol_table_id_for_name(&self->captures, name, length);
   if (id != -1) {
     for (unsigned i = 0; i < self->steps.size; i++) {
@@ -2840,6 +2855,7 @@ void sq_native_query_disable_capture(SQQuery *self, const char *name, uint32_t l
   }
 }
 
+// Remove every entry point while keeping pattern IDs and compiled steps stable.
 void sq_native_query_disable_pattern(SQQuery *self, uint32_t pattern_index) {
   for (uint32_t index = 0; index < self->pattern_map.size;) {
     if (self->pattern_map.contents[index].pattern_index == pattern_index) {
