@@ -2,8 +2,9 @@
 
 Companion to [rust-core-design.md](rust-core-design.md). This specifies component
 boundaries, ownership, and error contracts implemented by `crates/squatter-rust`.
-The comparison baseline is `main` at `0c3f79ab5`. Later `main` commit `83d962cdd`
-only changes `todo.md`; its implementation is identical.
+The current comparison baseline is `main` at `51ecbfafb`, including `iteration`
+through `9cf1cdb35`. Earlier measurements against `0c3f79ab5` remain historical
+results; they do not establish performance against the refreshed reference.
 
 Keep the public Rust API unchanged. The temporary `tree-squatter-rust` package
 allows comparison with `tree-squatter`; it does not introduce backend selection
@@ -567,10 +568,12 @@ fn seek_point(
 
 `Columns` borrows the slab, layout, grammar metadata, optional points, and
 presence index directly. It replaces `sq_tree_scan_columns` and
-`sq_tree_scan_point_layout`. Group masks always clear waste and interval-excluded
-lanes. A bounded preorder clips to the root's subtree and retains progress so
-repeated next-hit searches do not restart scanning. Position conversion retains
-the current reverse-slot mapping, including waste; consumers skip non-node slots.
+`sq_tree_scan_point_layout`; the candidate also derives symbol-index offsets
+without calling `sq_tree_scan_symbol_index`. Group masks always clear waste and
+interval-excluded lanes. A bounded preorder clips to the root's subtree and
+retains progress so repeated next-hit searches do not restart scanning. Position
+conversion retains the current reverse-slot mapping, including waste; consumers
+skip non-node slots.
 
 Retain the existing `GroupScan`, `Predicate::retain_matches`, ordered slot
 consumers, fixed/dynamic ID predicates, and coordinate relation kernels from
@@ -578,6 +581,31 @@ consumers, fixed/dynamic ID predicates, and coordinate relation kernels from
 without new public scan methods or a requirement that specialized query loops
 construct a public pipeline. Scalar/SIMD dispatch and set-size specialization
 remain behind these interfaces.
+
+`SymbolIndex` retains offsets into the existing slab. Its group searches respect
+the remaining subtree/range interval in both directions; sparse entries can also
+return exact slot masks. Dense selections keep flat traversal. Byte-subtree
+rejection runs before bitmap jumps so an index cannot skip a useful ancestor.
+Fixed predicates retain one posting cursor per target; dynamic predicates retain
+a bounded prefix of sixteen. Index jumps and exact masks share these hints.
+Each seek verifies its cursor and bounds local probing before binary search, so
+clipping, reversal, and skipped groups need no reset. `next_group` and
+`retain_indexed` borrow predicates mutably through composition; column-only
+`retain_matches` remains immutable.
+
+`Predicate::prepare` prepares encoded IDs and optional index traversal together
+for public scans. Query consumers use the narrower internal operation:
+
+```rust
+impl<const N: usize> FixedKindIds<N> {
+    fn prepare_columns(&mut self, group: &GroupRef<'_>);
+}
+```
+
+It encodes targets without reading index entries or enabling group jumps.
+`retain_matches` then consumes the caller's candidate mask. Query root and
+descendant-presence experiments retain their own progress, budgets, and index
+policy. Neither preparation path copies columns or changes slab ownership.
 
 `seek_byte` and `seek_point` preserve the indexed singular lookup algorithm and
 its structural tie-breaking. Coordinate kernels can accelerate candidate-group

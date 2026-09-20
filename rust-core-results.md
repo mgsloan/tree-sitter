@@ -13,12 +13,16 @@ is deferred. Persistence and benchmarks can select the candidate with their
 
 ## Baseline and measurement scope
 
-The reference is `0c3f79ab5`, including the merged iteration work. `main` at
-`83d962cdd` differs only in `todo.md`. The reference's production sources have
-not been edited. Both cores use one resolved Tree-sitter runtime and disjoint
+The original measurements use reference `0c3f79ab5`; `83d962cdd` differs only in
+`todo.md`. The current reference is `main` at `51ecbfafb`, which merges `iteration`
+through `9cf1cdb35`. The first iteration refresh below uses `8bb827f73` /
+`29a192f92`; the sparse-cursor refresh uses the current reference. Earlier ratios
+remain tied to their stated baseline and must not be read as comparisons against
+current `main`. The port itself does not modify reference production
+sources. Both cores use one resolved Tree-sitter runtime and disjoint
 Squatter/tree-feller native symbols.
 
-Measurements below used an Intel Core Ultra 7 165U, plugged in, Linux x86_64,
+Original measurements used an Intel Core Ultra 7 165U, plugged in, Linux x86_64,
 Rust 1.95.0 / LLVM 22.1.2, and GCC 15.3.0. Release builds retain the existing
 optimization settings and portable x86_64 target; SSE2 is available to both cores.
 Timing runs pin a performance core, usually CPU 2; lifecycle pilot runs also used
@@ -40,6 +44,149 @@ The probes preserve raw samples and binary identities. Some development runs
 overlapped later source edits, so their runtime checkout/patch identity must not
 be mistaken for an immutable build snapshot. The copied binary identifies those
 runs. Use `cargo xtask squat` snapshots for final acceptance runs.
+
+## First iteration refresh
+
+The first refresh carries over the scan changes through `29a192f92`: two-sided
+range seeking, forward byte-subtree pruning, bounded sparse/bitmap symbol-index
+traversal, prepared small dynamic kind sets, and separate dense count loops.
+The candidate derives index offsets from its Rust-owned slab; no native getter
+or slab-format change is needed. Singleton predicates also retain their prepared
+column offset and shift.
+
+Query root and descendant-presence experiments prepare only column masks. Their
+existing traversal, index policy, cancellation, budgets, and cooldown stay
+separate. This refresh does not establish new query-execution timing results.
+
+Artifacts are in
+[`build/rust-core-comparison/iteration-refresh`](build/rust-core-comparison/iteration-refresh).
+`final/` contains that implementation's full scan comparison; the parent
+directory retains the initial port and focused diagnostics. Patches identify
+the candidate changes relative to `c378a6368`; copied executables and SHA-256
+manifests identify the measured builds. The reference is `8bb827f73`.
+
+These runs followed laptop resume, with fresh warmups and AC reported offline.
+They compare separately linked processes on CPU 2 using the same eleven inputs
+(28,299 nodes), seven samples targeting 20 ms each, and 91 selected workloads.
+Each profile brackets the candidates with reference/reference controls; candidate
+order alternates between profiles. The benchmark validates results against
+scalar traversal before timing, and input/output counts agree across backends.
+Do not compare their absolute timings with the earlier plugged-in runs.
+
+Ratios are elapsed time divided by the comparison backend's time; smaller is
+faster. Each median is across workloads, not aggregate application throughput.
+The reference column uses the median throughput of the two reference processes.
+
+| Kind selection | Final / old Rust median | Final / reference median | Reference-repeat ratio range |
+|---|---:|---:|---:|
+| Frequent | 0.685 | 0.739 | 0.821–1.436 |
+| Rare | 0.239 | 0.748 | 0.772–1.586 |
+| Absent | 0.052 | 0.636 | 0.749–1.562 |
+| Frequent, symbol index disabled | 0.915 | 0.975 | 0.788–1.273 |
+
+The wide reference-repeat ranges make these provisional results. Unrelated
+build activity was observed on the host. The initial port's matrix had less
+drift and also showed broad gains, but predates the singleton metadata change;
+its numbers must not substitute for final-build measurements. No no-regression
+claim follows from either matrix.
+
+Remaining outliers include:
+
+- Unfiltered preorder folds take 1.36–2.24 times the old Rust candidate's time
+  and 1.60–2.33 times the reference's time across profiles.
+- Rare fixed sixteen-kind counts and folds take 1.42 and 1.34 times the old
+  candidate's time. The initial port also regressed these cases, so selective
+  index preparation and probing need further examination.
+- Dynamic four-kind folds improve over the old candidate but remain 1.33–1.71
+  times the reference's time for frequent kinds, with and without the index.
+  Rare dynamic sixteen-kind folds reach 1.75 times the reference's time.
+- Without the symbol index, reverse byte-range traversal and dynamic singleton
+  folds take 1.83 and 1.50 times the old candidate's time in this noisy matrix.
+  They need focused repeats before attributing those differences to the code.
+
+Earlier focused singleton repeats showed that retaining column metadata improves
+its fold by about 10% over the initial port, leaving it about 4–5% slower than
+the old candidate (`singleton-focus-*`). This narrower result motivated retaining
+the change; it does not settle every consumer or index configuration.
+
+The unfiltered preorder fold is sensitive to code placement. In the initial port,
+its hot function has the same 85 instructions after normalizing addresses, but
+the inner loop crosses a 64-byte boundary. Three focused repeats take
+1.77–1.98 times the old candidate's time. A diagnostic build with
+`-C llvm-args=-align-all-blocks=5` reduces that to 0.91–1.03. This supports an
+alignment explanation but does not establish a portable fix; production build
+flags are unchanged. The normal-build outlier remains an acceptance issue.
+
+That implementation passes 28 all-feature tests: six library tests, four
+query-execution tests, two scan-pattern tests, and sixteen shared scanning tests.
+The new unit tests cover clipped sparse/bitmap searches in both directions and
+verify that query-only preparation produces the same masks without preparing an
+index. Before the singleton metadata adjustment, all six library and sixteen
+scanning tests also passed with 32-slot groups and 64-byte column alignment.
+Formatting and whitespace checks pass. The sanitizer and cross-target checks
+below belong to the earlier implementation and were not repeated for this port.
+
+## Sparse-cursor refresh
+
+The candidate now includes the scan implementation through `46828abdd`, with
+reference `main` at `51ecbfafb` / iteration `9cf1cdb35`. Sparse index jumps and
+exact masks share per-target posting cursors. Each seek verifies the hint, probes
+at most four nearby entries, then binary-searches the remaining interval. Fixed
+arrays keep one cursor per ID; dynamic sets keep sixteen, with uncached searches
+for further targets. Bitmap traversal keeps its existing policy.
+
+Predicates pass mutable references through composed scans, without interior
+mutability or cursor heap allocation. The inline arrays add four bytes per fixed
+target and 64 bytes per dynamic predicate, before struct padding. Cursor hints
+remain valid after clipping, skipped groups, and reversal. Query-only preparation
+still encodes column targets without preparing symbol-index traversal. Slab bytes
+and the default backend are unchanged.
+
+Thirty all-feature tests pass: seven library tests, four query-execution tests,
+two scan-pattern tests, and seventeen shared scanning tests. The cursor test
+compares ascending, descending, and shuffled seeks against an independent linear
+partition, including empty lists, padding, and arbitrary initial hints. Shared
+pipeline tests cover clipping, subtrees, filter order, partial consumption,
+reversal, and disabled indexes. All seven library and seventeen scanning tests
+also pass with 32-slot groups and 64-byte column alignment. Sanitizers and
+cross-target checks were not repeated for this scan-only update.
+
+Artifacts are in
+[`build/rust-core-comparison/sparse-cursors`](build/rust-core-comparison/sparse-cursors).
+The before/after patches are relative to `a49db511d`; the pre-cursor build includes
+the first refresh above. The reference executable includes the new iteration
+cursor implementation. All three use the updated benchmark and input manifest.
+
+The focused pilot uses the same eleven files and 28,299 nodes on CPU 2, with AC
+reported offline, default build flags, and seven samples targeting 30 ms each.
+It selects 21 workloads covering forward/reverse kind scans, counts, folds,
+ranges, fields, intersections, and unfiltered controls. Builds finish before
+timing. Each profile brackets both Rust candidates with two reference processes;
+Rust process order alternates across profiles. Input metadata, slab sizes, and
+input/output counts agree across all twelve reports.
+
+| Selection | New / pre-cursor Rust median | New / current reference median | Reference-repeat ratio range |
+|---|---:|---:|---:|
+| Frequent | 1.001 | 0.835 | 0.938–1.031 |
+| Sparse | 0.791 | 0.770 | 0.991–1.051 |
+| Frequent, symbol index disabled | 1.010 | 0.846 | 0.968–1.097 |
+
+These are elapsed-time ratios across the selected workloads. Sparse four-ID
+array counts take 0.735 times the previous Rust time, reverse array enumeration
+0.652, dynamic four-ID counts 0.786, and eight-ID intersections 0.739. The larger
+cursor state still warrants checking dense consumers: common dynamic four-ID
+folds and some range counts are slower in this pilot. These local measurements
+do not reproduce iteration's cloud matrix or establish the promotion gate.
+
+Focused repeats use nine samples targeting 60 ms on four suspected outliers
+(`focus-summary.json`). Common-selection reference-repeat ratios span
+0.812–0.844, so that repeat is inconclusive. With the index disabled, reference
+repeats differ by less than 1%: range counts remain 4–5% slower than pre-cursor
+Rust and singleton array enumeration remains 6% slower. Dynamic four-ID folds
+do not repeat the earlier slowdown against pre-cursor Rust, but take 1.016 times
+the current reference's time. Retain these as open dense-scan costs rather than
+trading them against the sparse gains. Separating cursor storage from dense
+predicate state remains a follow-up, as noted in iteration's own findings.
 
 ## Query execution
 

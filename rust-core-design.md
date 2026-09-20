@@ -1,9 +1,10 @@
 # Rust core
 
-Proposal based on `main` at `0c3f79ab5`, which merges `iteration` through
-`8810c4828`. The candidate implementation is in `crates/squatter-rust`; the
-reference remains unchanged. [rust-core-results.md](rust-core-results.md) records
-comparison coverage, measurements, and remaining promotion checks.
+The current comparison baseline is `main` at `51ecbfafb`, which merges `iteration`
+through `9cf1cdb35`. The candidate implementation is in `crates/squatter-rust`.
+The port does not modify the reference. [rust-core-results.md](rust-core-results.md)
+distinguishes measurements against this baseline from the original `0c3f79ab5`
+baseline and records remaining promotion checks.
 
 [rust-core-interfaces.md](rust-core-interfaces.md) specifies the private
 interfaces and ownership contracts. Preserve the existing public Rust API.
@@ -366,8 +367,9 @@ starting point. Pin the actual revision and any patch used for each experiment;
 benchmark findings from earlier scan revisions are not measurements of this
 merged baseline.
 
-Scans read packed columns in Rust through one C metadata call per scan, plus one
-point-layout call when attaching a point filter. They provide typed
+Reference scans read packed columns in Rust through one C metadata call per scan,
+plus a point-layout call for point selections and a symbol-index call when
+preparing kind filters. They provide typed
 preorder/postorder traversal and reversal, group masks, fixed-size and dynamic
 kind/field sets, extra/missing/supertype filters, byte/point range and position
 relations, and node/group/count consumers. Plain preorder uses contiguous slot
@@ -377,6 +379,24 @@ Range group bounds can reject a preorder group before reading waste and
 constructing its live-slot mask. Delta slices are constructed only when endpoint
 comparisons need them. Preserve this deferred work when adapting storage access
 or sharing predicates with other consumers.
+
+Carry over two-sided start seeking, forward byte-subtree pruning, and selective
+symbol-index traversal from the refreshed baseline. Sparse index entries supply
+exact slots; bitmap entries skip groups and retain column comparisons. Keep the
+density fallback and separate dense count loops. Sparse postings keep a cursor
+per fixed target and for the first sixteen dynamic targets. Cursors are checked
+search hints: clipped ranges and direction changes remain valid, and long jumps
+fall back to binary search after bounded local probes. Pass mutable predicates
+through composed scans rather than introducing interior mutability. Point scans
+retain two-sided seeking without subtree pruning. These require no slab-format
+changes.
+
+Dynamic kind sets of up to sixteen IDs prepare their encoded targets once.
+Sparse candidate masks retain the scalar membership shortcut. Query kernels that
+already choose their groups prepare only column predicates; they must not sample
+symbol-index density or construct unused traversal state. Adopting index jumps
+inside query execution remains a separate experiment with its existing budgets,
+cache, cancellation, and cooldown controls.
 
 The recorded experiments support trying these implementations, not assuming
 they are faster than current C query execution or seeks. Some scan changes
