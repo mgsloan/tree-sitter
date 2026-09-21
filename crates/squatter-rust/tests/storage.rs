@@ -63,6 +63,11 @@ fn packing_and_loading_match_reference() {
     };
     let wide = format!("[{}0]", "{\"a\": 1, \"b\": true},\n".repeat(1000));
     let deep = format!("{}0{}", "[".repeat(300), "]".repeat(300));
+    let sibling_depths = (29..=33)
+        .map(|depth| format!("{}0{}", "[".repeat(depth), "]".repeat(depth)))
+        .collect::<Vec<_>>()
+        .join(",");
+    let inline_boundary = format!("[{sibling_depths}]");
     let long = format!("[\"{}\",\n\"{}\"]", "a".repeat(70000), "b".repeat(400));
 
     for (language, sources) in [
@@ -75,6 +80,7 @@ fn packing_and_loading_match_reference() {
                 "[1,",
                 &wide,
                 &deep,
+                &inline_boundary,
                 &long,
             ],
         ),

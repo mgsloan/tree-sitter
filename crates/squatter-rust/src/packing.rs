@@ -55,16 +55,20 @@ impl Boundaries {
 
     fn start(&mut self, depth: usize, position: u32) -> u32 {
         // Reverse preorder first reaches a depth at its rightmost descendant.
-        // Its physical boundary stays live until the parent arrives, including
-        // any waste added while forming the descendant groups.
-        let end = (depth + 1).min(self.shallow.len());
+        // Only ancestors need stored boundaries; a new leaf starts at position.
+        // Boundaries include waste added while forming descendant groups.
+        let end = depth.min(self.shallow.len());
         self.shallow[self.depth.min(end)..end].fill(position);
-        let boundary = if depth < self.shallow.len() {
+        let boundary = if depth >= self.depth {
+            if depth > self.shallow.len() {
+                self.deep.resize(depth - self.shallow.len(), position);
+            }
+            position
+        } else if depth < self.shallow.len() {
             self.deep.clear();
             self.shallow[depth]
         } else {
             let index = depth - self.shallow.len();
-            self.deep.resize(index + 1, position);
             let boundary = self.deep[index];
             self.deep.truncate(index);
             boundary
