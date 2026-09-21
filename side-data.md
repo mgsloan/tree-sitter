@@ -1,0 +1,430 @@
+# Side data: symbol presence and points
+
+Step 1 of 3: side data → [forests](forests-design.md) →
+[injections](injections-design.md). This step works on standalone trees and does
+not require either later feature.
+
+Decision draft for the Rust core in `crates/squatter-rust`, not implemented API.
+Code shows additions and changed signatures; omitted fields/methods remain as
+before. The C-backed reference stays separate, as in the
+[Rust core design](rust-core-design.md).
+
+No data has been persisted for ongoing use. Temporary databases create no
+compatibility obligation. Prototype format, schema, and profile versions remain
+at 0; change them directly and regenerate caches without migrations. Tree-sitter's
+upstream ABI versions are independent. These rules apply to all three steps.
+
+## Two kinds of side data
+
+Keep compressed byte coordinates and authoritative interpretation data in the
+immutable slab. Remove symbol-presence bitmaps, per-node point columns, and their
+per-group point bases. Grammar-symbol overrides and supertype encodings remain
+authoritative data.
+
+| Side data | What it adds | When absent |
+| --- | --- | --- |
+| `PresenceCache` | faster symbol scanning | same results through ordinary scanning |
+| `PointData` | materialized row/column coordinates | point APIs return `(0, byte_offset)` |
+
+Both are derived from a richer input, but only presence is a transparent cache
+for the tree API. Points are reproducible from source plus tree. A tree alone
+cannot recover them, and their presence changes its observable behavior.
+
+Use **point data** for the attached allocation and **point sidecar** for its
+serialized form. Persistence can cache data derived from the source and tree;
+that does not make it a transparent runtime optimization.
+Attaching/removing point data changes coordinates and can change point-bounded
+query results.
+
+```rust
+pub struct PackOptions {
+    pub initial_group_capacity: u32,
+    pub repack: bool,
+    pub symbol_presence: bool,
+    pub points: bool,
+}
+
+pub struct Tree {
+    core: CoreSlab,
+    grammar: Grammar,
+    presence_cache: Option<PresenceCache>,
+    point_data: Option<PointData>,
+}
+
+pub struct PresenceCache { /* independently owned symbol-presence data */ }
+pub struct PointData { /* independently owned point data */ }
+```
+
+Keep `symbol_presence` and `points` as conversion/parse options, with their
+existing defaults of true. They select which sidecars are created and set before
+the operation returns. A true flag promises completed side data on success;
+allocation or construction failure must not silently return a tree without it.
+A false flag leaves that sidecar absent. Construction may fill sidecar storage
+during packing/parsing, but always uses separate allocations.
+
+```rust
+let options = PackOptions {
+    symbol_presence: false,
+    points: false,
+    ..PackOptions::default()
+};
+let mut tree = packer.pack_with_options(&grammar, &native, options)?;
+assert!(!tree.has_points());
+// callers can build/set sidecars later, or drop those requested at creation
+```
+
+Keep `Tree::has_points()` as the explicit test for current point availability:
+creation options describe the initial state, while later set/drop operations can
+change it. Side-data flags control construction, not the core slab format. A loader must honor its requested side-data policy on both
+hits and misses; a core-tree hit alone does not fulfill a request for points.
+
+## Independent allocations
+
+The owner descriptor above is outside the serialized core slab. Its optional
+sidecar handles point to independently owned storage:
+
+```text
+Tree
+  core             → immutable core slab allocation
+  presence_cache   → optional presence allocation
+  point_data       → optional point allocation
+```
+
+Each sidecar is buildable, loadable, and settable independently after the core
+exists. `set_*` changes only the owner's sidecar handle; it must not resize,
+move, repack, or rewrite the core slab. `drop_*` has the same core-stability
+requirement. Core addresses, column offsets, groups, node IDs, serialized bytes,
+and serialized core contents remain unchanged.
+
+Sidecars index core groups/slots; they are not appended columns addressed by
+offsets in the core header. Their own encoding and allocation sizes do not affect
+the core layout.
+
+Core, presence, and point data must use separate allocations, including when
+created together during conversion/parsing. Do not coallocate sidecars with the
+core or with each other: `drop_*` must release the selected sidecar's storage
+immediately while keeping the core and other sidecars alive. There is no shared
+backing that delays reclamation until the tree is dropped.
+
+## Point access without source
+
+Keep accessors source-free, infallible, and constant-time. They read attached
+point data or use the existing synthetic coordinate frame:
+
+```rust
+impl Tree {
+    pub fn has_points(&self) -> bool;
+}
+
+impl<'tree> Node<'tree> {
+    pub fn has_points(self) -> bool;
+    pub fn byte_range(self) -> Range<usize>;
+    pub fn start_position(self) -> Point;
+    pub fn end_position(self) -> Point;
+    pub fn point_range(self) -> Range<Point>;
+
+    pub fn descendant_for_point_range(self, start: Point, end: Point) -> Option<Self>;
+}
+
+impl Cursor<'_> {
+    pub fn goto_first_child_for_point(&mut self, point: Point) -> Option<usize>;
+}
+
+// accessor behavior when has_points() is false
+fn fallback_start(node: Node<'_>) -> Point {
+    Point::new(0, node.start_byte())
+}
+
+fn fallback_end(node: Node<'_>) -> Point {
+    Point::new(0, node.end_byte())
+}
+```
+
+Named point-range navigation follows the same contract. No accessor reads source,
+builds an index, allocates, or searches line starts. Attachment/removal switches
+the coordinate frame for all subsequent borrowers; it never changes byte offsets.
+A real point can also have row zero, so the returned value is not an availability
+test. Callers needing document coordinates check `has_points()` first.
+
+### Attributes and shared traits
+
+Keep the existing point-bearing attributes and source-free signatures. Add an
+availability flag so callers can distinguish stored points from synthetic ones
+without guessing from row/column values.
+
+```rust
+pub struct Attributes<'tree> {
+    // all existing fields, including start_position and end_position
+    pub has_points: bool,
+}
+
+pub trait NodeLike<'tree>: Copy + Eq {
+    fn has_points(self) -> bool;
+    fn attributes(self) -> Attributes<'tree>;
+    fn start_position(self) -> Point;
+    fn end_position(self) -> Point;
+    fn descendant_for_point_range(self, start: Point, end: Point) -> Option<Self>;
+    // other methods unchanged
+}
+
+pub trait CursorLike<'tree> {
+    fn attributes(&mut self) -> Attributes<'tree>;
+    fn goto_first_child_for_point(&mut self, point: Point) -> Option<usize>;
+    // other methods unchanged
+}
+```
+
+Concrete nodes/cursors use these same attribute signatures. Packed `has_points`
+reports attachment; the native Tree-sitter implementation reports true because
+native trees retain point coordinates. This flag describes availability, not
+proof that custom native coordinates match a particular document source.
+
+### Queries
+
+Keep query execution's byte-slice input for text predicates. Supplying bytes does
+not materialize points or change the meaning of point bounds.
+
+```rust
+impl QueryCursor {
+    pub fn set_point_range(&mut self, range: Range<Point>) -> bool;
+
+    pub fn execute<'cursor, 'query, 'tree, 'text>(
+        &'cursor mut self,
+        query: &'query Query,
+        root: Node<'tree>,
+        source: &'text [u8],
+    ) -> QueryExecution<'cursor, 'query, 'tree, 'text>;
+}
+
+// a caller requiring document-coordinate bounds checks the capability first
+assert!(root.has_points());
+cursor.set_point_range(document_range);
+let execution = cursor.execute(&query, root, bytes);
+```
+
+Point bounds and point-based navigation use the same coordinates as accessors,
+including the row-zero frame when point data is absent. Preserve existing range
+semantics, sentinels, and boundaries. A query with document point bounds can
+therefore produce different matches without point data. Byte-bounded matching
+and text predicates remain independent of point availability; point fields on
+returned nodes/attributes still reflect it.
+
+## Explicit point derivation
+
+Source is an input to point-data construction, not to node access. Keep line-index
+construction and lookup explicit so their cost cannot hide in a cheap accessor.
+
+```rust
+pub struct SourcePoints<'bytes> { /* borrowed bytes, owned line starts */ }
+
+impl<'bytes> SourcePoints<'bytes> {
+    pub fn new(bytes: &'bytes [u8]) -> Result<Self, Error>;
+    pub fn bytes(&self) -> &'bytes [u8];
+    pub fn point(&self, byte: usize) -> Result<Point, Error>;
+}
+```
+
+Building the source index reads the input; individual `point` calls search line
+starts and validate bounds. An application can use this explicitly for occasional
+conversion, or build complete `PointData` before publishing a tree to consumers.
+Neither operation happens automatically during tree access.
+
+Derived document points use zero-based rows and byte columns. Row is the number
+of LF bytes strictly before the offset; column is the offset minus that row's
+start. Zero and EOF are valid, including EOF after a final newline. Do not decode
+or normalize CRLF, BOMs, or encoding. Other coordinate units require another
+explicit profile. One source index can serve multiple trees using the same bytes
+and coordinate frame, and can be dropped after building their point data.
+
+A generic tree does not prove which source produced it. The builder's caller
+supplies matching bytes. Native parsers may accept custom point coordinates;
+this materializer produces source-derived document coordinates instead. Parser-input points can
+affect parsing, separately from derived output data.
+
+## Side-data construction and ownership
+
+```rust
+pub enum SideDataError {
+    Cancelled,
+    InvalidTarget,
+    Core(Error),
+}
+
+impl PresenceCache {
+    pub fn build(tree: &Tree, cancel: Option<&AtomicBool>) -> Result<Self, SideDataError>;
+}
+
+impl PointData {
+    pub fn build(
+        tree: &Tree,
+        source: &SourcePoints<'_>,
+        cancel: Option<&AtomicBool>,
+    ) -> Result<Self, SideDataError>;
+}
+
+impl Tree {
+    pub fn set_presence_cache(&mut self, cache: PresenceCache) -> Result<(), SideDataError>;
+    pub fn set_point_data(&mut self, points: PointData) -> Result<(), SideDataError>;
+    pub fn drop_presence_cache(&mut self);
+    pub fn drop_point_data(&mut self);
+}
+```
+
+`PresenceCache` and `PointData` remain public owned types. Builders borrow the
+tree immutably, so workers can build side data while other readers use the tree.
+Completed values are `Send` and retain no tree/source borrow.
+
+`set_*` consumes a completed value, checks its dimensions and format, and replaces
+existing side data only on success. The caller supplies data for the matching
+tree and, for points, source. These structural checks do not prove that pairing. Cancellation or a failed build/set leaves the tree
+unchanged. `drop_*` immediately frees that sidecar's allocations and returns
+nothing; dropping absent side data is a no-op. Neither operation changes the
+core slab, other sidecars, or node IDs.
+Dropping points restores the row-zero frame; dropping presence changes only
+performance. Point eviction must respect the consumer's point requirements.
+
+```rust
+let presence = std::thread::scope(|scope| {
+    let worker = scope.spawn(|| PresenceCache::build(&tree, None));
+    // other readers can borrow tree while the worker builds
+    worker.join().expect("presence worker panicked")
+})?;
+
+// the worker's immutable borrow has ended
+tree.set_presence_cache(presence)?;
+tree.drop_presence_cache();
+```
+
+Serialized and freshly built side data use the same owned types. Background
+construction needs no mutable owner access; setting or dropping side data still
+requires exclusive access.
+
+Each public-symbol bitmap has one bit per physical group. A clear bit permits
+skipping; a set bit only indicates a possible match. Use the query candidate
+selection's interpretation of public symbols, aliases, and supertype requirements.
+Build from symbol columns. An absent cache is distinct from an all-zero bitmap;
+without a cache, use ordinary symbol scanning.
+
+Point data addresses physical node slots, ignoring group waste. Absolute or
+compressed values are a sidecar-format choice; they cannot change core packing
+groups or IDs. Every valid node has materialized endpoints after attachment;
+partial point data is never exposed as complete.
+
+The tree owner owns its slab and side data. Nodes, cursors, scans, and executions
+borrow them. `&mut Tree` excludes active readers during attachment/removal;
+immutable readers need no locks, atomics, lazy writes, or per-view reference
+counts. Attach after releasing views, then borrow new views. Cancellation uses
+an external flag, not synchronization in cache lookup.
+
+```rust
+let source = SourcePoints::new(bytes)?;
+let mut tree = packer.pack_with_options(
+    &grammar,
+    &native,
+    PackOptions { points: false, ..PackOptions::default() },
+)?;
+assert!(!tree.has_points());
+let root_byte = tree.root_node().start_byte();
+assert_eq!(tree.root_node().start_position(), Point::new(0, root_byte));
+
+let expected = source.point(root_byte)?;
+let points = PointData::build(&tree, &source, None)?;
+tree.set_point_data(points)?;
+drop(source); // point access no longer needs input bytes or a line index
+assert!(tree.has_points());
+assert_eq!(tree.root_node().start_position(), expected);
+
+tree.drop_point_data();
+assert!(!tree.has_points());
+assert_eq!(tree.root_node().start_position(), Point::new(0, root_byte));
+```
+
+`LoadedFile` currently shares trees through `Arc`. Attach before sharing or
+publish a new owner; do not expose mutation through shared ownership. Borrowed
+and transaction-backed slabs remain usable without side data, with row-zero
+points; attachment initially targets owned `Tree` values, using existing
+detachment when needed. Background publication and a public C facade are outside
+this step. Any later C facade must enforce the same exclusion on the caller side.
+
+## Serialization and loading
+
+Sidecar serialization uses the same owned types as construction:
+
+```rust
+impl PresenceCache {
+    pub fn to_bytes(&self) -> Result<Vec<u8>, SideDataError>;
+    pub fn from_bytes(tree: &Tree, bytes: &[u8]) -> Result<Self, SideDataError>;
+}
+
+impl PointData {
+    pub fn to_bytes(&self) -> Result<Vec<u8>, SideDataError>;
+    pub fn from_bytes(tree: &Tree, bytes: &[u8]) -> Result<Self, SideDataError>;
+}
+```
+
+The caller supplies sidecar bytes corresponding to the tree and intended source.
+Loading checks dimensions, lengths, format, and access bounds. Matching persisted
+records to their tree/source is separate work; no new fingerprint or cache-key
+scheme is specified here.
+
+Keep presence and points in separate LMDB databases, with independent read/build/
+write operations. Loading or setting a sidecar never compacts or reorders the
+core. If another operation rebuilds its groups/slots, rebuild or remap the side
+data to match.
+
+Expose the same creation policy on persistence loads, including cache hits:
+
+```rust
+pub struct LoadOptions<'a> {
+    pub pack: PackOptions, // added; defaults to PackOptions::default()
+    pub write: WritePolicy,
+    pub cancellation: Option<&'a AtomicBool>,
+}
+```
+
+Validate dimensions, lengths, and access bounds. If a requested sidecar is missing,
+incompatible, or rejected, the loader builds it before returning
+success; construction failure is an error. Unrequested sidecars remain absent,
+using ordinary symbol scanning or row-zero point access. A core-tree hit alone
+does not fulfill the side-data request. Materialization occurs during the
+requested creation/load operation, never as a hidden accessor fallback.
+Preserve the existing safety-only corruption policy: these checks do not prove
+bitmap or point contents semantically correct. Loaded sidecars own their bytes
+and retain no LMDB transaction.
+
+Publish sidecars independently, including after the tree transaction. Cleanup can
+delete them independently and must tolerate late writers without resurrecting
+retired source generations or authoritative artifacts. Publication and cleanup
+never mutate allocations held by existing readers.
+
+## Implementation and verification
+
+1. Move derived columns into separate allocations; retain conversion/parse flags
+   as sidecar creation controls.
+2. Keep source-free point access and row-zero fallback; expose availability on
+   tree/node/trait/attribute APIs.
+3. Add explicit point derivation, complete owned side data, and exclusive attachment.
+4. Add sidecar serialization and independent persistence with explicit point
+   availability requirements.
+
+Verify materialized points against explicit source conversion at zero/EOF, final
+newlines, CRLF, multibyte UTF-8 byte columns, and empty/missing nodes. Invalid byte
+offsets fail construction. Verify row-zero access before attachment and after
+removal, including point navigation, attributes, and point-bounded queries.
+Availability must be distinguishable even when materialized points also have
+row zero. Point access must work after dropping the source/index.
+
+Presence attachment/removal must preserve all results. Point attachment/removal
+must preserve core bytes, IDs, and byte-based matching, while changing the
+coordinate frame used by point APIs. Test aliases/supertypes, missing versus
+all-zero presence, malformed sidecars, cancelled builds, failed replacement,
+eviction, worker construction alongside immutable readers, setting after workers
+finish, no-op drops of absent data, and invalid dimensions on load. Record the core allocation
+address, serialized bytes, offsets, and IDs before setting/replacing/dropping
+separately built or loaded sidecars; all must remain unchanged. Exercise every
+combination of creation flags, including defaults, on conversion and parse paths.
+Verify requested sidecars are present on success, disabled ones are absent, and
+dropping one frees its storage while the core and other sidecars remain alive.
+
+Measure explicit point materialization independently of accessor cost. Do not add
+lazy source lookup to preserve equivalence with absent point data.
