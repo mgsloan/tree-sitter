@@ -99,8 +99,7 @@ bool sq_layout(const SQGrammar *grammar, uint32_t capacity, bool wide_supertypes
   layout->symbol_mask = (uint32_t)((UINT64_C(1) << layout->symbol_bits) - 1);
   layout->field_mask = (uint32_t)((UINT64_C(1) << layout->field_bits) - 1);
   uint32_t slots = capacity * SQ_GROUP_SIZE;
-  uint64_t next =
-      (sizeof(SQHeader) + SQ_COLUMN_ALIGNMENT - 1) & ~(uint64_t)(SQ_COLUMN_ALIGNMENT - 1);
+  uint64_t next = SQ_WASTE_OFFSET;
   layout->waste = column_offset(&next, sq_column_size(capacity, SQ_WASTE_BITS));
   layout->start_byte_base = column_offset(&next, sq_array_size(capacity, 4));
   layout->start_byte_delta = column_offset(&next, sq_array_size(slots, 1));

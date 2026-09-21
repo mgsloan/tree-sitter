@@ -46,6 +46,8 @@ typedef struct {
 
 _Static_assert(sizeof(SQHeader) == 16, "slab header size");
 
+enum { SQ_WASTE_OFFSET = (sizeof(SQHeader) + SQ_COLUMN_ALIGNMENT - 1) & ~(SQ_COLUMN_ALIGNMENT - 1) };
+
 #define SQ_WASTE_BITS 16u
 
 typedef struct {
@@ -304,7 +306,15 @@ static inline uint32_t sq_get_packed(const uint8_t *data, uint32_t offset, uint3
 void sq_set_packed(uint8_t *, uint32_t offset, uint32_t index, uint8_t bits, uint32_t);
 
 static inline uint32_t sq_group_waste(const SQTree *tree, uint32_t group) {
-  return sq_get_packed(tree->data, tree->layout.waste, group, SQ_WASTE_BITS);
+  return sq_get_packed(tree->data, SQ_WASTE_OFFSET, group, SQ_WASTE_BITS);
+}
+
+// The input is live; only crossing a group boundary can encounter waste.
+static inline uint32_t sq_previous_live_slot(const SQTree *tree, uint32_t slot) {
+  if (!slot) return SQ_NONE;
+  uint32_t previous = slot - 1;
+  return slot % SQ_GROUP_SIZE == 0 ? previous - sq_group_waste(tree, previous / SQ_GROUP_SIZE)
+                                  : previous;
 }
 
 static inline uint32_t sq_group_span_base(const SQTree *tree, uint32_t group) {

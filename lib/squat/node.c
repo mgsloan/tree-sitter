@@ -193,31 +193,31 @@ uint32_t sq_node_descendant_count(SQNode node) {
 }
 
 SQNode sq_node_next_preorder(SQNode node) {
-  return node.tree ? sq_tree_node_at_slot(node.tree, sq_previous_slot(node.tree, node.slot - 1))
-                   : sq_null();
+  if (!node.tree) return sq_null();
+  uint32_t slot = sq_previous_live_slot(node.tree, node.slot);
+  return slot != SQ_NONE ? (SQNode){node.tree, slot} : sq_null();
 }
 
 SQNode sq_node_prev_preorder(SQNode node) {
-  if (!node.tree || node.slot == sq_tree_root_node(node.tree).slot) return sq_null();
-  uint32_t slot = node.slot + 1, group = slot / SQ_GROUP_SIZE;
+  if (!node.tree) return sq_null();
+  uint32_t slot = node.slot + 1, group = node.slot / SQ_GROUP_SIZE;
   uint32_t end = (group + 1) * SQ_GROUP_SIZE - sq_group_waste(node.tree, group);
   if (slot >= end) slot = (group + 1) * SQ_GROUP_SIZE;
-  return sq_tree_node_at_slot(node.tree, slot);
+  return slot < sq_tree_slot_count(node.tree) ? (SQNode){node.tree, slot} : sq_null();
 }
 
 static SQNode first_child(SQNode node) {
   if (!node.tree) return sq_null();
 
-  // Normalization already establishes an occupied slot. Avoid repeating its
-  // bounds/waste checks through the public node-at-slot constructor.
-  uint32_t slot = sq_previous_slot(node.tree, node.slot - 1);
+  uint32_t slot = sq_previous_live_slot(node.tree, node.slot);
   return slot != SQ_NONE && slot >= sq_node_first_slot(node) ? (SQNode){node.tree, slot}
                                                              : sq_null();
 }
 
 SQNode sq_node_next_sibling_including_empty(SQNode node) {
+  // Subtree boundaries include leading waste, so their predecessor is live.
   return node.tree && !sq_node_last_flag(node)
-             ? sq_tree_node_at_slot(node.tree, sq_node_first_slot(node) - 1)
+             ? (SQNode){node.tree, sq_node_first_slot(node) - 1}
              : sq_null();
 }
 

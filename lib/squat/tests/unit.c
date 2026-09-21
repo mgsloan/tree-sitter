@@ -23,6 +23,65 @@ static void fixed_layout_limit_tests(void) {
   assert(layout.symbol_bits == 16 && layout.field_bits == 16 && layout.supertype_bits == 16);
 }
 
+static void navigation_tests(SQGrammar *grammar) {
+  SQError error;
+  SQTree *tree = sq_allocate(grammar, 3, false, &error);
+  assert(tree && tree->layout.waste == SQ_WASTE_OFFSET);
+  sq_header_set(tree, group_count, 3);
+  for (uint32_t first = 0; first < SQ_GROUP_SIZE; first++) {
+    for (uint32_t second = 0; second < SQ_GROUP_SIZE; second++) {
+      const uint32_t waste[] = {first, second, (first + second) % SQ_GROUP_SIZE};
+      uint32_t slots[3 * SQ_GROUP_SIZE], count = 0;
+      for (uint32_t group = 0; group < 3; group++) {
+        sq_set_u16(tree->data, tree->layout.waste, group, waste[group]);
+        for (uint32_t lane = 0; lane < SQ_GROUP_SIZE; lane++) {
+          uint32_t slot = group * SQ_GROUP_SIZE + lane;
+          if (lane >= SQ_GROUP_SIZE - waste[group]) {
+            assert(sq_node_is_null(sq_tree_node_at_slot(tree, slot)));
+            continue;
+          }
+          slots[count++] = slot;
+          // Empty sibling spans absorb the waste before their first live slot.
+          sq_set_u8(tree->data, tree->layout.span_delta, slot,
+                      group && !lane ? waste[group - 1] : 0);
+          sq_set_bit(tree->data, tree->layout.last, slot, slot == 0);
+        }
+      }
+      uint32_t root_slot = slots[count - 1];
+      sq_set_u8(tree->data, tree->layout.span_delta, root_slot, root_slot);
+      sq_set_bit(tree->data, tree->layout.last, root_slot, true);
+      SQNode root = sq_tree_root_node(tree);
+      assert(root.tree == tree && root.slot == root_slot);
+      assert(sq_node_is_null(sq_tree_node_at_slot(tree, 3 * SQ_GROUP_SIZE)));
+      assert(sq_node_is_null(sq_tree_node_at_slot(tree, SQ_NONE)));
+      for (uint32_t index = 0; index < count; index++) {
+        SQNode node = sq_tree_node_at_slot(tree, slots[index]);
+        assert(node.tree == tree && node.slot == slots[index]);
+        SQNode next = index ? (SQNode){tree, slots[index - 1]} : sq_null();
+        SQNode previous = index + 1 < count ? (SQNode){tree, slots[index + 1]} : sq_null();
+        assert(sq_node_eq(sq_node_next_preorder(node), next));
+        assert(sq_node_eq(sq_node_prev_preorder(node), previous));
+        assert(sq_node_eq(sq_node_next_sibling_including_empty(node),
+                          index + 1 < count ? next : sq_null()));
+        assert(sq_node_eq(sq_node_child(node, 0), index + 1 == count ? next : sq_null()));
+      }
+      SQCursor *cursor = sq_cursor_new(root);
+      assert(cursor && sq_cursor_goto_first_child(cursor));
+      for (uint32_t index = count - 1; index-- > 0;) {
+        assert(sq_cursor_node(cursor).slot == slots[index]);
+        assert(sq_cursor_depth(cursor) == 1);
+        assert(sq_cursor_goto_next_sibling(cursor) == (index > 0));
+      }
+      assert(sq_cursor_goto_parent(cursor) && sq_node_eq(sq_cursor_node(cursor), root));
+      sq_cursor_delete(cursor);
+    }
+  }
+  assert(sq_node_is_null(sq_node_next_preorder(sq_null())));
+  assert(sq_node_is_null(sq_node_prev_preorder(sq_null())));
+  assert(sq_node_is_null(sq_node_next_sibling_including_empty(sq_null())));
+  sq_tree_delete(tree);
+}
+
 static void empty_column_tests(void) {
   const char *names[] = {"end", "node"};
   const TSSymbolMetadata metadata[] = {{0}, {.visible = true, .named = true}};
@@ -87,6 +146,7 @@ static void empty_column_tests(void) {
     assert(error == SQ_ERROR_INVALID_SLAB);
   }
   sq_tree_delete(tree);
+  navigation_tests(grammar);
   sq_grammar_delete(grammar);
 }
 
