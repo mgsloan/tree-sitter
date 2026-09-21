@@ -12,6 +12,70 @@ comparison crate. The default remains C-backed `tree-squatter`, and the C facade
 is deferred. Persistence and benchmarks can select the candidate with their
 `rust-core` feature. There is no native query execution fallback.
 
+## Fused Rust packing and assembly comparison — 2026-09-21
+
+Commit `288f1139e` moves private subtree traversal and direct-parser reduction
+traversal into Rust, calling the encoder directly. Traversal frames now retain
+their physical subtree boundaries; there is no event batch or second boundary
+stack. The native bridge retains grammar preparation, tree-feller parsing, and
+query compilation. Builds now require libclang for target-specific subtree
+bindings.
+
+The [assembly comparison](rust-core-assembly.md) identifies an extra emission
+call layer and 128-byte frame copies in the initial port. Inlining emission and
+borrowing completed frames removes those costs. Remaining candidates include
+inlining the small-mask fast path, caching column addresses during group closure,
+and moving pending-array bounds checks outside the slot loop. The public
+Tree-sitter Rust node/cursor API is absent from the per-node packing path.
+
+The initial port was measured on the same 264-file, 11-language cloud corpus as
+the previous refresh. Isolated packing regressed 4.3–4.7% against batched Rust,
+while ordinary parsing was nearly unchanged and direct warm parsing improved
+2.9%. Those measurements precede the final assembly changes.
+
+The current executable was then compared on 22 files: the median-size and
+largest file per language. All timings ran on the Google Cloud e2-standard-4 VM,
+pinned to CPU 1. Cells sum per-file representative milliseconds, averaging two
+independent processes per implementation:
+
+| Operation | C ms | Batched Rust ms | Initial fused ms | Current Rust ms | Reduction vs batched |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| pack-cold | 16.199 | 17.466 | 18.228 | 17.116 | 2.00% |
+| pack-reuse | 16.043 | 17.477 | 17.988 | 16.957 | 2.98% |
+| pack-trim | 16.055 | 17.411 | 18.183 | 17.141 | 1.55% |
+| cold-parse | 226.938 | 223.246 | 223.327 | 221.468 | 0.80% |
+| warm-parse | 152.230 | 153.288 | 153.491 | 152.941 | 0.23% |
+
+The assembly changes reduce packing time 5.7–6.1% from the first fused version.
+Current Rust still takes 5.7–6.8% longer than C for isolated packing in this
+selection. Language results vary: C++, TypeScript, Go, and Python reuse improve
+5–8% against batched Rust, while JSON, TSX, and YAML regress 1–3%. Sub-percent
+parse changes are not established gains. The focused follow-up does not replace
+the medium comparison or establish final alternate-profile timings.
+
+Packing uses five samples targeting 20 ms per process. The order is C / batched
+Rust / initial fused / current / current / initial fused / batched / C, reversing
+file and language order on odd rounds. Median same-build packing repetition
+ratios range from 0.997 to 1.004. C remains unchanged from `fa2e389641c6`; batched
+Rust is `d1712fee2918`. The initial and current candidates have separate saved
+patches and executable hashes.
+
+The current executable passes all 2,110 eligible file/operation comparisons over
+the full corpus, retaining the two shared Go capture exclusions documented
+below. All 26 focused release tests pass. Before the final inlining/frame-borrow
+changes, the port also passed 15 ASan tests and 11 i686 Linux-musl runtime tests.
+PowerPC64 big-endian compilation passed; execution remains unverified. Formatting
+passes; Clippy reports only existing warnings.
+
+The [formatted report](build/fused-packing/report.html) and
+[Markdown report](build/fused-packing/report.md) contain both experiments,
+alternate profiles, direct parsing, language tables, and exact exclusions.
+[Current results](build/fused-packing/assembly-check-cloud/assembly-check/summary.json)
+retain per-file samples and identities. All 805 medium-run and 685 follow-up
+artifact hashes verified. Assembly, binaries, patches, source archives, profiles,
+and logs are under `build/fused-packing/`. No benchmarks ran on the laptop; the
+VM was stopped after collection.
+
 ## Google Cloud refresh and Rust packing optimization — 2026-09-21
 
 The merged `c-optimizations` baseline is `fa2e389641c6`, including the C repack/navigation changes and `rust-core` through `48126eec5`. Both backends were built from that snapshot with portable Cargo release defaults, Rust 1.95.0 / LLVM 22.1.2 and GCC 15.3.0. All timings ran on the Google Cloud `squatter-benchmark` e2-standard-4 VM, pinned to CPU 1.
