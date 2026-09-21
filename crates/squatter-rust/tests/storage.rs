@@ -154,7 +154,10 @@ fn packing_and_loading_match_reference() {
                             for group in 0..actual.group_count() {
                                 for symbol in 0..language.node_kind_count() as u16 {
                                     assert_eq!(
-                                        actual.group_has_symbol(group, symbol),
+                                        actual.group_has_symbol(
+                                            group,
+                                            tree_squatter_rust::KindId::new(symbol)
+                                        ),
                                         expected.group_has_symbol(group, symbol)
                                     );
                                 }

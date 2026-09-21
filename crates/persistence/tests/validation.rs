@@ -116,7 +116,7 @@ fn safety_loader_does_not_verify_presence_membership() {
         );
         for group in 0..loaded.group_count() {
             for symbol in 0..language.node_kind_count() as u16 {
-                let _ = loaded.group_has_symbol(group, symbol);
+                let _ = loaded.group_has_symbol(group, symbol.into());
             }
         }
         let query = Query::new(&language, "(number) @n").unwrap();

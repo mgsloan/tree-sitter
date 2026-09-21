@@ -141,6 +141,7 @@ static SQGrammar *grammar_new(const TSLanguage *language, const void *grammar_ca
       .defaults = grammar->symbols.defaults,
       .grammar_codes = grammar->symbols.grammar_codes,
       .symbol_count = symbols,
+      .grammar_symbol_count = language->symbol_count,
       .field_count = language->field_count,
       .supertype_count = grammar->supertype_count,
       .dictionary_count = grammar->supertype_grammar ? grammar->supertype_grammar->count : 0,

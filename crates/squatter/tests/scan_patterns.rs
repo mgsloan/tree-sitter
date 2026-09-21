@@ -1,16 +1,17 @@
 //! Small scan examples, also used to inspect optimized code generation.
+mod support;
+
 use std::{hint::black_box, ops::Range};
 use tree_sitter::Point;
 use tree_squatter::{Grammar, KindSet, Node, Tree};
 
+use support::{json_language, parse_native};
+
 const SOURCE: &str = r#"{"a": [1, 2], "b": {"c": 3}, "d": 4}"#;
 
 fn fixture() -> (tree_sitter::Language, Tree) {
-    let language =
-        unsafe { tree_sitter::Language::from_raw(tree_sitter_json::LANGUAGE.into_raw()().cast()) };
-    let mut parser = tree_sitter::Parser::new();
-    parser.set_language(&language).unwrap();
-    let native = parser.parse(SOURCE, None).unwrap();
+    let language = json_language();
+    let native = parse_native(&language, SOURCE);
     let tree = Tree::pack(&Grammar::new(&language).unwrap(), &native).unwrap();
     (language, tree)
 }

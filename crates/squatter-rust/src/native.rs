@@ -1,10 +1,33 @@
-use crate::{Error, QueryError};
+use crate::{
+    Error, FieldId, GrammarKindId, KindId, QueryError,
+    types::{PatternIndex, RemappedGrammarKindId, RemappedKindId, SymbolCode},
+};
 use std::{
     ffi::{CStr, c_char, c_void},
     mem::MaybeUninit,
     ptr::NonNull,
 };
 use tree_sitter::Language;
+
+#[repr(C)]
+pub(crate) struct GrammarHandle {
+    _private: [u8; 0],
+}
+
+#[repr(C)]
+pub(crate) struct QueryHandle {
+    _private: [u8; 0],
+}
+
+#[repr(C)]
+pub(crate) struct TraversalHandle {
+    _private: [u8; 0],
+}
+
+#[repr(C)]
+pub(crate) struct ParserHandle {
+    _private: [u8; 0],
+}
 
 #[repr(C)]
 pub(crate) struct GrammarView {
@@ -22,6 +45,7 @@ pub(crate) struct GrammarView {
     pub defaults: *const u16,
     pub grammar_codes: *const u16,
     pub symbol_count: u32,
+    pub grammar_symbol_count: u32,
     pub field_count: u32,
     pub supertype_count: u32,
     pub dictionary_count: u32,
@@ -49,16 +73,21 @@ impl GrammarView {
         unsafe { std::slice::from_raw_parts(self.supertype_masks, length) }
     }
 
-    pub fn symbol_code(&self, display: u16, original: u16) -> Option<u16> {
+    pub fn symbol_code(
+        &self,
+        display: RemappedKindId,
+        original: RemappedGrammarKindId,
+    ) -> Option<SymbolCode> {
+        let (display, original) = (display.get(), original.get());
         unsafe {
             if *self.public_symbols.add(original as usize) == display {
-                return Some(*self.default_codes.add(original as usize));
+                return Some(SymbolCode(*self.default_codes.add(original as usize)));
             }
             if self.separate != 0 {
-                return Some(display);
+                return Some(SymbolCode(display));
             }
             if self.encoding == 2 {
-                return Some((display << 8) | original);
+                return Some(SymbolCode((display << 8) | original));
             }
             let count = *self.counts.add(display as usize);
             if self.encoding == 1 {
@@ -71,17 +100,32 @@ impl GrammarView {
                 {
                     return None;
                 }
-                return Some((display << self.symbol_shift) | variant);
+                return Some(SymbolCode((display << self.symbol_shift) | variant));
             }
             let start = display << self.symbol_shift;
             (0..count)
                 .find(|variant| *self.grammar_ids.add((start + variant) as usize) == original)
-                .map(|variant| start + variant)
+                .map(|variant| SymbolCode(start + variant))
         }
     }
 
     #[inline]
-    pub fn encode_id(&self, symbol: u16) -> u32 {
+    pub fn remap_kind(&self, symbol: KindId) -> Option<RemappedKindId> {
+        let symbol = symbol.get();
+        // Values just past the public symbol table are reserved for remapped errors.
+        (u32::from(symbol) < self.symbol_count || symbol >= u16::MAX - 1)
+            .then(|| RemappedKindId(self.encode_id(symbol) as u16))
+    }
+
+    pub fn decode_kind(&self, symbol: RemappedKindId) -> KindId {
+        KindId::new(self.decode_id(symbol.get() as u32))
+    }
+
+    pub fn decode_grammar_kind(&self, symbol: RemappedGrammarKindId) -> GrammarKindId {
+        GrammarKindId::new(self.decode_id(symbol.get() as u32))
+    }
+
+    fn encode_id(&self, symbol: u16) -> u32 {
         match symbol {
             u16::MAX => self.symbol_count,
             65534 => self.symbol_count + 1,
@@ -90,7 +134,7 @@ impl GrammarView {
     }
 
     #[inline]
-    pub fn decode_id(&self, index: u32) -> u16 {
+    fn decode_id(&self, index: u32) -> u16 {
         if index == self.symbol_count {
             u16::MAX
         } else if index == self.symbol_count + 1 {
@@ -130,7 +174,7 @@ impl GrammarView {
 }
 
 pub struct Grammar {
-    pub(crate) raw: NonNull<c_void>,
+    pub(crate) raw: NonNull<GrammarHandle>,
     view: NonNull<GrammarView>,
 }
 
@@ -196,6 +240,30 @@ impl Grammar {
             Language::from_raw(self.tables().language.cast())
         });
         Language::clone(&borrowed)
+    }
+
+    /// Resolve a displayed kind name in this grammar.
+    pub fn kind_id_for_name(&self, name: &str, named: bool) -> Option<KindId> {
+        let language = self.language();
+        let id = language.id_for_node_kind(name, named);
+        (language.node_kind_for_id(id) == Some(name) && self.tables().named(id) == named)
+            .then_some(KindId::new(id))
+    }
+
+    /// Resolve an original grammar kind, including kinds hidden by aliases.
+    pub fn grammar_kind_id_for_name(&self, name: &str, named: bool) -> Option<GrammarKindId> {
+        let tables = self.tables();
+        (0..tables.grammar_symbol_count as u16)
+            .chain([u16::MAX, u16::MAX - 1])
+            .find_map(|id| {
+                (tables.symbol_name(id) == name && tables.named(id) == named)
+                    .then_some(GrammarKindId::new(id))
+            })
+    }
+
+    /// Resolve a field name in this grammar.
+    pub fn field_id_for_name(&self, name: &str) -> Option<FieldId> {
+        self.language().field_id_for_name(name).map(FieldId::from)
     }
 
     pub fn cache(&self) -> Result<Vec<u8>, Error> {
@@ -277,7 +345,7 @@ impl Step {
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct PatternEntry {
     pub step_index: u16,
-    pub pattern_index: u16,
+    pub pattern_index: PatternIndex,
     pub presence_requirement: u16,
     pub flags: u16,
 }
@@ -338,7 +406,7 @@ const _: () = {
 pub(crate) struct CompiledQuery {
     // The view borrows this allocation. Mutation requires exclusive access and
     // refreshes the view because native arrays may move.
-    raw: NonNull<c_void>,
+    raw: NonNull<QueryHandle>,
     pub view: QueryView,
 }
 
@@ -482,7 +550,7 @@ impl CompiledQuery {
         }
         for entry in self.entries() {
             assert!((entry.step_index as usize) < steps.len());
-            assert!((entry.pattern_index as usize) < self.patterns().len());
+            assert!((entry.pattern_index.get() as usize) < self.patterns().len());
             assert_eq!(entry.flags & !1, 0);
         }
         for pattern in self.patterns() {
@@ -519,19 +587,19 @@ impl CompiledQuery {
 }
 
 unsafe extern "C" {
-    fn sq_native_grammar_new(language: *const c_void, error: *mut i32) -> *mut c_void;
+    fn sq_native_grammar_new(language: *const c_void, error: *mut i32) -> *mut GrammarHandle;
     fn sq_native_grammar_new_with_cache(
         language: *const c_void,
         bytes: *const u8,
         length: usize,
         error: *mut i32,
-    ) -> *mut c_void;
-    fn sq_native_grammar_copy(grammar: *mut c_void) -> *mut c_void;
-    fn sq_native_grammar_delete(grammar: *mut c_void);
-    fn sq_native_grammar_view(grammar: *const c_void) -> *const GrammarView;
-    fn sq_native_grammar_cache_size(grammar: *const c_void) -> u32;
+    ) -> *mut GrammarHandle;
+    fn sq_native_grammar_copy(grammar: *mut GrammarHandle) -> *mut GrammarHandle;
+    fn sq_native_grammar_delete(grammar: *mut GrammarHandle);
+    fn sq_native_grammar_view(grammar: *const GrammarHandle) -> *const GrammarView;
+    fn sq_native_grammar_cache_size(grammar: *const GrammarHandle) -> u32;
     fn sq_native_grammar_copy_cache(
-        grammar: *const c_void,
+        grammar: *const GrammarHandle,
         destination: *mut u8,
         length: usize,
         error: *mut i32,
@@ -542,11 +610,11 @@ unsafe extern "C" {
         length: u32,
         offset: *mut u32,
         kind: *mut u32,
-    ) -> *mut c_void;
-    fn sq_native_query_delete(query: *mut c_void);
-    fn sq_native_query_view(query: *const c_void, view: *mut QueryView);
-    fn sq_native_query_disable_pattern(query: *mut c_void, pattern: u32);
-    fn sq_native_query_disable_capture(query: *mut c_void, name: *const u8, length: u32);
+    ) -> *mut QueryHandle;
+    fn sq_native_query_delete(query: *mut QueryHandle);
+    fn sq_native_query_view(query: *const QueryHandle, view: *mut QueryView);
+    fn sq_native_query_disable_pattern(query: *mut QueryHandle, pattern: u32);
+    fn sq_native_query_disable_capture(query: *mut QueryHandle, name: *const u8, length: u32);
 }
 
 #[repr(C)]
@@ -564,15 +632,15 @@ pub(crate) struct Event {
     pub end_byte: u32,
     pub start_point: Point,
     pub end_point: Point,
-    pub symbol: u16,
-    pub grammar: u16,
-    pub field: u16,
+    pub symbol: RemappedKindId,
+    pub grammar: RemappedGrammarKindId,
+    pub field: Option<FieldId>,
     pub supertype: u16,
     pub flags: u16,
 }
 const _: () = assert!(size_of::<Event>() == 40);
 
-pub(crate) struct Traversal(NonNull<c_void>);
+pub(crate) struct Traversal(NonNull<TraversalHandle>);
 unsafe impl Send for Traversal {}
 impl Drop for Traversal {
     fn drop(&mut self) {
@@ -667,20 +735,20 @@ impl Events<'_> {
 }
 
 unsafe extern "C" {
-    fn sq_native_traversal_new() -> *mut c_void;
-    fn sq_native_traversal_delete(traversal: *mut c_void);
-    fn sq_native_traversal_trim(traversal: *mut c_void);
-    fn sq_native_traversal_end(traversal: *mut c_void);
-    fn sq_native_traversal_node_count(traversal: *const c_void) -> u32;
+    fn sq_native_traversal_new() -> *mut TraversalHandle;
+    fn sq_native_traversal_delete(traversal: *mut TraversalHandle);
+    fn sq_native_traversal_trim(traversal: *mut TraversalHandle);
+    fn sq_native_traversal_end(traversal: *mut TraversalHandle);
+    fn sq_native_traversal_node_count(traversal: *const TraversalHandle) -> u32;
     fn sq_native_traversal_begin_tree(
-        traversal: *mut c_void,
-        grammar: *mut c_void,
+        traversal: *mut TraversalHandle,
+        grammar: *mut GrammarHandle,
         tree: *const c_void,
         points: bool,
         error: *mut i32,
     ) -> bool;
     fn sq_native_traversal_fill(
-        traversal: *mut c_void,
+        traversal: *mut TraversalHandle,
         events: *mut Event,
         capacity: u32,
         written: *mut u32,
@@ -723,7 +791,7 @@ impl ParseStatus {
 }
 
 pub(crate) struct NativeParser {
-    raw: NonNull<c_void>,
+    raw: NonNull<ParserHandle>,
     grammar: Grammar,
 }
 
@@ -815,19 +883,22 @@ impl Reductions<'_> {
 }
 
 unsafe extern "C" {
-    fn sq_native_parser_new(grammar: *mut c_void, error: *mut ParseStatus) -> *mut c_void;
-    fn sq_native_parser_delete(parser: *mut c_void);
-    fn sq_native_parser_trim(parser: *mut c_void);
-    fn sq_native_parser_clear(parser: *mut c_void);
+    fn sq_native_parser_new(
+        grammar: *mut GrammarHandle,
+        error: *mut ParseStatus,
+    ) -> *mut ParserHandle;
+    fn sq_native_parser_delete(parser: *mut ParserHandle);
+    fn sq_native_parser_trim(parser: *mut ParserHandle);
+    fn sq_native_parser_clear(parser: *mut ParserHandle);
     fn sq_native_parser_parse(
-        parser: *mut c_void,
+        parser: *mut ParserHandle,
         source: *const u8,
         length: u32,
         error: *mut ParseStatus,
     ) -> bool;
     fn sq_native_parser_begin(
-        parser: *mut c_void,
-        traversal: *mut c_void,
+        parser: *mut ParserHandle,
+        traversal: *mut TraversalHandle,
         points: bool,
         error: *mut i32,
     ) -> bool;
@@ -897,14 +968,14 @@ mod tests {
                     for (event, (node, depth, field)) in actual.iter().zip(expected.iter().rev()) {
                         assert_eq!(event.depth, *depth);
                         assert_eq!(
-                            grammar.tables().decode_id(event.symbol as u32),
+                            grammar.tables().decode_kind(event.symbol).get(),
                             node.kind_id()
                         );
                         assert_eq!(
-                            grammar.tables().decode_id(event.grammar as u32),
+                            grammar.tables().decode_grammar_kind(event.grammar).get(),
                             node.grammar_id()
                         );
-                        assert_eq!(event.field, *field);
+                        assert_eq!(event.field.map_or(0, FieldId::get), *field);
                         assert_eq!(event.start_byte as usize, node.start_byte());
                         assert_eq!(event.end_byte as usize, node.end_byte());
                         assert_eq!(event.flags & 2 != 0, node.is_extra());

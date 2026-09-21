@@ -1,6 +1,12 @@
+#[cfg(any(feature = "typed-query-scan", feature = "typed-presence-scan"))]
+use crate::types::GroupIx;
+#[cfg(not(feature = "typed-presence-scan"))]
+use crate::types::SlabOffset;
 use crate::{
-    Node, Query, QueryCapture, QueryExecutionError, QueryMatch, RawNode,
+    FieldId, GrammarKindId, KindId, Node, Query, QueryCapture, QueryExecutionError, QueryMatch,
+    RawNode, SlotIx,
     native::{Pattern, PatternEntry, Step, flags::*},
+    types::{CaptureId, MatchId, PackedPoint, PatternIndex, RemappedKindId},
 };
 use std::{
     cmp::Ordering,
@@ -22,7 +28,7 @@ const EXHAUSTED: u16 = 64;
 #[repr(C)]
 struct Capture {
     node: RawNode,
-    index: u32,
+    index: CaptureId,
 }
 
 impl PartialEq for Capture {
@@ -35,12 +41,12 @@ impl PartialEq for Capture {
 
 #[derive(Clone, Copy)]
 struct State {
-    id: u32,
+    id: MatchId,
     captures: u32,
     order: u32,
     start_depth: u16,
     step: u16,
-    pattern: u16,
+    pattern: PatternIndex,
     flags: u16,
     consumed: u32,
 }
@@ -104,9 +110,9 @@ impl CaptureList {
     }
 
     fn hash_capture(&mut self, capture: Capture) {
-        let identity = (capture.node.slot as u64)
+        let identity = (capture.node.slot.get() as u64)
             .wrapping_mul(0x9e37_79b1_85eb_ca87)
-            .wrapping_add(capture.index as u64);
+            .wrapping_add(capture.index.get() as u64);
         self.hash = self
             .hash
             .wrapping_mul(0xc2b2_ae3d_27d4_eb4f)
@@ -335,7 +341,7 @@ impl CapturePool {
             }
             let capture = Capture {
                 node: node.raw,
-                index: capture_id as u32,
+                index: CaptureId(capture_id as u32),
             };
             storage.values.push(capture);
             list.length += 1;
@@ -432,8 +438,8 @@ impl CapturePool {
 struct QueryRange {
     start_byte: u32,
     end_byte: u32,
-    start_point: u64,
-    end_point: u64,
+    start_point: PackedPoint,
+    end_point: PackedPoint,
 }
 
 impl Default for QueryRange {
@@ -441,22 +447,18 @@ impl Default for QueryRange {
         Self {
             start_byte: 0,
             end_byte: NONE,
-            start_point: 0,
-            end_point: u64::MAX,
+            start_point: PackedPoint(0),
+            end_point: PackedPoint(u64::MAX),
         }
     }
-}
-
-fn point_key(point: Point) -> Option<u64> {
-    Some(((u32::try_from(point.row).ok()? as u64) << 32) | u32::try_from(point.column).ok()? as u64)
 }
 
 impl QueryRange {
     fn unrestricted(self) -> bool {
         self.start_byte == 0
             && self.end_byte == NONE
-            && self.start_point == 0
-            && self.end_point == u64::MAX
+            && self.start_point == PackedPoint(0)
+            && self.end_point == PackedPoint(u64::MAX)
     }
 
     fn intersects(self, node: Node<'_>) -> bool {
@@ -464,19 +466,17 @@ impl QueryRange {
         (node.end_byte() > self.start_byte as usize
             || (empty && node.end_byte() == self.start_byte as usize))
             && node.start_byte() < self.end_byte as usize
-            && (point_key(node.end_position()).unwrap() > self.start_point
-                || (empty && point_key(node.end_position()).unwrap() == self.start_point))
-            && point_key(node.start_position()).unwrap() < self.end_point
+            && (node.packed_end_point() > self.start_point
+                || (empty && node.packed_end_point() == self.start_point))
+            && node.packed_start_point() < self.end_point
     }
 
     fn precedes(self, node: Node<'_>) -> bool {
-        node.end_byte() <= self.start_byte as usize
-            || point_key(node.end_position()).unwrap() <= self.start_point
+        node.end_byte() <= self.start_byte as usize || node.packed_end_point() <= self.start_point
     }
 
     fn follows(self, node: Node<'_>) -> bool {
-        node.start_byte() >= self.end_byte as usize
-            || point_key(node.start_position()).unwrap() >= self.end_point
+        node.start_byte() >= self.end_byte as usize || node.packed_start_point() >= self.end_point
     }
 }
 
@@ -501,13 +501,13 @@ struct DirectPosition {
 struct FirstCapture {
     state: usize,
     byte: u32,
-    pattern: u16,
+    pattern: PatternIndex,
     definite: bool,
 }
 
 struct Output {
-    id: u32,
-    pattern: usize,
+    id: MatchId,
+    pattern: PatternIndex,
     captures: *const Capture,
     count: usize,
     index: usize,
@@ -587,8 +587,8 @@ pub struct QueryCursor {
     comparison_blocks: Vec<ComparisonBlock>,
     finished: Vec<State>,
     finished_heap_size: usize,
-    parents: Vec<u32>,
-    position: u32,
+    parents: Vec<SlotIx>,
+    position: SlotIx,
     ascending: bool,
     halted: bool,
     error: Option<QueryExecutionError>,
@@ -598,7 +598,7 @@ pub struct QueryCursor {
     dirty_patterns: u64,
     states_need_sort: bool,
     states_max_depth: u32,
-    next_state_id: u32,
+    next_state_id: MatchId,
     next_finished_id: u32,
     first_capture: Option<FirstCapture>,
     first_capture_valid: bool,
@@ -638,7 +638,7 @@ impl QueryCursor {
             finished: Vec::with_capacity(8),
             finished_heap_size: 0,
             parents: Vec::new(),
-            position: 0,
+            position: SlotIx::new(0),
             ascending: false,
             halted: false,
             error: None,
@@ -648,7 +648,7 @@ impl QueryCursor {
             dirty_patterns: 0,
             states_need_sort: false,
             states_max_depth: 0,
-            next_state_id: 0,
+            next_state_id: MatchId(0),
             next_finished_id: 0,
             first_capture: None,
             first_capture_valid: false,
@@ -700,11 +700,14 @@ impl QueryCursor {
     }
 
     pub fn set_point_range(&mut self, range: std::ops::Range<Point>) -> bool {
-        let (Some(start), Some(mut end)) = (point_key(range.start), point_key(range.end)) else {
+        let (Some(start), Some(mut end)) = (
+            PackedPoint::from_point(range.start),
+            PackedPoint::from_point(range.end),
+        ) else {
             return false;
         };
-        if end == 0 {
-            end = u64::MAX;
+        if end == PackedPoint(0) {
+            end = PackedPoint(u64::MAX);
         }
         if start > end {
             return false;
@@ -746,7 +749,7 @@ impl QueryCursor {
         self.dirty_patterns = 0;
         self.states_need_sort = false;
         self.states_max_depth = 0;
-        self.next_state_id = 0;
+        self.next_state_id = MatchId(0);
         self.next_finished_id = 0;
         self.finished_heap_size = 0;
         self.first_capture_valid = false;
@@ -759,7 +762,8 @@ impl QueryCursor {
             && self.max_start_depth == NONE
             && self.range.unrestricted()
             && !self.halted;
-        self.direct_position = root.data().groups() * crate::storage::GROUP_SIZE - 1 - root.slot();
+        self.direct_position =
+            root.data().groups() * crate::storage::GROUP_SIZE - 1 - root.slot().get();
         self.direct_free = NONE;
 
         // Store word-wide comparisons once, as their encoding depends on the
@@ -873,15 +877,15 @@ impl<'query, 'tree> QueryExecution<'_, 'query, 'tree, '_> {
                 }
             };
             let result = QueryMatch {
-                id: output.id,
-                pattern_index: output.pattern,
+                id: output.id.get(),
+                pattern_index: output.pattern.get() as usize,
                 captures,
             };
             if result.satisfies(self.query, self.source) {
                 return Some((result, output.index));
             }
             if capture {
-                self.remove_match(output.id);
+                self.remove_match(output.id.get());
             }
         }
     }
@@ -1012,14 +1016,14 @@ impl<'query, 'tree> QueryExecution<'_, 'query, 'tree, '_> {
     }
 
     fn snapshot(&mut self, state: &mut State) -> Output {
-        if state.id == NONE {
+        if state.id == MatchId(NONE) {
             state.id = self.cursor.next_state_id;
-            self.cursor.next_state_id = self.cursor.next_state_id.wrapping_add(1);
+            self.cursor.next_state_id = MatchId(self.cursor.next_state_id.get().wrapping_add(1));
         }
         let captures = self.cursor.pool.get(state.captures);
         Output {
             id: state.id,
-            pattern: state.pattern as usize,
+            pattern: state.pattern,
             captures: captures.as_ptr(),
             count: captures.len(),
             index: state.consumed as usize,
@@ -1141,7 +1145,7 @@ impl<'query, 'tree> QueryExecution<'_, 'query, 'tree, '_> {
                     if self.cursor.direct {
                         self.release_direct(state.order);
                     }
-                    self.cursor.dirty_patterns |= 1 << (state.pattern % 64);
+                    self.cursor.dirty_patterns |= 1 << (state.pattern.get() % 64);
                 }
             }
             if !self.advance(true) && self.cursor.finished.is_empty() {
@@ -1151,6 +1155,7 @@ impl<'query, 'tree> QueryExecution<'_, 'query, 'tree, '_> {
     }
 
     pub fn remove_match(&mut self, id: u32) {
+        let id = MatchId(id);
         if self.cursor.finished_heap_size != 0 {
             self.heapify();
         }
@@ -1165,7 +1170,7 @@ impl<'query, 'tree> QueryExecution<'_, 'query, 'tree, '_> {
             if self.cursor.direct {
                 self.release_direct(state.order);
             }
-            self.cursor.dirty_patterns |= 1 << (state.pattern % 64);
+            self.cursor.dirty_patterns |= 1 << (state.pattern.get() % 64);
             self.cursor.first_capture_valid = false;
         }
     }
@@ -1190,7 +1195,7 @@ impl<'query, 'tree> QueryExecution<'_, 'query, 'tree, '_> {
         state.captures = other.captures;
         other.captures = NONE;
         other.flags |= DEAD;
-        self.cursor.dirty_patterns |= 1 << (other.pattern % 64);
+        self.cursor.dirty_patterns |= 1 << (other.pattern.get() % 64);
         self.cursor.states_need_sort = true;
         self.cursor.pool.clear(state.captures);
         true
@@ -1241,12 +1246,12 @@ impl<'query, 'tree> QueryExecution<'_, 'query, 'tree, '_> {
             index -= 1;
         }
 
-        self.cursor.dirty_patterns |= 1 << (entry.pattern_index % 64);
+        self.cursor.dirty_patterns |= 1 << (entry.pattern_index.get() % 64);
         self.cursor.states_need_sort = true;
         self.cursor.states.insert(
             index,
             State {
-                id: NONE,
+                id: MatchId(NONE),
                 captures: NONE,
                 order: NONE,
                 start_depth: depth as u16,
@@ -1314,7 +1319,7 @@ impl<'query, 'tree> QueryExecution<'_, 'query, 'tree, '_> {
     }
 
     fn position_node(&self, position: u32) -> Node<'tree> {
-        self.root.at(self.total_slots() - 1 - position)
+        self.root.at(SlotIx::new(self.total_slots() - 1 - position))
     }
 
     fn node_end(&self, node: Node<'tree>) -> u32 {
@@ -1325,7 +1330,12 @@ impl<'query, 'tree> QueryExecution<'_, 'query, 'tree, '_> {
         #[cfg(feature = "typed-query-scan")]
         {
             let targets = &self.query.program.scan_targets;
-            let decode = |symbol| self.root.data().tables().decode_id(symbol as u32);
+            let decode = |symbol| {
+                self.root
+                    .data()
+                    .tables()
+                    .decode_kind(RemappedKindId(symbol))
+            };
             // Fixed cardinalities keep comparison counts visible to the scan
             // compiler. Larger unions retain the packed-word control kernel.
             match targets.as_slice() {
@@ -1358,7 +1368,7 @@ impl<'query, 'tree> QueryExecution<'_, 'query, 'tree, '_> {
         &mut self,
         mut start: u32,
         end: u32,
-        targets: [u16; N],
+        targets: [KindId; N],
     ) -> u32 {
         use crate::scan::{GroupRef, IdSelection, Predicate};
         use crate::storage::{GROUP_SIZE, PRESENCE};
@@ -1366,8 +1376,7 @@ impl<'query, 'tree> QueryExecution<'_, 'query, 'tree, '_> {
         let data = self.root.data();
         let total = self.total_slots();
         let groups = GroupRef::new(self.root);
-        let mut predicate = targets.into_kind_predicate();
-        predicate.prepare_columns(&groups);
+        let predicate = targets.into_kind_predicate(&groups);
 
         while start < end {
             if self.poll() {
@@ -1380,16 +1389,17 @@ impl<'query, 'tree> QueryExecution<'_, 'query, 'tree, '_> {
                     .iter()
                     .any(|&symbol| data.group_has_symbol(index, symbol))
             {
-                let group = groups.at(index);
+                let group = groups.at_group(GroupIx(index));
+                let base = group.first_slot().get();
                 let mut hits = predicate.retain_matches(&group, group.valid_mask()).bits();
-                let first = total - group_end - group.first_slot();
-                let last = total - start - group.first_slot();
+                let first = total - group_end - base;
+                let last = total - start - base;
                 hits &= u64::MAX << first;
                 if last < 64 {
                     hits &= (1 << last) - 1;
                 }
                 if hits != 0 {
-                    return total - 1 - (group.first_slot() + 63 - hits.leading_zeros());
+                    return total - 1 - (base + 63 - hits.leading_zeros());
                 }
             }
             start = self.normalize_position(group_end);
@@ -1415,7 +1425,7 @@ impl<'query, 'tree> QueryExecution<'_, 'query, 'tree, '_> {
                 && !targets.is_empty()
                 && targets.len() <= 4
                 && !targets.iter().any(|symbol| {
-                    data.group_has_symbol(group, data.tables().decode_id(*symbol as u32))
+                    data.group_has_symbol(group, data.tables().decode_kind(RemappedKindId(*symbol)))
                 })
             {
                 start = self.normalize_position(group_end);
@@ -1424,7 +1434,7 @@ impl<'query, 'tree> QueryExecution<'_, 'query, 'tree, '_> {
 
             if filter.is_empty() {
                 while start < group_end {
-                    let symbol = data.symbol_index(total - 1 - start);
+                    let symbol = data.symbol_index(total - 1 - start).get();
                     if query.program.scan_symbols[symbol as usize / 64] & (1 << (symbol % 64)) != 0
                     {
                         return start;
@@ -1462,7 +1472,7 @@ impl<'query, 'tree> QueryExecution<'_, 'query, 'tree, '_> {
     }
 
     fn scan_seek(&mut self) -> bool {
-        let current_position = self.total_slots() - 1 - self.cursor.position;
+        let current_position = self.total_slots() - 1 - self.cursor.position.get();
         let end = self.node_end(self.root);
         let target = self.find_symbols(current_position, end);
         if self.cursor.halted {
@@ -1485,7 +1495,7 @@ impl<'query, 'tree> QueryExecution<'_, 'query, 'tree, '_> {
 
         // With no partial states, skipped enter/exit events cannot affect a
         // match. Restore only the ancestor path needed by the next root.
-        while self.total_slots() - 1 - self.cursor.position != target {
+        while self.total_slots() - 1 - self.cursor.position.get() != target {
             if target < self.node_end(self.current()) && self.goto_first_child() {
                 continue;
             }
@@ -1517,7 +1527,7 @@ impl<'query, 'tree> QueryExecution<'_, 'query, 'tree, '_> {
         }
         cache.samples += 1;
 
-        let mut begin = self.normalize_position(self.total_slots() - root.slot());
+        let mut begin = self.normalize_position(self.total_slots() - root.slot().get());
         let limit = self.node_end(root);
         if begin >= cache.start && begin <= cache.next {
             if cache.next >= limit {
@@ -1543,11 +1553,14 @@ impl<'query, 'tree> QueryExecution<'_, 'query, 'tree, '_> {
 
         #[cfg(feature = "typed-presence-scan")]
         let (groups, symbol_predicate, field_predicate) = {
-            use crate::scan::{GroupRef, IdSelection};
+            use crate::scan::{FieldSelection, GroupRef, IdSelection};
             let groups = GroupRef::new(root);
-            let mut symbol = [requirement.symbol].into_kind_predicate();
-            symbol.prepare_columns(&groups);
-            (groups, symbol, [requirement.field].into_field_predicate())
+            let symbol = [KindId::new(requirement.symbol)].into_kind_predicate(&groups);
+            (
+                groups,
+                symbol,
+                [FieldId::new(requirement.field)].into_field_predicate(),
+            )
         };
 
         while position < scanned_end {
@@ -1558,7 +1571,7 @@ impl<'query, 'tree> QueryExecution<'_, 'query, 'tree, '_> {
             #[cfg(feature = "typed-presence-scan")]
             let mut hits = {
                 use crate::scan::Predicate;
-                let group = groups.at(physical_group);
+                let group = groups.at_group(GroupIx(physical_group));
                 let mut hits = group.valid_mask();
                 if requirement.symbol != 0 {
                     hits = symbol_predicate.retain_matches(&group, hits);
@@ -1574,15 +1587,19 @@ impl<'query, 'tree> QueryExecution<'_, 'query, 'tree, '_> {
                 let mut hits = u64::MAX;
                 if requirement.symbol != 0 {
                     let shift = data.tables().symbol_shift;
-                    let symbol = data.tables().encode_id(requirement.symbol) as u16;
-                    hits = equal_column(
-                        data,
-                        data.layout.symbol,
-                        physical_group,
-                        symbol << shift,
-                        u16::MAX << shift,
-                    )
-                    .reverse_bits()
+                    hits = data
+                        .tables()
+                        .remap_kind(KindId::new(requirement.symbol))
+                        .map_or(0, |symbol| {
+                            equal_column(
+                                data,
+                                data.layout.symbol,
+                                physical_group,
+                                symbol.get() << shift,
+                                u16::MAX << shift,
+                            )
+                        })
+                        .reverse_bits()
                         >> (64 - group_size);
                 }
                 if requirement.field != 0 {
@@ -1678,7 +1695,7 @@ impl<'query, 'tree> QueryExecution<'_, 'query, 'tree, '_> {
                     }
                 }
                 let node = self.position_node(position);
-                if plan.roots[node.data().symbol_index(node.slot()) as usize] != 0 {
+                if plan.roots[node.data().symbol_index(node.slot().get()).get() as usize] != 0 {
                     break;
                 }
                 position = self.normalize_position(position + 1);
@@ -1708,8 +1725,8 @@ impl<'query, 'tree> QueryExecution<'_, 'query, 'tree, '_> {
 
             self.cursor.direct_position = self.normalize_position(position + 1);
             let node = self.position_node(position);
-            let symbol = node.kind_id();
-            let mut roots = plan.roots[node.data().symbol_index(node.slot()) as usize];
+            let symbol = node.kind_id().get();
+            let mut roots = plan.roots[node.data().symbol_index(node.slot().get()).get() as usize];
             while roots != 0 {
                 let pattern = roots.trailing_zeros() as usize;
                 roots &= roots - 1;
@@ -1719,12 +1736,12 @@ impl<'query, 'tree> QueryExecution<'_, 'query, 'tree, '_> {
                     end: self.node_end(node),
                 });
                 self.cursor.states.push(State {
-                    id: NONE,
+                    id: MatchId(NONE),
                     captures: NONE,
                     order,
                     start_depth: 0,
                     step: plan.start_steps[pattern],
-                    pattern: pattern as u16,
+                    pattern: PatternIndex(pattern as u16),
                     consumed: 0,
                     flags: 0,
                 });
@@ -1750,7 +1767,7 @@ impl<'query, 'tree> QueryExecution<'_, 'query, 'tree, '_> {
                 let step = self.step(state.step);
                 let sibling = self.node_end(node);
                 let matches = (operation.symbol == 0 || operation.symbol == symbol)
-                    && (operation.field == 0 || operation.field == node.field_id())
+                    && (operation.field == 0 || FieldId::new(operation.field) == node.field_id())
                     && (!operation.last_named_child
                         || self.named_child_position(sibling, current.end) == current.end);
                 if !matches {
@@ -1768,8 +1785,8 @@ impl<'query, 'tree> QueryExecution<'_, 'query, 'tree, '_> {
                     continue;
                 }
 
-                state.step = if plan.local_patterns & (1 << state.pattern) != 0 {
-                    plan.end_steps[state.pattern as usize]
+                state.step = if plan.local_patterns & (1 << state.pattern.get()) != 0 {
+                    plan.end_steps[state.pattern.get() as usize]
                 } else {
                     state.step + 1
                 };
@@ -1821,7 +1838,7 @@ impl<'query, 'tree> QueryExecution<'_, 'query, 'tree, '_> {
         }
         let mut next = self.current().next_sibling_including_empty();
         while let Some(node) = next {
-            if node.field_id() == field {
+            if node.field_id() == FieldId::new(field) {
                 return true;
             }
             next = node.next_sibling_including_empty();
@@ -1887,13 +1904,13 @@ impl<'query, 'tree> QueryExecution<'_, 'query, 'tree, '_> {
                         let step = self.step(state.step);
                         if step.depth == DONE && (state.start_depth as u32 > depth || depth == 0) {
                             self.finish(state);
-                            self.cursor.dirty_patterns |= 1 << (state.pattern % 64);
+                            self.cursor.dirty_patterns |= 1 << (state.pattern.get() % 64);
                             did_match = true;
                         } else if step.depth != DONE
                             && state.start_depth as u32 + step.depth as u32 > depth
                         {
                             self.cursor.pool.release(state.captures);
-                            self.cursor.dirty_patterns |= 1 << (state.pattern % 64);
+                            self.cursor.dirty_patterns |= 1 << (state.pattern.get() % 64);
                         } else {
                             if retained != index {
                                 self.cursor.states[retained] = state;
@@ -1942,10 +1959,10 @@ impl<'query, 'tree> QueryExecution<'_, 'query, 'tree, '_> {
     ) -> bool {
         let query = self.query;
         let depth = self.cursor.parents.len() as u32;
-        let symbol = node.kind_id();
+        let symbol = node.kind_id().get();
         let named = node.is_named();
         let field = if query.program.needs_fields && depth != 0 {
-            node.field_id()
+            node.field_id().map_or(0, FieldId::get)
         } else {
             0
         };
@@ -2058,11 +2075,11 @@ impl<'query, 'tree> QueryExecution<'_, 'query, 'tree, '_> {
                 && state.has(SEEKING_IMMEDIATE)
                 && symbol_matches
             {
-                self.cursor.dirty_patterns |= 1 << (state.pattern % 64);
+                self.cursor.dirty_patterns |= 1 << (state.pattern.get() % 64);
                 if step.capture_ids[0] != DONE {
                     self.capture(&mut state, node, step);
                 }
-                state.step = (self.patterns[state.pattern as usize].steps.end() - 1) as u16;
+                state.step = (self.patterns[state.pattern.get() as usize].steps.end() - 1) as u16;
                 state.flags &= !(SEEKING_IMMEDIATE | SKIPPED_QUANTIFIER);
                 did_match |= stop_on_definite && self.step(state.step).has(ROOT_PATTERN_GUARANTEED);
                 self.cursor.states[index] = state;
@@ -2078,7 +2095,9 @@ impl<'query, 'tree> QueryExecution<'_, 'query, 'tree, '_> {
             if step.has(IS_LAST_CHILD) && self.later_siblings(&mut siblings, true) {
                 matches = false;
             }
-            if step.supertype_symbol != 0 && !node.has_supertype(step.supertype_symbol) {
+            if step.supertype_symbol != 0
+                && !node.has_supertype(GrammarKindId::new(step.supertype_symbol))
+            {
                 matches = false;
             }
             if step.field != 0 {
@@ -2097,7 +2116,10 @@ impl<'query, 'tree> QueryExecution<'_, 'query, 'tree, '_> {
                     .copied()
                     .take_while(|field| *field != 0)
                 {
-                    if node.child_by_field_id(field).is_some() {
+                    if node
+                        .child_by_field_id(FieldId::new(field).unwrap())
+                        .is_some()
+                    {
                         matches = false;
                         break;
                     }
@@ -2107,7 +2129,7 @@ impl<'query, 'tree> QueryExecution<'_, 'query, 'tree, '_> {
             if !matches {
                 if !later_can_match {
                     self.cursor.pool.release(state.captures);
-                    self.cursor.dirty_patterns |= 1 << (state.pattern % 64);
+                    self.cursor.dirty_patterns |= 1 << (state.pattern.get() % 64);
                     self.stage_remaining(index);
                     self.cursor.states.remove(index);
                 } else {
@@ -2115,7 +2137,7 @@ impl<'query, 'tree> QueryExecution<'_, 'query, 'tree, '_> {
                 }
                 continue;
             }
-            self.cursor.dirty_patterns |= 1 << (state.pattern % 64);
+            self.cursor.dirty_patterns |= 1 << (state.pattern.get() % 64);
             self.stage_remaining(index);
             let mut copies = 0;
             if later_can_match
@@ -2370,10 +2392,11 @@ impl<'query, 'tree> QueryExecution<'_, 'query, 'tree, '_> {
             } else {
                 capture_id = Some(capture.index);
                 let quantifiers = unsafe {
-                    self.query.compiled.view.capture_quantifiers.as_slice()[state.pattern as usize]
+                    self.query.compiled.view.capture_quantifiers.as_slice()
+                        [state.pattern.get() as usize]
                         .as_slice()
                 };
-                if !matches!(quantifiers.get(capture.index as usize), Some(1 | 2)) {
+                if !matches!(quantifiers.get(capture.index.get() as usize), Some(1 | 2)) {
                     return false;
                 }
             }
@@ -2401,7 +2424,7 @@ impl<'query, 'tree> QueryExecution<'_, 'query, 'tree, '_> {
         }
         self.cursor.dirty_patterns = 0;
         for state in &mut self.cursor.states {
-            if dirty & (1 << (state.pattern % 64)) != 0 {
+            if dirty & (1 << (state.pattern.get() % 64)) != 0 {
                 state.flags &= !HAS_ALTERNATIVES;
             }
         }
@@ -2425,13 +2448,13 @@ impl<'query, 'tree> QueryExecution<'_, 'query, 'tree, '_> {
         let mut did_match = false;
         for index in 0..self.cursor.states.len() {
             let mut state = self.cursor.states[index];
-            if state.has(REMOVED) || dirty & (1 << (state.pattern % 64)) == 0 {
+            if state.has(REMOVED) || dirty & (1 << (state.pattern.get() % 64)) == 0 {
                 continue;
             }
             if state.has(DEAD) {
                 self.cursor.pool.release(state.captures);
                 self.cursor.states[index].flags |= REMOVED;
-                self.cursor.dirty_patterns |= 1 << (state.pattern % 64);
+                self.cursor.dirty_patterns |= 1 << (state.pattern.get() % 64);
                 continue;
             }
             if group != Some((state.start_depth, state.pattern)) {
@@ -2521,7 +2544,7 @@ impl<'query, 'tree> QueryExecution<'_, 'query, 'tree, '_> {
                     {
                         self.cursor.pool.release(other.captures);
                         self.cursor.states[other_index].flags |= REMOVED;
-                        self.cursor.dirty_patterns |= 1 << (state.pattern % 64);
+                        self.cursor.dirty_patterns |= 1 << (state.pattern.get() % 64);
                         other_index += 1;
                         continue;
                     }
@@ -2534,7 +2557,7 @@ impl<'query, 'tree> QueryExecution<'_, 'query, 'tree, '_> {
                     {
                         self.cursor.pool.release(state.captures);
                         state.flags |= REMOVED;
-                        self.cursor.dirty_patterns |= 1 << (state.pattern % 64);
+                        self.cursor.dirty_patterns |= 1 << (state.pattern.get() % 64);
                         break;
                     }
                     state.flags |= HAS_ALTERNATIVES;
@@ -2548,7 +2571,7 @@ impl<'query, 'tree> QueryExecution<'_, 'query, 'tree, '_> {
             {
                 self.finish(state);
                 state.flags |= REMOVED;
-                self.cursor.dirty_patterns |= 1 << (state.pattern % 64);
+                self.cursor.dirty_patterns |= 1 << (state.pattern.get() % 64);
                 did_match = true;
             }
             self.cursor.states[index].flags = state.flags;
@@ -2582,7 +2605,7 @@ impl<'query, 'tree> QueryExecution<'_, 'query, 'tree, '_> {
 #[cfg(not(feature = "typed-presence-scan"))]
 fn equal_column(
     data: &crate::storage::TreeData,
-    offset: u32,
+    offset: SlabOffset,
     group: u32,
     value: u16,
     mask: u16,
@@ -2597,7 +2620,7 @@ fn equal_column(
         let column = data
             .bytes
             .as_ptr()
-            .add(offset as usize + (group * GROUP_SIZE) as usize * 2);
+            .add(offset.get() as usize + (group * GROUP_SIZE) as usize * 2);
         for lane in (0..GROUP_SIZE).step_by(16) {
             let low = _mm_and_si128(
                 _mm_loadu_si128(column.add(lane as usize * 2).cast()),

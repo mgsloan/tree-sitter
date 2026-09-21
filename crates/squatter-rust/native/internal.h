@@ -47,7 +47,8 @@ typedef struct {
   const uint64_t *supertype_masks;
 
   const uint16_t *grammar_ids, *default_codes, *counts, *defaults, *grammar_codes;
-  uint32_t symbol_count, field_count, supertype_count, dictionary_count, dictionary_words;
+  uint32_t symbol_count, grammar_symbol_count, field_count, supertype_count;
+  uint32_t dictionary_count, dictionary_words;
   uint32_t encoding, dictionary_length;
   uint8_t symbol_shift, separate;
 } SQGrammarView;

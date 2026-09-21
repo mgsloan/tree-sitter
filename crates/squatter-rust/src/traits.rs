@@ -10,7 +10,7 @@
 //!         .sum()
 //! }
 //! ```
-use crate::{Cursor, Error, Node, Tree, scan::IdSelection};
+use crate::{Cursor, Error, FieldId, GrammarKindId, KindId, Node, Tree, scan::IdSelection};
 use std::ops::Range;
 use tree_sitter::Point;
 
@@ -20,8 +20,8 @@ use tree_sitter::Point;
 pub struct Attributes<'tree> {
     pub kind: &'tree str,
     pub grammar_name: &'tree str,
-    pub kind_id: u16,
-    pub grammar_id: u16,
+    pub kind_id: KindId,
+    pub grammar_id: GrammarKindId,
     pub start_byte: usize,
     pub end_byte: usize,
     pub start_position: Point,
@@ -48,8 +48,8 @@ pub trait NodeLike<'tree>: Copy + Eq {
     fn identity(self) -> usize;
     /// Read constant-time attributes; counts are separate operations below.
     fn attributes(self) -> Attributes<'tree>;
-    fn kind_id(self) -> u16;
-    fn grammar_id(self) -> u16;
+    fn kind_id(self) -> KindId;
+    fn grammar_id(self) -> GrammarKindId;
     fn kind(self) -> &'tree str;
     fn grammar_name(self) -> &'tree str;
     fn byte_range(self) -> Range<usize>;
@@ -72,8 +72,8 @@ pub trait NodeLike<'tree>: Copy + Eq {
     fn named_children(self) -> impl Iterator<Item = Self> {
         self.children().filter(|node| node.is_named())
     }
-    /// All children with this field, including inherited fields. Zero yields none.
-    fn children_by_field_id(self, field: u16) -> impl Iterator<Item = Self>;
+    /// All children with this field, including inherited fields.
+    fn children_by_field_id(self, field: FieldId) -> impl Iterator<Item = Self>;
     fn has_children(self) -> bool;
     /// May scan unnamed children; stops at the first named child.
     fn has_named_children(self) -> bool;
@@ -93,7 +93,7 @@ pub trait NodeLike<'tree>: Copy + Eq {
     fn prev_sibling(self) -> Option<Self>;
     fn next_named_sibling(self) -> Option<Self>;
     fn prev_named_sibling(self) -> Option<Self>;
-    fn child_by_field_id(self, field: u16) -> Option<Self>;
+    fn child_by_field_id(self, field: FieldId) -> Option<Self>;
     fn descendant_for_byte_range(self, start: usize, end: usize) -> Option<Self>;
     fn descendant_for_point_range(self, start: Point, end: Point) -> Option<Self>;
 }
@@ -114,7 +114,7 @@ pub trait CursorLike<'tree> {
     fn goto_first_child_for_byte(&mut self, byte: usize) -> Option<usize>;
     /// Point counterpart of goto_first_child_for_byte, with the same failure behavior.
     fn goto_first_child_for_point(&mut self, point: Point) -> Option<usize>;
-    fn field_id(&self) -> Option<u16>;
+    fn field_id(&self) -> Option<FieldId>;
     fn depth(&self) -> u32;
     fn goto_first_child(&mut self) -> bool;
     fn goto_last_child(&mut self) -> bool;
@@ -160,8 +160,8 @@ macro_rules! node_navigation {
         fn prev_named_sibling(self) -> Option<Self> {
             <$node>::prev_named_sibling($($borrow)? self)
         }
-        fn child_by_field_id(self, field: u16) -> Option<Self> {
-            <$node>::child_by_field_id($($borrow)? self, field)
+        fn child_by_field_id(self, field: FieldId) -> Option<Self> {
+            <$node>::child_by_field_id($($borrow)? self, field.into())
         }
         fn descendant_for_byte_range(self, start: usize, end: usize) -> Option<Self> {
             <$node>::descendant_for_byte_range($($borrow)? self, start, end)
@@ -173,11 +173,11 @@ macro_rules! node_navigation {
 }
 macro_rules! node_attributes {
     ($node:ty $(, $borrow:tt)?) => {
-        fn kind_id(self) -> u16 {
-            <$node>::kind_id($($borrow)? self)
+        fn kind_id(self) -> KindId {
+            <$node>::kind_id($($borrow)? self).into()
         }
-        fn grammar_id(self) -> u16 {
-            <$node>::grammar_id($($borrow)? self)
+        fn grammar_id(self) -> GrammarKindId {
+            <$node>::grammar_id($($borrow)? self).into()
         }
         fn kind(self) -> &'tree str {
             <$node>::kind($($borrow)? self)
@@ -225,8 +225,8 @@ macro_rules! attributes {
         Attributes {
             kind: $node.kind(),
             grammar_name: $node.grammar_name(),
-            kind_id: $node.kind_id(),
-            grammar_id: $node.grammar_id(),
+            kind_id: $node.kind_id().into(),
+            grammar_id: $node.grammar_id().into(),
             start_byte: $node.start_byte(),
             end_byte: $node.end_byte(),
             start_position: $node.start_position(),
@@ -250,12 +250,12 @@ impl<'tree> NodeLike<'tree> for tree_sitter::Node<'tree> {
         let empty = kinds.is_empty();
         NativePreorder::new(self)
             .take_while(move |_| !empty)
-            .filter(move |node| kinds.contains_id(node.kind_id()))
+            .filter(move |node| kinds.contains_id(node.kind_id().into()))
     }
     fn children(self) -> impl Iterator<Item = Self> {
         NativeChildren::new(self, None)
     }
-    fn children_by_field_id(self, field: u16) -> impl Iterator<Item = Self> {
+    fn children_by_field_id(self, field: FieldId) -> impl Iterator<Item = Self> {
         NativeChildren::new(self, Some(field))
     }
     fn has_children(self) -> bool {
@@ -296,7 +296,7 @@ impl<'tree> NodeLike<'tree> for Node<'tree> {
     fn children(self) -> impl Iterator<Item = Self> {
         Node::children(self)
     }
-    fn children_by_field_id(self, field: u16) -> impl Iterator<Item = Self> {
+    fn children_by_field_id(self, field: FieldId) -> impl Iterator<Item = Self> {
         Node::children_by_field_id(self, field)
     }
     fn has_children(self) -> bool {
@@ -315,7 +315,7 @@ impl<'tree> NodeLike<'tree> for Node<'tree> {
         Node::descendant_count(self)
     }
     fn identity(self) -> usize {
-        self.slot() as usize
+        self.slot().get() as usize
     }
     fn attributes(self) -> Attributes<'tree> {
         Node::attributes(self)
@@ -364,7 +364,7 @@ macro_rules! cursor_navigation {
 }
 impl<'tree> CursorLike<'tree> for tree_sitter::TreeCursor<'tree> {
     type Node = tree_sitter::Node<'tree>;
-    fn field_id(&self) -> Option<u16> {
+    fn field_id(&self) -> Option<FieldId> {
         self.field_id().map(Into::into)
     }
     cursor_navigation!(tree_sitter::TreeCursor<'tree>);
@@ -374,9 +374,8 @@ impl<'tree> CursorLike<'tree> for Cursor<'tree> {
     fn attributes(&mut self) -> Attributes<'tree> {
         Cursor::attributes(self)
     }
-    fn field_id(&self) -> Option<u16> {
-        let field = self.node().field_id();
-        (field != 0).then_some(field)
+    fn field_id(&self) -> Option<FieldId> {
+        self.node().field_id()
     }
     cursor_navigation!(Cursor<'tree>);
 }
@@ -418,12 +417,12 @@ impl std::iter::FusedIterator for NativePreorder<'_> {}
 struct NativeChildren<'tree> {
     cursor: tree_sitter::TreeCursor<'tree>,
     ready: bool,
-    field: Option<u16>,
+    field: Option<FieldId>,
 }
 impl<'tree> NativeChildren<'tree> {
-    fn new(node: tree_sitter::Node<'tree>, field: Option<u16>) -> Self {
+    fn new(node: tree_sitter::Node<'tree>, field: Option<FieldId>) -> Self {
         let mut cursor = node.walk();
-        let ready = field != Some(0) && cursor.goto_first_child();
+        let ready = cursor.goto_first_child();
         Self {
             cursor,
             ready,
@@ -439,7 +438,7 @@ impl<'tree> Iterator for NativeChildren<'tree> {
             let matches = self.field.is_none_or(|field| {
                 self.cursor
                     .field_id()
-                    .is_some_and(|actual| actual.get() == field)
+                    .is_some_and(|actual| actual.get() == field.get())
             });
             self.ready = self.cursor.goto_next_sibling();
             if matches {
