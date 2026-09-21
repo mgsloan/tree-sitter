@@ -1,10 +1,11 @@
 use crate::{
     Error, FieldId, Grammar, Tree,
-    native::{Event, Events, Traversal},
+    native::{Point, Reduction},
     storage::*,
-    types::SlabOffset,
+    types::{RemappedGrammarKindId, RemappedKindId, SlabOffset},
 };
-use std::mem::MaybeUninit;
+
+mod traversal;
 
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
@@ -26,68 +27,28 @@ impl Default for PackOptions {
     }
 }
 
-#[derive(Default)]
-pub(crate) struct Scratch {
-    boundaries: Boundaries,
-    presence: PresenceScratch,
-}
-
-impl Scratch {
-    pub fn trim(&mut self) {
-        self.boundaries = Boundaries::default();
-        self.presence.trim();
-    }
-}
-
-#[derive(Default)]
-struct Boundaries {
-    // Most trees need no allocation beyond the native traversal stack.
-    shallow: [u32; 32],
-    deep: Vec<u32>,
-    depth: usize,
-}
-
-impl Boundaries {
-    fn clear(&mut self) {
-        self.depth = 0;
-        self.deep.clear();
-    }
-
-    fn start(&mut self, depth: usize, position: u32) -> u32 {
-        // Reverse preorder first reaches a depth at its rightmost descendant.
-        // Only ancestors need stored boundaries; a new leaf starts at position.
-        // Boundaries include waste added while forming descendant groups.
-        let end = depth.min(self.shallow.len());
-        self.shallow[self.depth.min(end)..end].fill(position);
-        let boundary = if depth >= self.depth {
-            if depth > self.shallow.len() {
-                self.deep.resize(depth - self.shallow.len(), position);
-            }
-            position
-        } else if depth < self.shallow.len() {
-            self.deep.clear();
-            self.shallow[depth]
-        } else {
-            let index = depth - self.shallow.len();
-            let boundary = self.deep[index];
-            self.deep.truncate(index);
-            boundary
-        };
-        self.depth = depth;
-        boundary
-    }
+struct InputNode {
+    start_byte: u32,
+    end_byte: u32,
+    start_point: Point,
+    end_point: Point,
+    symbol: RemappedKindId,
+    grammar: RemappedGrammarKindId,
+    field: Option<FieldId>,
+    supertype: u16,
+    flags: u16,
 }
 
 pub struct PackContext {
-    traversal: Traversal,
-    scratch: Scratch,
+    traversal: traversal::Traversal,
+    presence: PresenceScratch,
 }
 
 impl PackContext {
     pub fn new() -> Result<Self, Error> {
         Ok(Self {
-            traversal: Traversal::new()?,
-            scratch: Scratch::default(),
+            traversal: traversal::Traversal::default(),
+            presence: PresenceScratch::default(),
         })
     }
 
@@ -101,13 +62,37 @@ impl PackContext {
         tree: &tree_sitter::Tree,
         options: PackOptions,
     ) -> Result<Tree, Error> {
-        let mut input = self.traversal.tree(grammar, tree, options.points)?;
-        encode(grammar, &mut input, &mut self.scratch, options)
+        let root = traversal::Root::new(tree, grammar.tables())?;
+        let mut builder = Builder::for_input(grammar, root.expected_nodes, options)?;
+        traversal::pack(&mut builder, grammar.tables(), &mut self.traversal, root)?;
+        builder.finish(&mut self.presence, options)
+    }
+
+    pub(crate) fn pack_reductions(
+        &mut self,
+        grammar: &Grammar,
+        nodes: &[Reduction],
+        root: u32,
+        options: PackOptions,
+    ) -> Result<Tree, Error> {
+        let mut builder = Builder::for_input(
+            grammar,
+            nodes[root as usize].visible_descendant_count + 1,
+            options,
+        )?;
+        traversal::pack_reductions(
+            &mut builder,
+            grammar.tables(),
+            &mut self.traversal,
+            nodes,
+            root,
+        )?;
+        builder.finish(&mut self.presence, options)
     }
 
     pub fn trim(&mut self) {
         self.traversal.trim();
-        self.scratch.trim();
+        self.presence.trim();
     }
 }
 
@@ -180,6 +165,19 @@ struct Builder {
 }
 
 impl Builder {
+    fn for_input(
+        grammar: &Grammar,
+        expected_nodes: u32,
+        options: PackOptions,
+    ) -> Result<Self, Error> {
+        let capacity = if options.initial_group_capacity == 0 {
+            expected_nodes / (GROUP_SIZE * 3 / 4) + 1
+        } else {
+            options.initial_group_capacity
+        };
+        Self::new(grammar, capacity, options.points)
+    }
+
     fn new(grammar: &Grammar, capacity: u32, points: bool) -> Result<Self, Error> {
         Ok(Self {
             tree: Tree::empty(grammar, capacity, points)?,
@@ -256,7 +254,8 @@ impl Builder {
         true
     }
 
-    fn emit(&mut self, event: &Event, boundary: u32) -> Result<(), Error> {
+    #[inline(always)]
+    fn emit(&mut self, event: &InputNode, boundary: u32) -> Result<(), Error> {
         loop {
             if self.count == GROUP_SIZE {
                 self.close();
@@ -443,38 +442,4 @@ impl Builder {
         }
         Ok(self.tree)
     }
-}
-
-pub(crate) fn encode(
-    grammar: &Grammar,
-    input: &mut Events<'_>,
-    scratch: &mut Scratch,
-    options: PackOptions,
-) -> Result<Tree, Error> {
-    scratch.boundaries.clear();
-    let capacity = if options.initial_group_capacity == 0 {
-        input.expected_nodes() / (GROUP_SIZE * 3 / 4) + 1
-    } else {
-        options.initial_group_capacity
-    };
-    let mut builder = Builder::new(grammar, capacity, options.points)?;
-    let mut buffer = [MaybeUninit::<Event>::uninit(); 128];
-    let result = (|| {
-        loop {
-            let (events, done) = input.fill(&mut buffer)?;
-            for event in events {
-                let depth = event.depth as usize;
-
-                let boundary = scratch.boundaries.start(depth, builder.distance());
-                builder.emit(event, boundary)?;
-            }
-            if done {
-                break;
-            }
-        }
-        debug_assert_eq!(scratch.boundaries.depth, 0);
-        builder.finish(&mut scratch.presence, options)
-    })();
-    scratch.boundaries.clear();
-    result
 }

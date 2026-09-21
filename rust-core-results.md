@@ -1,8 +1,9 @@
 # Rust core implementation and comparisons
 
 The candidate implements storage, packing, navigation, typed scans, and query
-execution in Rust. C retains grammar preparation, private Tree-sitter traversal,
-tree-feller, and query compilation. Compiled query records stay in their native
+execution in Rust. C retains grammar preparation, tree-feller, and query
+compilation. Rust packing reads the private subtree layout through generated
+bindings and traverses directly into the encoder. Compiled query records stay in their native
 allocation; Rust borrows them and releases the owner on drop. Release execution
 trusts compiler output; debug builds validate it.
 

@@ -38,6 +38,11 @@ const char *sq_native_error_string(SQError);
 
 typedef struct SQGrammar SQGrammar;
 
+// one production's direct fields, indexed by structural child position
+typedef struct {
+  uint32_t offset, length;
+} DirectFieldSlice;
+
 // metadata borrowed by Rust; pointers remain valid while SQGrammar is retained
 typedef struct {
   const TSLanguage *language;
@@ -51,6 +56,12 @@ typedef struct {
   uint32_t dictionary_count, dictionary_words;
   uint32_t encoding, dictionary_length;
   uint8_t symbol_shift, separate;
+
+  const DirectFieldSlice *production_fields;
+  const TSFieldId *direct_fields;
+  const TSSymbol *alias_sequences;
+  const uint32_t *supertype_table;
+  uint32_t max_alias_sequence_length, supertype_table_capacity;
 } SQGrammarView;
 
 // owns the interned supertype masks and their open-addressed lookup table
@@ -70,11 +81,6 @@ void sq_native_supertype_grammar_delete(SQSupertypeGrammar *);
 uint32_t sq_native_supertype_mask_id(const SQSupertypeGrammar *, const uint64_t *);
 size_t sq_native_supertype_grammar_cache_size(const SQSupertypeGrammar *);
 bool sq_native_supertype_grammar_copy_cache(const SQSupertypeGrammar *, void *, size_t, SQError *);
-
-// one production's direct fields, indexed by structural child position
-typedef struct {
-  uint32_t offset, length;
-} DirectFieldSlice;
 
 // Codes place the public display ID immediately above a grammar-wide variant.
 // Dictionaries are shared by trees. Zero selects the unique display default

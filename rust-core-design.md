@@ -1,17 +1,17 @@
 # Rust core
 
-The current comparison baseline is `main` at `9a3f0292c`, which merges `iteration`
-through `dae674ea2`. The candidate implementation is in `crates/squatter-rust`.
-The port does not modify the reference. [rust-core-results.md](rust-core-results.md)
-distinguishes measurements against this baseline from the original `0c3f79ab5`
-baseline and records remaining promotion checks.
+The candidate implementation is in `crates/squatter-rust`. Its port does not
+modify the reference implementation. [rust-core-results.md](rust-core-results.md)
+records the immutable revisions used by each comparison and the remaining
+promotion checks.
 
 [rust-core-interfaces.md](rust-core-interfaces.md) specifies the private
 interfaces and ownership contracts. Preserve the existing public Rust API.
 
 Move packed storage, packing, traversal, and query execution into Rust. Keep
-Tree-sitter's private tree/grammar access, tree-feller, and query compilation in
-C behind explicit interfaces. Preserve the existing implementation for direct
+grammar preparation, tree-feller, and query compilation in C behind explicit
+interfaces. Rust packing reads private subtree layouts generated from the same
+Tree-sitter headers used by the native build. Preserve the existing implementation for direct
 correctness and performance comparison. Switching the default implementation
 depends on those comparisons passing.
 
@@ -84,7 +84,8 @@ flowchart TD
     Reference --> CCore[Existing C Squatter]
     Reference --> ReferenceScans[Existing Rust scans]
     Bench --> RustCore[Rust packed core]
-    RustCore --> Adapter[C tree and grammar adapter]
+    RustCore --> Adapter[C grammar adapter]
+    RustCore --> TS
     RustCore --> Compiler[C query compiler]
     RustCore --> Feller[C tree-feller adapter]
     CCore --> TS[One Tree-sitter runtime]
@@ -105,7 +106,8 @@ benchmarks. Rust callers invoke the Rust implementation directly. The adapter
 never calls public `sq_*` functions, owns a packed tree, or executes a packed
 query. There is no crate dependency cycle.
 
-Keep native interop in one internal Rust module. Use a few substantial modules
+Keep native ownership in `native.rs` and private subtree access in the packing
+traversal module. Use a few substantial modules
 for storage/packing, traversal/scans, and query execution; do not reproduce one
 module per C helper. Preserve the current typed scanning
 API and adapt its internals; experiment with reusing those kernels in other
@@ -141,58 +143,40 @@ specific `Send`/`Sync` audit.
 
 ## Mainline tree import and packing
 
-Use a resumable C traversal that fills a caller-provided batch of plain events.
-Its handle borrows the original `TSTree`; a Rust guard enforces that lifetime.
-The adapter resolves hidden wrappers, aliases, inherited fields, extras, and
-exact supertype membership. It emits visible topology only.
+Traverse private Tree-sitter subtrees and encode them in one Rust loop. The
+packing traversal module contains the generated layout bindings and raw reads.
+Bindgen uses the resolved Tree-sitter headers and target architecture; builds
+require libclang, supplied by the development shell. Cross builds must give
+bindgen the target's system headers as well as selecting the target C compiler.
 
-The implementation emits one record per visible node in reverse preorder, with
-its visible depth. This avoids separate Enter and Leave records. Native traversal
-retains the private frames needed to resolve hidden nodes; Rust needs only a
-stack of physical write boundaries indexed by visible depth.
+Visit children from last to first, then emit the parent directly into the shared
+encoder. Each frame stores the physical write boundary from before its children;
+it includes any waste introduced by descendant group closures. There is no event
+batch or separate stack indexed by visible depth.
 
-Node records carry byte and optional point coordinates, display and grammar IDs,
-field ID, last-visible-child status, extra/missing/subtree-error flags, and the
-prepared supertype code. A code is a direct mask for small supertype sets or an
-index into the prepared dictionary. Hidden-node effects must be fully represented
-before they are omitted. No raw subtree pointer crosses into Rust.
+The walker resolves hidden wrappers, aliases, inherited fields, extras, and
+supertype membership. Small masks stay in the frame; larger masks use a reusable
+arena and the immutable grammar dictionary. Point-free packing skips coordinate
+work. Rust owns grouping, optional columns, growth, compaction, and presence
+indexes.
 
-Visit children from last to first and emit their parent after them. Before
-encoding a record at depth `d`, extend the Rust boundary stack through `d` using
-the current write position for newly encountered ancestors. Encode the node
-relative to boundary `d`, then truncate the stack to `d`. Existing ancestor
-boundaries survive descendant emission and include any introduced group waste.
-Rust owns group-fit decisions, bases, optional columns, growth, final compaction,
-and presence-index construction.
-
-The traversal retains state across batch boundaries, which may occur at any
-depth. Scratch remains proportional to traversal depth, sibling-position scratch,
-and a bounded batch; do not create a full expanded copy of a mainline tree.
-Point-free packing continues to skip point work. A failed traversal or encoding
-discards the incomplete slab and leaves reusable contexts resettable.
-
-The fill function reports initialized event count and a distinct completion or
-error status. Only the initialized prefix is readable. Records belong to the
-caller; no adapter pointer may survive a refill. Batch size and scratch sizing
-remain subject to allocation, peak-scratch, and packing-time comparisons.
-Native traversal exposes the existing node-count estimate for initial capacity.
-A batch callback is a fallback if
-pull-state overhead is measurable; neither design requires callbacks for
-individual attributes.
+`PackContext` retains frame, position, mask, and presence-index scratch. Frames
+borrow the input only for the active walk. A guard clears their logical lengths
+on success, error, or unwind; unused capacity never owns native nodes. Heap
+metadata is read through raw pointers, without borrowing the concurrently
+updated reference count as part of a shared heap-header reference.
 
 ## Direct parsing
 
-Keep tree-feller's parser and reduction sink in C. Parsing returns a native-owned
-reduction view, then a native walker exposes the same visible event protocol.
-Rust consumes those events with the same encoder as mainline input. The native
-parser retains its arena between calls, but no completed Rust tree borrows it.
-Its reduction traversal retains the current field and supertype propagation.
+Keep tree-feller and its reduction sink in C. A Rust guard borrows the successful
+reduction arena and excludes parser mutation until encoding finishes. Rust walks
+those links and calls the same encoder directly, preserving field, sibling, and
+supertype propagation. No second node arena is constructed.
 
-This path already buffers reductions proportional to the raw parse. Do not add
-a second complete Rust record arena or claim the batching design eliminates the
-existing scratch. Move the current `sq_pack_reductions` traversal responsibilities
-to the adapter and its encoding responsibilities to Rust. Parsing no longer
-calls the packed-tree API from C.
+The native parser retains arena capacity between parses. Completed trees own
+their storage and grammar, and borrow neither the input tree nor parser scratch.
+Failed parsing clears logical state; failed encoding drops the partial tree and
+releases the reduction borrow.
 
 Preserve the existing eligibility rules: ABI 15, no external scanners or
 nonterminal extras, syntax errors reported, and no automatic recovery fallback.
@@ -540,8 +524,7 @@ a shared, clearer implementation when memory use also passes that gate.
 Build the candidate as a Rust library with a private native archive. A public C
 facade, candidate C ABI compatibility, and shared-library distribution are outside
 this implementation. The `tree-sitter` dependency supplies the runtime; the native
-archive must not add another copy. Native callbacks, if used for batched import,
-must not unwind through C.
+archive must not add another copy. Native callbacks must not unwind through C.
 
 Build the adapter against the headers for the resolved Tree-sitter dependency.
 Tree-sitter supplies `DEP_TREE_SITTER_INCLUDE`, and its published crate currently
@@ -686,11 +669,10 @@ candidate before changing that consumer. Temporary caches can be regenerated.
 1. **Freeze and measure the reference.** Add the candidate crate and comparison
    plumbing without changing the C reference. Verify one Tree-sitter runtime,
    disjoint native symbols, baseline repeatability, and standalone builds.
-2. **Define and check native interfaces.** Extract grammar views, batched tree
-   events, tree-feller reduction walking, and the owned compiler-result views. Test
-   these against existing metadata and traversal before using them to replace
-   core operations. Measure event production, direct compiled-record access, and
-   retained compiled-query storage.
+2. **Define and check native interfaces.** Expose immutable grammar tables,
+   borrowed subtree/reduction input, and owned compiler-result views. Test these
+   against existing metadata and traversal before replacing core operations.
+   Measure traversal/encoding, direct compiled-record access, and retained storage.
 3. **Implement storage, packing, and traversal.** Cross-load reference slabs,
    reproduce encoded output, and compare allocation/packing/read costs. Preserve
    SIMD, compact copying, borrowed storage, and optional layouts. Establish the
@@ -706,7 +688,7 @@ candidate before changing that consumer. Temporary caches can be regenerated.
    to promote the candidate to `tree-squatter`. Keep the reference available for
    regression checks rather than deleting it as part of promotion.
 
-The largest uncertain costs are the traversal batch boundary, extra metadata
-ownership, compiled-record layout, and preserving query-state/capture allocation
+The largest uncertain costs are traversal/encoding code generation, scratch and
+metadata allocation, compiled-record layout, and query-state/capture allocation
 behavior in Rust. These have explicit measurements above. Benefits from inlining
 and stronger ownership are expectations to test, not assumed speedups.

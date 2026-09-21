@@ -1,8 +1,4 @@
-use crate::{
-    Error, Grammar, PackOptions, Tree,
-    native::{NativeParser, Traversal},
-    packing::{Scratch, encode},
-};
+use crate::{Error, Grammar, PackContext, PackOptions, Tree, native::NativeParser};
 use tree_sitter::Point;
 
 /// Direct-parser failure, including its owned diagnostic and source position.
@@ -45,8 +41,7 @@ impl From<Error> for ParseError {
 /// Output trees own their storage and remain valid across reuse or parser drop.
 pub struct Parser {
     native: NativeParser,
-    traversal: Traversal,
-    scratch: Scratch,
+    pack: PackContext,
 }
 
 impl Parser {
@@ -54,8 +49,7 @@ impl Parser {
     pub fn new(grammar: &Grammar) -> Result<Self, ParseError> {
         Ok(Self {
             native: NativeParser::new(grammar)?,
-            traversal: Traversal::new()?,
-            scratch: Scratch::default(),
+            pack: PackContext::new()?,
         })
     }
 
@@ -70,20 +64,16 @@ impl Parser {
         options: PackOptions,
     ) -> Result<Tree, ParseError> {
         let reductions = self.native.parse(source.as_ref())?;
-        let mut events = reductions.events(&mut self.traversal, options.points)?;
-        Ok(encode(
-            reductions.grammar(),
-            &mut events,
-            &mut self.scratch,
-            options,
-        )?)
+        let (nodes, root) = reductions.nodes();
+        Ok(self
+            .pack
+            .pack_reductions(reductions.grammar(), nodes, root, options)?)
     }
 
     /// Release high-water scratch while retaining the prepared grammar.
     pub fn trim(&mut self) {
         self.native.trim();
-        self.traversal.trim();
-        self.scratch.trim();
+        self.pack.trim();
     }
 }
 

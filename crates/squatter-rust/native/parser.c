@@ -275,8 +275,10 @@ bool sq_native_parser_parse(SQParser *parser, const char *source, uint32_t lengt
   return false;
 }
 
-// Borrow the accepted reduction arena until traversal ends; the parser must remain idle.
-bool sq_native_parser_begin(SQParser *parser, SQTraversal *traversal, bool points, SQError *error) {
-  return sq_native_traversal_begin_reductions(traversal, parser->grammar, parser->reductions,
-                                              parser->count, parser->root, points, error);
+// The Rust parse guard retains the arena and excludes parser mutation.
+const SQReduction *sq_native_parser_reductions(const SQParser *parser, uint32_t *count,
+                                               uint32_t *root) {
+  *count = parser->count;
+  *root = parser->root;
+  return parser->reductions;
 }

@@ -2599,6 +2599,7 @@ dependencies = [
 name = "tree-squatter-rust"
 version = "0.1.0"
 dependencies = [
+ "bindgen",
  "cc",
  "regex",
  "tree-sitter",

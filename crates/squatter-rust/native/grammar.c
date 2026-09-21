@@ -150,6 +150,13 @@ static SQGrammar *grammar_new(const TSLanguage *language, const void *grammar_ca
       .dictionary_length = grammar->symbols.length,
       .symbol_shift = grammar->symbols.shift,
       .separate = grammar->symbols.separate,
+      .production_fields = grammar->production_fields,
+      .direct_fields = grammar->direct_fields,
+      .alias_sequences = language->alias_sequences,
+      .max_alias_sequence_length = language->max_alias_sequence_length,
+      .supertype_table = grammar->supertype_grammar ? grammar->supertype_grammar->table : NULL,
+      .supertype_table_capacity =
+          grammar->supertype_grammar ? grammar->supertype_grammar->table_capacity : 0,
   };
   return grammar;
 

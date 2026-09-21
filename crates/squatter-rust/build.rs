@@ -20,6 +20,19 @@ fn main() {
     .unwrap();
     let include = PathBuf::from(env::var_os("DEP_TREE_SITTER_INCLUDE").unwrap());
     let source = include.parent().unwrap().join("src");
+    bindgen::Builder::default()
+        .header(source.join("subtree.h").to_str().unwrap())
+        .clang_arg(format!("-I{}", include.display()))
+        .clang_arg(format!("--target={}", env::var("TARGET").unwrap()))
+        .allowlist_type("Subtree")
+        .parse_callbacks(Box::new(bindgen::CargoCallbacks::new()))
+        .generate_comments(false)
+        .layout_tests(true)
+        .generate()
+        .expect("generate Tree-sitter subtree layout")
+        .write_to_file(PathBuf::from(env::var_os("OUT_DIR").unwrap()).join("subtree.rs"))
+        .unwrap();
+    println!("cargo:rerun-if-changed={}", source.display());
     let feller = PathBuf::from("../../lib/tree_feller");
     let mut build = cc::Build::new();
     build
@@ -55,7 +68,6 @@ fn main() {
         "symbols.c",
         "supertypes.c",
         "query.c",
-        "traversal.c",
         "parser.c",
     ] {
         build.file(PathBuf::from("native").join(file));

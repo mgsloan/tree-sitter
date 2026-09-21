@@ -2,9 +2,8 @@
 
 Companion to [rust-core-design.md](rust-core-design.md). This specifies component
 boundaries, ownership, and error contracts implemented by `crates/squatter-rust`.
-The current comparison baseline is `main` at `9a3f0292c`, including `iteration`
-through `dae674ea2`. Earlier measurements against `0c3f79ab5` remain historical
-results; they do not establish performance against the refreshed reference.
+[rust-core-results.md](rust-core-results.md) identifies the immutable baseline
+and candidate revisions used by each comparison.
 
 Keep the public Rust API unchanged. The temporary `tree-squatter-rust` package
 allows comparison with `tree-squatter`; it does not introduce backend selection
@@ -14,7 +13,8 @@ Rust signatures below are interface sketches; private helper names can differ.
 The native declarations live in [native](crates/squatter-rust/native), with Rust
 owners and borrowed views in [native.rs](crates/squatter-rust/src/native.rs).
 Existing public signatures remain the contract, including macros and traits.
-Packing uses batches of reverse-preorder events with visible depth.
+Packing walks native subtrees or borrowed reductions in Rust and feeds the
+encoder directly in reverse preorder.
 
 ## Public API carried over
 
@@ -144,12 +144,13 @@ int32_t sq_native_grammar_copy_cache(
 | `symbol_encoding` | Fixed-width encoding mode, shift, separate-column flag, and views of the existing grammar-ID, default-code, variant-count, default-selector, and grammar-selector tables. |
 | `supertypes`, `supertype_indexes` | `NativeSlice<u16>` preserving ordering and the existing zero/one-based index conventions. |
 | `supertype_masks` | `NativeSlice<u64>` plus dictionary count and words per mask; native-endian grammar data, not persisted slab bytes. |
+| Packing tables | Direct fields by production/structural child, alias sequences and stride, and immutable supertype hash buckets/capacity. |
 
 The symbol encoding table follows [symbols.c](lib/squat/symbols.c): local codes,
 global selectors, or literal byte IDs. It must retain the current decoding and
 alias behavior; the interface does not require expanding it into a larger lookup
-table. Private production, alias, and inherited-field tables stay behind the
-native handle because only native traversal uses them.
+table. Production and alias tables remain owned by the native handle and are
+exposed through its immutable view for Rust packing.
 
 Grammar symbol metadata/name/public-map tables include two additional entries:
 builtin error at `symbol_count` and error-repeat at `symbol_count + 1`. Rust
@@ -186,110 +187,64 @@ to grammar preparation. Slab serialization belongs to Rust.
 
 ## Tree input and direct parsing
 
-A reusable native traversal context produces bounded batches of visible-tree
-events. It has three states: idle, reading a mainline tree, or reading reductions.
-Beginning requires idle; completion, error, or guard destruction ends the session
-and restores idle while retaining reusable scratch.
+`PackContext` owns reusable Rust frame, position, mask, and presence-index
+scratch. The mainline walker borrows `tree_sitter::Tree`; its root wrapper ties
+private subtree pointers to that borrow. The packing traversal module is the
+only Rust code that interprets the private subtree representation.
+
+Bindgen generates the subtree layouts, unions, and bitfield accessors from the
+resolved dependency's headers for the selected target. This requires libclang;
+the development shell supplies it. Cross builds also need matching target system
+headers, which bindgen accepts through `BINDGEN_EXTRA_CLANG_ARGS`.
+
+The inline/heap tag must be checked before choosing a union member. Nonterminal
+metadata is read only with a nonzero child count. Heap fields use raw accesses:
+a shared reference to the entire header would also cover the reference count,
+which other tree owners can update concurrently.
+
+The walker visits children last-to-first and emits the parent directly into the
+Rust encoder. Frames retain the subtree's physical starting boundary, including
+waste introduced by descendants. Hidden nodes propagate fields, aliases, sibling
+state, and supertypes without producing output. Disabling points skips position
+calculation. `InputNode` is an internal encoder argument, not an FFI record or
+retained batch.
+
+A walk guard clears every scratch vector's logical length on success, error, or
+unwind. Retained capacity never owns input pointers. A completed packed tree owns
+its slab and grammar independently of the packer or input. `trim` releases all
+retained traversal and presence scratch.
+
+The direct parser keeps its C-owned reduction arena. Its private bridge exposes
+that arena after a successful parse:
 
 ```c
-typedef struct SQNativeTraversal SQNativeTraversal;
-typedef struct SQNativeParser SQNativeParser;
-
-SQNativeTraversal *sq_native_traversal_new(int32_t *error);
-void sq_native_traversal_delete(SQNativeTraversal *traversal);
-void sq_native_traversal_trim(SQNativeTraversal *traversal);
-int32_t sq_native_traversal_begin_tree(
-    SQNativeTraversal *traversal, const SQNativeGrammar *grammar,
-    const TSTree *tree, uint32_t flags);
-int32_t sq_native_traversal_begin_reductions(
-    SQNativeTraversal *traversal, const SQNativeParser *parser, uint32_t flags);
-int32_t sq_native_traversal_fill(
-    SQNativeTraversal *traversal, SQNativeEvent *destination,
-    uint32_t capacity, SQNativeBatch *out);
-void sq_native_traversal_end(SQNativeTraversal *traversal);
-
-SQNativeParser *sq_native_parser_new(
-    SQNativeGrammar *grammar, SQNativeParseError *error);
-void sq_native_parser_delete(SQNativeParser *parser);
-void sq_native_parser_trim(SQNativeParser *parser);
-int32_t sq_native_parser_parse(
-    SQNativeParser *parser, const uint8_t *source, uint32_t length,
-    SQNativeParseError *error);
-void sq_native_parser_clear(SQNativeParser *parser);
+const SQReduction *sq_native_parser_reductions(
+    const SQParser *parser, uint32_t *count, uint32_t *root);
 ```
 
-`flags` bit zero indicates whether stored points are needed; it does not pass
-slab growth, compaction, or presence-index policy to C. `SQNativeBatch` has
-`uint32_t written` and `uint32_t state` (`MORE = 0` or `DONE = 1`). `DONE` may
-accompany a final nonempty batch. For nonzero capacity, `MORE` must make progress.
-On error the caller
-discards the batch and incomplete encoding; it never reads uninitialized slots.
-`end` and `clear` are infallible cleanup and tolerate an already idle context.
-
-`parser_parse` retains the successful reduction arena and root until `clear`.
-The result is represented by a Rust guard borrowing the parser, not another
-heap allocation. C owns reduction records; only its walker interprets them.
-The source is borrowed for parsing only. A failed parse clears logical state;
-retained capacity can be reused. `trim` is only allowed while idle. Parser
-construction retains the grammar and prepares its shared tree-feller tables.
-
-The Rust-side interfaces express these lifetimes:
+`SQReduction` and the Rust `#[repr(C)] Reduction` share child/sibling indexes,
+byte and point bounds, original symbol, alias, field, extra/visible flags, and
+visible descendant count. Absent links use `UINT32_MAX`; child links already run
+right to left. Hidden reductions have at least one child with visible output.
 
 ```rust
-impl NativeTraversal {
-    fn new() -> Result<Self, Error>;
-    fn begin_tree<'context, 'grammar, 'tree>(
-        &'context mut self, grammar: &'grammar Grammar,
-        tree: &'tree tree_sitter::Tree, points: bool,
-    ) -> Result<TreeImport<'context, 'grammar, 'tree>, Error>;
-
-    fn begin_reductions<'context, 'reductions>(
-        &'context mut self, reductions: &'reductions Reductions<'_>, points: bool,
-    ) -> Result<ReductionImport<'context, 'reductions>, Error>;
-    fn trim(&mut self);
-}
-
 impl NativeParser {
     fn new(grammar: &Grammar) -> Result<Self, ParseError>;
     fn parse(&mut self, source: &[u8]) -> Result<Reductions<'_>, ParseError>;
     fn trim(&mut self);
 }
 
-trait EventSource {
-    fn fill<'buffer>(
-        &mut self, buffer: &'buffer mut [MaybeUninit<NativeEvent>],
-    ) -> Result<EventBatch<'buffer>, Error>;
+impl Reductions<'_> {
+    fn grammar(&self) -> &Grammar;
+    fn nodes(&self) -> (&[Reduction], u32);
 }
-
-struct EventBatch<'buffer> { events: &'buffer [NativeEvent], done: bool }
 ```
 
-`EventSource` is private and statically dispatched. Both import guards implement
-it and call `traversal_end` on drop. `Reductions` exclusively borrows its parser
-and calls `parser_clear` on drop, after any reduction import has ended. The
-public `Parser` owns native parser state, a traversal context, and Rust packing
-scratch; its finished trees borrow none of these. `PackContext` owns the mainline
-traversal context and Rust packing scratch and can be reused across grammars.
-
-### Event representation
-
-The initial implementation emits one 40-byte record per visible node, in reverse
-preorder: children last-to-first, then their parent. Each record carries its
-visible depth. Rust retains a physical subtree boundary for each open depth;
-this includes waste introduced when a group closes during encoding.
-
-| Data | Contract |
-|---|---|
-| Visible topology | Visible depth, including a root at depth zero; hidden nodes are resolved before emission. |
-| Node identity | Display symbol, original grammar symbol, and inherited field ID as fixed-width integers. |
-| Position | Start/end bytes and optional start/end points; disabling points avoids coordinate work. |
-| Flags | Explicit last-visible-child, extra, missing, and subtree-error bits. |
-| Supertype code | Direct mask for small sets or index into the retained grammar dictionary. |
-
-The initial batch holds 128 records. Native traversal supplies a visible-node
-count estimate for the encoder's first allocation; it never substitutes for
-physical spans. Batch size remains a benchmark parameter. No event contains a
-borrowed private subtree pointer.
+`Reductions` exclusively borrows the parser and calls `parser_clear` on drop.
+The returned slice cannot outlive that guard. Rust walks the reductions and
+calls the same encoder without a native traversal session or expanded event
+arena. The public `Parser` owns native parser state and a `PackContext`.
+Syntax failures clear logical state; `trim` is allowed only while idle.
 
 ## Compiled-query interface
 
@@ -486,11 +441,6 @@ impl SlabBuilder {
     fn finish(self, scratch: &mut PackingScratch) -> Result<Tree, Error>;
 }
 
-fn encode_events(
-    grammar: &Grammar, source: &mut impl EventSource,
-    scratch: &mut PackingScratch, options: PackOptions,
-) -> Result<Tree, Error>;
-
 impl PackingScratch {
     fn clear(&mut self);
     fn trim(&mut self);
@@ -518,10 +468,9 @@ safety; full validation additionally checks auxiliary membership and canonical
 contents. Neither proves agreement with an external source or grammar identity.
 
 `finish` handles optional-column removal, requested repacking, and presence-index
-construction using retained scratch. `encode_events` accounts for waste when
-forming subtree spans, preserves reverse-preorder slots, and clears transient
-scratch after success or failure. The batch buffer and frame representation are
-part of the deferred packing protocol.
+construction using retained scratch. Traversal frames retain physical subtree
+boundaries through descendant emission; the encoder recomputes spans when a
+group closure adds waste. Walk guards clear transient scratch on every exit.
 
 The existing public `compact_size`, `copy_compact_into`, and `repack` are also the
 internal serialization interface; another serializer abstraction is unnecessary.

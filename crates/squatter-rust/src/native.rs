@@ -20,11 +20,6 @@ pub(crate) struct QueryHandle {
 }
 
 #[repr(C)]
-pub(crate) struct TraversalHandle {
-    _private: [u8; 0],
-}
-
-#[repr(C)]
 pub(crate) struct ParserHandle {
     _private: [u8; 0],
 }
@@ -54,6 +49,12 @@ pub(crate) struct GrammarView {
     pub dictionary_length: u32,
     pub symbol_shift: u8,
     pub separate: u8,
+    pub production_fields: *const Range,
+    pub direct_fields: *const u16,
+    pub alias_sequences: *const u16,
+    pub supertype_table: *const u32,
+    pub max_alias_sequence_length: u32,
+    pub supertype_table_capacity: u32,
 }
 
 impl GrammarView {
@@ -625,136 +626,19 @@ pub(crate) struct Point {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy, Default, Debug)]
-pub(crate) struct Event {
-    pub depth: u32,
+pub(crate) struct Reduction {
+    pub first_child: u32,
+    pub next_sibling: u32,
     pub start_byte: u32,
     pub end_byte: u32,
     pub start_point: Point,
     pub end_point: Point,
-    pub symbol: RemappedKindId,
-    pub grammar: RemappedGrammarKindId,
+    pub symbol: u16,
+    pub alias: u16,
     pub field: Option<FieldId>,
-    pub supertype: u16,
-    pub flags: u16,
-}
-const _: () = assert!(size_of::<Event>() == 40);
-
-pub(crate) struct Traversal(NonNull<TraversalHandle>);
-unsafe impl Send for Traversal {}
-impl Drop for Traversal {
-    fn drop(&mut self) {
-        unsafe {
-            sq_native_traversal_delete(self.0.as_ptr());
-        }
-    }
-}
-pub(crate) struct Events<'input> {
-    traversal: &'input mut Traversal,
-    // Native frames borrow tree/reduction storage between refills.
-    input: std::marker::PhantomData<&'input ()>,
-}
-
-impl Drop for Events<'_> {
-    fn drop(&mut self) {
-        unsafe {
-            sq_native_traversal_end(self.traversal.0.as_ptr());
-        }
-    }
-}
-
-impl Traversal {
-    pub fn new() -> Result<Self, Error> {
-        NonNull::new(unsafe { sq_native_traversal_new() })
-            .map(Self)
-            .ok_or(Error::Allocation)
-    }
-
-    pub fn trim(&mut self) {
-        unsafe {
-            sq_native_traversal_trim(self.0.as_ptr());
-        }
-    }
-
-    pub fn tree<'input>(
-        &'input mut self,
-        grammar: &'input Grammar,
-        tree: &'input tree_sitter::Tree,
-        points: bool,
-    ) -> Result<Events<'input>, Error> {
-        let mut error = 0;
-        if !unsafe {
-            sq_native_traversal_begin_tree(
-                self.0.as_ptr(),
-                grammar.raw.as_ptr(),
-                tree.root_node().into_raw().tree.cast(),
-                points,
-                &mut error,
-            )
-        } {
-            return Err(Error::from_code(error));
-        }
-        Ok(Events {
-            traversal: self,
-            input: std::marker::PhantomData,
-        })
-    }
-}
-
-impl Events<'_> {
-    pub fn expected_nodes(&self) -> u32 {
-        unsafe { sq_native_traversal_node_count(self.traversal.0.as_ptr()) }
-    }
-
-    pub fn fill<'buffer>(
-        &mut self,
-        buffer: &'buffer mut [MaybeUninit<Event>],
-    ) -> Result<(&'buffer [Event], bool), Error> {
-        let capacity = u32::try_from(buffer.len()).map_err(|_| Error::Overflow)?;
-        let mut written = 0;
-        let mut done = false;
-        let mut error = 0;
-        if !unsafe {
-            sq_native_traversal_fill(
-                self.traversal.0.as_ptr(),
-                buffer.as_mut_ptr().cast(),
-                capacity,
-                &mut written,
-                &mut done,
-                &mut error,
-            )
-        } {
-            return Err(Error::from_code(error));
-        }
-        debug_assert!(written <= capacity && (written != 0 || done));
-        Ok((
-            unsafe { std::slice::from_raw_parts(buffer.as_ptr().cast(), written as usize) },
-            done,
-        ))
-    }
-}
-
-unsafe extern "C" {
-    fn sq_native_traversal_new() -> *mut TraversalHandle;
-    fn sq_native_traversal_delete(traversal: *mut TraversalHandle);
-    fn sq_native_traversal_trim(traversal: *mut TraversalHandle);
-    fn sq_native_traversal_end(traversal: *mut TraversalHandle);
-    fn sq_native_traversal_node_count(traversal: *const TraversalHandle) -> u32;
-    fn sq_native_traversal_begin_tree(
-        traversal: *mut TraversalHandle,
-        grammar: *mut GrammarHandle,
-        tree: *const c_void,
-        points: bool,
-        error: *mut i32,
-    ) -> bool;
-    fn sq_native_traversal_fill(
-        traversal: *mut TraversalHandle,
-        events: *mut Event,
-        capacity: u32,
-        written: *mut u32,
-        done: *mut bool,
-        error: *mut i32,
-    ) -> bool;
+    pub extra: bool,
+    pub visible: bool,
+    pub visible_descendant_count: u32,
 }
 
 #[repr(C)]
@@ -846,7 +730,7 @@ pub(crate) struct Reductions<'parse>(&'parse mut NativeParser);
 impl Drop for Reductions<'_> {
     fn drop(&mut self) {
         // Clear logical state even if encoding fails or unwinds; capacity stays
-        // reusable. Events borrow this guard and must end before it is dropped.
+        // reusable. Borrowed reductions cannot outlive this guard.
         unsafe {
             sq_native_parser_clear(self.0.raw.as_ptr());
         }
@@ -858,27 +742,17 @@ impl Reductions<'_> {
         &self.0.grammar
     }
 
-    pub fn events<'input>(
-        &'input self,
-        traversal: &'input mut Traversal,
-        points: bool,
-    ) -> Result<Events<'input>, Error> {
-        let mut error = 0;
-        if !unsafe {
-            sq_native_parser_begin(
-                self.0.raw.as_ptr(),
-                traversal.0.as_ptr(),
-                points,
-                &mut error,
-            )
-        } {
-            return Err(Error::from_code(error));
-        }
-
-        Ok(Events {
-            traversal,
-            input: std::marker::PhantomData,
-        })
+    pub fn nodes(&self) -> (&[Reduction], u32) {
+        let mut count = 0;
+        let mut root = 0;
+        let nodes =
+            unsafe { sq_native_parser_reductions(self.0.raw.as_ptr(), &mut count, &mut root) };
+        // Successful parsing retains a nonempty arena until this guard drops.
+        debug_assert!(root < count);
+        (
+            unsafe { std::slice::from_raw_parts(nodes, count as usize) },
+            root,
+        )
     }
 }
 
@@ -896,103 +770,9 @@ unsafe extern "C" {
         length: u32,
         error: *mut ParseStatus,
     ) -> bool;
-    fn sq_native_parser_begin(
-        parser: *mut ParserHandle,
-        traversal: *mut TraversalHandle,
-        points: bool,
-        error: *mut i32,
-    ) -> bool;
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn batches_preserve_visible_nodes_across_refills() {
-        let languages = [
-            (
-                unsafe { Language::from_raw(tree_sitter_json::LANGUAGE.into_raw()().cast()) },
-                "{\"a\": [1, true, {\"b\": null}], \"c\": []}",
-            ),
-            (
-                unsafe { Language::from_raw(tree_sitter_c::LANGUAGE.into_raw()().cast()) },
-                "int f(int x) { /* extra */ if (x) return x + 1; return 0; }",
-            ),
-        ];
-        for (language, source) in languages {
-            let grammar = Grammar::new(&language).unwrap();
-            let mut parser = tree_sitter::Parser::new();
-            parser.set_language(&language).unwrap();
-            let tree = parser.parse(source, None).unwrap();
-            let mut expected = Vec::new();
-            let mut cursor = tree.walk();
-            let mut depth = 0;
-            loop {
-                expected.push((
-                    cursor.node(),
-                    depth,
-                    cursor.field_id().map_or(0, |field| field.get()),
-                ));
-                if cursor.goto_first_child() {
-                    depth += 1;
-                    continue;
-                }
-                loop {
-                    if cursor.goto_next_sibling() {
-                        break;
-                    }
-                    if !cursor.goto_parent() {
-                        break;
-                    }
-                    depth -= 1;
-                }
-                if depth == 0 {
-                    break;
-                }
-            }
-            let mut traversal = Traversal::new().unwrap();
-            for capacity in [1, 2, 7, 128] {
-                for points in [false, true] {
-                    let mut input = traversal.tree(&grammar, &tree, points).unwrap();
-                    let mut buffer = vec![MaybeUninit::uninit(); capacity];
-                    let mut actual = Vec::new();
-                    loop {
-                        let (batch, done) = input.fill(&mut buffer).unwrap();
-                        actual.extend_from_slice(batch);
-                        if done {
-                            break;
-                        }
-                    }
-                    assert_eq!(actual.len(), expected.len());
-                    for (event, (node, depth, field)) in actual.iter().zip(expected.iter().rev()) {
-                        assert_eq!(event.depth, *depth);
-                        assert_eq!(
-                            grammar.tables().decode_kind(event.symbol).get(),
-                            node.kind_id()
-                        );
-                        assert_eq!(
-                            grammar.tables().decode_grammar_kind(event.grammar).get(),
-                            node.grammar_id()
-                        );
-                        assert_eq!(event.field.map_or(0, FieldId::get), *field);
-                        assert_eq!(event.start_byte as usize, node.start_byte());
-                        assert_eq!(event.end_byte as usize, node.end_byte());
-                        assert_eq!(event.flags & 2 != 0, node.is_extra());
-                        assert_eq!(event.flags & 4 != 0, node.is_missing());
-                        assert_eq!(event.flags & 8 != 0, node.has_error());
-                        if points {
-                            assert_eq!(event.start_point.row as usize, node.start_position().row);
-                            assert_eq!(
-                                event.start_point.column as usize,
-                                node.start_position().column
-                            );
-                            assert_eq!(event.end_point.row as usize, node.end_position().row);
-                            assert_eq!(event.end_point.column as usize, node.end_position().column);
-                        }
-                    }
-                }
-            }
-        }
-    }
+    fn sq_native_parser_reductions(
+        parser: *const ParserHandle,
+        count: *mut u32,
+        root: *mut u32,
+    ) -> *const Reduction;
 }
