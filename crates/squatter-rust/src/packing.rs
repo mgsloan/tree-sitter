@@ -375,10 +375,9 @@ impl Builder {
         }
 
         let mut writer = data.writer();
-        for index in 0..self.count {
-            let pending = self.pending[index as usize];
+        for (index, pending) in self.pending[..self.count as usize].iter().enumerate() {
             let value = pending.values;
-            let slot = self.slot_base + index;
+            let slot = self.slot_base + index as u32;
             writer.put_byte(layout.span_delta, slot, (value.span - self.base.span) as u8);
             writer.put_byte(
                 layout.start_byte_delta,
