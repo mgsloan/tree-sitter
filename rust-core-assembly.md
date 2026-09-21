@@ -169,3 +169,57 @@ The [manifest](build/slab-writer/assembly/manifest.json) identifies executables;
 [symbol sizes](build/slab-writer/assembly/symbol-sizes.json) retain the static
 comparison. Benchmark results are recorded separately in
 [rust-core-results.md](rust-core-results.md).
+
+## Four packing follow-ups
+
+Starting from `cc783db89`, all four remaining candidates were built separately,
+then tested together with each change removed in turn. The retained code is
+`d96b0793d`; each optimization has its own commit:
+
+| Change | Commit | Assembly result |
+| --- | --- | --- |
+| Inline small-mask handling | `44b8fdd63` | Grammars with at most eight supertypes skip the lookup call and its six saved registers. Dictionary lookup stays outlined. |
+| Iterate a bounded pending prefix | `0e906b68a` | One bounds check per group replaces the per-slot checks; the no-points loop also loses its stack-memory accesses. |
+| Inline group fitting | `d12c23835` | Candidate values pass directly through the fit check; the separate `Builder::extend` call disappears. |
+| Initialize retained frames earlier | `d96b0793d` | Frame metadata is stored before scratch allocation and mask lookup, reducing live locals across calls. |
+
+The mask wrapper is forced inline, while `lookup_mask` retains the generic hash
+and probing path. Its body falls from 408 to 369 bytes. The small-mask case no
+longer enters that helper. Group-fit inlining increases traversal code size;
+the table below includes that tradeoff rather than treating call removal as an
+automatic improvement.
+
+| Traversal build | Code bytes | Fixed local stack bytes |
+| --- | ---: | ---: |
+| Baseline | 4,278 | 344 |
+| Small-mask change alone | 4,224 | 328 |
+| Group-fit change alone | 5,138 | 280 |
+| All four | 5,239 | 312 |
+
+The frame rewrite pushes an initialized `Frame` before filling child metadata
+and positions. It uses safe Rust and retains normal vector allocation. If a
+later allocation or lookup fails, `Walk::drop` clears the frame along with the
+other scratch state. `Walk::push` shrinks from 1,974 to 1,491 code bytes and from
+216 to 120 fixed stack bytes. Its emitted code is unchanged by the other three
+candidates.
+
+| Group-close loop | Baseline | Bounded prefix |
+| --- | ---: | ---: |
+| Instructions per slot, with points | 44 | 40 |
+| Instructions per slot, without points | 23 | 17 |
+| Stack-memory instructions, with points | 13 | 10 |
+| Stack-memory instructions, without points | 6 | 0 |
+| Fixed local stack bytes | 104 | 104 |
+| Entire function code bytes | 1,068 | 1,061 |
+
+These counts include the normal loop back edge and exclude setup and error
+paths. The bounded-prefix change produces the same loop counts independently
+and in the combined build. It preserves the cached slab writer.
+
+The [experiment report](build/packing-candidates/report.html) records cloud
+results, including removal experiments that test whether each change still
+helps in combination. [Baseline assembly](build/packing-candidates/baseline/assembly.txt),
+[selected assembly](build/packing-candidates/selected/assembly.txt),
+[symbol sizes](build/packing-candidates/selected/assembly.json), and
+[loop counts](build/packing-candidates/loop-counts.json) retain the static evidence.
+Conversion remains entirely in Rust.

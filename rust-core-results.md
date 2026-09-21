@@ -12,6 +12,75 @@ comparison crate. The default remains C-backed `tree-squatter`, and the C facade
 is deferred. Persistence and benchmarks can select the candidate with their
 `rust-core` feature. There is no native query execution fallback.
 
+## Four packing optimizations — 2026-09-21
+
+All four assembly candidates are retained, with one commit each. The baseline
+is `cc783db89`; the selected implementation is `d96b0793d`. Conversion stays in
+Rust, and the frame rewrite adds no unsafe code.
+
+The first cloud experiment builds each change independently. A second compares
+all four against builds with each change removed. Both cover pack-reuse over
+264 files and reverse execution order on the second pass:
+
+| Change | Independent time reduction | Contribution in combined build | Commit |
+| --- | ---: | ---: | --- |
+| Inline small-mask handling | 2.82% | 5.02% | `44b8fdd63` |
+| Hoist pending bounds checks | 0.28% | 1.32% | `0e906b68a` |
+| Inline group fitting | 1.99% | 4.00% | `d12c23835` |
+| Initialize retained frames earlier | 1.18% | 3.25% | `d96b0793d` |
+
+Every contribution is positive in both execution orders. These effects interact
+and cannot be added: the combined build improves pack-reuse by 9.02% in the
+removal experiment. A separate final comparison measures the selected source
+against the baseline and unchanged C (`fa2e389641c6`):
+
+| Operation | C ms | Rust before ms | Rust selected ms | Rust time reduction |
+| --- | ---: | ---: | ---: | ---: |
+| pack-cold | 69.098 | 71.985 | 66.298 | 7.90% |
+| pack-reuse | 68.655 | 71.697 | 65.529 | 8.60% |
+| pack-trim | 69.005 | 72.167 | 65.972 | 8.58% |
+
+Times sum representative per-file milliseconds across all 264 inputs. Rust now
+takes 4.1–4.6% less time than C for default packing. All 11 language reuse
+aggregates improve against the Rust baseline, from 6.52% for HTML to 12.09% for
+JSON. Forward/reverse reductions agree: cold 7.59% / 8.21%, reuse 8.62% / 8.59%,
+and trim 8.83% / 8.34%.
+
+The 22-file alternate profiles improve too: 11.4–11.6% without points and
+7.6–9.3% without presence indexes. No-points results vary more between rounds
+(7.5–15.3% improvements), and C remains slightly faster for that profile.
+
+Ordinary cold/warm parsing improves 1.43% / 0.93% on the 22-file subset, with
+both process orders improving. Direct cold/warm parsing improves 4.66% / 2.12%,
+but covers only four eligible inputs. These end-to-end effects are smaller than
+the isolated packing gains and have narrower corpus coverage.
+
+The [assembly analysis](rust-core-assembly.md#four-packing-follow-ups) records
+the tradeoffs. Small masks avoid a helper call; pending-prefix iteration moves
+the bounds check outside the slot loop; fitting stays in the emission function;
+and frame initialization reduces its fixed stack allocation from 216 to 120
+bytes. Inlining fitting increases traversal code size. The cloud results,
+including removal experiments, justify keeping that tradeoff.
+
+All benchmarks ran on the Google Cloud e2-standard-4 VM, pinned to CPU 1 under
+the shared lock. The independent screen and final packing comparison use five
+10 ms samples per process; removal experiments use five 15 ms samples. Tables
+average two process medians per file. Stage order rotates by language and
+reverses in the second round, along with input and language order. No laptop
+benchmarks ran.
+
+All 26 focused release tests and 2,110 eligible corpus comparisons pass. The
+two pre-existing shared Go capture exclusions are unchanged. Formatting passes;
+Clippy reports warnings only in unchanged code. The committed implementation
+matches the measured source patch exactly, and all result hashes and binary
+identities verify. The cloud instance was stopped after collection.
+
+The [formatted report](build/packing-candidates/report.html) and
+[Markdown report](build/packing-candidates/report.md) contain all profiles,
+language tables, repeated-run results, and parsing comparisons. Patches,
+executables, disassembly, raw samples, per-file summaries, and source identities
+are preserved under `build/packing-candidates/`.
+
 ## Cached slab writer — 2026-09-21
 
 The group-closing loop captures the slab pointer once through a borrowed
