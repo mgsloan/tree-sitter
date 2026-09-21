@@ -177,3 +177,7 @@ Each percentage compares against the navigation-only build within its own run. T
 Fresh-cursor cases also regressed, so allocation retention alone does not explain the timing. Code generation/layout remains a hypothesis, not an established cause. The final branch restores the navigation-only query implementation; the experiment and its allocation-specific test remain in commit `646c937d4`. These narrow `-O2` results do not establish how another integration, workload, or release build would behave.
 
 Next: deduplication specialization/outlining, then range-support caching and metadata access.
+
+**Merged newtypes work**
+
+Merge `cb39d71f1` brings in `rust-core` through `48126eec5` without conflicts. The final `lib/squat` sources match the measured navigation commit exactly. Post-merge checks passed: 16 binding tests across both implementations, the Rust navigation comparison, four Rust/C query comparisons, native unit/supertype/parser checks, and the native JSON query suite. Logs are under `build/navigation-query/`. The separate `rust-core` worktree was not modified.
