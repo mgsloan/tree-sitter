@@ -199,6 +199,7 @@ impl Builder {
         self.slot_base + self.count
     }
 
+    #[inline(always)]
     fn extend(&mut self, value: Values) -> bool {
         if self.count == 0 {
             self.base = value;
