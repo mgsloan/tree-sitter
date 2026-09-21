@@ -274,9 +274,10 @@ impl Tree {
 tree immutably, so workers can build side data while other readers use the tree.
 Completed values are `Send` and retain no tree/source borrow.
 
-`set_*` consumes a completed value, checks its dimensions and format, and replaces
-existing side data only on success. The caller supplies data for the matching
-tree and, for points, source. These structural checks do not prove that pairing. Cancellation or a failed build/set leaves the tree
+`set_*` consumes a completed value, performs the cheap checks described below, and
+replaces existing side data only on success. The caller supplies data for the
+matching tree and, for points, source. Count checks do not prove that pairing.
+Cancellation or a failed build/set leaves the tree
 unchanged. `drop_*` immediately frees that sidecar's allocations and returns
 nothing; dropping absent side data is a no-op. Neither operation changes the
 core slab, other sidecars, or node IDs.
@@ -363,9 +364,32 @@ impl PointData {
 ```
 
 The caller supplies sidecar bytes corresponding to the tree and intended source.
-Loading checks dimensions, lengths, format, and access bounds. Matching persisted
-records to their tree/source is separate work; no new fingerprint or cache-key
-scheme is specified here.
+Release loading performs only very cheap checks: recognized format, matching
+group/slot/symbol counts, and payload sizes consistent with those counts, using
+checked arithmetic. Do not scan bitmap words, point values, or tree nodes for
+validity; do not recompute contents or checksums. Setting loaded side data must
+not hide such a scan either.
+
+Debug builds additionally scan the contents and check their invariants against
+the tree. Compile these scans out of release builds using `debug_assertions`:
+
+```rust
+impl PresenceCache {
+    fn validate_loaded(&self, tree: &Tree) -> Result<(), SideDataError> {
+        self.validate_counts(tree)?;
+
+        #[cfg(debug_assertions)]
+        self.validate_contents(tree)?;
+
+        Ok(())
+    }
+}
+// PointData follows the same count-check / debug-content-scan split
+```
+
+The cheap checks do not establish content validity. Matching persisted records
+to their tree/source is separate work; no new fingerprint or cache-key scheme is
+specified here.
 
 Keep presence and points in separate LMDB databases, with independent read/build/
 write operations. Loading or setting a sidecar never compacts or reorders the
@@ -382,15 +406,14 @@ pub struct LoadOptions<'a> {
 }
 ```
 
-Validate dimensions, lengths, and access bounds. If a requested sidecar is missing,
-incompatible, or rejected, the loader builds it before returning
+If a requested sidecar is missing, incompatible, or rejected by the applicable
+checks, the loader builds it before returning
 success; construction failure is an error. Unrequested sidecars remain absent,
 using ordinary symbol scanning or row-zero point access. A core-tree hit alone
 does not fulfill the side-data request. Materialization occurs during the
 requested creation/load operation, never as a hidden accessor fallback.
-Preserve the existing safety-only corruption policy: these checks do not prove
-bitmap or point contents semantically correct. Loaded sidecars own their bytes
-and retain no LMDB transaction.
+Loaded sidecars own their bytes and retain no LMDB transaction. Release loads do
+not attempt to prove bitmap or point contents semantically correct.
 
 Publish sidecars independently, including after the tree transaction. Cleanup can
 delete them independently and must tolerate late writers without resurrecting
@@ -425,6 +448,9 @@ separately built or loaded sidecars; all must remain unchanged. Exercise every
 combination of creation flags, including defaults, on conversion and parse paths.
 Verify requested sidecars are present on success, disabled ones are absent, and
 dropping one frees its storage while the core and other sidecars remain alive.
+
+Test count/size rejection in both build modes. Debug builds must reject invalid
+contents even when counts match; release loading must not run a content scan.
 
 Measure explicit point materialization independently of accessor cost. Do not add
 lazy source lookup to preserve equivalence with absent point data.

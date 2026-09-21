@@ -303,6 +303,11 @@ never delete injection entries. Sidecar writes cannot resurrect source/artifacts
 Sidecar loading, validation, ownership, and publication follow
 [step 1](side-data.md#serialization-and-loading) and
 [forest serialization in step 2](forests-design.md#representation-and-serialization).
+Release loads only perform cheap count/size checks; they do not scan forest,
+manifest, or sidecar contents for validity. Debug builds perform those scans.
+This does not change validation of newly constructed parser requests before
+invoking the parser.
+
 Host and injection owners have independent side data. Sidecar allocations are
 separate from their core slabs; loading/setting/replacing them cannot shift core
 columns, descriptors, or tree IDs. Sidecars are never coallocated with the core

@@ -206,9 +206,10 @@ performs no source lookup and needs no retained source bytes. Forests with unrel
 sources can use explicit source conversion outside accessors, or separate owners when they need
 attached points. Per-tree point attachments are outside this initial interface.
 
-Side-data serialization remains the `to_bytes` API from step 1. Attachment checks
-target kind, region geometry, dimensions, and bounds. The caller supplies data
-built for the matching forest/region; structural checks alone do not prove that
+Side-data serialization remains the `to_bytes` API from step 1. Release loading
+and attachment only check target kind, region counts, dimensions, and payload
+sizes. Content scans run only in debug builds, as in step 1. The caller supplies
+data built for the matching forest/region; count checks alone do not prove that
 pairing. Reordering trees/groups while rebuilding a core requires fresh side
 data or a correct remapping. Loading or setting side data does not rebuild the
 core. Failed attachment leaves current side data unchanged. Workers can build through immutable region/forest borrows; completed
@@ -259,9 +260,15 @@ Region group bounds follow from its first and last trees. Tree node bounds follo
 from group size; the final occupied slot is the root under reverse-preorder
 encoding. Avoid redundant root/boundary tables unless measurements justify them.
 
-Serialize fields explicitly in little-endian form. Check arithmetic, offsets,
-alignment, column/index/coordinate bounds, and grammar bindings. Regions partition
+Serialize fields explicitly in little-endian form. Release loading performs only
+cheap header/count/size checks, including checked arithmetic for table and column
+extents. Do not scan descriptors, nodes, indexes, or coordinates for validity.
+
+Under `#[cfg(debug_assertions)]`, scan descriptors and contents: check alignment,
+offsets, column/index/coordinate bounds, and grammar references. Regions partition
 the tree table; trees partition used groups; topology stays inside each tree.
+These remain representation invariants; release loading does not revalidate them
+by scanning the stored contents.
 An empty forest has no tree/region intervals. Loading retains supplied grammar
 handles; each grammar index selects a caller-supplied grammar. The caller must
 supply the matching grammars; persistent compatibility checks are separate work.
@@ -299,6 +306,9 @@ Byte-based matching and core contents must remain unchanged. Setting/replacing/
 dropping independently built or loaded sidecars must preserve the core allocation
 address, serialized bytes, descriptor offsets, groups, and IDs. Test creation
 flags and immediate reclamation of each sidecar while the forest remains alive.
+Check malformed counts/sizes in release and debug builds, and malformed contents
+with matching counts in debug builds. Release load paths must contain no content
+validation scan.
 
 Later, compare per-tree/segmented queries with shared candidate scanning and
 contiguous reassembly. Include viewport selection, predicates, merging, copying,
