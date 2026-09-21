@@ -11,6 +11,49 @@ comparison crate. The default remains C-backed `tree-squatter`, and the C facade
 is deferred. Persistence and benchmarks can select the candidate with their
 `rust-core` feature. There is no native query execution fallback.
 
+## Google Cloud refresh and Rust packing optimization — 2026-09-21
+
+The merged `c-optimizations` baseline is `fa2e389641c6`, including the C repack/navigation changes and `rust-core` through `48126eec5`. Both backends were built from that snapshot with portable Cargo release defaults, Rust 1.95.0 / LLVM 22.1.2 and GCC 15.3.0. All timings ran on the Google Cloud `squatter-benchmark` e2-standard-4 VM, pinned to CPU 1.
+
+The deterministic medium corpus contains 264 files across 11 languages, totaling 3.39 MiB. Coverage includes all eight API operations, all 15 lifecycle operations, all 267 scan workloads across four profiles, and all 120 supported registry queries. API/tree/scan operations use the full eligible corpus; input-independent grammar and query lifecycle operations use representative files.
+
+**Speedup is C time divided by Rust time; above 1 favors Rust.** Times below sum representative per-file milliseconds. These API results precede the packing change.
+
+| Operation | Files | C ms | Rust ms | Rust speedup |
+| --- | ---: | ---: | ---: | ---: |
+| cold-parse | 264 | 1468.830 | 1415.938 | 1.04× |
+| warm-parse | 264 | 635.309 | 644.189 | 0.99× |
+| cursor-forward | 264 | 18.293 | 10.701 | 1.71× |
+| scan-forward | 264 | 73.957 | 55.672 | 1.33× |
+| seek-byte | 264 | 2.522 | 2.126 | 1.19× |
+| seek-point | 264 | 3.519 | 3.298 | 1.07× |
+| query-matches | 264 | 929.724 | 773.902 | 1.20× |
+| query-captures | 262 | 1126.098 | 920.705 | 1.22× |
+
+The scan workload medians are 1.19× with frequent kinds, 1.18× with sparse kinds, 1.40× with absent kinds, and 1.18× without the symbol index. Each profile has four workloads at least 5% slower in Rust. The C-backed public scan facade also uses Rust scan loops; these are backend comparisons.
+
+Commit `4650f3ab1` stores only pending ancestor boundaries during reverse-preorder packing. Leaves use the current position directly, avoiding stack writes/reads and unnecessary heap-stack growth at the inline boundary. Slab bytes and public APIs are unchanged.
+
+The separate packing experiment compares C, baseline Rust, and two candidates in forward/reverse process order. Each process uses five samples targeting 10 ms; each cell averages two process medians per file. All 264 files contribute to the default profile:
+
+| Operation | C ms | Rust before ms | Rust after ms | Rust time reduction | C / final Rust |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| pack-cold | 68.819 | 76.726 | 74.504 | 2.90% | 0.924× |
+| pack-reuse | 68.420 | 75.893 | 73.919 | 2.60% | 0.926× |
+| pack-trim | 68.616 | 76.407 | 74.319 | 2.73% | 0.923× |
+
+The retained change improves all 11 language aggregates. The 22-file alternate profiles also improve: packing time falls 1.7–2.0% without points and 1.5–2.2% without presence indexes. An additional equal-depth fast path produced no consistent benefit and was not retained. Median same-build repetition ratios in the default comparison range from 0.998 to 1.001.
+
+Rust packing still takes about 8% longer than C in the default profile. Other remaining targets are safety/backed loading (0.94×/0.93×), capture disabling (0.91×), and field scans: four-field counting is 0.80× and two-field enumeration is 0.85×. Query construction is near parity; small query-mutation timings need focused follow-up before attributing their ratios to specific code.
+
+The baseline uses C / Rust / Rust / C independent processes, five API repeats, and three scan/lifecycle samples targeting 20/10 ms. The final packing experiment uses C / baseline Rust / candidate A / candidate B / B / A / baseline Rust / C, reversing file and language order on odd rounds. No benchmarks ran on the laptop.
+
+Validation covers byte-exact C packing/cross-loading, deep/wide/error trees, points/presence/repack options, and a new sibling-tree fixture crossing the inline boundary. All 23 focused release tests pass. The full-corpus checks retain two pre-existing Go capture exclusions shared by C and Rust: `values_test.go` and `index_test.go` from Helm. The other 2,110 file/operation combinations pass with the committed implementation; timed API records have no failures.
+
+The [formatted report](build/rust-performance/cloud/report.html) and [Markdown report](build/rust-performance/cloud/report.md) contain all operation tables, language breakdowns, candidate comparisons, repeat controls, and exact exclusion paths. [Packing results](build/rust-performance/packing-full/cloud/summary.json) retain all per-file measurements. Source/input archives, binaries, patches, logs, hashes, and scripts are under `build/rust-performance/`; 1,545 baseline, 591 follow-up, and 63 final-validation artifact hashes verified. The initial full-disk preflight failed before timing and is excluded.
+
+The sections below retain earlier measurements and their original baselines.
+
 ## Baseline and measurement scope
 
 The original measurements use reference `0c3f79ab5`; `83d962cdd` differs only in
