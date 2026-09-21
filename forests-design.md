@@ -116,9 +116,10 @@ nodes, cursors, and scans borrow the owner; no view frees or retains a slab on i
 own. Sidecar handles live in the owner descriptor, outside the core slab.
 Each presence region and the point data have independently loadable allocations.
 Set/drop requires exclusive access to the forest and never shifts or rewrites
-its core columns, descriptor tables, groups, or IDs. No sidecar shares an
-allocation with the core or another sidecar, even at creation. Dropping a region
-cache frees its storage independently of other regions and point data.
+its core columns, descriptor tables, groups, or IDs. Built/copied sidecars never
+share an allocation with the core or another sidecar. Mapped sidecars retain
+backing owners as in step 1. Dropping a region cache frees its owned storage or
+releases its backing handle independently of other regions and point data.
 
 ```rust
 impl TreeLike for TreeView<'_> {
@@ -163,7 +164,12 @@ impl PresenceCache {
         cancel: Option<&AtomicBool>,
     ) -> Result<Self, SideDataError>;
 
-    pub fn from_region_bytes(
+    pub fn from_region_backing(
+        region: GrammarRegion<'_>,
+        backing: impl StableSlab,
+    ) -> Result<Self, SideDataError>;
+
+    pub fn copy_from_region_bytes(
         region: GrammarRegion<'_>,
         bytes: &[u8],
     ) -> Result<Self, SideDataError>;
@@ -176,7 +182,12 @@ impl PointData {
         cancel: Option<&AtomicBool>,
     ) -> Result<Self, SideDataError>;
 
-    pub fn from_forest_bytes(
+    pub fn from_forest_backing(
+        forest: &Forest,
+        backing: impl StableSlab,
+    ) -> Result<Self, SideDataError>;
+
+    pub fn copy_from_forest_bytes(
         forest: &Forest,
         bytes: &[u8],
     ) -> Result<Self, SideDataError>;
@@ -206,16 +217,19 @@ performs no source lookup and needs no retained source bytes. Forests with unrel
 sources can use explicit source conversion outside accessors, or separate owners when they need
 attached points. Per-tree point attachments are outside this initial interface.
 
-Side-data serialization remains the `to_bytes` API from step 1. Release loading
-and attachment only check target kind, region counts, dimensions, and payload
+Side data uses the `as_bytes` representation from step 1. The backing constructors
+read mapped payloads directly and retain their owners; the copy constructors
+allocate aligned storage and memcpy the same layout. Neither path decodes fields
+into another representation or reconstructs indexes. Release loading
+and attachment only check target kind, region counts, dimensions, alignment, and payload
 sizes. Content scans run only in debug builds, as in step 1. The caller supplies
 data built for the matching forest/region; count checks alone do not prove that
 pairing. Reordering trees/groups while rebuilding a core requires fresh side
 data or a correct remapping. Loading or setting side data does not rebuild the
 core. Failed attachment leaves current side data unchanged. Workers can build through immutable region/forest borrows; completed
 values retain no borrow. Set/drop requires exclusive owner access after those
-borrows end. Set replaces existing data on success; drop frees it without returning
-ownership and is a no-op when absent.
+borrows end. Set replaces existing data on success; drop frees owned storage or
+releases the mapped backing handle, returns nothing, and is a no-op when absent.
 Point attachment/removal preserves layout and IDs but switches the coordinate
 frame; presence attachment/removal preserves query results.
 

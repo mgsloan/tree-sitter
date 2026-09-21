@@ -100,11 +100,13 @@ Sidecars index core groups/slots; they are not appended columns addressed by
 offsets in the core header. Their own encoding and allocation sizes do not affect
 the core layout.
 
-Core, presence, and point data must use separate allocations, including when
-created together during conversion/parsing. Do not coallocate sidecars with the
-core or with each other: `drop_*` must release the selected sidecar's storage
-immediately while keeping the core and other sidecars alive. There is no shared
-backing that delays reclamation until the tree is dropped.
+Built or copied core, presence, and point data must use separate allocations,
+including when created together during conversion/parsing. Do not coallocate
+sidecars with the core or with each other. Mapped sidecars occupy separate LMDB
+values and retain their backing through an owner. `drop_*` immediately frees an
+owned sidecar allocation or releases its mapped backing handle, independently of
+the core. Releasing a mapped handle does not unmap the database or reclaim pages
+still held by other readers.
 
 ## Point access without source
 
@@ -278,8 +280,8 @@ Completed values are `Send` and retain no tree/source borrow.
 replaces existing side data only on success. The caller supplies data for the
 matching tree and, for points, source. Count checks do not prove that pairing.
 Cancellation or a failed build/set leaves the tree
-unchanged. `drop_*` immediately frees that sidecar's allocations and returns
-nothing; dropping absent side data is a no-op. Neither operation changes the
+unchanged. `drop_*` immediately frees owned storage or releases mapped backing and
+returns nothing; dropping absent side data is a no-op. Neither operation changes the
 core slab, other sidecars, or node IDs.
 Dropping points restores the row-zero frame; dropping presence changes only
 performance. Point eviction must respect the consumer's point requirements.
@@ -349,23 +351,47 @@ this step. Any later C facade must enforce the same exclusion on the caller side
 
 ## Serialization and loading
 
-Sidecar serialization uses the same owned types as construction:
+The in-memory sidecar representation is also its persisted representation: a
+small header and pointer-free payload, with offsets relative to the sidecar's
+start. Builders produce this layout directly. There is no separate encoding,
+decoding, pointer fixup, or reconstructed index when loading.
 
 ```rust
 impl PresenceCache {
-    pub fn to_bytes(&self) -> Result<Vec<u8>, SideDataError>;
-    pub fn from_bytes(tree: &Tree, bytes: &[u8]) -> Result<Self, SideDataError>;
+    pub fn as_bytes(&self) -> &[u8];
+    pub fn from_backing(
+        tree: &Tree,
+        backing: impl StableSlab,
+    ) -> Result<Self, SideDataError>;
+    pub fn copy_from_bytes(tree: &Tree, bytes: &[u8]) -> Result<Self, SideDataError>;
 }
 
 impl PointData {
-    pub fn to_bytes(&self) -> Result<Vec<u8>, SideDataError>;
-    pub fn from_bytes(tree: &Tree, bytes: &[u8]) -> Result<Self, SideDataError>;
+    pub fn as_bytes(&self) -> &[u8];
+    pub fn from_backing(
+        tree: &Tree,
+        backing: impl StableSlab,
+    ) -> Result<Self, SideDataError>;
+    pub fn copy_from_bytes(tree: &Tree, bytes: &[u8]) -> Result<Self, SideDataError>;
 }
 ```
 
+`as_bytes` borrows the existing layout without allocation. `from_backing` wraps
+stable bytes without copying the payload, retaining their owner for the sidecar's
+lifetime. Reuse the existing `StableSlab` ownership contract: bytes remain valid
+at a stable address and immutable while retained. The LMDB backing owner holds
+the read transaction; node access reads the mmap directly.
+
+`copy_from_bytes` allocates suitably aligned storage and copies the complete
+layout with a memcpy. The result has no dependency on the input bytes or LMDB
+transaction. Use it when independent ownership is preferable or mapped bytes
+do not meet alignment requirements. `from_backing` rejects unsuitable alignment;
+it does not silently allocate and copy. Both paths produce the same public
+sidecar type and use the same set/drop methods.
+
 The caller supplies sidecar bytes corresponding to the tree and intended source.
 Release loading performs only very cheap checks: recognized format, matching
-group/slot/symbol counts, and payload sizes consistent with those counts, using
+group/slot/symbol counts, alignment, and payload sizes consistent with those counts, using
 checked arithmetic. Do not scan bitmap words, point values, or tree nodes for
 validity; do not recompute contents or checksums. Setting loaded side data must
 not hide such a scan either.
@@ -412,8 +438,9 @@ success; construction failure is an error. Unrequested sidecars remain absent,
 using ordinary symbol scanning or row-zero point access. A core-tree hit alone
 does not fulfill the side-data request. Materialization occurs during the
 requested creation/load operation, never as a hidden accessor fallback.
-Loaded sidecars own their bytes and retain no LMDB transaction. Release loads do
-not attempt to prove bitmap or point contents semantically correct.
+Copied sidecars own their allocation; mapped sidecars retain the LMDB read
+transaction through their backing owner. Release loads do not attempt to prove
+bitmap or point contents semantically correct.
 
 Publish sidecars independently, including after the tree transaction. Cleanup can
 delete them independently and must tolerate late writers without resurrecting
@@ -427,8 +454,8 @@ never mutate allocations held by existing readers.
 2. Keep source-free point access and row-zero fallback; expose availability on
    tree/node/trait/attribute APIs.
 3. Add explicit point derivation, complete owned side data, and exclusive attachment.
-4. Add sidecar serialization and independent persistence with explicit point
-   availability requirements.
+4. Add direct mapped sidecar access, allocation-and-copy loading, and independent
+   persistence with explicit point availability requirements.
 
 Verify materialized points against explicit source conversion at zero/EOF, final
 newlines, CRLF, multibyte UTF-8 byte columns, and empty/missing nodes. Invalid byte
@@ -447,7 +474,13 @@ address, serialized bytes, offsets, and IDs before setting/replacing/dropping
 separately built or loaded sidecars; all must remain unchanged. Exercise every
 combination of creation flags, including defaults, on conversion and parse paths.
 Verify requested sidecars are present on success, disabled ones are absent, and
-dropping one frees its storage while the core and other sidecars remain alive.
+dropping one frees owned storage or releases mapped backing while the core and
+other sidecars remain alive.
+Verify mapped sidecars read the supplied payload without copying and retain its
+transaction for their lifetime. Copied sidecars must remain valid after the input
+backing is dropped. Check alignment rejection, relocation by memcpy, and matching
+results through both loading paths. Validation remains separate from decoding;
+only debug builds scan payload contents.
 
 Test count/size rejection in both build modes. Debug builds must reject invalid
 contents even when counts match; release loading must not run a content scan.
