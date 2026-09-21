@@ -1,6 +1,6 @@
 **Rust optimizations relevant to the C implementation — source audit, 2026-09-20**
 
-Start with direct repacking, cheaper navigation of known-valid nodes, query cursor reuse, and specialized query deduplication. There are also smaller opportunities in range handling, metadata, and the C-backed Rust scan facade. Most of the larger query and scan algorithms are already shared.
+Direct repacking and cheaper navigation of known-valid nodes are implemented and measured. Next is specialized query deduplication. There are also smaller opportunities in range handling, metadata, and the C-backed Rust scan facade. Most of the larger query and scan algorithms are already shared. Query cursor reuse was implemented, measured, and reverted after regressions.
 
 This audit compares the committed implementations at `9800d0c3fdd9`. The subsequent merge of local `main`, `c07d1b2a7`, changes documentation only. The working tree's ongoing typed-ID/API edits are not included in the performance conclusions. No compilation, tests, or benchmarks were run for this audit; no implementation changes were made.
 
@@ -29,7 +29,7 @@ Priority reflects the clarity and scope of the source difference, not a promised
 | --- | --- | --- |
 | First | Copy directly into a compact owned tree | Rust `Tree::repack` allocates the compact destination and calls `copy_compact_into`. C `sq_tree_repack` calls `sq_tree_from_bytes`, including full node/index validation, then `sq_resize`. Reuse C's existing compact-copy machinery without loading the tree again. This also avoids an intermediate oversized copy when capacity must shrink. |
 | Done | Use cheaper transitions from known-live slots | C now follows Rust's live-slot predecessor rule, reading waste only across group boundaries. Preorder, first-child, and sibling movement construct established live nodes directly; reverse preorder checks only the resulting tree boundary. Arbitrary-slot normalization and the checked public constructor remain separate. |
-| Done | Retain the query traversal cursor between executions | C now resets an existing traversal cursor and retains its parent stack, like Rust. Null-node execution deletes the traversal cursor. Fault injection verifies a warmed general-query execution allocates nothing; lifetime and fallback checks cover freed previous trees, invalid executions, and restoration from planned execution. |
+| Deferred after measurement | Retain the query traversal cursor between executions | Rust retains its parent stack. Two C versions eliminated warmed-execution allocations but slowed general query matches by 1.76% and 3.13% on the 264-file cloud corpus. Neither is retained; see the results below. A different integration would need fresh evidence. |
 | First | Separate small-state and indexed deduplication loops | Rust dispatches once to `compare_states::<false>` or `::<true>`. C tests `capture_comparison_index.size` within the pairwise loop and carries hash-bucket/bitmap state even on the small-state path. Give C separate specialized comparison kernels. |
 | First | Outline the deduplication pass | Rust explicitly marks `deduplicate` as `inline(never)` to keep its large working set out of the per-node matcher. C embeds the pass in `sq_query_cursor__advance`. A separate helper can reduce register pressure and hot-function size; actual generated code still needs later inspection. |
 | Done | Use the constant waste-column offset | C layout construction and waste access now share `SQ_WASTE_OFFSET`, derived from the header size and configured column alignment, like Rust's `Layout::WASTE`. Default and 32-slot/64-byte-alignment builds pass navigation boundary tests. |
@@ -110,7 +110,7 @@ The experiment assessments come from [rust-core-results.md](rust-core-results.md
 | Direct-parser preparation and reuse | Both retain native tree-feller preparation and parse scratch. The Rust branch provides no established direct-parser speedup to port. |
 | Typed IDs, ownership wrappers, compiler trust boundary | Useful Rust correctness/interface choices, not evidence of faster C execution. Do not remove C's recoverable errors or external-input validation to imitate Rust's allocation or ownership model. |
 
-Recommended order: direct repack; known-live navigation plus constant waste offset; query cursor reuse; deduplication specialization/outlining; range-support caching and metadata access; then the small facade changes. Keep each change separable so later measurements can attribute its effect. Leave the experimental kernels and packing redesign for targeted investigation when benchmarking is appropriate.
+Recommended order after repacking and navigation: deduplication specialization/outlining; range-support caching and metadata access; then the small facade changes. Cursor reuse is deferred after the measured regressions below. Keep each change separable so later measurements can attribute its effect. Leave the experimental kernels and packing redesign for targeted investigation when benchmarking is appropriate.
 
 **Direct repacking completed — 2026-09-20**
 
@@ -138,4 +138,42 @@ The [full report](build/repack/cloud/report.md) and [formatted tables](build/rep
 
 Local validation passed: native unit/supertype/parser checks, allocation-failure recovery, ASan/UBSan checks, a 32-slot/64-byte-alignment layout, 52 Rust binding/persistence tests (3 ignored), and native comparisons on 22 files across all 11 languages. The broad Rust suite was stopped during compilation; only the focused suites are counted. All benchmarking ran on Google Cloud.
 
-Known-live navigation, the constant waste-column offset, and query cursor reuse are implemented. Next: deduplication specialization/outlining, then range-support caching and metadata access.
+**Navigation and query cursor reuse — 2026-09-20**
+
+Commit `9e3da8376` implements known-live navigation and the constant waste offset. A Google Cloud comparison against `eeadedf53` used all 264 selected files across 11 languages. The baseline already includes encoded symbol comparisons and local child-seek scanning; this run does not isolate those earlier changes.
+
+Times sum one representative operation per file. Each value averages two process medians, each from five samples normalized by iteration count. Speedup is before / after.
+
+| Operation | Before, ms | Navigation, ms | Speedup |
+| --- | ---: | ---: | ---: |
+| Forward preorder | 9.510 | 2.227 | **4.27×** |
+| Reverse preorder | 21.277 | 3.911 | **5.44×** |
+| Cursor traversal | 21.446 | 14.551 | **1.47×** |
+| Traversal with attributes | 32.911 | 24.510 | **1.34×** |
+| Query matches, fresh cursor | 269.829 | 253.319 | 1.07× |
+| Query matches, reused cursor | 269.437 | 252.241 | 1.07× |
+| Query captures, fresh cursor | 570.635 | 552.609 | 1.03× |
+| Query captures, reused cursor | 487.858 | 472.131 | 1.03× |
+
+Query workloads use the general engine with `(_ (_) @child) @parent`. Fresh cases create and destroy the query cursor each iteration; reused cases retain it after warmup. Parsing, packing, query compilation, and correctness checks are outside timing. This isolates traversal and cursor reuse; it does not measure the default direct planner or the grammar highlight-query suite.
+
+The native harness and libraries use GCC 15.3.0 at `-O2 -g`, with assertions enabled. This differs from the older Cargo-release comparison. Runs use the same `e2-standard-4` VM, CPU 1 affinity, benchmark/activity locks, alternating build order, and reversed file order on alternating passes. Calibration targets 5 ms per sample after at least 1 ms of calibration, capped at 10,000 iterations. Fast cases can produce shorter samples.
+
+The first run compared baseline, navigation, and cursor reuse (`646c937d4`) in forward/reverse order: 1,584 successful commands, 12,672 workload rows, and 63,360 samples. All 3,179 downloaded artifact hashes verified. Node counts, slab sizes, and result checksums matched across all builds and repetitions. The [report](build/navigation-query/cloud/report.md) and [formatted tables](build/navigation-query/cloud/report.html) retain the complete results, language breakdowns, repetition checks, and provenance. Raw inputs, binaries, harness, source archive, patches, and test logs are under `build/navigation-query/`.
+
+Native unit, supertype, and parser checks passed, as did the alternate 32-slot/64-byte-alignment build, native comparisons across all 11 languages, and eight Rust binding tests for each change. The JSON query suite covered matches, captures, ranges, limits, removal, and optimization modes. ASan/UBSan passed navigation and cursor lifetime/fault-injection checks. The warmed cursor test observes zero allocation attempts and covers freed previous trees, invalid execution recovery, and direct-plan fallback.
+
+Cursor reuse passed those checks, but did not improve these query workloads. The initial implementation added 1.76% to reused match time. Inspection found that GCC outlined the reset helper; a second version used an explicit inline helper with an early reuse return. A separate navigation / revised / revised / navigation comparison covered the same 264 files:
+
+| Query operation | Initial reuse: time increase | Revised reuse: time increase |
+| --- | ---: | ---: |
+| Matches, fresh cursor | 1.60% | 3.08% |
+| Matches, reused cursor | 1.76% | 3.13% |
+| Captures, fresh cursor | 0.71% | 1.78% |
+| Captures, reused cursor | 0.33% | 1.30% |
+
+Each percentage compares against the navigation-only build within its own run. The follow-up completed 1,056 commands, producing 8,448 workload rows and 42,240 samples; all downloaded hashes and cross-build checksums verified. Same-build median repetition ratios ranged from 0.997 to 1.002. Its binaries, patch, raw results, and analysis are in `build/navigation-query/reset-followup/`.
+
+Fresh-cursor cases also regressed, so allocation retention alone does not explain the timing. Code generation/layout remains a hypothesis, not an established cause. The final branch restores the navigation-only query implementation; the experiment and its allocation-specific test remain in commit `646c937d4`. These narrow `-O2` results do not establish how another integration, workload, or release build would behave.
+
+Next: deduplication specialization/outlining, then range-support caching and metadata access.

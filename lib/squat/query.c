@@ -40,13 +40,8 @@ static void query_tree_cursor_delete(QueryTreeCursor *cursor) {
 }
 
 static void query_tree_cursor_reset(QueryTreeCursor *cursor, SQNode node) {
-  if (!node.tree) {
-    query_tree_cursor_delete(cursor);
-  } else if (cursor->cursor) {
-    sq_cursor_reset(cursor->cursor, node);
-  } else {
-    cursor->cursor = sq_cursor_new(node);
-  }
+  query_tree_cursor_delete(cursor);
+  cursor->cursor = sq_cursor_new(node);
   ts_assert(!node.tree || cursor->cursor);
 }
 
