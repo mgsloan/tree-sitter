@@ -12,6 +12,63 @@ comparison crate. The default remains C-backed `tree-squatter`, and the C facade
 is deferred. Persistence and benchmarks can select the candidate with their
 `rust-core` feature. There is no native query execution fallback.
 
+## Cached slab writer — 2026-09-21
+
+The group-closing loop captures the slab pointer once through a borrowed
+`SlabWriter`. Its lifetime prevents resizing or replacing the descriptor during
+writes. Existing byte/short setters share the same implementation, preserving
+unaligned little-endian storage. Traversal, group fitting, mask lookup, and
+pending-array iteration are unchanged.
+
+The [assembly follow-up](rust-core-assembly.md#slab-pointer-follow-up) confirms
+that per-slot descriptor pointer loads fall from six to zero with points, and
+four to zero without points. Both loops have five fewer instructions. Stack
+spills remain; fixed local stack space stays at 104 bytes, and extra setup grows
+the whole function from 1,034 to 1,068 bytes. The writer adds no allocation or
+out-of-line call.
+
+The Google Cloud comparison uses the full 264-file, 11-language corpus for
+default packing. The baseline is `bddbf8a38` (fused Rust from `288f1139e`), and C
+is unchanged from `fa2e389641c6`. Times sum representative per-file milliseconds:
+
+| Operation | C ms | Rust before ms | Rust after ms | Rust time reduction |
+| --- | ---: | ---: | ---: | ---: |
+| pack-cold | 70.633 | 74.452 | 73.268 | 1.59% |
+| pack-reuse | 70.166 | 73.908 | 72.730 | 1.59% |
+| pack-trim | 70.299 | 74.619 | 73.252 | 1.83% |
+
+The two input orders agree: cold packing improves 1.59% in each; reuse improves
+1.80% / 1.39%, and trim improves 1.84% / 1.82%. Median same-build repetition
+ratios lie between 0.999 and 1.002. Rust still takes 3.7–4.2% longer than C for
+these operations. Nine language reuse aggregates improve 1.2–2.9%; Bash and C++
+are approximately flat (-0.27% / +0.07%).
+
+The 22-file profile without presence indexes improves 1.2–2.1%. The no-points
+profile shows no clear gain, with opposite-sign results in the two process
+orders. Ordinary parse changes are below 0.5%; direct-parse results cover only
+four files and are mixed. These do not establish end-to-end parsing gains.
+
+All timings ran on the e2-standard-4 cloud VM, pinned to CPU 1 under the shared
+benchmark lock. Packing uses five samples targeting 10 ms, with C / before /
+after / after / before / C order and reversed files/languages on odd rounds.
+The initial 22-file pilot used 50 ms samples and found a 0.85% reuse improvement.
+No benchmarks ran on the laptop.
+
+All 26 focused release tests, 10 ASan storage/binding tests, and 2,110 eligible
+corpus comparisons pass. The two pre-existing shared Go capture exclusions are
+unchanged. Formatting passes; Clippy reports only existing warnings.
+
+The [formatted report](build/slab-writer/report.html) and
+[Markdown report](build/slab-writer/report.md) contain all profiles, language
+tables, repetition controls, and identities. All 790 medium-run and 136 pilot
+artifact hashes verified; [per-file results](build/slab-writer/cloud/summary.json),
+assembly, binaries, patches, and logs are preserved under `build/slab-writer/`.
+
+The full run completed at 06:18 UTC. The VM subsequently shut down and could not
+start SSH because its boot disk was full. Expanding the disk from 10 to 12 GB
+restored access; the completed results were collected and verified without
+repeating timings. The VM was stopped after recovery.
+
 ## Fused Rust packing and assembly comparison — 2026-09-21
 
 Commit `288f1139e` moves private subtree traversal and direct-parser reduction

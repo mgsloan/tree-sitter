@@ -225,6 +225,34 @@ pub(crate) struct TreeData {
     owned: bool,
 }
 
+// Capture the slab address once: raw stores otherwise make LLVM reload it
+// from the descriptor. The borrow excludes resizing while the writer is used.
+pub(crate) struct SlabWriter<'tree> {
+    bytes: NonNull<u8>,
+    borrow: PhantomData<&'tree mut [u8]>,
+}
+
+impl SlabWriter<'_> {
+    pub fn put_byte(&mut self, offset: SlabOffset, index: u32, value: u8) {
+        unsafe {
+            *self
+                .bytes
+                .as_ptr()
+                .add(offset.get() as usize + index as usize) = value;
+        }
+    }
+
+    pub fn put_short(&mut self, offset: SlabOffset, index: u32, value: u16) {
+        unsafe {
+            self.bytes
+                .as_ptr()
+                .add(offset.get() as usize + index as usize * 2)
+                .cast::<u16>()
+                .write_unaligned(value.to_le());
+        }
+    }
+}
+
 impl TreeData {
     #[inline]
     pub fn tables(&self) -> &GrammarView {
@@ -366,23 +394,19 @@ impl TreeData {
         unsafe { std::slice::from_raw_parts(self.bytes.as_ptr(), self.length as usize) }
     }
 
-    pub(crate) fn put_byte(&mut self, offset: SlabOffset, index: u32, value: u8) {
-        unsafe {
-            *self
-                .bytes
-                .as_ptr()
-                .add(offset.get() as usize + index as usize) = value;
+    pub(crate) fn writer(&mut self) -> SlabWriter<'_> {
+        SlabWriter {
+            bytes: self.bytes,
+            borrow: PhantomData,
         }
     }
 
+    pub(crate) fn put_byte(&mut self, offset: SlabOffset, index: u32, value: u8) {
+        self.writer().put_byte(offset, index, value);
+    }
+
     pub(crate) fn put_short(&mut self, offset: SlabOffset, index: u32, value: u16) {
-        unsafe {
-            self.bytes
-                .as_ptr()
-                .add(offset.get() as usize + index as usize * 2)
-                .cast::<u16>()
-                .write_unaligned(value.to_le());
-        }
+        self.writer().put_short(offset, index, value);
     }
 
     pub(crate) fn put_word(&mut self, offset: SlabOffset, index: u32, value: u32) {

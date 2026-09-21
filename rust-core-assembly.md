@@ -116,7 +116,56 @@ which implementation has lower total stack use. Code sizes are not timings.
 3. Revisit group-fit inlining and frame initialization after those narrower
    changes; monitor spills and duplicated code as well as call elimination.
 
-These follow-ups are not included in the current assembly. Conversion remains
-entirely in Rust. [rust-core-results.md](rust-core-results.md) records cloud
-timings and validation separately; assembly alone does not establish a speedup
-or explain the whole cold-parse time.
+These follow-ups are absent from the `288f1139e` assembly above. The next section
+examines slab-pointer caching; the other candidates remain open. Conversion
+remains entirely in Rust. [rust-core-results.md](rust-core-results.md) records
+cloud timings and validation separately; assembly alone does not establish a
+speedup or explain the whole cold-parse time.
+
+## Slab-pointer follow-up
+
+`TreeData::writer` now returns a `SlabWriter` that captures the slab pointer by
+value. Its lifetime borrows the descriptor mutably, excluding resizing or
+replacement until the last write. `Builder::close` uses one writer for its slot
+loop. The existing byte/short write methods delegate to the same implementation,
+preserving unaligned little-endian stores and the trusted-layout contract.
+
+The writer introduces no allocation or out-of-line helper calls. It removes the
+descriptor reloads from the loop without changing pending-array iteration,
+group-fit decisions, traversal, or supertype lookup. The compiler retains some
+cached addresses and values on the stack.
+
+| Group-close loop | Before | After |
+| --- | ---: | ---: |
+| Slab-pointer loads per slot, with points | 6 | 0 |
+| Instructions per slot, with points | 49 | 44 |
+| Slab-pointer loads per slot, without points | 4 | 0 |
+| Instructions per slot, without points | 28 | 23 |
+| Instructions referencing stack memory, with / without points | 13 / 6 | 13 / 6 |
+| Fixed local stack allocation | 104 bytes | 104 bytes |
+| Entire group-close function | 1,034 bytes | 1,068 bytes |
+
+Counts cover one loop body including its back edge on the normal path. They
+exclude entry, exit, and error paths, and do not measure cycles or cache misses.
+The extra setup increases total code size despite the smaller slot loops. All
+other inspected packing helpers retain their previous code sizes.
+
+The new points loop loads cached column addresses from stack slots, rather than
+following the slab pointer in the descriptor again after each store:
+
+```asm
+19c20d: mov 0x30(%rsp),%rcx
+19c212: mov %r11b,(%rcx,%rbx,1)  # span delta
+...
+19c21a: mov 0x38(%rsp),%r11
+19c21f: mov %dl,(%r11,%rbx,1)    # start-byte delta
+```
+
+[Before](build/slab-writer/assembly/before.asm.txt),
+[after](build/slab-writer/assembly/after.asm.txt), and
+[C](build/slab-writer/assembly/c.asm.txt) retain the complete function bodies.
+The [manifest](build/slab-writer/assembly/manifest.json) identifies executables;
+[loop counts](build/slab-writer/assembly/loop-counts.json) and
+[symbol sizes](build/slab-writer/assembly/symbol-sizes.json) retain the static
+comparison. Benchmark results are recorded separately in
+[rust-core-results.md](rust-core-results.md).

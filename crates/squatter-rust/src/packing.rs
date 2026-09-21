@@ -374,30 +374,31 @@ impl Builder {
             self.optional |= ERRORS;
         }
 
+        let mut writer = data.writer();
         for index in 0..self.count {
             let pending = self.pending[index as usize];
             let value = pending.values;
             let slot = self.slot_base + index;
-            data.put_byte(layout.span_delta, slot, (value.span - self.base.span) as u8);
-            data.put_byte(
+            writer.put_byte(layout.span_delta, slot, (value.span - self.base.span) as u8);
+            writer.put_byte(
                 layout.start_byte_delta,
                 slot,
                 (value.start_byte - self.base.start_byte) as u8,
             );
-            data.put_short(
+            writer.put_short(
                 layout.end_byte_delta,
                 slot,
                 (self.maximum.end_byte - value.end_byte) as u16,
             );
-            data.put_short(layout.supertype, slot, pending.supertype);
+            writer.put_short(layout.supertype, slot, pending.supertype);
             if self.points {
-                data.put_short(
+                writer.put_short(
                     layout.start_point,
                     slot,
                     (((value.start_row - self.base.start_row) << 8)
                         | (value.start_column - self.base.start_column)) as u16,
                 );
-                data.put_short(
+                writer.put_short(
                     layout.end_point,
                     slot,
                     (((self.maximum.end_row - value.end_row) << 8)
