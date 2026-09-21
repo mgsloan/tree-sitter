@@ -167,6 +167,10 @@ impl<'tree> Node<'tree> {
         self.packed_start_point().point()
     }
 
+    pub fn has_points(self) -> bool {
+        self.data().has_points()
+    }
+
     pub fn end_position(self) -> Point {
         self.packed_end_point().point()
     }
@@ -174,25 +178,19 @@ impl<'tree> Node<'tree> {
     #[inline]
     pub(crate) fn packed_start_point(self) -> PackedPoint {
         let data = self.data();
-        if !data.has_points() {
-            return PackedPoint(self.start_byte() as u64);
-        }
-
-        let base = data.long(data.layout.start_point_base, self.slot().group().get());
-        let delta = data.short(data.layout.start_point, self.slot().get());
-        PackedPoint(base) + expand_point(delta)
+        data.point_data.as_ref().map_or_else(
+            || PackedPoint(self.start_byte() as u64),
+            |points| points.start(self.slot().get()),
+        )
     }
 
     #[inline]
     pub(crate) fn packed_end_point(self) -> PackedPoint {
         let data = self.data();
-        if !data.has_points() {
-            return PackedPoint(self.end_byte() as u64);
-        }
-
-        let base = data.long(data.layout.end_point_base, self.slot().group().get());
-        let delta = data.short(data.layout.end_point, self.slot().get());
-        PackedPoint(base) - expand_point(delta)
+        data.point_data.as_ref().map_or_else(
+            || PackedPoint(self.end_byte() as u64),
+            |points| points.end(self.slot().get()),
+        )
     }
 
     #[inline]
@@ -449,6 +447,7 @@ impl<'tree> Node<'tree> {
             end_byte: self.end_byte(),
             start_position: self.start_position(),
             end_position: self.end_position(),
+            has_points: self.has_points(),
             is_named: self.is_named(),
             is_extra: self.is_extra(),
             is_missing: self.is_missing(),
@@ -542,14 +541,10 @@ impl<'tree> Node<'tree> {
         if start > end {
             return None;
         }
-        let data = self.data();
-        if POINTS && !data.has_points() {
-            return if start >> 32 == 0 && end >> 32 == 0 {
-                self.seek::<false>(start, end, named)
-            } else {
-                Some(self.seek_descent::<true>(start, end, named))
-            };
+        if POINTS {
+            return Some(self.seek_descent::<true>(start, end, named));
         }
+        let data = self.data();
         if start < self.start_key::<POINTS>() || end > self.end_key::<POINTS>() {
             return Some(self);
         }
@@ -561,17 +556,7 @@ impl<'tree> Node<'tree> {
         let mut high = self.slot().group().get();
         while low < high {
             let middle = low + (high - low) / 2;
-            let after = if POINTS {
-                let row = data.long(data.layout.start_point_base, middle) >> 32;
-                row > start >> 32
-                    || (row == start >> 32
-                        && self
-                            .at(SlotIx::new(data.group_end(middle) - 1))
-                            .start_key::<true>()
-                            > start)
-            } else {
-                data.word(data.layout.start_byte_base, middle) as u64 > start
-            };
+            let after = data.word(data.layout.start_byte_base, middle) as u64 > start;
             if after {
                 low = middle + 1;
             } else {
@@ -593,29 +578,13 @@ impl<'tree> Node<'tree> {
         }
         #[cfg(not(feature = "typed-seek"))]
         {
-            if POINTS {
-                let base = data.long(data.layout.start_point_base, low);
-                let threshold = point_threshold(
-                    (start >> 32) as i64 - (base >> 32) as i64,
-                    start as u32 as i64 - base as u32 as i64,
-                );
-                while slot < limit
-                    && threshold.is_none_or(|threshold| {
-                        data.short(data.layout.start_point, slot) as u32 > threshold
-                    })
-                {
-                    slot += 1;
-                }
+            let base = data.word(data.layout.start_byte_base, low) as u64;
+            let mask = start_mask(data, low, (start - base).min(255) as u8) >> (slot % GROUP_SIZE);
+            slot = if mask == 0 {
+                limit
             } else {
-                let base = data.word(data.layout.start_byte_base, low) as u64;
-                let mask =
-                    start_mask(data, low, (start - base).min(255) as u8) >> (slot % GROUP_SIZE);
-                slot = if mask == 0 {
-                    limit
-                } else {
-                    (slot + mask.trailing_zeros()).min(limit)
-                };
-            }
+                (slot + mask.trailing_zeros()).min(limit)
+            };
         }
         if slot == limit {
             slot = (low + 1) * GROUP_SIZE;
@@ -633,20 +602,6 @@ impl<'tree> Node<'tree> {
                 }
                 previous = previous.at(SlotIx::new(previous.previous_preorder_slot()));
             }
-        }
-
-        // Point end scans become expensive over large distances. Parent spans
-        // can skip the intervening subtrees; byte end scans remain cheap enough.
-        if POINTS && self.slot().get() - candidate.slot().get() > 512 * GROUP_SIZE {
-            while candidate.slot() < self.slot() {
-                let candidate_end = candidate.end_key::<POINTS>();
-                if candidate_end >= end && candidate_end > start && (!named || candidate.is_named())
-                {
-                    return Some(candidate);
-                }
-                candidate = candidate.parent().unwrap_or(self);
-            }
-            return Some(self);
         }
 
         if candidate.slot() < self.slot() {
@@ -681,22 +636,11 @@ impl<'tree> Node<'tree> {
             }
             #[cfg(not(feature = "typed-seek"))]
             {
-                let threshold = if POINTS {
-                    let base = data.long(data.layout.end_point_base, group);
-                    point_threshold(
-                        (base >> 32) as i64 - (end >> 32) as i64,
-                        base as u32 as i64 - end as u32 as i64 - (start == end) as i64,
-                    )
-                } else {
-                    let base = data.word(data.layout.end_byte_base, group) as u64;
-                    (base >= end && base > start).then(|| (base - end).min(base - start - 1) as u32)
-                };
+                let base = data.word(data.layout.end_byte_base, group) as u64;
+                let threshold = (base >= end && base > start)
+                    .then(|| (base - end).min(base - start - 1) as u32);
                 if let Some(threshold) = threshold {
-                    let offset = if POINTS {
-                        data.layout.end_point
-                    } else {
-                        data.layout.end_byte_delta
-                    };
+                    let offset = data.layout.end_byte_delta;
                     while candidate.slot().get() < limit {
                         if data.short(offset, candidate.slot().get()) as u32 <= threshold
                             && (!named || candidate.is_named())
@@ -710,21 +654,6 @@ impl<'tree> Node<'tree> {
             candidate.raw.slot = SlotIx::new((group + 1) * GROUP_SIZE);
         }
         Some(self)
-    }
-}
-
-// Row occupies the high byte of a point delta. A negative column difference
-// excludes the tied row but still permits all columns of smaller row deltas.
-#[cfg(not(feature = "typed-seek"))]
-fn point_threshold(rows: i64, columns: i64) -> Option<u32> {
-    if rows < 0 {
-        None
-    } else if rows > 255 {
-        Some(65535)
-    } else if columns < 0 {
-        (rows != 0).then(|| ((rows as u32) << 8) - 1)
-    } else {
-        Some(((rows as u32) << 8) | columns.min(255) as u32)
     }
 }
 
@@ -756,11 +685,6 @@ fn start_mask(data: &TreeData, group: u32, threshold: u8) -> u64 {
         }
         mask
     }
-}
-
-#[inline]
-fn expand_point(delta: u16) -> u64 {
-    ((delta as u64 >> 8) << 32) | (delta as u64 & 255)
 }
 
 pub struct Children<'tree> {

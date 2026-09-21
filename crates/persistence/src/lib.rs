@@ -94,10 +94,19 @@ pub enum WritePolicy {
     Disabled,
 }
 
-#[derive(Default)]
 pub struct LoadOptions<'a> {
+    pub pack: tree_sitter_squatter::PackOptions,
     pub write: WritePolicy,
     pub cancellation: Option<&'a AtomicBool>,
+}
+impl Default for LoadOptions<'_> {
+    fn default() -> Self {
+        Self {
+            pack: tree_sitter_squatter::PackOptions::default(),
+            write: WritePolicy::default(),
+            cancellation: None,
+        }
+    }
 }
 impl LoadOptions<'_> {
     fn cancelled(&self) -> bool {
@@ -188,8 +197,7 @@ pub struct PendingLoad {
     source: Arc<[u8]>,
     grammar: Grammar,
     store: Option<Arc<Store>>,
-    symbol_presence: bool,
-    points: bool,
+    pack: tree_sitter_squatter::PackOptions,
     write: WritePolicy,
     read: ReadPolicy,
     persistable: bool,
@@ -343,9 +351,15 @@ impl Persistence {
         grammar: &Grammar,
         parser: &mut tree_sitter::Parser,
     ) -> Result<LoadedFile, LoadError> {
-        Ok(self
-            .load_with_options(path, grammar, parser, LoadOptions::default())?
-            .file)
+        let options = LoadOptions {
+            pack: tree_sitter_squatter::PackOptions {
+                symbol_presence: self.options.symbol_presence,
+                points: self.options.points,
+                ..tree_sitter_squatter::PackOptions::default()
+            },
+            ..LoadOptions::default()
+        };
+        Ok(self.load_with_options(path, grammar, parser, options)?.file)
     }
 
     pub fn load_with_options(
@@ -477,25 +491,23 @@ impl Persistence {
             source.extend_from_slice(&chunk[..count]);
         }
         let source: Arc<[u8]> = source.into();
-        let request = Arc::new(Request::new(
-            encoded,
-            &source,
-            grammar,
-            self.options.symbol_presence,
-            self.options.points,
-        ));
+        let pack = options.pack;
+        let mut request =
+            Request::new(encoded, &source, grammar, pack.symbol_presence, pack.points);
         // Symlinked files outside the project can be read but are not persisted.
         let persistable = source_path
             .canonicalize()
             .is_ok_and(|p| p.starts_with(&self.root));
         let store = self.store.as_ref().filter(|_| persistable);
+        if let Some(store) = store {
+            request.current_guard = store.current_guard(&request);
+        }
         Ok(PendingLoad {
-            request,
+            request: Arc::new(request),
             source,
             grammar: grammar.clone(),
             store: store.cloned(),
-            symbol_presence: self.options.symbol_presence,
-            points: self.options.points,
+            pack,
             write: options.write,
             read: self.options.read,
             persistable,
@@ -561,6 +573,7 @@ impl PendingLoad {
         packing: Option<&mut Option<tree_sitter_squatter::PackContext>>,
     ) -> Result<LoadStep, LoadError> {
         let options = LoadOptions {
+            pack: self.pack,
             write: self.write,
             cancellation,
         };
@@ -569,28 +582,55 @@ impl PendingLoad {
         let hit = || {
             store.as_ref().and_then(|store| {
                 if self.read == ReadPolicy::PreferTransactionBacked
-                    && let Some(tree) =
-                        snapshot::get(store, &self.request, &self.source, &self.grammar)
+                    && let Some((tree, complete)) = snapshot::get(
+                        store,
+                        &self.request,
+                        &self.source,
+                        &self.grammar,
+                        cancellation,
+                    )
                 {
-                    return Some(LoadedTree::Backed(Arc::new(tree)));
+                    return Some((LoadedTree::Backed(Arc::new(tree)), complete));
                 }
                 store
-                    .get(&self.request, &self.source, &self.grammar)
-                    .map(|tree| LoadedTree::Owned(Arc::new(tree)))
+                    .get_with_cancel(&self.request, &self.source, &self.grammar, cancellation)
+                    .map(|(tree, complete)| (LoadedTree::Owned(Arc::new(tree)), complete))
             })
         };
-        let ready = |tree| {
-            LoadStep::Ready(LoadResult {
-                file: LoadedFile {
-                    source: self.source.clone(),
-                    tree,
-                    hit: true,
-                    cleanup: store
-                        .as_ref()
-                        .map(|store| (store.clone(), self.request.clone())),
-                },
-                pending_write: None,
-            })
+        let ready = |(tree, complete): (LoadedTree, bool)| {
+            let file = LoadedFile {
+                source: self.source.clone(),
+                tree,
+                hit: true,
+                cleanup: store
+                    .as_ref()
+                    .map(|store| (store.clone(), self.request.clone())),
+            };
+            let pending_write = store
+                .as_ref()
+                .filter(|_| self.write != WritePolicy::Disabled && !complete)
+                .map(|store| PendingWrite {
+                    store: Some(store.clone()),
+                    request: self.request.clone(),
+                    grammar: self.grammar.clone(),
+                    file: file.clone(),
+                });
+            if self.write == WritePolicy::Inline {
+                if let Some(write) = &pending_write {
+                    let _ = write.publish_with_cancellation(
+                        options.cancellation.unwrap_or(&AtomicBool::new(false)),
+                    );
+                }
+                LoadStep::Ready(LoadResult {
+                    file,
+                    pending_write: None,
+                })
+            } else {
+                LoadStep::Ready(LoadResult {
+                    file,
+                    pending_write,
+                })
+            }
         };
         if let Some(tree) = hit() {
             return Ok(ready(tree));
@@ -639,14 +679,7 @@ impl PendingLoad {
             return Err(LoadError::ParseFailed);
         };
         options.check()?;
-        let pack_options = tree_sitter_squatter::PackOptions {
-            // Retain transient capacity for the caller. Publication compacts
-            // directly into reserved LMDB storage, off the parse path.
-            repack: false,
-            symbol_presence: self.symbol_presence,
-            points: self.points,
-            initial_group_capacity: 0,
-        };
+        let pack_options = self.pack;
         let packed = if let Some(packing) = packing {
             if packing.is_none() {
                 *packing = Some(tree_sitter_squatter::PackContext::new().map_err(LoadError::Pack)?);

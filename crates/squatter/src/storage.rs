@@ -1,6 +1,7 @@
 use crate::{
     Error, Grammar, KindId,
     native::GrammarView,
+    side_data::{PointData, PresenceCache},
     types::{RemappedGrammarKindId, RemappedKindId, SlabOffset, SymbolCode},
 };
 use std::{
@@ -12,15 +13,13 @@ use std::{
 };
 
 include!(concat!(env!("OUT_DIR"), "/format.rs"));
-pub(crate) const VERSION: u32 = 0x5351_0001
+pub(crate) const VERSION: u32 = 0x5351_0011
     | match GROUP_SIZE {
         32 => 2,
         64 => 4,
         _ => 0,
     }
     | if ALIGNMENT == 64 { 8 } else { 0 };
-pub(crate) const NO_POINTS: u32 = 0x100;
-pub(crate) const PRESENCE: u32 = 0x200;
 pub(crate) const WIDE_SUPERTYPES: u32 = 0x400;
 pub(crate) const SEPARATE_GRAMMAR: u32 = 0x800;
 pub(crate) const EXTRAS: u32 = 0x1000;
@@ -45,10 +44,6 @@ pub(crate) struct Layout {
     pub field: SlabOffset,
     pub supertype: SlabOffset,
     pub last: SlabOffset,
-    pub start_point_base: SlabOffset,
-    pub start_point: SlabOffset,
-    pub end_point_base: SlabOffset,
-    pub end_point: SlabOffset,
     pub extra: SlabOffset,
     pub missing: SlabOffset,
     pub error: SlabOffset,
@@ -75,7 +70,6 @@ impl Layout {
             .checked_mul(GROUP_SIZE)
             .filter(|_| capacity != 0)
             .ok_or(Error::Overflow)?;
-        let points = flags & NO_POINTS == 0;
         let mut next = Self::WASTE.get() as u64;
         let mut column = |length: u64| {
             let offset = SlabOffset(next as u32);
@@ -94,18 +88,6 @@ impl Layout {
             field: column(aligned_bytes(slots, 2)),
             supertype: column(aligned_bytes(slots, 2)),
             last: column(bit_bytes(slots)),
-            start_point_base: column(if points {
-                aligned_bytes(capacity, 8)
-            } else {
-                0
-            }),
-            start_point: column(if points { aligned_bytes(slots, 2) } else { 0 }),
-            end_point_base: column(if points {
-                aligned_bytes(capacity, 8)
-            } else {
-                0
-            }),
-            end_point: column(if points { aligned_bytes(slots, 2) } else { 0 }),
             extra: column(if flags & EXTRAS != 0 {
                 bit_bytes(slots)
             } else {
@@ -132,9 +114,8 @@ impl Layout {
         Ok(result)
     }
 
-    fn columns(self, groups: u32, flags: u32) -> [(SlabOffset, usize); 19] {
+    fn columns(self, groups: u32, flags: u32) -> [(SlabOffset, usize); 15] {
         let slots = groups * GROUP_SIZE;
-        let points = flags & NO_POINTS == 0;
         [
             (self.waste, aligned_bytes(groups, 2) as usize),
             (self.start_byte_base, aligned_bytes(groups, 4) as usize),
@@ -147,38 +128,6 @@ impl Layout {
             (self.field, aligned_bytes(slots, 2) as usize),
             (self.supertype, aligned_bytes(slots, 2) as usize),
             (self.last, bit_bytes(slots) as usize),
-            (
-                self.start_point_base,
-                if points {
-                    aligned_bytes(groups, 8) as usize
-                } else {
-                    0
-                },
-            ),
-            (
-                self.start_point,
-                if points {
-                    aligned_bytes(slots, 2) as usize
-                } else {
-                    0
-                },
-            ),
-            (
-                self.end_point_base,
-                if points {
-                    aligned_bytes(groups, 8) as usize
-                } else {
-                    0
-                },
-            ),
-            (
-                self.end_point,
-                if points {
-                    aligned_bytes(slots, 2) as usize
-                } else {
-                    0
-                },
-            ),
             (
                 self.extra,
                 if flags & EXTRAS != 0 {
@@ -223,6 +172,8 @@ pub(crate) struct TreeData {
     // Small final shrinks retain the allocation; deallocation needs its original size.
     allocation_length: u32,
     owned: bool,
+    pub presence_cache: Option<PresenceCache>,
+    pub point_data: Option<PointData>,
 }
 
 // Capture the slab address once: raw stores otherwise make LLVM reload it
@@ -387,7 +338,7 @@ impl TreeData {
     }
 
     pub fn has_points(&self) -> bool {
-        self.flags() & NO_POINTS == 0
+        self.point_data.is_some()
     }
 
     pub fn slice(&self) -> &[u8] {
@@ -437,14 +388,6 @@ impl TreeData {
             (self.byte(offset, index / 8) & !mask) | if value { mask } else { 0 },
         );
     }
-
-    fn presence_size(&self) -> u64 {
-        presence_size(self.tables().symbol_count + 2, self.groups())
-    }
-}
-
-pub(crate) fn presence_size(symbols: u32, groups: u32) -> u64 {
-    (bit_bytes(symbols) + symbols as u64 * (groups as u64).div_ceil(32) * 4 + 7) & !7
 }
 
 fn prefix() -> usize {
@@ -513,12 +456,14 @@ impl Tree {
                 length,
                 allocation_length: length,
                 owned: borrowed.is_none(),
+                presence_cache: None,
+                point_data: None,
             });
         }
         Ok(Self(pointer.cast()))
     }
 
-    pub(crate) fn empty(grammar: &Grammar, capacity: u32, points: bool) -> Result<Self, Error> {
+    pub(crate) fn empty(grammar: &Grammar, capacity: u32) -> Result<Self, Error> {
         // Reserve optional columns while packing. Their presence is only known
         // after traversal, when unused columns can be removed together.
         let flags = VERSION
@@ -530,8 +475,7 @@ impl Tree {
                 SEPARATE_GRAMMAR
             } else {
                 0
-            }
-            | if points { 0 } else { NO_POINTS };
+            };
         let layout = Layout::new(capacity, flags)?;
         let mut tree = Self::allocate(grammar, layout, layout.end.get(), None, true)?;
         let data = tree.data_mut();
@@ -756,7 +700,7 @@ impl Tree {
 
     pub fn repack(&self) -> Result<Self, Error> {
         let layout = Layout::new(self.group_count(), self.data().flags())?;
-        let result = Self::allocate(
+        let mut result = Self::allocate(
             &self.data().grammar,
             layout,
             self.compact_size() as u32,
@@ -769,6 +713,13 @@ impl Tree {
                 result.data().length as usize,
             );
             self.copy_compact_into(destination)?;
+        }
+        if let Some(cache) = &self.data().presence_cache {
+            result
+                .set_presence_cache(PresenceCache::copy_from_bytes(&result, cache.as_bytes())?)?;
+        }
+        if let Some(points) = &self.data().point_data {
+            result.set_point_data(PointData::copy_from_bytes(&result, points.as_bytes())?)?;
         }
         Ok(result)
     }
@@ -818,85 +769,26 @@ impl Deref for BackedTree {
     }
 }
 
-impl BackedTree {
-    pub fn detach(&self) -> Result<Tree, Error> {
-        Tree::from_bytes_safety_checked(&self.data().grammar, self.as_bytes())
+impl std::ops::DerefMut for BackedTree {
+    fn deref_mut(&mut self) -> &mut Tree {
+        &mut self.tree
     }
 }
 
-#[derive(Default)]
-pub(crate) struct PresenceScratch {
-    counts: Vec<u32>,
-    bitmap: Vec<u8>,
-}
-
-impl PresenceScratch {
-    pub fn trim(&mut self) {
-        *self = Self::default();
+impl BackedTree {
+    pub fn detach(&self) -> Result<Tree, Error> {
+        let mut tree = Tree::from_bytes_safety_checked(&self.data().grammar, self.as_bytes())?;
+        if let Some(cache) = self.presence_cache() {
+            tree.set_presence_cache(PresenceCache::copy_from_bytes(&tree, cache.as_bytes())?)?;
+        }
+        if let Some(points) = self.point_data() {
+            tree.set_point_data(PointData::copy_from_bytes(&tree, points.as_bytes())?)?;
+        }
+        Ok(tree)
     }
 }
 
 impl Tree {
-    pub(crate) fn build_presence(&mut self, scratch: &mut PresenceScratch) {
-        let data = self.data_mut();
-        let groups = data.groups();
-        if groups <= 32 {
-            return;
-        }
-        let symbols = data.tables().symbol_count + 2;
-        // Rare symbols store descending slot IDs in the same space as a group
-        // bitmap. Convert once the occurrence list no longer fits.
-        let entry_bytes = groups.div_ceil(32) * 4;
-        let entry_slots = entry_bytes / 4;
-        scratch.counts.resize(symbols as usize, 0);
-        scratch.counts.fill(0);
-        scratch.bitmap.resize(entry_bytes as usize, 0);
-        let offset = data.layout.end;
-        let entries = offset + bit_bytes(symbols) as u32;
-        unsafe {
-            ptr::write_bytes(
-                data.bytes.as_ptr().add(offset.get() as usize),
-                0,
-                data.presence_size() as usize,
-            );
-            ptr::write_bytes(
-                data.bytes.as_ptr().add(entries.get() as usize),
-                255,
-                symbols as usize * entry_bytes as usize,
-            );
-        }
-        data.put_word(SlabOffset(0), 0, data.flags() | PRESENCE);
-        for group in (0..groups).rev() {
-            for slot in (group * GROUP_SIZE..data.group_end(group)).rev() {
-                let symbol = u32::from(data.symbol_index(slot).get());
-                let entry = entries + symbol * entry_bytes;
-                let count = &mut scratch.counts[symbol as usize];
-                if *count > entry_slots {
-                    data.put_bit(entry, group, true);
-                } else if *count < entry_slots {
-                    data.put_word(entry, *count, slot);
-                    *count += 1;
-                } else {
-                    scratch.bitmap.fill(0);
-                    for index in 0..entry_slots {
-                        let previous = data.word(entry, index) / GROUP_SIZE;
-                        scratch.bitmap[previous as usize / 8] |= 1 << (previous % 8);
-                    }
-                    scratch.bitmap[group as usize / 8] |= 1 << (group % 8);
-                    unsafe {
-                        ptr::copy_nonoverlapping(
-                            scratch.bitmap.as_ptr(),
-                            data.bytes.as_ptr().add(entry.get() as usize),
-                            entry_bytes as usize,
-                        );
-                    }
-                    data.put_bit(offset, symbol, true);
-                    *count = entry_slots + 1;
-                }
-            }
-        }
-    }
-
     pub fn group_has_symbol(&self, group: u32, symbol: KindId) -> bool {
         self.data().group_has_symbol(group, symbol)
     }
@@ -910,33 +802,15 @@ impl TreeData {
         if group >= self.groups() {
             return false;
         }
-        if self.flags() & PRESENCE == 0 {
-            return (group * GROUP_SIZE..self.group_end(group))
-                .any(|slot| self.symbol_index(slot) == symbol);
+        if let Some(cache) = &self.presence_cache {
+            return cache.has(group, symbol.get() as usize, self.groups());
         }
-        let symbol = u32::from(symbol.get());
-        let entry_bytes = self.groups().div_ceil(32) * 4;
-        let entry = self.layout.end
-            + bit_bytes(self.tables().symbol_count + 2) as u32
-            + symbol * entry_bytes;
-        if self.bit(self.layout.end, symbol) {
-            return self.bit(entry, group);
-        }
-        for index in 0..entry_bytes / 4 {
-            let slot = self.word(entry, index);
-            if slot == u32::MAX || slot / GROUP_SIZE < group {
-                break;
-            }
-            if slot / GROUP_SIZE == group {
-                return true;
-            }
-        }
-        false
+        (group * GROUP_SIZE..self.group_end(group)).any(|slot| self.symbol_index(slot) == symbol)
     }
 }
 
 impl Tree {
-    fn load(grammar: &Grammar, bytes: &[u8], borrowed: bool, full: bool) -> Result<Self, Error> {
+    fn load(grammar: &Grammar, bytes: &[u8], borrowed: bool, _full: bool) -> Result<Self, Error> {
         if bytes.len() < 16 || bytes.len() > u32::MAX as usize {
             return Err(Error::InvalidSlab);
         }
@@ -948,7 +822,7 @@ impl Tree {
         let flags = header(0);
         let groups = header(1);
         let capacity = header(2);
-        if flags & !(NO_POINTS | PRESENCE | WIDE_SUPERTYPES | OPTIONAL) != VERSION
+        if flags & !(WIDE_SUPERTYPES | OPTIONAL) != VERSION
             || groups == 0
             || groups > capacity
             || flags & WIDE_SUPERTYPES == 0
@@ -959,15 +833,7 @@ impl Tree {
             return Err(Error::InvalidSlab);
         }
         let layout = Layout::new(capacity, flags).map_err(|_| Error::InvalidSlab)?;
-        let trailing = if flags & PRESENCE != 0 {
-            if groups <= 32 {
-                return Err(Error::InvalidSlab);
-            }
-            presence_size(grammar.tables().symbol_count + 2, groups)
-        } else {
-            0
-        };
-        if layout.end.get() as u64 + trailing != bytes.len() as u64 {
+        if layout.end.get() as usize != bytes.len() {
             return Err(Error::InvalidSlab);
         }
         let tree = Self::allocate(
@@ -983,11 +849,6 @@ impl Tree {
             }
         }
         tree.validate_nodes()?;
-        // Safety-only loading may trust presence hints, but never node spans or
-        // table indexes: those determine subsequent unchecked memory accesses.
-        if full && flags & PRESENCE != 0 {
-            tree.validate_presence()?;
-        }
         Ok(tree)
     }
 
@@ -1006,16 +867,6 @@ impl Tree {
             let span_base = data.word(data.layout.span_base, group) as u64;
             let start_base = data.word(data.layout.start_byte_base, group) as u64;
             let end_base = data.word(data.layout.end_byte_base, group);
-            let start_point = if data.has_points() {
-                data.long(data.layout.start_point_base, group)
-            } else {
-                0
-            };
-            let end_point = if data.has_points() {
-                data.long(data.layout.end_point_base, group)
-            } else {
-                0
-            };
             for slot in (group * GROUP_SIZE..data.group_end(group)).rev() {
                 while ends.last().is_some_and(|end| *end > slot) {
                     ends.pop();
@@ -1084,98 +935,7 @@ impl Tree {
                 {
                     return Err(Error::InvalidSlab);
                 }
-                if data.has_points() {
-                    let start_delta = data.short(data.layout.start_point, slot) as u64;
-                    let end_delta = data.short(data.layout.end_point, slot) as u64;
-                    let start_row = (start_point >> 32) + (start_delta >> 8);
-                    let start_column = (start_point & 0xffff_ffff) + (start_delta & 255);
-                    let end_row = (end_point >> 32)
-                        .checked_sub(end_delta >> 8)
-                        .ok_or(Error::InvalidSlab)?;
-                    let end_column = (end_point & 0xffff_ffff)
-                        .checked_sub(end_delta & 255)
-                        .ok_or(Error::InvalidSlab)?;
-                    if start_row > u32::MAX as u64
-                        || start_column > u32::MAX as u64
-                        || (start_row, start_column) > (end_row, end_column)
-                    {
-                        return Err(Error::InvalidSlab);
-                    }
-                }
                 ends.push(end);
-            }
-        }
-        Ok(())
-    }
-
-    fn validate_presence(&self) -> Result<(), Error> {
-        let data = self.data();
-        let symbols = data.tables().symbol_count + 2;
-        let entry_bytes = data.groups().div_ceil(32) * 4;
-        let entry_slots = entry_bytes / 4;
-        let modes = data.layout.end;
-        let mode_bytes = bit_bytes(symbols) as u32;
-        let entries = modes + mode_bytes;
-        let mut local = [[0u32; 3]; 256];
-        let mut allocated = if symbols > 256 {
-            vec![[0u32; 3]; symbols as usize]
-        } else {
-            Vec::new()
-        };
-        let counts = if symbols <= 256 {
-            &mut local[..symbols as usize]
-        } else {
-            &mut allocated[..]
-        };
-        for group in (0..data.groups()).rev() {
-            for slot in (group * GROUP_SIZE..data.group_end(group)).rev() {
-                let symbol = u32::from(data.symbol_index(slot).get());
-                let entry = entries + symbol * entry_bytes;
-                let count = &mut counts[symbol as usize];
-                if data.bit(modes, symbol) {
-                    if !data.bit(entry, group) {
-                        return Err(Error::InvalidSlab);
-                    }
-                    if count[0] == 0 || count[2] != group {
-                        count[1] += 1;
-                        count[2] = group;
-                    }
-                } else if count[0] >= entry_slots || data.word(entry, count[0]) != slot {
-                    return Err(Error::InvalidSlab);
-                }
-                count[0] += 1;
-            }
-        }
-        for symbol in 0..symbols {
-            let count = counts[symbol as usize];
-            let entry = entries + symbol * entry_bytes;
-            let bitmap = data.bit(modes, symbol);
-            if bitmap != (count[0] > entry_slots) {
-                return Err(Error::InvalidSlab);
-            }
-            if bitmap {
-                if (0..entry_slots)
-                    .map(|index| data.word(entry, index).count_ones())
-                    .sum::<u32>()
-                    != count[1]
-                {
-                    return Err(Error::InvalidSlab);
-                }
-            } else {
-                for index in count[0]..entry_slots {
-                    if data.word(entry, index) != u32::MAX {
-                        return Err(Error::InvalidSlab);
-                    }
-                }
-            }
-        }
-        if symbols % 64 != 0 && data.long(modes + mode_bytes - 8, 0) >> (symbols % 64) != 0 {
-            return Err(Error::InvalidSlab);
-        }
-        for index in (mode_bytes as u64 + symbols as u64 * entry_bytes as u64)..data.presence_size()
-        {
-            if data.byte(modes, index as u32) != 0 {
-                return Err(Error::InvalidSlab);
             }
         }
         Ok(())

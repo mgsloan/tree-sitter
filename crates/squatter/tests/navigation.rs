@@ -40,7 +40,13 @@ fn navigation_and_indexed_ranges_survive_loading() {
                 },
             )
             .unwrap();
-            let expected = Tree::from_bytes(&grammar, actual.as_bytes()).unwrap();
+            let mut expected = Tree::from_bytes(&grammar, actual.as_bytes()).unwrap();
+            if let Some(points) = actual.point_data() {
+                let points =
+                    tree_squatter::PointData::copy_from_bytes(&expected, points.as_bytes())
+                        .unwrap();
+                expected.set_point_data(points).unwrap();
+            }
             let mut actual_cursor = actual.root_node().walk().unwrap();
             let mut expected_cursor = expected.root_node().walk().unwrap();
 

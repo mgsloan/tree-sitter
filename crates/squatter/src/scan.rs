@@ -24,9 +24,9 @@
 //! # }
 //! ```
 use crate::{
-    FieldId, FieldSet, GrammarKindId, KindId, KindSet, Node, SlotIx,
+    FieldId, FieldSet, GrammarKindId, KindId, KindSet, Node, PointData, SlotIx,
     native::GrammarView,
-    storage::{GROUP_SIZE, Layout, PRESENCE, TreeData, bit_bytes},
+    storage::{GROUP_SIZE, Layout, TreeData},
     types::{GroupIx, GroupSlotIx, PackedPoint, RemappedKindId, SlabOffset},
 };
 use std::{
@@ -119,252 +119,56 @@ impl<'tree> Columns<'tree> {
 
 #[derive(Clone, Copy, Default)]
 struct SymbolIndex {
-    modes: SlabOffset,
-    entries: SlabOffset,
     entry_bytes: u32,
 }
 impl SymbolIndex {
-    // Group counts fit in the u32 slot space, so entry lengths use at most 26 bits.
     const BITMAP: u32 = 1 << 31;
-    #[inline(always)]
-    fn new(group: &GroupRef<'_>, targets: impl Iterator<Item = RemappedKindId>) -> Self {
-        let tree = group.columns.tree();
-        if tree.flags() & PRESENCE == 0 {
-            return Self::default();
-        }
 
-        // The optional index follows the columns and includes both error symbols.
-        // Keep offsets only; entries borrow the tree's existing slab allocation.
-        let modes = tree.layout.end;
-        let mut index = Self {
-            modes,
-            entries: modes + bit_bytes(tree.tables().symbol_count + 2) as u32,
-            entry_bytes: tree.groups().div_ceil(32) * 4,
-        };
-        let mut bitmap = false;
-        let mut occupied = 0;
-        for target in targets {
-            let entry = index.entry(group, target);
-            if entry.bitmap {
-                bitmap = true;
-                let words = entry.bytes.len() / 4;
-                occupied += [0, words / 2, words - 1]
-                    .into_iter()
-                    .map(|position| entry.word(position).count_ones())
-                    .sum::<u32>();
-                // Estimate the union conservatively, allowing repeated bits.
-                // Bitmap probes only pay when most groups can be skipped.
-                if occupied > 12 {
-                    return Self::default();
-                }
+    fn new(group: &GroupRef<'_>, mut targets: impl Iterator<Item = RemappedKindId>) -> Self {
+        if group.columns.tree().presence_cache.is_some() && targets.next().is_some() {
+            Self {
+                entry_bytes: Self::BITMAP,
             }
+        } else {
+            Self::default()
         }
-        if bitmap {
-            index.entry_bytes |= Self::BITMAP;
-        }
-        index
     }
-    #[inline]
     fn enabled(self) -> bool {
         self.entry_bytes != 0
     }
-    #[inline]
-    fn entry<'tree>(self, group: &GroupRef<'tree>, target: RemappedKindId) -> SymbolEntry<'tree> {
-        let length = (self.entry_bytes & !Self::BITMAP) as usize;
-        let start = self.entries.get() as usize + usize::from(target.get()) * length;
-        SymbolEntry {
-            bytes: &group.columns.data()[start..start + length],
-            bitmap: group.columns.byte(self.modes, u32::from(target.get()) / 8)
-                & (1 << (target.get() % 8))
-                != 0,
-            shift: GROUP_SIZE.trailing_zeros(),
-        }
-    }
-    #[inline(always)]
     fn next_group(
         self,
         group: &GroupRef<'_>,
         targets: impl Iterator<Item = RemappedKindId>,
-        cursors: &mut [u32],
+        _cursors: &mut [u32],
         groups: Range<u32>,
         reverse: bool,
     ) -> Option<u32> {
-        if groups.is_empty() {
-            return None;
-        }
-        let nearest = if reverse {
-            groups.start
-        } else {
-            groups.end - 1
-        };
-        let mut next = None;
-        for (position, target) in targets.enumerate() {
-            if let Some(candidate) = self.entry(group, target).next_group(
-                groups.clone(),
-                reverse,
-                cursors.get_mut(position),
-            ) {
-                if candidate == nearest {
-                    return Some(candidate);
+        let cache = group.columns.tree().presence_cache.as_ref()?;
+        targets
+            .filter_map(|target| {
+                cache.next_group(
+                    groups.clone(),
+                    target.get() as usize,
+                    group.columns.tree().groups(),
+                    reverse,
+                )
+            })
+            .reduce(|previous, candidate| {
+                if reverse {
+                    previous.min(candidate)
+                } else {
+                    previous.max(candidate)
                 }
-                next = Some(next.map_or(candidate, |previous: u32| {
-                    if reverse {
-                        previous.min(candidate)
-                    } else {
-                        previous.max(candidate)
-                    }
-                }));
-            }
-        }
-        next
+            })
     }
-    #[inline(always)]
     fn sparse_mask(
         self,
-        group: &GroupRef<'_>,
-        targets: impl Iterator<Item = RemappedKindId>,
-        cursors: &mut [u32],
+        _group: &GroupRef<'_>,
+        _targets: impl Iterator<Item = RemappedKindId>,
+        _cursors: &mut [u32],
     ) -> Option<Mask> {
-        if !self.enabled() || self.entry_bytes & Self::BITMAP != 0 {
-            return None;
-        }
-        let mut matches = 0;
-        for (position, target) in targets.enumerate() {
-            let entry = self.entry(group, target);
-            let mut position = entry.seek_before(group.index.get() + 1, cursors.get_mut(position));
-            while position < entry.bytes.len() / 4 {
-                let slot = entry.word(position);
-                if slot == u32::MAX || slot >> entry.shift != group.index.get() {
-                    break;
-                }
-                matches |= 1 << (slot & (group.columns.group_size() - 1));
-                position += 1;
-            }
-        }
-        Some(Mask(matches))
-    }
-}
-struct SymbolEntry<'tree> {
-    bytes: &'tree [u8],
-    bitmap: bool,
-    shift: u32,
-}
-impl SymbolEntry<'_> {
-    #[inline]
-    fn word(&self, position: usize) -> u32 {
-        u32::from_le_bytes(
-            self.bytes[position * 4..position * 4 + 4]
-                .try_into()
-                .unwrap(),
-        )
-    }
-    // Sparse slots descend in physical order, followed by u32::MAX padding.
-    #[inline(always)]
-    fn before(&self, group: u32) -> usize {
-        self.before_in(group, 0..self.bytes.len() / 4)
-    }
-    #[inline]
-    fn precedes(&self, position: usize, group: u32) -> bool {
-        let slot = self.word(position);
-        slot != u32::MAX && slot >> self.shift >= group
-    }
-    #[inline(always)]
-    fn before_in(&self, group: u32, positions: Range<usize>) -> usize {
-        let (mut start, mut end) = (positions.start, positions.end);
-        while start < end {
-            let middle = start + (end - start) / 2;
-            if self.precedes(middle, group) {
-                start = middle + 1;
-            } else {
-                end = middle;
-            }
-        }
-        start
-    }
-    // A cursor is a verified search hint, so clipping, skipped groups, and
-    // direction changes do not require resetting it. Bound local probing to
-    // avoid walking a long posting prefix after a subtree or range jump.
-    #[inline(always)]
-    fn seek_before(&self, group: u32, cursor: Option<&mut u32>) -> usize {
-        let Some(cursor) = cursor else {
-            return self.before(group);
-        };
-
-        let length = self.bytes.len() / 4;
-        let mut position = (*cursor as usize).min(length);
-
-        if position != 0 && !self.precedes(position - 1, group) {
-            position -= 1;
-            for _ in 0..3 {
-                if position == 0 || self.precedes(position - 1, group) {
-                    *cursor = position as u32;
-                    return position;
-                }
-                position -= 1;
-            }
-            position = self.before_in(group, 0..position);
-        } else {
-            for _ in 0..4 {
-                if position == length || !self.precedes(position, group) {
-                    *cursor = position as u32;
-                    return position;
-                }
-                position += 1;
-            }
-            position = self.before_in(group, position..length);
-        }
-
-        *cursor = position as u32;
-        position
-    }
-    #[inline(always)]
-    fn next_group(
-        &self,
-        mut groups: Range<u32>,
-        reverse: bool,
-        cursor: Option<&mut u32>,
-    ) -> Option<u32> {
-        if self.bitmap {
-            while !groups.is_empty() {
-                let position = if reverse {
-                    groups.start / 32
-                } else {
-                    (groups.end - 1) / 32
-                };
-                let first = groups.start.saturating_sub(position * 32);
-                let end = (groups.end - position * 32).min(32);
-                let bits =
-                    self.word(position as usize) & (u32::MAX << first) & (u32::MAX >> (32 - end));
-                if bits != 0 {
-                    return Some(
-                        position * 32
-                            + if reverse {
-                                bits.trailing_zeros()
-                            } else {
-                                31 - bits.leading_zeros()
-                            },
-                    );
-                }
-                if reverse {
-                    groups.start = (position + 1) * 32;
-                } else {
-                    groups.end = position * 32;
-                }
-            }
-            None
-        } else {
-            let position = if reverse {
-                self.seek_before(groups.start, cursor).checked_sub(1)?
-            } else {
-                self.seek_before(groups.end, cursor)
-            };
-            if position >= self.bytes.len() / 4 {
-                return None;
-            }
-            let slot = self.word(position);
-            let group = slot >> self.shift;
-            (slot != u32::MAX && groups.contains(&group)).then_some(group)
-        }
+        None
     }
 }
 
@@ -1518,6 +1322,33 @@ struct BytePositions<'group, 'tree>(&'group GroupRef<'tree>);
 struct PointPositions<'group, 'tree, const STORED: bool> {
     group: &'group GroupRef<'tree>,
 }
+struct AbsolutePointColumn<'tree, const END: bool> {
+    points: &'tree PointData,
+    first_slot: u32,
+    count: u32,
+}
+impl<const END: bool> PositionColumn for AbsolutePointColumn<'_, END> {
+    type Position = PackedPoint;
+    fn minimum(&self) -> PackedPoint {
+        (0..self.count)
+            .map(|slot| self.get(slot))
+            .min()
+            .unwrap_or(PackedPoint(0))
+    }
+    fn maximum(&self) -> PackedPoint {
+        (0..self.count)
+            .map(|slot| self.get(slot))
+            .max()
+            .unwrap_or(PackedPoint(0))
+    }
+    fn get(&self, slot: u32) -> PackedPoint {
+        if END {
+            self.points.end(self.first_slot + slot)
+        } else {
+            self.points.start(self.first_slot + slot)
+        }
+    }
+}
 struct ByteColumn<'tree, const END: bool> {
     base: usize,
     deltas: ColumnDeltas<'tree>,
@@ -1553,14 +1384,6 @@ fn column_deltas<'tree>(
         length: group.columns.group_size() as usize * width,
     }
 }
-#[inline]
-fn point_base(group: &GroupRef<'_>, offset: SlabOffset) -> PackedPoint {
-    let offset = offset.get() as usize + group.index.get() as usize * 8;
-    PackedPoint(u64::from_le_bytes(
-        group.columns.data()[offset..offset + 8].try_into().unwrap(),
-    ))
-}
-
 #[inline]
 fn byte_cutoff(base: u64, position: u64, inclusive: bool, limit: u32) -> u32 {
     position.checked_sub(base).map_or(0, |delta| {
@@ -1857,38 +1680,43 @@ impl<'tree> Positions for BytePositions<'_, 'tree> {
         }
     }
 }
-impl<'tree, const STORED: bool> Positions for PointPositions<'_, 'tree, STORED> {
+impl<'tree> Positions for PointPositions<'_, 'tree, false> {
     type Position = PackedPoint;
-    type Start = PointColumn<'tree, false, STORED>;
-    type End = PointColumn<'tree, true, STORED>;
+    type Start = PointColumn<'tree, false, false>;
+    type End = PointColumn<'tree, true, false>;
     #[inline]
     fn start(&self) -> Self::Start {
-        if STORED {
-            PointColumn {
-                base: point_base(self.group, self.group.columns.layout().start_point_base),
-                deltas: column_deltas(self.group, self.group.columns.layout().start_point, 2),
-            }
-        } else {
-            let column = BytePositions(self.group).start();
-            PointColumn {
-                base: PackedPoint(column.base as u64),
-                deltas: column.deltas,
-            }
+        let column = BytePositions(self.group).start();
+        PointColumn {
+            base: PackedPoint(column.base as u64),
+            deltas: column.deltas,
         }
     }
     #[inline]
     fn end(&self) -> Self::End {
-        if STORED {
-            PointColumn {
-                base: point_base(self.group, self.group.columns.layout().end_point_base),
-                deltas: column_deltas(self.group, self.group.columns.layout().end_point, 2),
-            }
-        } else {
-            let column = BytePositions(self.group).end();
-            PointColumn {
-                base: PackedPoint(column.base as u64),
-                deltas: column.deltas,
-            }
+        let column = BytePositions(self.group).end();
+        PointColumn {
+            base: PackedPoint(column.base as u64),
+            deltas: column.deltas,
+        }
+    }
+}
+impl<'tree> Positions for PointPositions<'_, 'tree, true> {
+    type Position = PackedPoint;
+    type Start = AbsolutePointColumn<'tree, false>;
+    type End = AbsolutePointColumn<'tree, true>;
+    fn start(&self) -> Self::Start {
+        AbsolutePointColumn {
+            points: self.group.columns.tree().point_data.as_ref().unwrap(),
+            first_slot: self.group.first_slot().get(),
+            count: self.group.used(),
+        }
+    }
+    fn end(&self) -> Self::End {
+        AbsolutePointColumn {
+            points: self.group.columns.tree().point_data.as_ref().unwrap(),
+            first_slot: self.group.first_slot().get(),
+            count: self.group.used(),
         }
     }
 }
@@ -1946,7 +1774,7 @@ impl Coordinates for Points {
         let end = if !self.stored {
             PackedPoint(BytePositions(group).end().maximum() as u64)
         } else {
-            point_base(group, group.columns.layout().end_point_base)
+            PointPositions::<true> { group }.end().maximum()
         };
         match bound {
             Included(limit) | Excluded(limit) => {
@@ -3505,53 +3333,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn sparse_cursor_boundaries() {
-        for shift in [4, 5, 6] {
-            let slots = (0..512u32)
-                .rev()
-                .filter(|group| group % 7 == 0)
-                .flat_map(|group| {
-                    (0..1 + group % (1 << shift))
-                        .rev()
-                        .map(move |slot| (group << shift) + slot)
-                })
-                .collect::<Vec<_>>();
-            for length in [0, 1, slots.len() / 2, slots.len()] {
-                for padding in [0, 17] {
-                    let slots = slots[..length]
-                        .iter()
-                        .copied()
-                        .chain(std::iter::repeat_n(u32::MAX, padding))
-                        .collect::<Vec<_>>();
-                    let bytes = slots
-                        .iter()
-                        .flat_map(|slot| slot.to_le_bytes())
-                        .collect::<Vec<_>>();
-                    let entry = SymbolEntry {
-                        bytes: &bytes,
-                        bitmap: false,
-                        shift,
-                    };
-                    for initial in [0, (slots.len() / 2) as u32, slots.len() as u32, u32::MAX] {
-                        let mut cursor = initial;
-                        for group in (0..=513)
-                            .chain((0..=513).rev())
-                            .chain((0..1024).map(|value| (value * 137) % 514))
-                        {
-                            let expected = slots
-                                .iter()
-                                .position(|slot| *slot == u32::MAX || *slot >> shift < group)
-                                .unwrap_or(slots.len());
-                            assert_eq!(entry.seek_before(group, Some(&mut cursor)), expected);
-                            assert_eq!(cursor as usize, expected);
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    #[test]
     fn query_masks_match_indexed_masks_without_preparing_traversal() {
         let language = unsafe {
             tree_sitter::Language::from_raw(tree_sitter_json::LANGUAGE.into_raw()().cast())
@@ -3566,8 +3347,8 @@ mod tests {
         let columns = Columns::new(root);
         let group = columns.group(GroupIx(0));
 
-        // A root-only symbol has a sparse index, even for 64-slot groups. Both
-        // preparation paths must produce its exact mask in every physical group.
+        // Preparation may use the sidecar to skip groups. Both paths must
+        // produce the same exact mask within each group.
         let query = [root.kind_id()].into_kind_predicate(&group);
         assert!(!query.has_group_index());
         let mut indexed = [root.kind_id()].into_kind_predicate(&group);
@@ -3587,71 +3368,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn symbol_entries_clip_both_directions() {
-        for shift in [4, 5, 6] {
-            let bitmap = [0x8000_0003u32, 0x8000_0001, 0x8000_0001]
-                .into_iter()
-                .flat_map(u32::to_le_bytes)
-                .collect::<Vec<_>>();
-            let slots = [
-                (95 << shift) + 3,
-                (64 << shift) + 1,
-                (32 << shift) + (1 << shift) - 1,
-                (32 << shift) + 2,
-                0,
-                u32::MAX,
-                u32::MAX,
-                u32::MAX,
-            ];
-            let sparse = slots
-                .into_iter()
-                .flat_map(u32::to_le_bytes)
-                .collect::<Vec<_>>();
-            let empty = [u32::MAX; 8]
-                .into_iter()
-                .flat_map(u32::to_le_bytes)
-                .collect::<Vec<_>>();
-            for (bytes, bitmap, present) in [
-                (bitmap.as_slice(), true, vec![0, 1, 31, 32, 63, 64, 95]),
-                (sparse.as_slice(), false, vec![0, 32, 64, 95]),
-                (empty.as_slice(), false, vec![]),
-            ] {
-                let entry = super::SymbolEntry {
-                    bytes,
-                    bitmap,
-                    shift,
-                };
-                let mut cursor = 0;
-                for start in 0..=96 {
-                    for end in start..=96 {
-                        let groups = start..end;
-                        let expected = present
-                            .iter()
-                            .copied()
-                            .filter(|group| groups.contains(group))
-                            .collect::<Vec<_>>();
-                        assert_eq!(
-                            entry.next_group(groups.clone(), true, None),
-                            expected.first().copied()
-                        );
-                        assert_eq!(
-                            entry.next_group(groups.clone(), false, None),
-                            expected.last().copied()
-                        );
-                        assert_eq!(
-                            entry.next_group(groups.clone(), true, Some(&mut cursor)),
-                            expected.first().copied()
-                        );
-                        assert_eq!(
-                            entry.next_group(groups, false, Some(&mut cursor)),
-                            expected.last().copied()
-                        );
-                    }
-                }
-            }
-        }
-    }
     #[test]
     fn direct_supertype_masks_match_scalar_membership() {
         for length in [16, 32, 64] {

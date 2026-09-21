@@ -1371,7 +1371,7 @@ impl<'query, 'tree> QueryExecution<'_, 'query, 'tree, '_> {
         targets: [KindId; N],
     ) -> u32 {
         use crate::scan::{GroupRef, IdSelection, Predicate};
-        use crate::storage::{GROUP_SIZE, PRESENCE};
+        use crate::storage::GROUP_SIZE;
 
         let data = self.root.data();
         let total = self.total_slots();
@@ -1384,7 +1384,7 @@ impl<'query, 'tree> QueryExecution<'_, 'query, 'tree, '_> {
             }
             let index = (total - 1 - start) / GROUP_SIZE;
             let group_end = ((start / GROUP_SIZE + 1) * GROUP_SIZE).min(end);
-            if data.flags() & PRESENCE == 0
+            if data.presence_cache.is_none()
                 || targets
                     .iter()
                     .any(|&symbol| data.group_has_symbol(index, symbol))
@@ -1408,7 +1408,7 @@ impl<'query, 'tree> QueryExecution<'_, 'query, 'tree, '_> {
     }
 
     fn find_symbols_control(&mut self, mut start: u32, end: u32) -> u32 {
-        use crate::storage::{GROUP_SIZE, PRESENCE};
+        use crate::storage::GROUP_SIZE;
         let query = self.query;
         let data = self.root.data();
         let filter = &query.program.scan_filter.matches;
@@ -1421,7 +1421,7 @@ impl<'query, 'tree> QueryExecution<'_, 'query, 'tree, '_> {
             }
             let group = (total - 1 - start) / GROUP_SIZE;
             let group_end = ((start / GROUP_SIZE + 1) * GROUP_SIZE).min(end);
-            if data.flags() & PRESENCE != 0
+            if data.presence_cache.is_some()
                 && !targets.is_empty()
                 && targets.len() <= 4
                 && !targets.iter().any(|symbol| {

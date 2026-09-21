@@ -1,5 +1,5 @@
 use std::{env, fs, mem::MaybeUninit};
-use tree_squatter::{Grammar, PackOptions, SlotIx, Tree};
+use tree_squatter::{Grammar, PackOptions, PointData, PresenceCache, SlotIx, Tree};
 
 fn compare(expected: &Tree, actual: &Tree) {
     assert_eq!(expected.slot_count(), actual.slot_count());
@@ -54,17 +54,45 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             },
         )?;
         fs::write(format!("{}-{variant}.slab", arguments[2]), tree.as_bytes())?;
+        if let Some(points) = tree.point_data() {
+            fs::write(
+                format!("{}-{variant}.points", arguments[2]),
+                points.as_bytes(),
+            )?;
+        }
+        if let Some(presence) = tree.presence_cache() {
+            fs::write(
+                format!("{}-{variant}.presence", arguments[2]),
+                presence.as_bytes(),
+            )?;
+        }
         if let Some(prefix) = arguments.get(3) {
             let bytes = fs::read(format!("{prefix}-{variant}.slab"))?;
             assert!(
                 bytes == tree.as_bytes(),
                 "different bytes for variant {variant}"
             );
-            let copied = Tree::from_bytes(&grammar, &bytes)?;
+            let mut copied = Tree::from_bytes(&grammar, &bytes)?;
             let borrowed = Tree::from_bytes_borrowed(&grammar, copied.as_bytes())?;
-            let checked = Tree::from_bytes_safety_checked(&grammar, &bytes)?;
+            let mut checked = Tree::from_bytes_safety_checked(&grammar, &bytes)?;
+            assert!(!copied.has_points());
+            assert!(copied.presence_cache().is_none());
+            compare(&copied, &borrowed);
+            compare(&copied, &checked);
+            drop(borrowed);
+            if let Some(points) = tree.point_data() {
+                let bytes = fs::read(format!("{prefix}-{variant}.points"))?;
+                assert_eq!(bytes, points.as_bytes());
+                copied.set_point_data(PointData::copy_from_bytes(&copied, &bytes)?)?;
+                checked.set_point_data(PointData::copy_from_bytes(&checked, &bytes)?)?;
+            }
+            if let Some(presence) = tree.presence_cache() {
+                let bytes = fs::read(format!("{prefix}-{variant}.presence"))?;
+                assert_eq!(bytes, presence.as_bytes());
+                copied.set_presence_cache(PresenceCache::copy_from_bytes(&copied, &bytes)?)?;
+                checked.set_presence_cache(PresenceCache::copy_from_bytes(&checked, &bytes)?)?;
+            }
             compare(&tree, &copied);
-            compare(&tree, &borrowed);
             compare(&tree, &checked);
             let mut compact = vec![MaybeUninit::uninit(); tree.compact_size()];
             assert_eq!(

@@ -412,6 +412,14 @@ fn direct_parser_matches_mainline_packing() -> Result<(), Box<dyn Error>> {
                 let direct = direct_parser.parse_with_options(&source, options)?;
                 let expected = Tree::pack_with_options(&grammar, &native, options)?;
                 assert_eq!(direct.as_bytes(), expected.as_bytes());
+                assert_eq!(
+                    direct.point_data().map(|points| points.as_bytes()),
+                    expected.point_data().map(|points| points.as_bytes())
+                );
+                assert_eq!(
+                    direct.presence_cache().map(|cache| cache.as_bytes()),
+                    expected.presence_cache().map(|cache| cache.as_bytes())
+                );
                 let loaded = Tree::from_bytes(&grammar, direct.as_bytes())?;
                 check_shared_navigation(loaded.root_node(), language.field_count() as u16)?;
             }

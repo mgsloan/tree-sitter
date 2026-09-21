@@ -4,7 +4,7 @@ Step 1 of 3: side data → [forests](forests-design.md) →
 [injections](injections-design.md). This step works on standalone trees and does
 not require either later feature.
 
-Decision draft for the Rust core in `crates/squatter-rust`, not implemented API.
+Implementation design for the Rust core in `crates/squatter-rust`.
 Code shows additions and changed signatures; omitted fields/methods remain as
 before. The C-backed reference stays separate, as in the
 [Rust core design](rust-core-design.md).

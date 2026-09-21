@@ -2,7 +2,7 @@ use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
 };
-use tree_sitter_squatter::{PackOptions, Query, QueryCursor, Tree};
+use tree_sitter_squatter::{PackOptions, Tree};
 
 struct TrackedSlab {
     storage: Box<[u64]>,
@@ -90,38 +90,26 @@ fn pack(language: &tree_sitter::Language, source: &str, presence: bool) -> Tree 
 }
 
 #[test]
-fn safety_loader_does_not_verify_presence_membership() {
+fn presence_sidecar_is_separate_and_debug_loading_checks_membership() {
     let language = language();
     let grammar = tree_sitter_squatter::Grammar::new(&language).unwrap();
     let source = format!("[{}0]", "1,".repeat(4096));
     let original = pack(&language, &source, true);
     let without = pack(&language, &source, false);
-    assert!(original.group_count() > 32);
-    assert_eq!(original.group_count(), without.group_count());
-    // JSON has no supertype dictionary: the presence section is the whole tail.
-    assert_eq!(&original.as_bytes()[12..16], &[0; 4]);
-    assert_eq!(&without.as_bytes()[12..16], &[0; 4]);
-    assert!(original.as_bytes().len() > without.as_bytes().len());
-    for byte in [0, 0xff, 0x55] {
-        let mut bytes = original.as_bytes().to_vec();
-        bytes[without.as_bytes().len()..].fill(byte);
-        assert!(Tree::from_bytes(&grammar, &bytes).is_err());
-        let loaded = Tree::from_bytes_safety_checked(&grammar, &bytes).unwrap();
-        assert_eq!(
-            loaded.root_node().preorder().count(),
-            original.root_node().preorder().count()
-        );
-        for group in 0..loaded.group_count() {
-            for symbol in 0..language.node_kind_count() as u16 {
-                let _ = loaded.group_has_symbol(group, symbol.into());
-            }
-        }
-        let query = Query::new(&language, "(number) @n").unwrap();
-        let mut cursor = QueryCursor::new();
-        let mut execution = cursor.execute(&query, loaded.root_node(), source.as_bytes());
-        // Membership may be wrong, but execution must stay safe and terminate.
-        while execution.next_match().is_some() {}
-    }
+    assert_eq!(original.as_bytes(), without.as_bytes());
+    let cache = original.presence_cache().unwrap();
+    let mut corrupted = cache.as_bytes().to_vec();
+    corrupted[16..].fill(0);
+    let loaded = Tree::from_bytes_safety_checked(&grammar, original.as_bytes()).unwrap();
+    assert!(!loaded.has_points());
+    assert!(loaded.presence_cache().is_none());
+    assert_eq!(
+        tree_sitter_squatter::PresenceCache::copy_from_bytes(&loaded, &corrupted).is_err(),
+        cfg!(debug_assertions),
+    );
+    assert!(
+        tree_sitter_squatter::PresenceCache::copy_from_bytes(&loaded, cache.as_bytes()).is_ok()
+    );
 }
 
 #[test]

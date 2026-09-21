@@ -6,7 +6,10 @@ use crate::{
 };
 use std::{
     ptr::NonNull,
-    sync::{Arc, atomic::Ordering},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 use tree_sitter_squatter::{BackedTree, StableSlab, Tree};
 
@@ -27,6 +30,9 @@ struct Snapshot {
     // Field order releases the transaction before its admission permit.
     _permit: Permit,
 }
+// The transaction is sealed after construction; only immutable mapped bytes
+// are shared. Its final drop runs after the last core or sidecar owner.
+unsafe impl Sync for Snapshot {}
 impl Snapshot {
     fn open(store: &Arc<Store>) -> Option<Self> {
         store
@@ -47,7 +53,7 @@ impl Snapshot {
 struct SnapshotSlab {
     pointer: NonNull<u8>,
     length: usize,
-    _snapshot: Snapshot,
+    _snapshot: Arc<Snapshot>,
 }
 // After construction, no LMDB calls occur until exclusive final destruction.
 // Readers only inspect immutable mapped pages pinned by this read transaction.
@@ -68,8 +74,9 @@ pub(crate) fn get(
     request: &Request,
     source: &[u8],
     grammar: &Grammar,
-) -> Option<BackedTree> {
-    let snapshot = Snapshot::open(store)?;
+    cancellation: Option<&AtomicBool>,
+) -> Option<(BackedTree, bool)> {
+    let snapshot = Arc::new(Snapshot::open(store)?);
     if store
         .paths
         .get(&snapshot.tx, &request.source_key[..32])
@@ -89,11 +96,11 @@ pub(crate) fn get(
     let owner = SnapshotSlab {
         pointer,
         length,
-        _snapshot: snapshot,
+        _snapshot: snapshot.clone(),
     };
     // The native loader checks the actual address, not merely the envelope's
     // offset. Misaligned values release their snapshot and use the owned path.
-    let tree = Tree::from_owned_slab(&grammar.prepared, owner).ok()?;
+    let mut tree = Tree::from_owned_slab(&grammar.prepared, owner).ok()?;
     if tree
         .root_node()
         .preorder()
@@ -102,5 +109,52 @@ pub(crate) fn get(
     {
         return None;
     }
-    Some(tree)
+    let mut complete = true;
+    if request.presence {
+        let loaded = store
+            .presence
+            .get(&snapshot.tx, &request.tree_key)
+            .ok()
+            .flatten()
+            .and_then(|bytes| {
+                let owner = SnapshotSlab {
+                    pointer: NonNull::new(bytes.as_ptr().cast_mut())?,
+                    length: bytes.len(),
+                    _snapshot: snapshot.clone(),
+                };
+                tree_sitter_squatter::PresenceCache::from_backing(&tree, owner)
+                    .ok()
+                    .or_else(|| {
+                        tree_sitter_squatter::PresenceCache::copy_from_bytes(&tree, bytes).ok()
+                    })
+            });
+        complete &= loaded.is_some();
+        let cache = loaded
+            .or_else(|| tree_sitter_squatter::PresenceCache::build(&tree, cancellation).ok())?;
+        tree.set_presence_cache(cache).ok()?;
+    }
+    if request.points {
+        let loaded = store
+            .points
+            .get(&snapshot.tx, &request.tree_key)
+            .ok()
+            .flatten()
+            .and_then(|bytes| {
+                let owner = SnapshotSlab {
+                    pointer: NonNull::new(bytes.as_ptr().cast_mut())?,
+                    length: bytes.len(),
+                    _snapshot: snapshot.clone(),
+                };
+                tree_sitter_squatter::PointData::from_backing(&tree, owner)
+                    .ok()
+                    .or_else(|| tree_sitter_squatter::PointData::copy_from_bytes(&tree, bytes).ok())
+            });
+        complete &= loaded.is_some();
+        let points = loaded.or_else(|| {
+            let source_points = tree_sitter_squatter::SourcePoints::new(source).ok()?;
+            tree_sitter_squatter::PointData::build(&tree, &source_points, cancellation).ok()
+        })?;
+        tree.set_point_data(points).ok()?;
+    }
+    Some((tree, complete))
 }

@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 // Prototype formats stay at version 0; no persisted data needs backward compatibility.
 const MAGIC: &[u8; 8] = b"TSQXFR00";
-const HEADER_LEN: usize = 192;
+const HEADER_LEN: usize = 176;
 const PREFIX_LEN: usize = 8 + 3 * 8 + HEADER_LEN;
 
 fn invalid() -> io::Error {
@@ -95,34 +95,47 @@ impl Persistence {
             return Err(invalid().into());
         }
         let source: Arc<[u8]> = bytes[path_len..path_len + source_len].into();
-        let request = Arc::new(Request::new(
+        let mut request = Request::new(
             path.to_vec(),
             &source,
             grammar,
             self.options.symbol_presence,
             self.options.points,
-        ));
+        );
         if request.header.as_slice() != &prefix[32..] {
             return Err(invalid().into());
         }
-        let tree = tree_sitter_squatter::Tree::from_bytes_safety_checked(
+        let mut tree = tree_sitter_squatter::Tree::from_bytes_safety_checked(
             &grammar.prepared,
             &bytes[path_len + source_len..],
         )
         .map_err(io::Error::other)?;
-        if tree.has_points() != request.points
-            || tree
-                .root_node()
-                .preorder()
-                .nodes()
-                .any(|node| node.end_byte() > source.len())
+        if tree
+            .root_node()
+            .preorder()
+            .nodes()
+            .any(|node| node.end_byte() > source.len())
         {
             return Err(invalid().into());
+        }
+        if request.presence {
+            let cache = tree_sitter_squatter::PresenceCache::build(&tree, None)
+                .map_err(io::Error::other)?;
+            tree.set_presence_cache(cache).map_err(io::Error::other)?;
+        }
+        if request.points {
+            let index =
+                tree_sitter_squatter::SourcePoints::new(&source).map_err(io::Error::other)?;
+            let points = tree_sitter_squatter::PointData::build(&tree, &index, None)
+                .map_err(io::Error::other)?;
+            tree.set_point_data(points).map_err(io::Error::other)?;
         }
         let store = self
             .store
             .clone()
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "cache unavailable"))?;
+        request.current_guard = store.current_guard(&request);
+        let request = Arc::new(request);
         Ok(PendingWrite {
             store: Some(store.clone()),
             grammar: grammar.clone(),

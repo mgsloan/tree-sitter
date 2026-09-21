@@ -11,6 +11,7 @@ fn load(cache: &Persistence, write: WritePolicy) -> LoadResult {
             &grammar(42),
             &mut tree_sitter::Parser::new(),
             LoadOptions {
+                pack: tree_sitter_squatter::PackOptions::default(),
                 write,
                 cancellation: None,
             },
@@ -80,7 +81,7 @@ fn transfer_rejects_bad_identity_lengths_and_truncation() {
             .read_transfer(overflow.as_slice(), &grammar(42), bytes.len())
             .is_err()
     );
-    bytes[216 + 1 + "file.json".len()] ^= 1; // captured source bytes
+    bytes[208 + 1 + "file.json".len()] ^= 1; // captured source bytes
     assert!(
         cache
             .read_transfer(bytes.as_slice(), &grammar(42), bytes.len())

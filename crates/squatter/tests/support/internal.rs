@@ -150,9 +150,7 @@ fn synthetic_supertype_emission_and_persistence() {
                 slots.push(SlotIx::new(builder.distance() - 1));
             }
             builder.emit(&leaf(1, 1, 0, 1), 0).unwrap();
-            let mut tree = builder
-                .finish(&mut PresenceScratch::default(), PackOptions::default())
-                .unwrap();
+            let mut tree = builder.finish(PackOptions::default()).unwrap();
             let groups = tree.group_count();
             for capacity in [groups + 17, groups, groups + 1] {
                 let trailing = tree.as_bytes().len() as u32 - tree.data().layout.end.get();
@@ -211,13 +209,10 @@ fn synthetic_symbol_encodings_and_optional_columns() {
                 }
                 builder.emit(&leaf(0, 0, 0, 1), 0).unwrap();
                 let mut tree = builder
-                    .finish(
-                        &mut PresenceScratch::default(),
-                        PackOptions {
-                            points,
-                            ..Default::default()
-                        },
-                    )
+                    .finish(PackOptions {
+                        points,
+                        ..Default::default()
+                    })
                     .unwrap();
                 for pass in 0..3 {
                     for node in tree.root_node().preorder().nodes().skip(1) {
@@ -270,7 +265,7 @@ fn synthetic_symbol_encodings_and_optional_columns() {
 #[test]
 fn navigation_across_every_waste_boundary() {
     let fixture = Fixture::symbols(16);
-    let mut tree = Tree::empty(&fixture.grammar, 3, false).unwrap();
+    let mut tree = Tree::empty(&fixture.grammar, 3).unwrap();
     tree.data_mut().put_word(SlabOffset(0), 1, 3);
     for first in 0..GROUP_SIZE {
         for second in 0..GROUP_SIZE {
@@ -349,8 +344,6 @@ fn exercise_columns(tree: &mut Tree, fill: bool) {
         (layout.span_base, 32, 1),
         (layout.start_byte_base, 32, 1),
         (layout.end_byte_base, 32, 1),
-        (layout.start_point_base, 64, 1),
-        (layout.end_point_base, 64, 1),
         (layout.last, 1, GROUP_SIZE),
         (layout.extra, 1, GROUP_SIZE),
         (layout.error, 1, 1),
@@ -358,8 +351,6 @@ fn exercise_columns(tree: &mut Tree, fill: bool) {
         (layout.span_delta, 8, GROUP_SIZE),
         (layout.start_byte_delta, 8, GROUP_SIZE),
         (layout.end_byte_delta, 16, GROUP_SIZE),
-        (layout.start_point, 16, GROUP_SIZE),
-        (layout.end_point, 16, GROUP_SIZE),
         (layout.supertype, 16, GROUP_SIZE),
         (layout.symbol, 16, GROUP_SIZE),
         (layout.field, 16, GROUP_SIZE),
@@ -407,7 +398,7 @@ fn exercise_columns(tree: &mut Tree, fill: bool) {
 #[test]
 fn column_growth_compaction_and_little_endian_encoding() {
     let fixture = Fixture::symbols(32767);
-    let mut tree = Tree::empty(&fixture.grammar, 3, true).unwrap();
+    let mut tree = Tree::empty(&fixture.grammar, 3).unwrap();
     tree.data_mut().put_word(SlabOffset(0), 1, 2);
     exercise_columns(&mut tree, true);
     for capacity in [7, 19, 2, 31, 2] {
@@ -433,9 +424,7 @@ fn invalid_waste_and_absent_fields() {
                 .unwrap();
         }
         builder.emit(&leaf(1, 1, 0, 1), 0).unwrap();
-        let tree = builder
-            .finish(&mut PresenceScratch::default(), PackOptions::default())
-            .unwrap();
+        let tree = builder.finish(PackOptions::default()).unwrap();
         assert_eq!(
             tree.root_node().all().filter_field_ids([None]).count(),
             count as usize
@@ -463,7 +452,7 @@ fn presence_ignores_waste_and_invalid_symbols() {
     for count in [16, 300, 32766, 32767] {
         let fixture = Fixture::symbols(count);
         let grammar = &fixture.grammar;
-        let mut tree = Tree::empty(grammar, 33, false).unwrap();
+        let mut tree = Tree::empty(grammar, 33).unwrap();
         tree.data_mut().put_word(SlabOffset(0), 1, 33);
         for group in 0..33 {
             let data = tree.data_mut();
@@ -486,10 +475,8 @@ fn presence_ignores_waste_and_invalid_symbols() {
         }
         for indexed in [false, true] {
             if indexed {
-                let trailing = presence_size(count + 2, 33) as u32;
-                tree.resize(33, tree.data().flags(), trailing, false)
-                    .unwrap();
-                tree.build_presence(&mut PresenceScratch::default());
+                let cache = PresenceCache::build(&tree, None).unwrap();
+                tree.set_presence_cache(cache).unwrap();
             }
             for symbol in [
                 0,

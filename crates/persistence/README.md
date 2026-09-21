@@ -39,7 +39,10 @@ Implemented:
 
 - Exact owned disk-byte capture and source hashing; path validation.
 - LMDB metadata, source contents, and compact slabs published in one synchronous
-  transaction. Source generations and packing/grammar variants coexist.
+  transaction. Presence and point sidecars use separate databases and can be
+  published later. Source generations and grammar variants coexist.
+- `LoadOptions::pack` selects side data on both cache hits and misses. The simple
+  `load` method uses the side-data defaults in `Options`.
 - Publication compacts used columns directly into heed `put_reserved` storage,
   including envelope and initialized padding, without an intermediate compact
   tree or combined value buffer. Misses retain spare capacity until publication;
@@ -49,9 +52,9 @@ Implemented:
   snapshot for aligned cache slabs. Misaligned hits and local reader pressure use
   owned copies. `LoadedFile::transaction_backed` reports the actual storage mode;
   `detach` copies without invalidating aliases. Sources remain owned disk captures.
-- Structural safety loading without recomputing auxiliary-index membership or
-  checking canonical auxiliary padding; no slab checksum. Node source bounds are
-  checked before returning the pair. See [the validator audit](validation.md).
+- Structural safety loading of the core, with cheap sidecar dimension checks
+  and debug content checks; no slab checksum. Node source bounds are checked
+  before returning the pair. See [the validator audit](validation.md).
 - Parser reset, whole-file ranges, cancellation checks and no partial publication.
 - Inline, deferred, and disabled writes. Deferred work retains no transaction.
 - `open_existing` avoids foreground cache creation; `WritePolicy::Transfer`

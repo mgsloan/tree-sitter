@@ -70,6 +70,16 @@ fn packing_context_matches_fresh_packing_and_loading() {
                                 Tree::pack_with_options(&fresh_grammar, &tree, options).unwrap();
                             let actual =
                                 context.pack_with_options(&grammar, &tree, options).unwrap();
+                            assert_eq!(actual.has_points(), points);
+                            assert_eq!(actual.presence_cache().is_some(), symbol_presence);
+                            assert_eq!(
+                                actual.point_data().map(|points| points.as_bytes()),
+                                expected.point_data().map(|points| points.as_bytes())
+                            );
+                            assert_eq!(
+                                actual.presence_cache().map(|cache| cache.as_bytes()),
+                                expected.presence_cache().map(|cache| cache.as_bytes())
+                            );
                             let description = format!("{} bytes, {options:?}", source.len());
                             assert_eq!(
                                 actual.as_bytes().len(),
@@ -87,6 +97,8 @@ fn packing_context_matches_fresh_packing_and_loading() {
                             );
 
                             let loaded = Tree::from_bytes(&grammar, expected.as_bytes()).unwrap();
+                            assert!(!loaded.has_points());
+                            assert!(loaded.presence_cache().is_none());
                             let borrowed =
                                 Tree::from_bytes_borrowed(&grammar, expected.as_bytes()).unwrap();
                             assert_eq!(loaded.as_bytes(), borrowed.as_bytes());
@@ -94,6 +106,8 @@ fn packing_context_matches_fresh_packing_and_loading() {
                                 .unwrap();
 
                             let compact = actual.repack().unwrap();
+                            assert_eq!(compact.has_points(), points);
+                            assert_eq!(compact.presence_cache().is_some(), symbol_presence);
                             assert_eq!(compact.as_bytes(), expected.repack().unwrap().as_bytes());
                             for group in 0..actual.group_count() {
                                 for symbol in 0..language.node_kind_count() as u16 {
@@ -114,6 +128,319 @@ fn packing_context_matches_fresh_packing_and_loading() {
                 }
             }
             context.trim();
+        }
+    }
+}
+
+#[test]
+fn side_data_changes_only_attached_coordinates() {
+    use tree_squatter::{PointData, PresenceCache, SourcePoints};
+    let language =
+        unsafe { tree_sitter::Language::from_raw(tree_sitter_json::LANGUAGE.into_raw()().cast()) };
+    let grammar = Grammar::new(&language).unwrap();
+    let mut parser = tree_sitter::Parser::new();
+    parser.set_language(&language).unwrap();
+
+    for source in ["", "[\n1,\n2]", "[\r\n\"é\"]\n", "[1,"] {
+        let native = parser.parse(source, None).unwrap();
+        let mut tree = Tree::pack_with_options(
+            &grammar,
+            &native,
+            PackOptions {
+                points: false,
+                symbol_presence: false,
+                ..PackOptions::default()
+            },
+        )
+        .unwrap();
+        let core_address = tree.as_bytes().as_ptr();
+        let core_bytes = tree.as_bytes().to_vec();
+        let root_slot = tree.root_node().slot();
+        let source_points = SourcePoints::new(source.as_bytes()).unwrap();
+        assert_eq!(
+            source_points.point(0).unwrap(),
+            tree_sitter::Point::new(0, 0)
+        );
+        assert!(source_points.point(source.len() + 1).is_err());
+        let expected = tree
+            .root_node()
+            .preorder()
+            .nodes()
+            .map(|node| {
+                (
+                    node.slot(),
+                    source_points.point(node.start_byte()).unwrap(),
+                    source_points.point(node.end_byte()).unwrap(),
+                )
+            })
+            .collect::<Vec<_>>();
+        assert!(!tree.root_node().has_points());
+        assert_eq!(
+            tree.root_node().start_position(),
+            tree_sitter::Point::new(0, tree.root_node().start_byte())
+        );
+        let presence = std::thread::scope(|scope| {
+            scope
+                .spawn(|| PresenceCache::build(&tree, None))
+                .join()
+                .unwrap()
+        })
+        .unwrap();
+        let points = PointData::build(&tree, &source_points, None).unwrap();
+        tree.set_presence_cache(presence).unwrap();
+        tree.set_point_data(points).unwrap();
+        drop(source_points);
+        assert!(tree.has_points());
+        assert!(tree.root_node().attributes().has_points);
+        for (slot, start, end) in expected {
+            let node = tree.node_at_slot(slot).unwrap();
+            assert_eq!(node.start_position(), start);
+            assert_eq!(node.end_position(), end);
+        }
+        assert_eq!(tree.as_bytes().as_ptr(), core_address);
+        assert_eq!(tree.as_bytes(), core_bytes);
+        assert_eq!(tree.root_node().slot(), root_slot);
+        tree.drop_presence_cache();
+        assert!(tree.has_points());
+        tree.drop_point_data();
+        tree.drop_point_data();
+        assert!(!tree.has_points());
+        assert_eq!(
+            tree.root_node().start_position(),
+            tree_sitter::Point::new(0, tree.root_node().start_byte())
+        );
+        assert_eq!(tree.as_bytes().as_ptr(), core_address);
+        assert_eq!(tree.as_bytes(), core_bytes);
+    }
+}
+
+#[test]
+fn sidecar_mapping_copy_and_failed_replacement() {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+    use tree_squatter::{PointData, PresenceCache, SourcePoints, StableSlab};
+
+    struct Backing {
+        words: Box<[u64]>,
+        drops: Arc<AtomicUsize>,
+    }
+    impl Drop for Backing {
+        fn drop(&mut self) {
+            self.drops.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+    unsafe impl StableSlab for Backing {
+        fn bytes(&self) -> &[u8] {
+            unsafe { std::slice::from_raw_parts(self.words.as_ptr().cast(), self.words.len() * 8) }
+        }
+    }
+    struct MisalignedBacking(Box<[u64]>, usize);
+    unsafe impl StableSlab for MisalignedBacking {
+        fn bytes(&self) -> &[u8] {
+            unsafe { std::slice::from_raw_parts(self.0.as_ptr().cast::<u8>().add(1), self.1) }
+        }
+    }
+    fn backing(bytes: &[u8], drops: Arc<AtomicUsize>) -> Backing {
+        let mut words = vec![0u64; bytes.len() / 8].into_boxed_slice();
+        unsafe {
+            std::ptr::copy_nonoverlapping(bytes.as_ptr(), words.as_mut_ptr().cast(), bytes.len());
+        }
+        Backing { words, drops }
+    }
+
+    let language =
+        unsafe { tree_sitter::Language::from_raw(tree_sitter_json::LANGUAGE.into_raw()().cast()) };
+    let grammar = Grammar::new(&language).unwrap();
+    let source = "[\n1, 2]";
+    let mut parser = tree_sitter::Parser::new();
+    parser.set_language(&language).unwrap();
+    let native = parser.parse(source, None).unwrap();
+    let mut tree = Tree::pack_with_options(
+        &grammar,
+        &native,
+        PackOptions {
+            points: false,
+            symbol_presence: false,
+            ..PackOptions::default()
+        },
+    )
+    .unwrap();
+    let points =
+        PointData::build(&tree, &SourcePoints::new(source.as_bytes()).unwrap(), None).unwrap();
+    let presence = PresenceCache::build(&tree, None).unwrap();
+    let drops = Arc::new(AtomicUsize::new(0));
+    let mapped_backing = backing(points.as_bytes(), drops.clone());
+    let mapped_address = mapped_backing.bytes().as_ptr();
+    let mapped = PointData::from_backing(&tree, mapped_backing).unwrap();
+    assert_eq!(mapped.as_bytes().as_ptr(), mapped_address);
+    tree.set_point_data(mapped).unwrap();
+    assert!(
+        PointData::from_backing(
+            &tree,
+            MisalignedBacking(
+                vec![0; points.as_bytes().len() / 8 + 1].into_boxed_slice(),
+                points.as_bytes().len()
+            )
+        )
+        .is_err()
+    );
+    let copied = PresenceCache::copy_from_bytes(&tree, presence.as_bytes()).unwrap();
+    tree.set_presence_cache(copied).unwrap();
+    let presence_drops = Arc::new(AtomicUsize::new(0));
+    let mapped_backing = backing(presence.as_bytes(), presence_drops.clone());
+    let mapped_address = mapped_backing.bytes().as_ptr();
+    let mapped = PresenceCache::from_backing(&tree, mapped_backing).unwrap();
+    assert_eq!(mapped.as_bytes().as_ptr(), mapped_address);
+    tree.set_presence_cache(mapped).unwrap();
+    let original_point = tree.root_node().start_position();
+    let mut invalid = points.as_bytes().to_vec();
+    invalid[4..8].copy_from_slice(&0u32.to_le_bytes());
+    assert!(PointData::copy_from_bytes(&tree, &invalid).is_err());
+    let mut invalid = points.as_bytes().to_vec();
+    let root_start = 16 + tree.root_node().slot().get() as usize * 16;
+    invalid[root_start..root_start + 8].copy_from_slice(&u64::MAX.to_le_bytes());
+    assert_eq!(
+        PointData::copy_from_bytes(&tree, &invalid).is_err(),
+        cfg!(debug_assertions)
+    );
+    assert_eq!(tree.root_node().start_position(), original_point);
+    tree.drop_point_data();
+    assert_eq!(drops.load(Ordering::Relaxed), 1);
+    assert!(tree.presence_cache().is_some());
+    tree.drop_presence_cache();
+    assert_eq!(presence_drops.load(Ordering::Relaxed), 1);
+    let copied_points = PointData::copy_from_bytes(&tree, points.as_bytes()).unwrap();
+    tree.set_point_data(copied_points).unwrap();
+    assert_eq!(tree.root_node().start_position(), original_point);
+}
+
+#[test]
+fn source_points_are_byte_based_and_builds_can_cancel() {
+    use std::sync::atomic::AtomicBool;
+    use tree_squatter::{PointData, PresenceCache, SideDataError, SourcePoints};
+
+    let source = b"\xef\xbb\xbfa\r\n\xc3\xa9\n";
+    let index = SourcePoints::new(source).unwrap();
+    for (byte, point) in [
+        (0, tree_sitter::Point::new(0, 0)),
+        (3, tree_sitter::Point::new(0, 3)),
+        (5, tree_sitter::Point::new(0, 5)),
+        (6, tree_sitter::Point::new(1, 0)),
+        (8, tree_sitter::Point::new(1, 2)),
+        (9, tree_sitter::Point::new(2, 0)),
+    ] {
+        assert_eq!(index.point(byte).unwrap(), point);
+    }
+    assert!(index.point(10).is_err());
+    assert_eq!(
+        SourcePoints::new(b"").unwrap().point(0).unwrap(),
+        tree_sitter::Point::new(0, 0)
+    );
+
+    let language =
+        unsafe { tree_sitter::Language::from_raw(tree_sitter_json::LANGUAGE.into_raw()().cast()) };
+    let grammar = Grammar::new(&language).unwrap();
+    let mut parser = tree_sitter::Parser::new();
+    parser.set_language(&language).unwrap();
+    let native = parser.parse("[1]", None).unwrap();
+    let mut tree = Tree::pack_with_options(
+        &grammar,
+        &native,
+        PackOptions {
+            points: false,
+            symbol_presence: false,
+            ..PackOptions::default()
+        },
+    )
+    .unwrap();
+    let cancelled = AtomicBool::new(true);
+    assert!(matches!(
+        PresenceCache::build(&tree, Some(&cancelled)),
+        Err(SideDataError::Cancelled)
+    ));
+    assert!(matches!(
+        PointData::build(&tree, &SourcePoints::new(b"[1]").unwrap(), Some(&cancelled)),
+        Err(SideDataError::Cancelled)
+    ));
+    assert!(PointData::build(&tree, &SourcePoints::new(b"[").unwrap(), None).is_err());
+    assert!(!tree.has_points());
+    assert!(tree.presence_cache().is_none());
+    tree.drop_presence_cache();
+    tree.drop_point_data();
+}
+
+#[test]
+fn point_bounded_queries_follow_attachment() {
+    use tree_squatter::{PointData, Query, QueryCursor, SourcePoints};
+    let language =
+        unsafe { tree_sitter::Language::from_raw(tree_sitter_json::LANGUAGE.into_raw()().cast()) };
+    let grammar = Grammar::new(&language).unwrap();
+    let source = b"[\n1,\n2]";
+    let mut parser = tree_sitter::Parser::new();
+    parser.set_language(&language).unwrap();
+    let native = parser.parse(source, None).unwrap();
+    let mut tree = Tree::pack_with_options(
+        &grammar,
+        &native,
+        PackOptions {
+            points: false,
+            ..PackOptions::default()
+        },
+    )
+    .unwrap();
+    let query = Query::new(&language, "(number) @number").unwrap();
+    let mut cursor = QueryCursor::new();
+    let mut count = |tree: &Tree| {
+        assert!(
+            cursor.set_point_range(tree_sitter::Point::new(1, 0)..tree_sitter::Point::new(2, 0))
+        );
+        let mut execution = cursor.execute(&query, tree.root_node(), source);
+        let mut found = 0;
+        while execution.next_match().is_some() {
+            found += 1;
+        }
+        found
+    };
+    assert_eq!(count(&tree), 0);
+    let points = PointData::build(&tree, &SourcePoints::new(source).unwrap(), None).unwrap();
+    tree.set_point_data(points).unwrap();
+    assert_eq!(count(&tree), 1);
+    tree.drop_point_data();
+    assert_eq!(count(&tree), 0);
+}
+
+#[test]
+fn side_data_creation_flags_do_not_change_core_layout() {
+    let language =
+        unsafe { tree_sitter::Language::from_raw(tree_sitter_json::LANGUAGE.into_raw()().cast()) };
+    let grammar = Grammar::new(&language).unwrap();
+    let source = format!("[{}0]", "1,\n".repeat(500));
+    let mut parser = tree_sitter::Parser::new();
+    parser.set_language(&language).unwrap();
+    let native = parser.parse(&source, None).unwrap();
+    let mut baseline = None;
+    for points in [false, true] {
+        for symbol_presence in [false, true] {
+            let tree = Tree::pack_with_options(
+                &grammar,
+                &native,
+                PackOptions {
+                    points,
+                    symbol_presence,
+                    repack: true,
+                    ..PackOptions::default()
+                },
+            )
+            .unwrap();
+            assert_eq!(tree.has_points(), points);
+            assert_eq!(tree.presence_cache().is_some(), symbol_presence);
+            if let Some(bytes) = &baseline {
+                assert_eq!(tree.as_bytes(), bytes);
+            } else {
+                baseline = Some(tree.as_bytes().to_vec());
+            }
         }
     }
 }

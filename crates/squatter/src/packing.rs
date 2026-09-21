@@ -1,6 +1,7 @@
 use crate::{
     Error, FieldId, Grammar, Tree,
     native::{Point, Reduction},
+    side_data::{PointData, PresenceCache},
     storage::*,
     types::{RemappedGrammarKindId, RemappedKindId, SlabOffset},
 };
@@ -41,14 +42,12 @@ struct InputNode {
 
 pub struct PackContext {
     traversal: traversal::Traversal,
-    presence: PresenceScratch,
 }
 
 impl PackContext {
     pub fn new() -> Result<Self, Error> {
         Ok(Self {
             traversal: traversal::Traversal::default(),
-            presence: PresenceScratch::default(),
         })
     }
 
@@ -65,7 +64,7 @@ impl PackContext {
         let root = traversal::Root::new(tree, grammar.tables())?;
         let mut builder = Builder::for_input(grammar, root.expected_nodes, options)?;
         traversal::pack(&mut builder, grammar.tables(), &mut self.traversal, root)?;
-        builder.finish(&mut self.presence, options)
+        builder.finish(options)
     }
 
     pub(crate) fn pack_reductions(
@@ -87,12 +86,11 @@ impl PackContext {
             nodes,
             root,
         )?;
-        builder.finish(&mut self.presence, options)
+        builder.finish(options)
     }
 
     pub fn trim(&mut self) {
         self.traversal.trim();
-        self.presence.trim();
     }
 }
 
@@ -137,10 +135,6 @@ struct Values {
     span: u32,
     start_byte: u32,
     end_byte: u32,
-    start_row: u32,
-    end_row: u32,
-    start_column: u32,
-    end_column: u32,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -162,6 +156,7 @@ struct Builder {
     has_error: bool,
     optional: u32,
     points: bool,
+    native_points: Vec<(tree_sitter::Point, tree_sitter::Point)>,
 }
 
 impl Builder {
@@ -180,7 +175,7 @@ impl Builder {
 
     fn new(grammar: &Grammar, capacity: u32, points: bool) -> Result<Self, Error> {
         Ok(Self {
-            tree: Tree::empty(grammar, capacity, points)?,
+            tree: Tree::empty(grammar, capacity)?,
             pending: [Pending::default(); GROUP_SIZE as usize],
             count: 0,
             slot_base: 0,
@@ -192,6 +187,7 @@ impl Builder {
             has_error: false,
             optional: 0,
             points,
+            native_points: Vec::new(),
         })
     }
 
@@ -215,8 +211,7 @@ impl Builder {
             *maximum - *base <= limit
         };
 
-        // Reverse preorder makes start bytes and rows nonincreasing; columns
-        // and end positions still need both extrema.
+        // Reverse preorder makes start bytes nonincreasing; end bytes need both extrema.
         base.start_byte = value.start_byte;
         if maximum.start_byte - base.start_byte > 255
             || !extend(value.span, &mut base.span, &mut maximum.span, 255)
@@ -230,26 +225,6 @@ impl Builder {
             return false;
         }
 
-        if self.points {
-            base.start_row = value.start_row;
-            if maximum.start_row - base.start_row > 255
-                || !extend(value.end_row, &mut base.end_row, &mut maximum.end_row, 255)
-                || !extend(
-                    value.start_column,
-                    &mut base.start_column,
-                    &mut maximum.start_column,
-                    255,
-                )
-                || !extend(
-                    value.end_column,
-                    &mut base.end_column,
-                    &mut maximum.end_column,
-                    255,
-                )
-            {
-                return false;
-            }
-        }
         self.base = base;
         self.maximum = maximum;
         true
@@ -271,10 +246,6 @@ impl Builder {
                 span: self.distance() - boundary,
                 start_byte: event.start_byte,
                 end_byte: event.end_byte,
-                start_row: event.start_point.row,
-                end_row: event.end_point.row,
-                start_column: event.start_point.column,
-                end_column: event.end_point.column,
             };
             if !self.extend(value) {
                 self.close();
@@ -298,6 +269,25 @@ impl Builder {
                 .symbol_code(event.symbol, event.grammar)
                 .ok_or(Error::Language)?;
             let slot = self.distance();
+            if self.points {
+                self.native_points
+                    .try_reserve(slot as usize + 1 - self.native_points.len())
+                    .map_err(|_| Error::Allocation)?;
+                self.native_points.resize(
+                    slot as usize + 1,
+                    (tree_sitter::Point::default(), tree_sitter::Point::default()),
+                );
+                self.native_points[slot as usize] = (
+                    tree_sitter::Point::new(
+                        event.start_point.row as usize,
+                        event.start_point.column as usize,
+                    ),
+                    tree_sitter::Point::new(
+                        event.end_point.row as usize,
+                        event.end_point.column as usize,
+                    ),
+                );
+            }
             let data = self.tree.data_mut();
             let layout = data.layout;
             let separate = data.tables().separate != 0;
@@ -342,18 +332,6 @@ impl Builder {
         data.put_word(layout.span_base, group, self.base.span);
         data.put_word(layout.start_byte_base, group, self.base.start_byte);
         data.put_word(layout.end_byte_base, group, self.maximum.end_byte);
-        if self.points {
-            data.put_long(
-                layout.start_point_base,
-                group,
-                (self.base.start_row as u64) << 32 | self.base.start_column as u64,
-            );
-            data.put_long(
-                layout.end_point_base,
-                group,
-                (self.maximum.end_row as u64) << 32 | self.maximum.end_column as u64,
-            );
-        }
 
         for (offset, flags) in [
             (layout.last, self.last),
@@ -396,24 +374,6 @@ impl Builder {
             );
             writer.put_short(layout.supertype, slot, pending.supertype);
         }
-        if self.points {
-            for (index, pending) in pending.iter().enumerate() {
-                let value = pending.values;
-                let slot = self.slot_base + index as u32;
-                writer.put_short(
-                    layout.start_point,
-                    slot,
-                    (((value.start_row - self.base.start_row) << 8)
-                        | (value.start_column - self.base.start_column)) as u16,
-                );
-                writer.put_short(
-                    layout.end_point,
-                    slot,
-                    (((self.maximum.end_row - value.end_row) << 8)
-                        | (self.maximum.end_column - value.end_column)) as u16,
-                );
-            }
-        }
 
         self.count = 0;
         self.slot_base += GROUP_SIZE;
@@ -423,31 +383,29 @@ impl Builder {
         self.has_error = false;
     }
 
-    fn finish(
-        mut self,
-        scratch: &mut PresenceScratch,
-        options: PackOptions,
-    ) -> Result<Tree, Error> {
+    fn finish(mut self, options: PackOptions) -> Result<Tree, Error> {
         self.close();
         let groups = self.tree.group_count();
-        let trailing = if options.symbol_presence && groups > 32 {
-            u32::try_from(presence_size(
-                self.tree.data().tables().symbol_count + 2,
-                groups,
-            ))
-            .map_err(|_| Error::Overflow)?
-        } else {
-            0
-        };
         let capacity = if options.repack {
             groups
         } else {
             self.tree.group_capacity()
         };
         let flags = (self.tree.data().flags() & !OPTIONAL) | self.optional;
-        self.tree.finish_layout(capacity, flags, trailing)?;
+        self.tree.finish_layout(capacity, flags, 0)?;
         if options.symbol_presence {
-            self.tree.build_presence(scratch);
+            let cache = PresenceCache::build(&self.tree, None)?;
+            self.tree.set_presence_cache(cache)?;
+        }
+        if options.points {
+            let mut points = PointData::empty(&self.tree)?;
+            for group in 0..groups {
+                for slot in group * GROUP_SIZE..self.tree.data().group_end(group) {
+                    let (start, end) = self.native_points[slot as usize];
+                    points.put(slot, start, end)?;
+                }
+            }
+            self.tree.set_point_data(points)?;
         }
         Ok(self.tree)
     }

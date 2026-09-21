@@ -3,22 +3,27 @@ use std::{
     fs::{self, File, OpenOptions},
     io::{self, Write},
     path::{Path, PathBuf},
-    sync::{Arc, Mutex, MutexGuard, OnceLock, atomic::AtomicUsize},
+    sync::{
+        Arc, Mutex, MutexGuard, OnceLock,
+        atomic::{AtomicBool, AtomicUsize},
+    },
 };
 
-use crate::identity::{Grammar, Request};
+use crate::identity::{CurrentGuard, Grammar, Request};
 use heed::{Env, EnvOpenOptions, WithoutTls, types::Bytes};
 
 pub(crate) type Database = heed::Database<Bytes, Bytes>;
 
 // Prototype formats stay at version 0; no persisted data needs backward compatibility.
-const SCHEMA: &[u8] = b"tree-squatter-persistence owned prototype 0";
+const SCHEMA: &[u8] = b"tree-squatter-persistence side data prototype 0";
 
 pub(crate) struct Store {
     pub(crate) env: Env<WithoutTls>,
     pub(crate) paths: Database,
     pub(crate) sources: Database,
     pub(crate) trees: Database,
+    pub(crate) presence: Database,
+    pub(crate) points: Database,
     pub(crate) grammars: Database,
     pub(crate) current: Database,
     pub(crate) writer: Mutex<File>,
@@ -401,12 +406,12 @@ impl Store {
         let env = unsafe {
             EnvOpenOptions::new()
                 .read_txn_without_tls()
-                .max_dbs(6)
+                .max_dbs(8)
                 .max_readers(256)
                 .map_size(map_size)
                 .open(&anchor)?
         };
-        let (paths, sources, trees, grammars, current) = if existed {
+        let (paths, sources, trees, presence, points, grammars, current) = if existed {
             let tx = env.read_txn()?;
             let open = |name| -> Result<Database, CacheError> {
                 env.open_database(&tx, Some(name))?
@@ -420,6 +425,8 @@ impl Store {
                 open("paths")?,
                 open("sources")?,
                 open("trees")?,
+                open("presence")?,
+                open("points")?,
                 open("grammars")?,
                 open("current")?,
             );
@@ -436,6 +443,8 @@ impl Store {
                 env.create_database(&mut tx, Some("paths"))?,
                 env.create_database(&mut tx, Some("sources"))?,
                 env.create_database(&mut tx, Some("trees"))?,
+                env.create_database(&mut tx, Some("presence"))?,
+                env.create_database(&mut tx, Some("points"))?,
                 env.create_database(&mut tx, Some("grammars"))?,
                 env.create_database(&mut tx, Some("current"))?,
             );
@@ -449,6 +458,8 @@ impl Store {
             paths,
             sources,
             trees,
+            presence,
+            points,
             grammars,
             current,
             writer,
@@ -464,12 +475,38 @@ impl Store {
         self.work.acquire(&request.tree_key)
     }
 
+    pub fn current_guard(&self, request: &Request) -> CurrentGuard {
+        let Ok(tx) = self.env.read_txn() else {
+            return CurrentGuard::Unchecked;
+        };
+        match self.current.get(&tx, &request.source_key[..32]) {
+            Ok(Some(bytes)) => bytes
+                .try_into()
+                .map(CurrentGuard::Current)
+                .unwrap_or(CurrentGuard::Unchecked),
+            Ok(None) => CurrentGuard::Missing,
+            Err(_) => CurrentGuard::Unchecked,
+        }
+    }
+
+    #[cfg(test)]
     pub fn get(
         &self,
         request: &Request,
         source: &[u8],
         grammar: &Grammar,
     ) -> Option<tree_sitter_squatter::Tree> {
+        self.get_with_cancel(request, source, grammar, None)
+            .map(|(tree, _)| tree)
+    }
+
+    pub fn get_with_cancel(
+        &self,
+        request: &Request,
+        source: &[u8],
+        grammar: &Grammar,
+        cancellation: Option<&AtomicBool>,
+    ) -> Option<(tree_sitter_squatter::Tree, bool)> {
         let tx = self.env.read_txn().ok()?;
         if self.paths.get(&tx, &request.source_key[..32]).ok()?? != request.path
             || self.sources.get(&tx, &request.source_key).ok()?? != source
@@ -478,19 +515,49 @@ impl Store {
         }
         let value = self.trees.get(&tx, &request.tree_key).ok()??;
         let slab = request.decode(value)?;
-        // Safety validation does not reconstruct auxiliary index membership.
-        let tree =
+        // Core validation is independent of optional sidecar contents.
+        let mut tree =
             tree_sitter_squatter::Tree::from_bytes_safety_checked(&grammar.prepared, slab).ok()?;
-        if tree.has_points() != request.points
-            || tree
-                .root_node()
-                .preorder()
-                .nodes()
-                .any(|node| node.end_byte() > source.len())
+        if tree
+            .root_node()
+            .preorder()
+            .nodes()
+            .any(|node| node.end_byte() > source.len())
         {
             return None;
         }
-        Some(tree)
+        let mut complete = true;
+        if request.presence {
+            let loaded = self
+                .presence
+                .get(&tx, &request.tree_key)
+                .ok()
+                .flatten()
+                .and_then(|bytes| {
+                    tree_sitter_squatter::PresenceCache::copy_from_bytes(&tree, bytes).ok()
+                });
+            complete &= loaded.is_some();
+            let cache = loaded
+                .or_else(|| tree_sitter_squatter::PresenceCache::build(&tree, cancellation).ok())?;
+            tree.set_presence_cache(cache).ok()?;
+        }
+        if request.points {
+            let loaded = self
+                .points
+                .get(&tx, &request.tree_key)
+                .ok()
+                .flatten()
+                .and_then(|bytes| {
+                    tree_sitter_squatter::PointData::copy_from_bytes(&tree, bytes).ok()
+                });
+            complete &= loaded.is_some();
+            let points = loaded.or_else(|| {
+                let source_points = tree_sitter_squatter::SourcePoints::new(source).ok()?;
+                tree_sitter_squatter::PointData::build(&tree, &source_points, cancellation).ok()
+            })?;
+            tree.set_point_data(points).ok()?;
+        }
+        Some((tree, complete))
     }
 
     pub fn prepare_grammar(
@@ -514,53 +581,89 @@ impl Store {
         grammar: &Grammar,
         cancelled: impl Fn() -> bool,
     ) -> Result<WriteOutcome, CacheError> {
-        let grammar_cache = tree.grammar_cache().map_err(io::Error::other)?;
-        let slab_size = tree.compact_size();
-        let prefix_size = request.header.len() + 8;
-        let value_size = prefix_size
-            .checked_add(slab_size)
-            .ok_or_else(|| io::Error::other("cache entry size overflow"))?;
+        if tree.has_points() != request.points
+            || tree.presence_cache().is_some() != request.presence
+        {
+            return Err(
+                io::Error::new(io::ErrorKind::InvalidInput, "side data policy mismatch").into(),
+            );
+        }
         if cancelled() {
             return Err(CacheError::Cancelled);
         }
         let Some(_guard) = gate(&self.writer)? else {
             return Ok(WriteOutcome::Busy);
         };
-        if self.get(request, source, grammar).is_some() {
+        let existing = self.get_with_cancel(request, source, grammar, None);
+        let already_present = existing.is_some();
+        let has_sidecars = existing.as_ref().is_some_and(|(_, complete)| *complete);
+        if already_present && has_sidecars {
             return Ok(WriteOutcome::AlreadyPresent);
         }
+        let core_publication = if already_present {
+            None
+        } else {
+            let grammar_cache = tree.grammar_cache().map_err(io::Error::other)?;
+            let slab_size = tree.compact_size();
+            let prefix_size = request.header.len() + 8;
+            let value_size = prefix_size
+                .checked_add(slab_size)
+                .ok_or_else(|| io::Error::other("cache entry size overflow"))?;
+            Some((grammar_cache, slab_size, prefix_size, value_size))
+        };
         let mut tx = self.env.write_txn()?;
-        if let Some(path) = self.paths.get(&tx, &request.source_key[..32])?
-            && path != request.path
-        {
-            return Err(CacheError::PathCollision);
+        let current = self.current.get(&tx, &request.source_key[..32])?;
+        let superseded = match &request.current_guard {
+            CurrentGuard::Unchecked => false,
+            CurrentGuard::Missing => current.is_some_and(|value| value != request.source_key),
+            CurrentGuard::Current(expected) => {
+                current != Some(expected.as_slice())
+                    && current != Some(request.source_key.as_slice())
+            }
+        };
+        if superseded {
+            return Ok(WriteOutcome::AlreadyPresent);
         }
-        self.paths
-            .put(&mut tx, &request.source_key[..32], &request.path)?;
-        // All records become visible in the same durable transaction.
-        if self.sources.get(&tx, &request.source_key)? != Some(source) {
-            self.sources.put(&mut tx, &request.source_key, source)?;
+        if let Some((grammar_cache, slab_size, prefix_size, value_size)) = core_publication {
+            if let Some(path) = self.paths.get(&tx, &request.source_key[..32])?
+                && path != request.path
+            {
+                return Err(CacheError::PathCollision);
+            }
+            self.paths
+                .put(&mut tx, &request.source_key[..32], &request.path)?;
+            if self.sources.get(&tx, &request.source_key)? != Some(source) {
+                self.sources.put(&mut tx, &request.source_key, source)?;
+            }
+            self.trees
+                .put_reserved(&mut tx, &request.tree_key, value_size, |reserved| {
+                    reserved.write_all(&request.header)?;
+                    reserved.write_all(&(slab_size as u64).to_le_bytes())?;
+                    tree.copy_compact_into(&mut reserved.as_uninit_mut()[prefix_size..])
+                        .map_err(io::Error::other)?;
+                    // The envelope writes and successful compact copy initialized the
+                    // entire reservation. No LMDB operation occurs while it is borrowed.
+                    unsafe {
+                        reserved.assume_written(value_size);
+                    }
+                    Ok(())
+                })?;
+            self.grammars.put(
+                &mut tx,
+                &crate::identity::grammar_key(grammar.fingerprint),
+                &grammar_cache,
+            )?;
+            self.current
+                .put(&mut tx, &request.source_key[..32], &request.source_key)?;
         }
-        self.trees
-            .put_reserved(&mut tx, &request.tree_key, value_size, |reserved| {
-                reserved.write_all(&request.header)?;
-                reserved.write_all(&(slab_size as u64).to_le_bytes())?;
-                tree.copy_compact_into(&mut reserved.as_uninit_mut()[prefix_size..])
-                    .map_err(io::Error::other)?;
-                // The envelope writes and successful compact copy initialized the
-                // entire reservation. No LMDB operation occurs while it is borrowed.
-                unsafe {
-                    reserved.assume_written(value_size);
-                }
-                Ok(())
-            })?;
-        self.grammars.put(
-            &mut tx,
-            &crate::identity::grammar_key(grammar.fingerprint),
-            &grammar_cache,
-        )?;
-        self.current
-            .put(&mut tx, &request.source_key[..32], &request.source_key)?;
+        if let Some(cache) = tree.presence_cache() {
+            self.presence
+                .put(&mut tx, &request.tree_key, cache.as_bytes())?;
+        }
+        if let Some(points) = tree.point_data() {
+            self.points
+                .put(&mut tx, &request.tree_key, points.as_bytes())?;
+        }
         if cancelled() {
             return Err(CacheError::Cancelled);
         }

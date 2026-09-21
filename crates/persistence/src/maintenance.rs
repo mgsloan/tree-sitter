@@ -286,6 +286,10 @@ impl Maintenance {
                         && first_key(&tx, self.store.trees, &key, &key)?.is_some();
                     if !retain && !referenced {
                         db.delete(&mut tx, &key)?;
+                        if phase == Phase::Trees {
+                            self.store.presence.delete(&mut tx, &key)?;
+                            self.store.points.delete(&mut tx, &key)?;
+                        }
                         deleted += 1;
                     }
                     next = key;

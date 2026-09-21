@@ -26,6 +26,7 @@ pub struct Attributes<'tree> {
     pub end_byte: usize,
     pub start_position: Point,
     pub end_position: Point,
+    pub has_points: bool,
     pub is_named: bool,
     pub is_extra: bool,
     pub is_missing: bool,
@@ -57,6 +58,7 @@ pub trait NodeLike<'tree>: Copy + Eq {
     fn end_byte(self) -> usize;
     fn start_position(self) -> Point;
     fn end_position(self) -> Point;
+    fn has_points(self) -> bool;
     fn is_named(self) -> bool;
     fn is_extra(self) -> bool;
     fn is_missing(self) -> bool;
@@ -231,6 +233,7 @@ macro_rules! attributes {
             end_byte: $node.end_byte(),
             start_position: $node.start_position(),
             end_position: $node.end_position(),
+            has_points: $node.has_points(),
             is_named: $node.is_named(),
             is_extra: $node.is_extra(),
             is_missing: $node.is_missing(),
@@ -243,6 +246,9 @@ macro_rules! attributes {
 impl<'tree> NodeLike<'tree> for tree_sitter::Node<'tree> {
     type Cursor = tree_sitter::TreeCursor<'tree>;
     node_attributes!(tree_sitter::Node<'tree>, &);
+    fn has_points(self) -> bool {
+        true
+    }
     fn preorder(self) -> impl Iterator<Item = Self> {
         NativePreorder::new(self)
     }
@@ -287,6 +293,9 @@ impl<'tree> NodeLike<'tree> for tree_sitter::Node<'tree> {
 impl<'tree> NodeLike<'tree> for Node<'tree> {
     type Cursor = Cursor<'tree>;
     node_attributes!(Node<'tree>);
+    fn has_points(self) -> bool {
+        Node::has_points(self)
+    }
     fn preorder(self) -> impl Iterator<Item = Self> {
         Node::preorder(self).nodes()
     }

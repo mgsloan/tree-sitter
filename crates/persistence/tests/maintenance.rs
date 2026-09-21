@@ -57,7 +57,7 @@ fn bounded_cleanup_preserves_current_variants_and_old_readers() {
 }
 
 #[test]
-fn stale_cleanup_stops_and_late_writer_restores_complete_records() {
+fn stale_cleanup_stops_and_late_writer_cannot_restore_retired_records() {
     let root = tempfile::tempdir().unwrap();
     let path = root.path().join("file.json");
     let cache = Persistence::open(root.path(), Options::default()).unwrap();
@@ -68,6 +68,7 @@ fn stale_cleanup_stops_and_late_writer_restores_complete_records() {
             &grammar(),
             &mut tree_sitter::Parser::new(),
             LoadOptions {
+                pack: tree_sitter_squatter::PackOptions::default(),
                 write: WritePolicy::Deferred,
                 cancellation: None,
             },
@@ -83,9 +84,12 @@ fn stale_cleanup_stops_and_late_writer_restores_complete_records() {
         MaintenanceState::Superseded
     );
     assert_eq!(finish(&mut new.maintenance().unwrap()), 2);
-    deferred.pending_write.unwrap().publish().unwrap();
+    assert_eq!(
+        deferred.pending_write.unwrap().publish().unwrap(),
+        WriteOutcome::AlreadyPresent
+    );
     fs::write(&path, "1").unwrap();
-    assert!(load(&cache).cache_hit());
+    assert!(!load(&cache).cache_hit());
 }
 
 #[test]

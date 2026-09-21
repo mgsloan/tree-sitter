@@ -67,7 +67,16 @@ pub(crate) struct Request {
     pub source_key: [u8; 72],
     pub tree_key: [u8; 104],
     pub header: Vec<u8>,
+    pub presence: bool,
     pub points: bool,
+    pub current_guard: CurrentGuard,
+}
+
+#[derive(Clone)]
+pub(crate) enum CurrentGuard {
+    Unchecked,
+    Missing,
+    Current([u8; 72]),
 }
 
 impl Request {
@@ -87,9 +96,6 @@ impl Request {
         identity.extend_from_slice(&grammar.fingerprint.0);
         identity.extend_from_slice(&runtime());
         identity.extend_from_slice(&representation());
-        // Compact whole-file/raw-byte mode; transient capacity is not identity.
-        identity.extend_from_slice(&u64::from(presence).to_le_bytes());
-        identity.extend_from_slice(&u64::from(points).to_le_bytes());
         let variant = digest("tree-squatter cache variant v0", &identity);
         let mut tree_key = [0; 104];
         tree_key[..72].copy_from_slice(&source_key);
@@ -103,7 +109,9 @@ impl Request {
             source_key,
             tree_key,
             header,
+            presence,
             points,
+            current_guard: CurrentGuard::Unchecked,
         }
     }
 
@@ -156,7 +164,9 @@ mod tests {
             source_key: [0; 72],
             tree_key: [0; 104],
             header: vec![7; 192],
+            presence: true,
             points: true,
+            current_guard: CurrentGuard::Unchecked,
         };
         let encoded = request.encode(b"slab");
         assert_eq!(&encoded[192..200], &4u64.to_le_bytes());
