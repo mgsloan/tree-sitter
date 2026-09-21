@@ -501,8 +501,8 @@ impl<'tree> GroupRef<'tree> {
     pub fn index(self) -> u32 {
         self.index.get()
     }
-    pub fn first_slot(self) -> u32 {
-        self.index.first_slot().get()
+    pub fn first_slot(self) -> SlotIx {
+        self.index.first_slot()
     }
     #[inline]
     pub fn valid_mask(self) -> Mask {
@@ -519,7 +519,7 @@ impl<'tree> GroupRef<'tree> {
     #[inline]
     fn kind(self, slot: u32) -> KindId {
         let columns = self.columns;
-        let symbol = columns.short(columns.layout().symbol, self.first_slot() + slot)
+        let symbol = columns.short(columns.layout().symbol, self.first_slot().get() + slot)
             >> columns.tables().symbol_shift;
         columns.tables().decode_kind(RemappedKindId(symbol))
     }
@@ -528,10 +528,10 @@ impl<'tree> GroupRef<'tree> {
     fn equal_ids(&self, offset: SlabOffset, shift: u32, target: u16, candidates: Mask) -> Mask {
         if candidates.0.is_power_of_two() {
             return candidates.retain(|slot| {
-                self.columns.short(offset, self.first_slot() + slot) >> shift == target
+                self.columns.short(offset, self.first_slot().get() + slot) >> shift == target
             });
         }
-        let start = offset.get() as usize + self.first_slot() as usize * 2;
+        let start = offset.get() as usize + self.first_slot().get() as usize * 2;
         let bytes = &self.columns.data()[start..start + self.columns.group_size() as usize * 2];
         let mut matches = 0;
         #[cfg(target_arch = "x86_64")]
@@ -590,7 +590,7 @@ impl<'tree> GroupRef<'tree> {
             );
         }
         if candidates.0.is_power_of_two() {
-            let slot = self.first_slot() + candidates.0.trailing_zeros();
+            let slot = self.first_slot().get() + candidates.0.trailing_zeros();
             let value = self.columns.short(offset, slot) >> shift;
             return if targets.iter().any(|target| target.raw() == value) {
                 candidates
@@ -601,7 +601,7 @@ impl<'tree> GroupRef<'tree> {
         #[cfg(target_arch = "x86_64")]
         {
             use std::arch::x86_64::*;
-            let start = offset.get() as usize + self.first_slot() as usize * 2;
+            let start = offset.get() as usize + self.first_slot().get() as usize * 2;
             let bytes = &self.columns.data()[start..start + self.columns.group_size() as usize * 2];
             let mut matches = 0;
             // SSE2 is baseline. Each checked chunk contains both vector loads;
@@ -628,7 +628,7 @@ impl<'tree> GroupRef<'tree> {
         #[cfg(not(target_arch = "x86_64"))]
         candidates.retain(|slot| {
             targets.iter().any(|target| {
-                target.raw() == self.columns.short(offset, self.first_slot() + slot) >> shift
+                target.raw() == self.columns.short(offset, self.first_slot().get() + slot) >> shift
             })
         })
     }
@@ -637,10 +637,10 @@ impl<'tree> GroupRef<'tree> {
         if offset.get() == 0 {
             return 0;
         }
+        let start = self.first_slot().get() / 8;
         let mut bits = 0;
         for byte in 0..self.columns.group_size() / 8 {
-            bits |=
-                u64::from(self.columns.byte(offset, self.first_slot() / 8 + byte)) << (byte * 8);
+            bits |= u64::from(self.columns.byte(offset, start + byte)) << (byte * 8);
         }
         // Predicates intersect these bits with an already-valid candidate mask.
         bits
@@ -664,7 +664,7 @@ impl<'tree> GroupMatches<'tree> {
     #[inline]
     pub fn nodes(self) -> GroupNodes<'tree> {
         GroupNodes {
-            base: self.group.columns.node(self.group.first_slot()),
+            base: self.group.columns.root.at(self.group.first_slot()),
             matches: self.matches,
             descending: self.descending,
         }
@@ -967,7 +967,7 @@ impl<'tree, S: GroupScan<'tree>> Iterator for Nodes<'tree, S> {
         });
         while let Some(slots) = self.source.next_slots() {
             let group = self.source.group();
-            let base = group.first_slot();
+            let base = group.first_slot().get();
             accumulator = slots.fold(accumulator, |accumulator, slot| {
                 fold(accumulator, columns.node(base + slot))
             });
@@ -982,7 +982,7 @@ impl<'tree, S: GroupScan<'tree>> Iterator for Nodes<'tree, S> {
             }
             self.slots = self.source.next_slots()?;
             let group = self.source.group();
-            self.base = group.first_slot();
+            self.base = group.first_slot().get();
         }
     }
     fn count(self) -> usize {
@@ -1046,8 +1046,9 @@ impl<'tree> Preorder<'tree> {
     }
     #[inline]
     fn mask(&self) -> Mask {
-        let first = self.slots.start.saturating_sub(self.group.first_slot());
-        let end = (self.slots.end - self.group.first_slot()).min(self.group.used());
+        let base = self.group.first_slot().get();
+        let first = self.slots.start.saturating_sub(base);
+        let end = (self.slots.end - base).min(self.group.used());
         Mask(Mask::lower(end).0 & !Mask::lower(first).0)
     }
     #[inline]
@@ -1058,8 +1059,9 @@ impl<'tree> Preorder<'tree> {
             } else {
                 self.groups.next_back()?
             });
-            let first = self.slots.start.saturating_sub(self.group.first_slot());
-            let end = (self.slots.end - self.group.first_slot()).min(self.group.used());
+            let base = self.group.first_slot().get();
+            let first = self.slots.start.saturating_sub(base);
+            let end = (self.slots.end - base).min(self.group.used());
             if first < end {
                 return Some(first..end);
             }
@@ -1091,7 +1093,7 @@ impl<'tree> Preorder<'tree> {
                     self.groups.end = if span == 0 {
                         self.group.index.get()
                     } else {
-                        (self.group.first_slot() - span)
+                        (self.group.first_slot().get() - span)
                             .div_ceil(self.group.columns.group_size())
                             .min(self.group.index.get())
                             .max(self.groups.start)
@@ -1126,8 +1128,8 @@ impl<'tree> Preorder<'tree> {
                 if span != 0 {
                     // The base alone is a conservative span; avoid delta loads
                     // and short jumps when all spans fit in a byte.
-                    let end =
-                        (self.group.first_slot() - span).div_ceil(self.group.columns.group_size());
+                    let end = (self.group.first_slot().get() - span)
+                        .div_ceil(self.group.columns.group_size());
                     self.groups.end = self.groups.end.min(end).max(self.groups.start);
                 }
                 continue;
@@ -1220,8 +1222,9 @@ impl<'tree> GroupScan<'tree> for Preorder<'tree> {
         self.groups
             .map(|index| {
                 let group = self.group.columns.group(GroupIx(index));
-                let first = self.slots.start.saturating_sub(group.first_slot());
-                let end = (self.slots.end - group.first_slot()).min(group.used());
+                let base = group.first_slot().get();
+                let first = self.slots.start.saturating_sub(base);
+                let end = (self.slots.end - base).min(group.used());
                 end.saturating_sub(first) as usize
             })
             .sum()
@@ -1531,7 +1534,7 @@ fn column_deltas<'tree>(
 ) -> ColumnDeltas<'tree> {
     ColumnDeltas {
         data: group.columns.data(),
-        start: offset.get() as usize + group.first_slot() as usize * width,
+        start: offset.get() as usize + group.first_slot().get() as usize * width,
         length: group.columns.group_size() as usize * width,
     }
 }
@@ -3263,7 +3266,7 @@ fn retain_kind_set(group: &GroupRef<'_>, candidates: Mask, kinds: &KindSet) -> M
         return candidates.retain(|slot| kinds.contains(group.kind(slot)));
     }
     let layout = group.columns.layout();
-    let start = layout.symbol.get() as usize + group.first_slot() as usize * 2;
+    let start = layout.symbol.get() as usize + group.first_slot().get() as usize * 2;
     let bytes = &group.columns.data()[start..start + group.used() as usize * 2];
     let mut matches = 0;
     for (slot, bytes) in bytes.chunks_exact(2).enumerate() {
@@ -3306,7 +3309,7 @@ impl Predicate for FieldIds<'_> {
             }
             _ => candidates.retain(|slot| {
                 self.0.contains(FieldId::new(
-                    group.columns.short(offset, group.first_slot() + slot),
+                    group.columns.short(offset, group.first_slot().get() + slot),
                 ))
             }),
         }
@@ -3415,7 +3418,7 @@ impl Predicate for SupertypeId {
         }
         let words = columns.tables().supertypes().len().div_ceil(64);
         candidates.retain(|slot| {
-            let value = columns.short(columns.layout().supertype, group.first_slot() + slot);
+            let value = columns.short(columns.layout().supertype, group.first_slot().get() + slot);
             columns.tables().supertype_masks()[usize::from(value) * words + index / 64]
                 & (1u64 << (index % 64))
                 != 0

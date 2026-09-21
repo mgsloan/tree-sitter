@@ -1390,15 +1390,16 @@ impl<'query, 'tree> QueryExecution<'_, 'query, 'tree, '_> {
                     .any(|&symbol| data.group_has_symbol(index, symbol))
             {
                 let group = groups.at_group(GroupIx(index));
+                let base = group.first_slot().get();
                 let mut hits = predicate.retain_matches(&group, group.valid_mask()).bits();
-                let first = total - group_end - group.first_slot();
-                let last = total - start - group.first_slot();
+                let first = total - group_end - base;
+                let last = total - start - base;
                 hits &= u64::MAX << first;
                 if last < 64 {
                     hits &= (1 << last) - 1;
                 }
                 if hits != 0 {
-                    return total - 1 - (group.first_slot() + 63 - hits.leading_zeros());
+                    return total - 1 - (base + 63 - hits.leading_zeros());
                 }
             }
             start = self.normalize_position(group_end);
