@@ -1,5 +1,6 @@
 // Context lifecycle, exact output, and recovery after every allocation failure.
 #include "../internal.h"
+#include <tree_sitter/squat_query.h>
 #include <assert.h>
 #include <dlfcn.h>
 #include <stdio.h>
@@ -51,6 +52,53 @@ static void grammar_allocation_failures(bool multi_child) {
 static int64_t cursor_seek(SQCursor *cursor, bool by_point, uint32_t target) {
   return by_point ? sq_cursor_goto_first_child_for_point(cursor, (TSPoint){target, target})
                   : sq_cursor_goto_first_child_for_byte(cursor, target);
+}
+
+static void query_cursor_reuse(const SQTree *tree) {
+  const char *source = "(_) @node";
+  uint32_t offset;
+  TSQueryError query_error;
+  SQQuery *query = sq_query_new(tree->language, source, (uint32_t)strlen(source), &offset, &query_error);
+  SQQueryCursor *cursor = sq_query_cursor_new();
+  assert(query && cursor);
+  sq_query_cursor_set_optimized(cursor, false);
+  uint32_t expected = 0;
+  SQQueryMatch match;
+  for (unsigned pass = 0; pass < 2; pass++) {
+    allocations = 0;
+    fail_at = pass ? 1 : 0;
+    sq_query_cursor_exec(cursor, query, sq_tree_root_node(tree));
+    uint32_t count = 0;
+    while (sq_query_cursor_next_match(cursor, &match)) count++;
+    fail_at = 0;
+    assert(sq_query_cursor_error(cursor) == SQ_QUERY_OK);
+    if (pass) assert(count == expected && allocations == 0);
+    else expected = count;
+  }
+
+  SQError error;
+  SQTree *temporary = sq_tree_repack(tree, &error);
+  assert(temporary);
+  sq_query_cursor_exec(cursor, query, sq_tree_root_node(temporary));
+  sq_query_cursor_next_match(cursor, &match);
+  sq_tree_delete(temporary);
+  sq_query_cursor_exec(cursor, NULL, sq_null());
+  assert(sq_query_cursor_error(cursor) == SQ_QUERY_INVALID_EXECUTION);
+  assert(!sq_query_cursor_next_match(cursor, &match));
+  sq_query_cursor_exec(cursor, query, sq_tree_root_node(tree));
+  uint32_t count = 0;
+  while (sq_query_cursor_next_match(cursor, &match)) count++;
+  assert(sq_query_cursor_error(cursor) == SQ_QUERY_OK && count == expected);
+
+  sq_query_cursor_set_optimized(cursor, true);
+  sq_query_cursor_exec(cursor, query, sq_tree_root_node(tree));
+  count = sq_query_cursor_next_match(cursor, &match) ? 1 : 0;
+  // A range setter after a planned match restores the traversal cursor.
+  assert(sq_query_cursor_set_byte_range(cursor, 0, UINT32_MAX));
+  while (sq_query_cursor_next_match(cursor, &match)) count++;
+  assert(sq_query_cursor_error(cursor) == SQ_QUERY_OK && count == expected);
+  sq_query_cursor_delete(cursor);
+  sq_query_delete(query);
 }
 
 static void cursor_seek_allocation_failures(const SQTree *tree) {
@@ -186,6 +234,7 @@ int main(int argc, char **argv) {
     assert(expected);
     if (getenv("CONTEXT_FAILURES")) {
       cursor_seek_allocation_failures(expected);
+      query_cursor_reuse(expected);
       for (size_t nth = 1; ; nth++) {
         assert(nth < 256);
         allocations = 0;
