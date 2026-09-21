@@ -326,10 +326,16 @@ impl Walk<'_> {
         Ok(Mask(offset as u64))
     }
 
+    #[inline(always)]
     fn mask_id(&self, mask: Mask) -> Result<u16, Error> {
         if self.tables.supertype_count <= 8 {
             return Ok(mask.0 as u16);
         }
+        self.lookup_mask(mask)
+    }
+
+    #[inline(never)]
+    fn lookup_mask(&self, mask: Mask) -> Result<u16, Error> {
         let words = if self.words == 1 {
             std::slice::from_ref(&mask.0)
         } else {
