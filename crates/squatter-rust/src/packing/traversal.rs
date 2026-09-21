@@ -377,7 +377,11 @@ impl Walk<'_> {
     ) -> Result<(), Error> {
         let position_mark = self.scratch.positions.len();
         let mask_mark = self.scratch.masks.len();
-        let mut frame = Frame {
+        // Initialize the retained slot before scratch allocation and mask lookup
+        // so its metadata need not stay live across those calls. Walk clears the
+        // frame if either operation fails.
+        reserve(&mut self.scratch.stack, 1)?;
+        self.scratch.stack.push(Frame {
             node,
             subtree,
             children: ptr::null(),
@@ -400,15 +404,24 @@ impl Walk<'_> {
             structural: 0,
             visible,
             child_later: false,
-        };
+        });
         if facts.children != 0 {
             let (children, production, symbol) = subtree.branch();
-            frame.children = children;
-            frame.aliases = self.aliases(production);
-            frame.fields = self.fields(production);
+            let aliases = self.aliases(production);
+            let fields = self.fields(production);
+            let child_mask = self.child_mask(
+                node.mask,
+                visible,
+                if node.alias == 0 { symbol } else { node.alias },
+            )?;
             if self.points && facts.children > 1 {
                 reserve(&mut self.scratch.positions, facts.children as usize)?;
             }
+            let frame = self.scratch.stack.last_mut().unwrap();
+            frame.children = children;
+            frame.aliases = aliases;
+            frame.fields = fields;
+            frame.child_mask = child_mask;
             let mut position = node.position;
             for index in 0..facts.children as usize {
                 let child = Subtree(unsafe { children.add(index) });
@@ -429,14 +442,7 @@ impl Walk<'_> {
                 };
                 frame.structural += u32::from(!extra);
             }
-            frame.child_mask = self.child_mask(
-                node.mask,
-                visible,
-                if node.alias == 0 { symbol } else { node.alias },
-            )?;
         }
-        reserve(&mut self.scratch.stack, 1)?;
-        self.scratch.stack.push(frame);
         Ok(())
     }
 
