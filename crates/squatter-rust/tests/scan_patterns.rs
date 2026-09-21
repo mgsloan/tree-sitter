@@ -1,20 +1,21 @@
 //! Small scan examples, also used to inspect optimized code generation.
-extern crate tree_squatter_rust as tree_squatter;
+#[path = "../../squatter/tests/support/mod.rs"]
+mod support;
+
 use std::{hint::black_box, ops::Range};
 use tree_sitter::Point;
-use tree_squatter::{FieldId, GrammarKindId, KindId};
-use tree_squatter::{Grammar, KindSet, Node, Tree};
+use tree_squatter_rust::{FieldId, Grammar, GrammarKindId, KindId, KindSet, Node, SlotIx, Tree};
+
+use support::{json_language, parse_native};
 
 const SOURCE: &str = r#"{"a": [1, 2], "b": {"c": 3}, "d": 4}"#;
 
-fn fixture() -> (tree_sitter::Language, Tree) {
-    let language =
-        unsafe { tree_sitter::Language::from_raw(tree_sitter_json::LANGUAGE.into_raw()().cast()) };
-    let mut parser = tree_sitter::Parser::new();
-    parser.set_language(&language).unwrap();
-    let native = parser.parse(SOURCE, None).unwrap();
-    let tree = Tree::pack(&Grammar::new(&language).unwrap(), &native).unwrap();
-    (language, tree)
+fn fixture() -> (Grammar, Tree) {
+    let language = json_language();
+    let grammar = Grammar::new(&language).unwrap();
+    let native = parse_native(&language, SOURCE);
+    let tree = Tree::pack(&grammar, &native).unwrap();
+    (grammar, tree)
 }
 
 fn texts<'tree>(nodes: impl IntoIterator<Item = Node<'tree>>) -> Vec<&'static str> {
@@ -26,12 +27,13 @@ fn texts<'tree>(nodes: impl IntoIterator<Item = Node<'tree>>) -> Vec<&'static st
 
 #[test]
 fn scan_patterns() {
-    let (language, tree) = fixture();
+    let (grammar, tree) = fixture();
     let root = tree.root_node();
-    let numbers = kind_set([language.id_for_node_kind("number", true)]);
-    let containers_and_numbers =
-        kind_set(["pair", "array", "number"].map(|name| language.id_for_node_kind(name, true)));
-    let value_field = language.field_id_for_name("value").unwrap().get();
+    let numbers = KindSet::new([grammar.kind_id_for_name("number", true).unwrap()]);
+    let containers_and_numbers = KindSet::new(
+        ["pair", "array", "number"].map(|name| grammar.kind_id_for_name(name, true).unwrap()),
+    );
+    let value_field = Some(grammar.field_id_for_name("value").unwrap());
 
     let preorder = [
         r#""a": [1, 2]"#,
@@ -86,15 +88,12 @@ fn scan_patterns() {
     all_numbers.sort_unstable();
     assert_eq!(all_numbers, ["1", "2", "3", "4"]);
     assert_eq!(
-        texts(root.preorder().filter_field_id(FieldId::new(value_field))),
+        texts(root.preorder().filter_field_id(value_field)),
         ["[1, 2]", r#"{"c": 3}"#, "3", "4"]
     );
-    let key_field = language.field_id_for_name("key").unwrap().get();
+    let key_field = Some(grammar.field_id_for_name("key").unwrap());
     assert_eq!(
-        texts(
-            root.preorder()
-                .filter_field_ids([key_field, value_field].map(FieldId::new))
-        ),
+        texts(root.preorder().filter_field_ids([key_field, value_field])),
         [
             r#""a""#,
             "[1, 2]",
@@ -110,7 +109,7 @@ fn scan_patterns() {
         texts(
             root.preorder()
                 .filter_kind_ids(&numbers)
-                .filter_field_id(FieldId::new(value_field))
+                .filter_field_id(value_field)
         ),
         ["3", "4"]
     );
@@ -134,7 +133,9 @@ fn scan_patterns() {
 
     let array = root
         .preorder()
-        .filter_kind_ids(&kind_set([language.id_for_node_kind("array", true)]))
+        .filter_kind_ids(&KindSet::new([grammar
+            .kind_id_for_name("array", true)
+            .unwrap()]))
         .nodes()
         .next()
         .unwrap();
@@ -189,12 +190,12 @@ mod patterns {
         root.all().filter_kind_ids(kinds).count()
     }
     #[inline(never)]
-    pub fn four_kind_count(root: Node<'_>, kinds: [u16; 4]) -> usize {
-        root.all().filter_kind_ids(kinds.map(KindId::new)).count()
+    pub fn four_kind_count(root: Node<'_>, kinds: [KindId; 4]) -> usize {
+        root.all().filter_kind_ids(kinds).count()
     }
     #[inline(never)]
-    pub fn eight_kind_count(root: Node<'_>, kinds: [u16; 8]) -> usize {
-        root.all().filter_kind_ids(kinds.map(KindId::new)).count()
+    pub fn eight_kind_count(root: Node<'_>, kinds: [KindId; 8]) -> usize {
+        root.all().filter_kind_ids(kinds).count()
     }
     #[inline(never)]
     pub fn scalar_kind_count(root: Node<'_>, kinds: &KindSet) -> usize {
@@ -204,14 +205,12 @@ mod patterns {
             .count()
     }
     #[inline(never)]
-    pub fn field_count(root: Node<'_>, field: u16) -> usize {
-        root.all().filter_field_id(FieldId::new(field)).count()
+    pub fn field_count(root: Node<'_>, field: Option<FieldId>) -> usize {
+        root.all().filter_field_id(field).count()
     }
     #[inline(never)]
-    pub fn two_field_count(root: Node<'_>, fields: [u16; 2]) -> usize {
-        root.all()
-            .filter_field_ids(fields.map(FieldId::new))
-            .count()
+    pub fn two_field_count(root: Node<'_>, fields: [Option<FieldId>; 2]) -> usize {
+        root.all().filter_field_ids(fields).count()
     }
     #[inline(never)]
     pub fn range_count(root: Node<'_>, range: Range<usize>) -> usize {
@@ -222,7 +221,7 @@ mod patterns {
         root.all()
             .overlapping_bytes(range)
             .nodes()
-            .map(|node| u64::from(u32::from(node.slot())))
+            .map(|node| u64::from(node.slot().get()))
             .sum()
     }
     #[inline(never)]
@@ -230,7 +229,7 @@ mod patterns {
         root.all()
             .overlapping_points(range)
             .nodes()
-            .map(|node| u64::from(u32::from(node.slot())))
+            .map(|node| u64::from(node.slot().get()))
             .sum()
     }
     #[inline(never)]
@@ -238,27 +237,25 @@ mod patterns {
         root: Node<'_>,
         range: Range<usize>,
         kinds: &KindSet,
-        field: u16,
+        field: Option<FieldId>,
     ) -> usize {
         root.all()
             .overlapping_bytes(range)
             .filter_kind_ids(kinds)
-            .filter_field_id(FieldId::new(field))
+            .filter_field_id(field)
             .filter_extra(false)
             .filter_missing(false)
             .count()
     }
     #[inline(never)]
-    pub fn supertype_count(root: Node<'_>, supertype: u16) -> usize {
-        root.all()
-            .filter_supertype_id(GrammarKindId::new(supertype))
-            .count()
+    pub fn supertype_count(root: Node<'_>, supertype: GrammarKindId) -> usize {
+        root.all().filter_supertype_id(supertype).count()
     }
     #[inline(never)]
     pub fn preorder_slots(root: Node<'_>) -> u64 {
         root.preorder()
             .nodes()
-            .map(|node| u64::from(u32::from(node.slot())))
+            .map(|node| u64::from(node.slot().get()))
             .sum()
     }
     #[inline(never)]
@@ -266,14 +263,14 @@ mod patterns {
         root.preorder()
             .rev()
             .nodes()
-            .map(|node| u64::from(u32::from(node.slot())))
+            .map(|node| u64::from(node.slot().get()))
             .sum()
     }
     #[inline(never)]
     pub fn postorder_slots(root: Node<'_>) -> u64 {
         root.postorder()
             .nodes()
-            .map(|node| u64::from(u32::from(node.slot())))
+            .map(|node| u64::from(node.slot().get()))
             .sum()
     }
     #[inline(never)]
@@ -281,7 +278,7 @@ mod patterns {
         root.postorder()
             .rev()
             .nodes()
-            .map(|node| u64::from(u32::from(node.slot())))
+            .map(|node| u64::from(node.slot().get()))
             .sum()
     }
     #[inline(never)]
@@ -291,7 +288,7 @@ mod patterns {
             .map(|group| {
                 group
                     .nodes()
-                    .map(|node| u64::from(u32::from(node.slot())))
+                    .map(|node| u64::from(node.slot().get()))
                     .sum::<u64>()
             })
             .sum()
@@ -305,18 +302,18 @@ mod patterns {
             .sum()
     }
     #[inline(never)]
-    pub fn first_kind_slot(root: Node<'_>, kinds: &KindSet) -> Option<u32> {
+    pub fn first_kind_slot(root: Node<'_>, kinds: &KindSet) -> Option<SlotIx> {
         root.preorder()
             .filter_kind_ids(kinds)
             .nodes()
             .next()
-            .map(|node| u32::from(node.slot()))
+            .map(|node| node.slot())
     }
 }
 
 #[test]
 fn assembly_patterns_match_examples() {
-    let (language, tree) = fixture();
+    let (grammar, tree) = fixture();
     let root = black_box(tree.root_node());
     // Scalar navigation supplies an independent reference for the reductions.
     let nodes = std::iter::successors(Some(root), |node| node.next_preorder()).collect::<Vec<_>>();
@@ -329,7 +326,7 @@ fn assembly_patterns_match_examples() {
 
     let slots = nodes
         .iter()
-        .map(|node| u64::from(u32::from(node.slot())))
+        .map(|node| u64::from(node.slot().get()))
         .sum::<u64>();
     assert_eq!(patterns::preorder_slots(root), slots);
     assert_eq!(patterns::reverse_preorder_slots(root), slots);
@@ -342,10 +339,10 @@ fn assembly_patterns_match_examples() {
         (vec!["pair", "array", "number"], 9),
         (vec![], 0),
     ] {
-        let kinds = kind_set(
+        let kinds = KindSet::new(
             names
                 .iter()
-                .map(|name| language.id_for_node_kind(name, true)),
+                .map(|name| grammar.kind_id_for_name(name, true).unwrap()),
         );
         let kinds = black_box(&kinds);
         assert_eq!(patterns::kind_count(root, kinds), count);
@@ -353,10 +350,7 @@ fn assembly_patterns_match_examples() {
         let matching_nodes = nodes.iter().filter(|node| kinds.contains(node.kind_id()));
         assert_eq!(
             patterns::first_kind_slot(root, kinds),
-            matching_nodes
-                .clone()
-                .next()
-                .map(|node| u32::from(node.slot()))
+            matching_nodes.clone().next().map(|node| node.slot())
         );
         assert_eq!(
             patterns::kind_start_bytes(root, kinds),
@@ -364,33 +358,37 @@ fn assembly_patterns_match_examples() {
         );
     }
 
-    let fixed =
-        ["number", "array", "pair", "string"].map(|name| language.id_for_node_kind(name, true));
+    let fixed = ["number", "array", "pair", "string"]
+        .map(|name| grammar.kind_id_for_name(name, true).unwrap());
     let expected = nodes
         .iter()
-        .filter(|node| fixed.contains(&u16::from(node.kind_id())))
+        .filter(|node| fixed.contains(&node.kind_id()))
         .count();
     assert_eq!(patterns::four_kind_count(root, black_box(fixed)), expected);
     assert_eq!(
         patterns::eight_kind_count(
             root,
             black_box([
-                fixed[0], fixed[1], fixed[2], fixed[3], 32768, 32769, fixed[0], fixed[1]
+                fixed[0],
+                fixed[1],
+                fixed[2],
+                fixed[3],
+                KindId::new(32768),
+                KindId::new(32769),
+                fixed[0],
+                fixed[1]
             ])
         ),
         expected
     );
-    let numbers = kind_set([language.id_for_node_kind("number", true)]);
+    let numbers = KindSet::new([grammar.kind_id_for_name("number", true).unwrap()]);
     let numbers = black_box(&numbers);
-    let value_field = black_box(language.field_id_for_name("value").unwrap().get());
+    let value_field = black_box(Some(grammar.field_id_for_name("value").unwrap()));
     assert_eq!(patterns::field_count(root, value_field), 4);
     assert_eq!(
         patterns::two_field_count(
             root,
-            black_box([
-                language.field_id_for_name("key").unwrap().get(),
-                value_field
-            ])
+            black_box([Some(grammar.field_id_for_name("key").unwrap()), value_field])
         ),
         8
     );
@@ -418,7 +416,7 @@ fn assembly_patterns_match_examples() {
                     && node.start_byte() < range.end
                     && (node.end_byte() > range.start || node.start_byte() >= range.start)
             })
-            .map(|node| u64::from(u32::from(node.slot())))
+            .map(|node| u64::from(node.slot().get()))
             .sum::<u64>();
         assert_eq!(
             patterns::range_slots(root, black_box(range.clone())),
@@ -446,17 +444,13 @@ fn assembly_patterns_match_examples() {
         0
     );
 
-    for &supertype in language.supertypes() {
-        let supertype = black_box(supertype);
+    for &supertype in grammar.language().supertypes() {
+        let supertype = black_box(GrammarKindId::new(supertype));
         let expected = nodes
             .iter()
-            .filter(|node| node.has_supertype(GrammarKindId::new(supertype)))
+            .filter(|node| node.has_supertype(supertype))
             .count();
         assert!(expected > 0);
         assert_eq!(patterns::supertype_count(root, supertype), expected);
     }
-}
-
-fn kind_set(ids: impl IntoIterator<Item = u16>) -> KindSet {
-    KindSet::new(ids.into_iter().map(KindId::new))
 }

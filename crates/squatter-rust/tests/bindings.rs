@@ -1,11 +1,14 @@
-extern crate tree_squatter_rust as tree_squatter;
+#[path = "../../squatter/tests/support/mod.rs"]
+mod support;
+
 use std::error::Error;
-use tree_sitter::StreamingIterator;
-use tree_squatter::{FieldId, KindId};
-use tree_squatter::{
+use tree_squatter_rust::{FieldId, KindId};
+use tree_squatter_rust::{
     KindSet, PackOptions, Tree,
     traits::{CursorLike, NodeLike},
 };
+
+use support::{c_language, describe_capture, json_language, native_query_results, parse_native};
 
 fn check_shared_navigation<'tree, N: NodeLike<'tree>>(
     root: N,
@@ -156,47 +159,16 @@ fn check_queries(
     ] {
         for modification in [0, 2] {
             let mut expected_query = tree_sitter::Query::new(language, source_query)?;
-            let mut actual_query = tree_squatter::Query::new(language, source_query)?;
+            let mut actual_query = tree_squatter_rust::Query::new(language, source_query)?;
             if modification == 2 {
                 let name = actual_query.capture_names()[0].clone();
                 expected_query.disable_capture(&name);
                 actual_query.disable_capture(&name);
             }
             for captures in [false, true] {
-                let mut expected_cursor = tree_sitter::QueryCursor::new();
-                let mut expected = Vec::new();
-                let mut append = |result: &tree_sitter::QueryMatch<'_, '_>, index| {
-                    expected.push((
-                        result.pattern_index,
-                        index,
-                        result
-                            .captures()
-                            .iter()
-                            .map(|capture| {
-                                (
-                                    capture.index,
-                                    capture.node.start_byte(),
-                                    capture.node.end_byte(),
-                                    u16::from(capture.node.kind_id()),
-                                )
-                            })
-                            .collect::<Vec<_>>(),
-                    ));
-                };
-                if captures {
-                    let mut results =
-                        expected_cursor.captures(&expected_query, mainline.root_node(), source);
-                    while let Some((result, index)) = results.next() {
-                        append(result, Some(*index));
-                    }
-                } else {
-                    let mut results =
-                        expected_cursor.matches(&expected_query, mainline.root_node(), source);
-                    while let Some(result) = results.next() {
-                        append(result, None);
-                    }
-                }
-                let mut actual_cursor = tree_squatter::QueryCursor::new();
+                let expected =
+                    native_query_results(&expected_query, mainline.root_node(), source, captures);
+                let mut actual_cursor = tree_squatter_rust::QueryCursor::new();
                 let mut execution =
                     actual_cursor.execute(&actual_query, packed.root_node(), source);
                 let mut actual = Vec::new();
@@ -218,11 +190,10 @@ fn check_queries(
                             .captures
                             .iter()
                             .map(|capture| {
-                                (
+                                describe_capture(
                                     capture.index,
-                                    capture.node.start_byte(),
-                                    capture.node.end_byte(),
-                                    u16::from(capture.node.kind_id()),
+                                    capture.node.kind_id(),
+                                    capture.node.byte_range(),
                                 )
                             })
                             .collect::<Vec<_>>(),
@@ -245,8 +216,8 @@ fn check_cursor_reuse(
     language: &tree_sitter::Language,
     tree: &tree_sitter::Tree,
 ) -> Result<(), Box<dyn Error>> {
-    use tree_squatter::{Query, QueryCursor, QueryExecutionError};
-    let grammar = tree_squatter::Grammar::new(language)?;
+    use tree_squatter_rust::{Query, QueryCursor, QueryExecutionError};
+    let grammar = tree_squatter_rust::Grammar::new(language)?;
     let mut cursor = QueryCursor::new();
     cursor.set_timeout(Some(std::time::Duration::from_secs(1)));
     for _ in 0..3 {
@@ -306,12 +277,9 @@ fn check_cursor_reuse(
 const SOURCE: &str = "{\"a\": [1, true, null], \"b\": 2}";
 
 fn fixture() -> Result<(tree_sitter::Language, tree_sitter::Tree, Tree), Box<dyn Error>> {
-    let language =
-        unsafe { tree_sitter::Language::from_raw(tree_sitter_json::LANGUAGE.into_raw()().cast()) };
-    let grammar = tree_squatter::Grammar::new(&language)?;
-    let mut parser = tree_sitter::Parser::new();
-    parser.set_language(&language)?;
-    let native = parser.parse(SOURCE, None).ok_or("parse failed")?;
+    let language = json_language();
+    let grammar = tree_squatter_rust::Grammar::new(&language)?;
+    let native = parse_native(&language, SOURCE);
     let packed = Tree::pack_with_options(
         &grammar,
         &native,
@@ -334,13 +302,11 @@ fn shared_navigation() -> Result<(), Box<dyn Error>> {
 #[test]
 fn group_boundaries_and_optional_columns() -> Result<(), Box<dyn Error>> {
     let (language, _, _) = fixture()?;
-    let grammar = tree_squatter::Grammar::new(&language)?;
-    let mut parser = tree_sitter::Parser::new();
-    parser.set_language(&language)?;
+    let grammar = tree_squatter_rust::Grammar::new(&language)?;
     // Cross the presence-index threshold and several physical groups, retaining
     // a rare boolean beside common number and punctuation symbols.
     let source = format!("[true,{}null]", "123,\n".repeat(600));
-    let native = parser.parse(&source, None).ok_or("parse failed")?;
+    let native = parse_native(&language, &source);
     for points in [false, true] {
         for symbol_presence in [false, true] {
             let packed = Tree::pack_with_options(
@@ -369,7 +335,7 @@ fn streaming_queries_and_cursor_reuse() -> Result<(), Box<dyn Error>> {
 #[test]
 fn owned_and_borrowed_storage() -> Result<(), Box<dyn Error>> {
     let (language, native, packed) = fixture()?;
-    let grammar = tree_squatter::Grammar::new(&language)?;
+    let grammar = tree_squatter_rust::Grammar::new(&language)?;
     let compact = packed.repack()?;
     let decoded = Tree::from_bytes(&grammar, compact.as_bytes())?;
     let borrowed = Tree::from_bytes_borrowed(&grammar, compact.as_bytes())?;
@@ -399,18 +365,14 @@ fn owned_and_borrowed_storage() -> Result<(), Box<dyn Error>> {
     );
     let mut corrupted = decoded.as_bytes().to_vec();
     corrupted[0] ^= 0x80;
-    let grammar = tree_squatter::Grammar::new(&language)?;
+    let grammar = tree_squatter_rust::Grammar::new(&language)?;
     assert!(Tree::from_bytes(&grammar, &corrupted).is_err());
     Ok(())
 }
 
-fn c_language() -> tree_sitter::Language {
-    unsafe { tree_sitter::Language::from_raw(tree_sitter_c::LANGUAGE.into_raw()().cast()) }
-}
-
 #[test]
 fn direct_parser_matches_mainline_packing() -> Result<(), Box<dyn Error>> {
-    use tree_squatter::{Grammar, Parser};
+    use tree_squatter_rust::{Grammar, Parser};
 
     let language = c_language();
     let grammar = Grammar::new(&language)?;
@@ -463,7 +425,7 @@ fn direct_parser_matches_mainline_packing() -> Result<(), Box<dyn Error>> {
 
 #[test]
 fn direct_parser_reuses_after_failure_and_owns_grammar() -> Result<(), Box<dyn Error>> {
-    use tree_squatter::{Error as SquatError, Grammar, Parser};
+    use tree_squatter_rust::{Error as SquatError, Grammar, Parser};
 
     let mut parser = {
         let grammar = Grammar::new(&c_language())?;
@@ -495,14 +457,13 @@ fn direct_parser_reuses_after_failure_and_owns_grammar() -> Result<(), Box<dyn E
 
 #[test]
 fn direct_parser_rejects_unsupported_grammar() -> Result<(), Box<dyn Error>> {
-    use tree_squatter::{Error as SquatError, Grammar};
+    use tree_squatter_rust::{Error as SquatError, Grammar};
 
     // This dependency generates ABI 14, which remains usable by the conversion
     // API but must never silently fall back to a mainline parser.
-    let language =
-        unsafe { tree_sitter::Language::from_raw(tree_sitter_json::LANGUAGE.into_raw()().cast()) };
+    let language = json_language();
     let grammar = Grammar::new(&language)?;
-    let failure = tree_squatter::Parser::new(&grammar)
+    let failure = tree_squatter_rust::Parser::new(&grammar)
         .err()
         .ok_or("accepted ABI 14")?;
     assert_eq!(failure.code, SquatError::Language);
@@ -515,7 +476,7 @@ fn direct_parser_rejects_unsupported_grammar() -> Result<(), Box<dyn Error>> {
 
 #[test]
 fn mainline_parse_keeps_error_recovery() -> Result<(), Box<dyn Error>> {
-    use tree_squatter::{Error as SquatError, Grammar};
+    use tree_squatter_rust::{Error as SquatError, Grammar};
 
     let language = c_language();
     let grammar = Grammar::new(&language)?;

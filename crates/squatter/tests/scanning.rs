@@ -1,3 +1,5 @@
+mod support;
+
 use std::collections::HashSet;
 use tree_sitter::Point;
 use tree_squatter::{
@@ -5,39 +7,21 @@ use tree_squatter::{
     scan::{GroupScan, Scan},
 };
 
-type Description = (u16, usize, usize);
-fn describe(node: Node<'_>) -> Description {
-    (node.kind_id(), node.start_byte(), node.end_byte())
+use support::{
+    NodeDescription, c_sharp_language, check_consumption, describe_node, json_language,
+    native_orders, parse_native,
+};
+
+fn describe(node: Node<'_>) -> NodeDescription {
+    describe_node(node.kind_id(), node.byte_range())
 }
-fn native_orders(root: tree_sitter::Node<'_>) -> (Vec<Description>, Vec<Description>) {
-    fn visit(
-        node: tree_sitter::Node<'_>,
-        preorder: &mut Vec<Description>,
-        postorder: &mut Vec<Description>,
-    ) {
-        let description = (node.kind_id(), node.start_byte(), node.end_byte());
-        preorder.push(description);
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            visit(child, preorder, postorder);
-        }
-        postorder.push(description);
-    }
-    let (mut preorder, mut postorder) = (Vec::new(), Vec::new());
-    visit(root, &mut preorder, &mut postorder);
-    (preorder, postorder)
-}
-fn json_language() -> tree_sitter::Language {
-    unsafe { tree_sitter::Language::from_raw(tree_sitter_json::LANGUAGE.into_raw()().cast()) }
-}
+
 fn parse(
     language: &tree_sitter::Language,
     source: &str,
     options: PackOptions,
 ) -> (tree_sitter::Tree, Tree) {
-    let mut parser = tree_sitter::Parser::new();
-    parser.set_language(language).unwrap();
-    let native = parser.parse(source, None).unwrap();
+    let native = parse_native(language, source);
     let packed =
         Tree::pack_with_options(&Grammar::new(language).unwrap(), &native, options).unwrap();
     (native, packed)
@@ -58,36 +42,6 @@ fn reference_preorder(root: Node<'_>) -> Vec<Node<'_>> {
             }
         }
     }
-}
-
-fn check_consumption<'tree, I: Iterator<Item = Node<'tree>>>(
-    make: impl Fn() -> I,
-    expected: &[Node<'tree>],
-) {
-    for consumed in [0, 1, 2, 7, 16, 33, expected.len() + 1] {
-        let mut nodes = make();
-        for index in 0..consumed {
-            assert_eq!(nodes.next(), expected.get(index).copied());
-        }
-        let remaining = &expected[consumed.min(expected.len())..];
-        assert_eq!(nodes.count(), remaining.len());
-
-        let mut nodes = make();
-        for _ in 0..consumed {
-            nodes.next();
-        }
-        let actual = nodes.fold(Vec::new(), |mut result, node| {
-            result.push(node);
-            result
-        });
-        assert_eq!(actual, remaining);
-    }
-    let mut nodes = make();
-    for &node in expected {
-        assert_eq!(nodes.next(), Some(node));
-    }
-    assert_eq!(nodes.next(), None);
-    assert_eq!(nodes.next(), None);
 }
 
 fn check_pipeline<'tree, S: GroupScan<'tree>>(
@@ -1426,9 +1380,7 @@ fn supertype_membership() {
     let languages = [
         (json_language(), json_source.as_str()),
         (
-            unsafe {
-                tree_sitter::Language::from_raw(tree_sitter_c_sharp::LANGUAGE.into_raw()().cast())
-            },
+            c_sharp_language(),
             "class Example { int field = 1; int Method(int value) { return value + field; } }",
         ),
     ];
@@ -1472,9 +1424,7 @@ fn supertype_membership() {
 
 #[test]
 fn composition_and_reverse_preserve_membership() {
-    let language = unsafe {
-        tree_sitter::Language::from_raw(tree_sitter_c_sharp::LANGUAGE.into_raw()().cast())
-    };
+    let language = c_sharp_language();
     let source = "// comment\nclass Example { int field = 1; int Method(int value) { return value + field; } }";
     let (_, tree) = parse(&language, source, PackOptions::default());
     check_ranges(&tree, source.len());
