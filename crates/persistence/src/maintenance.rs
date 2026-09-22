@@ -12,6 +12,53 @@ use std::{
     },
 };
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SidecarKind {
+    Presence,
+    Points,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EvictionOutcome {
+    Evicted,
+    Absent,
+    Busy,
+}
+
+impl Store {
+    pub(crate) fn evict_sidecar(
+        &self,
+        request: &Request,
+        kind: SidecarKind,
+        cancellation: Option<&AtomicBool>,
+    ) -> Result<EvictionOutcome, CacheError> {
+        let check = || {
+            if cancellation.is_some_and(|flag| flag.load(Ordering::Relaxed)) {
+                Err(CacheError::Cancelled)
+            } else {
+                Ok(())
+            }
+        };
+        check()?;
+        let Some(_guard) = gate(&self.writer)? else {
+            return Ok(EvictionOutcome::Busy);
+        };
+        let database = match kind {
+            SidecarKind::Presence => self.presence,
+            SidecarKind::Points => self.points,
+        };
+        let mut tx = self.env.write_txn()?;
+        let deleted = database.delete(&mut tx, &request.tree_key)?;
+        check()?;
+        tx.commit()?;
+        Ok(if deleted {
+            EvictionOutcome::Evicted
+        } else {
+            EvictionOutcome::Absent
+        })
+    }
+}
+
 /// Each call inspects/deletes at most the requested number of candidate records.
 /// No LMDB transaction or cursor survives a call or an executor yield.
 pub struct Maintenance {

@@ -41,6 +41,9 @@ Implemented:
 - LMDB metadata, source contents, and compact slabs published in one synchronous
   transaction. Presence and point sidecars use separate databases and can be
   published later. Source generations and grammar variants coexist.
+- `LoadedFile::evict_sidecar` deletes presence or points independently, preserving
+  the core, other sidecar, and existing readers. Subsequent loads or publishers
+  can recreate evicted data.
 - `LoadOptions::pack` selects side data on both cache hits and misses. The simple
   `load` method uses the side-data defaults in `Options`.
 - Publication compacts used columns directly into heed `put_reserved` storage,

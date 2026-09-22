@@ -12,7 +12,9 @@ mod store;
 mod transfer;
 mod work;
 pub use identity::{Grammar, GrammarFingerprint};
-pub use maintenance::{Maintenance, MaintenanceProgress, MaintenanceState, MissingSweep};
+pub use maintenance::{
+    EvictionOutcome, Maintenance, MaintenanceProgress, MaintenanceState, MissingSweep, SidecarKind,
+};
 pub use store::{CacheError, WriteOutcome};
 
 use identity::Request;
@@ -176,6 +178,22 @@ impl LoadedFile {
     pub fn cache_hit(&self) -> bool {
         self.hit
     }
+    /// Delete one persisted sidecar for this tree, preserving the core and other sidecar.
+    /// Existing readers retain their data; later loads or publishers can rebuild it.
+    pub fn evict_sidecar(
+        &self,
+        kind: SidecarKind,
+        cancellation: Option<&AtomicBool>,
+    ) -> Result<EvictionOutcome, CacheError> {
+        if cancellation.is_some_and(|flag| flag.load(Ordering::Relaxed)) {
+            return Err(CacheError::Cancelled);
+        }
+        match &self.cleanup {
+            Some((store, request)) => store.evict_sidecar(request, kind, cancellation),
+            None => Ok(EvictionOutcome::Absent),
+        }
+    }
+
     /// Retire older cached generations independently of loading/publication.
     /// The work stops if another publication supersedes this generation.
     pub fn maintenance(&self) -> Option<Maintenance> {

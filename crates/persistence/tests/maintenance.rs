@@ -148,3 +148,93 @@ fn recreation_cancels_missing_file_cleanup() {
     );
     assert!(load(&cache).cache_hit());
 }
+
+#[test]
+fn sidecars_can_be_evicted_independently_of_core_and_readers() {
+    for read in [ReadPolicy::Owned, ReadPolicy::PreferTransactionBacked] {
+        let root = tempfile::tempdir().unwrap();
+        fs::write(
+            root.path().join("file.json"),
+            format!("[{}0]", "1,\n".repeat(4096)),
+        )
+        .unwrap();
+        let cache = Persistence::open(
+            root.path(),
+            Options {
+                read,
+                ..Options::default()
+            },
+        )
+        .unwrap();
+        load(&cache);
+        let reader = load(&cache);
+        assert_eq!(
+            reader.transaction_backed(),
+            read == ReadPolicy::PreferTransactionBacked
+        );
+        let core = reader.tree().as_bytes().to_vec();
+        let presence = reader.tree().presence_cache().unwrap().as_bytes().to_vec();
+        let points = reader.tree().point_data().unwrap().as_bytes().to_vec();
+
+        for kind in [SidecarKind::Presence, SidecarKind::Points] {
+            assert!(matches!(
+                reader.evict_sidecar(kind, Some(&AtomicBool::new(true))),
+                Err(CacheError::Cancelled)
+            ));
+            assert_eq!(
+                reader.evict_sidecar(kind, None).unwrap(),
+                EvictionOutcome::Evicted
+            );
+            assert_eq!(
+                reader.evict_sidecar(kind, None).unwrap(),
+                EvictionOutcome::Absent
+            );
+
+            let without = cache
+                .load_with_options(
+                    Path::new("file.json"),
+                    &grammar(),
+                    &mut tree_sitter::Parser::new(),
+                    LoadOptions {
+                        pack: tree_sitter_squatter::PackOptions {
+                            symbol_presence: kind != SidecarKind::Presence,
+                            points: kind != SidecarKind::Points,
+                            ..Default::default()
+                        },
+                        write: WritePolicy::Deferred,
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+            assert!(without.file.cache_hit());
+            assert!(without.pending_write.is_none());
+            assert_eq!(without.file.tree().as_bytes(), core);
+
+            let rebuilt = cache
+                .load_with_options(
+                    Path::new("file.json"),
+                    &grammar(),
+                    &mut tree_sitter::Parser::new(),
+                    LoadOptions {
+                        write: WritePolicy::Deferred,
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+            assert!(rebuilt.file.cache_hit());
+            assert_eq!(rebuilt.file.tree().as_bytes(), core);
+            assert_eq!(
+                rebuilt.file.tree().presence_cache().unwrap().as_bytes(),
+                presence
+            );
+            assert_eq!(rebuilt.file.tree().point_data().unwrap().as_bytes(), points);
+            assert_eq!(
+                rebuilt.pending_write.unwrap().publish().unwrap(),
+                WriteOutcome::Published
+            );
+            assert_eq!(reader.tree().as_bytes(), core);
+            assert_eq!(reader.tree().presence_cache().unwrap().as_bytes(), presence);
+            assert_eq!(reader.tree().point_data().unwrap().as_bytes(), points);
+        }
+    }
+}
