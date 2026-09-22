@@ -4,6 +4,7 @@ use clap::Parser;
 use corpus_analysis::{LoadedGrammar, Registry, digest, digest_file};
 use std::{fs, hint::black_box, mem::MaybeUninit, path::PathBuf, sync::Arc, time::Instant};
 use tree_squatter::{Grammar, PackContext, PackOptions, Query, StableSlab, Tree};
+use tree_squatter::{PointData, SourcePoints};
 
 #[derive(Parser, serde::Serialize)]
 struct Arguments {
@@ -52,12 +53,16 @@ struct Case<'input> {
     packer: PackContext,
     compact: Vec<MaybeUninit<u8>>,
     options: PackOptions,
+    source_points: SourcePoints<'input>,
 }
 
 const WORKLOADS: &[&str] = &[
     "pack-cold",
     "pack-reuse",
     "pack-trim",
+    "source-points",
+    "point-build",
+    "point-access",
     "load-full",
     "load-safety",
     "load-borrowed",
@@ -99,6 +104,15 @@ impl Case<'_> {
                 self.packer
                     .pack_with_options(&self.grammar, self.native, self.options)
                     .unwrap()
+            }),
+            "source-points" => measure!(SourcePoints::new(self.source_points.bytes()).unwrap()),
+            "point-build" => {
+                measure!(PointData::build(&self.tree, &self.source_points, None).unwrap())
+            }
+            "point-access" => measure!({
+                for node in self.tree.root_node().preorder() {
+                    black_box((node.start_position(), node.end_position()));
+                }
             }),
             "load-full" => measure!(Tree::from_bytes(&self.grammar, self.tree.as_bytes()).unwrap()),
             "load-safety" => measure!(
@@ -226,6 +240,7 @@ fn main() -> Result<()> {
             tree,
             packer: PackContext::new()?,
             options,
+            source_points: SourcePoints::new(&source)?,
         };
         for &workload in WORKLOADS {
             if !arguments.workload.is_empty()
@@ -264,6 +279,7 @@ fn main() -> Result<()> {
                 "query_sha256": query_source.sha256, "workload": workload,
                 "iterations": iterations, "seconds": seconds,
                 "source_bytes": source.len(), "slab_bytes": case.tree.as_bytes().len(),
+                "nodes": case.tree.root_node().descendant_count(),
                 "compact_bytes": case.tree.compact_size(), "grammar_cache_bytes": case.cache.len(),
             }));
             eprintln!("{} / {workload}", path.display());
@@ -274,8 +290,8 @@ fn main() -> Result<()> {
         serde_json::to_vec_pretty(&serde_json::json!({
             "schema": 1, "arguments": arguments, "results": rows,
             "backend": squatter_bench::BACKEND, "binary_sha256": binary_sha256,
-            "resident": "one core, source, mainline tree/parser, grammar, slab, reusable packer and compact destination; query mutations retain up to 16 compiled programs",
-            "timing_contract": "complete operation and destruction; query-drop and query-disable exclude compilation; load-backed includes Arc clone and owner allocation; compact-copy reuses destination",
+            "resident": "one core, source, mainline tree/parser, grammar, slab, reusable packer and compact destination; also retains a source line index; query mutations retain up to 16 compiled programs",
+            "timing_contract": "complete operation and destruction; query-drop and query-disable exclude compilation; load-backed includes Arc clone and owner allocation; compact-copy reuses destination; source-points builds and drops the line index; point-build builds and drops the sidecar using the resident index; point-access traverses all nodes and reads both endpoints without source lookup",
         }))?,
     )?;
     Ok(())
