@@ -419,6 +419,20 @@ static void symbol_pair_tests(uint32_t symbols, bool separate) {
   free(public_symbols);
 }
 
+static void symbol_metadata_tests(void) {
+  const char *names[] = {"end", "node", "alias"};
+  const TSSymbolMetadata metadata[] = {{0}, {.named = true}, {.named = true}};
+  const TSLanguage language = {.symbol_count = 2, .alias_count = 1,
+                               .symbol_names = names, .symbol_metadata = metadata};
+  const TSSymbol symbols[] = {0, 1, 2, ts_builtin_sym_error, ts_builtin_sym_error_repeat};
+  for (unsigned index = 0; index < sizeof(symbols) / sizeof(symbols[0]); index++) {
+    TSSymbol symbol = symbols[index];
+    assert(sq_symbol_is_named(&language, symbol) ==
+           ts_language_symbol_metadata(&language, symbol).named);
+    assert(!strcmp(sq_symbol_name(&language, symbol), ts_language_symbol_name(&language, symbol)));
+  }
+}
+
 static void terminal_alias_tests(void) {
   TSSymbol public_symbols[300], aliases[] = {0, 0, 3, 0}, alias_map[] = {0};
   TSSymbolMetadata metadata[300] = {0};
@@ -559,6 +573,7 @@ static void optional_flag_tests(void) {
 }
 
 int main(void) {
+  symbol_metadata_tests();
   optional_flag_tests();
   terminal_alias_tests();
   fixed_layout_limit_tests();

@@ -192,6 +192,17 @@ static inline TSSymbol sq_decode_symbol(const SQTree *tree, uint32_t symbol) {
                                           : (TSSymbol)symbol;
 }
 
+// Symbols decoded from validated nodes include aliases and the two built-in errors.
+static inline bool sq_symbol_is_named(const TSLanguage *language, TSSymbol symbol) {
+  return symbol < ts_builtin_sym_error_repeat ? language->symbol_metadata[symbol].named
+                                              : symbol == ts_builtin_sym_error;
+}
+
+static inline const char *sq_symbol_name(const TSLanguage *language, TSSymbol symbol) {
+  return symbol < ts_builtin_sym_error_repeat ? language->symbol_names[symbol]
+                                              : ts_language_symbol_name(language, symbol);
+}
+
 uint8_t *sq_allocate_data(size_t size);
 uint8_t *sq_reallocate_data(uint8_t *data, size_t old_size, size_t new_size);
 uint64_t sq_lane_starts(uint8_t bits);

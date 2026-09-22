@@ -4760,7 +4760,7 @@ static void sq_query_cursor__current_status(const QueryTreeCursor *cursor, const
                                             TSSymbol *supertypes, unsigned *supertype_count) {
   SQNode node = query_tree_cursor_node(cursor);
   *symbol = sq_decode_symbol(node.tree, sq_node_symbol_id(node));
-  *is_named = ts_language_symbol_metadata(node.tree->language, *symbol).named;
+  *is_named = sq_symbol_is_named(node.tree->language, *symbol);
   *field = query->needs_fields && sq_cursor_depth(cursor->cursor) ? sq_node_field_id(node) : 0;
   (void)supertypes;
 

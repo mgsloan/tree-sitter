@@ -84,11 +84,11 @@ TSSymbol sq_node_grammar_symbol(SQNode node) {
 }
 
 const char *sq_node_type(SQNode node) {
-  return node.tree ? ts_language_symbol_name(node.tree->language, display_symbol(node)) : NULL;
+  return node.tree ? sq_symbol_name(node.tree->language, display_symbol(node)) : NULL;
 }
 
 const char *sq_node_grammar_type(SQNode node) {
-  return node.tree ? ts_language_symbol_name(node.tree->language, sq_node_grammar_symbol(node))
+  return node.tree ? sq_symbol_name(node.tree->language, sq_node_grammar_symbol(node))
                    : NULL;
 }
 
@@ -123,7 +123,7 @@ TSPoint sq_node_end_point(SQNode node) {
 }
 
 bool sq_node_is_named(SQNode node) {
-  return node.tree && ts_language_symbol_metadata(node.tree->language, display_symbol(node)).named;
+  return node.tree && sq_symbol_is_named(node.tree->language, display_symbol(node));
 }
 
 bool sq_node_is_extra(SQNode node) {

@@ -9,9 +9,9 @@ static inline void sq_attributes_finish(SQNode node, uint32_t symbol, uint32_t g
   TSSymbol display = sq_decode_symbol(node.tree, symbol);
   out->symbol = display;
   out->grammar_symbol = sq_decode_symbol(node.tree, grammar);
-  out->type = ts_language_symbol_name(language, display);
-  out->grammar_type = ts_language_symbol_name(language, out->grammar_symbol);
-  out->is_named = ts_language_symbol_metadata(language, display).named;
+  out->type = sq_symbol_name(language, display);
+  out->grammar_type = sq_symbol_name(language, out->grammar_symbol);
+  out->is_named = sq_symbol_is_named(language, display);
   out->is_error = out->symbol == ts_builtin_sym_error;
   out->field_id = field;
 }
