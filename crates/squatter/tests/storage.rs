@@ -295,6 +295,41 @@ fn sidecar_mapping_copy_and_failed_replacement() {
     assert_eq!(mapped.as_bytes().as_ptr(), mapped_address);
     tree.set_presence_cache(mapped).unwrap();
     let original_point = tree.root_node().start_position();
+    let core_address = tree.as_bytes().as_ptr();
+    let core_bytes = tree.as_bytes().to_vec();
+    let point_address = tree.point_data().unwrap().as_bytes().as_ptr();
+    let presence_address = tree.presence_cache().unwrap().as_bytes().as_ptr();
+    let other_source = format!("[{}0]", "1,".repeat(500));
+    let other_native = parser.parse(&other_source, None).unwrap();
+    let other = Tree::pack(&grammar, &other_native).unwrap();
+    assert_ne!(tree.group_count(), other.group_count());
+    assert!(
+        tree.set_presence_cache(PresenceCache::build(&other, None).unwrap())
+            .is_err()
+    );
+    assert!(
+        tree.set_point_data(
+            PointData::build(
+                &other,
+                &SourcePoints::new(other_source.as_bytes()).unwrap(),
+                None,
+            )
+            .unwrap()
+        )
+        .is_err()
+    );
+    assert_eq!(tree.as_bytes().as_ptr(), core_address);
+    assert_eq!(tree.as_bytes(), core_bytes);
+    assert_eq!(
+        tree.point_data().unwrap().as_bytes().as_ptr(),
+        point_address
+    );
+    assert_eq!(
+        tree.presence_cache().unwrap().as_bytes().as_ptr(),
+        presence_address
+    );
+    assert_eq!(drops.load(Ordering::Relaxed), 0);
+    assert_eq!(presence_drops.load(Ordering::Relaxed), 0);
     let mut invalid = points.as_bytes().to_vec();
     invalid[4..8].copy_from_slice(&0u32.to_le_bytes());
     assert!(PointData::copy_from_bytes(&tree, &invalid).is_err());
@@ -314,6 +349,26 @@ fn sidecar_mapping_copy_and_failed_replacement() {
     let copied_points = PointData::copy_from_bytes(&tree, points.as_bytes()).unwrap();
     tree.set_point_data(copied_points).unwrap();
     assert_eq!(tree.root_node().start_position(), original_point);
+
+    let core_drops = Arc::new(AtomicUsize::new(0));
+    let owner = backing(tree.as_bytes(), core_drops.clone());
+    let core_address = owner.bytes().as_ptr();
+    let mut backed = Tree::from_owned_slab(&grammar, owner).unwrap();
+    backed
+        .set_presence_cache(PresenceCache::build(&backed, None).unwrap())
+        .unwrap();
+    backed
+        .set_point_data(PointData::copy_from_bytes(&backed, points.as_bytes()).unwrap())
+        .unwrap();
+    assert_eq!(backed.root_node().start_position(), original_point);
+    backed.drop_presence_cache();
+    backed.drop_point_data();
+    assert!(!backed.has_points());
+    assert!(backed.presence_cache().is_none());
+    assert_eq!(backed.as_bytes().as_ptr(), core_address);
+    assert_eq!(core_drops.load(Ordering::Relaxed), 0);
+    drop(backed);
+    assert_eq!(core_drops.load(Ordering::Relaxed), 1);
 }
 
 #[test]

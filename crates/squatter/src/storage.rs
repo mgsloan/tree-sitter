@@ -1,7 +1,7 @@
 use crate::{
     Error, Grammar, KindId,
     native::GrammarView,
-    side_data::{PointData, PresenceCache},
+    side_data::{PointData, PresenceCache, SideDataError},
     types::{RemappedGrammarKindId, RemappedKindId, SlabOffset, SymbolCode},
 };
 use std::{
@@ -756,6 +756,15 @@ pub unsafe trait StableSlab: Send + Sync + 'static {
     fn bytes(&self) -> &[u8];
 }
 
+/// A tree retaining its immutable slab owner.
+///
+/// The inner tree cannot be replaced independently of its backing storage.
+///
+/// ```compile_fail
+/// # fn example(mut backed: tree_squatter::BackedTree, replacement: tree_squatter::Tree) {
+/// let escaped = std::mem::replace(&mut *backed, replacement);
+/// # }
+/// ```
 pub struct BackedTree {
     // The descriptor must be destroyed before its backing storage.
     tree: Tree,
@@ -769,13 +778,23 @@ impl Deref for BackedTree {
     }
 }
 
-impl std::ops::DerefMut for BackedTree {
-    fn deref_mut(&mut self) -> &mut Tree {
-        &mut self.tree
-    }
-}
-
 impl BackedTree {
+    pub fn set_presence_cache(&mut self, cache: PresenceCache) -> Result<(), SideDataError> {
+        self.tree.set_presence_cache(cache)
+    }
+
+    pub fn set_point_data(&mut self, points: PointData) -> Result<(), SideDataError> {
+        self.tree.set_point_data(points)
+    }
+
+    pub fn drop_presence_cache(&mut self) {
+        self.tree.drop_presence_cache();
+    }
+
+    pub fn drop_point_data(&mut self) {
+        self.tree.drop_point_data();
+    }
+
     pub fn detach(&self) -> Result<Tree, Error> {
         let mut tree = Tree::from_bytes_safety_checked(&self.data().grammar, self.as_bytes())?;
         if let Some(cache) = self.presence_cache() {
