@@ -181,3 +181,88 @@ Next: deduplication specialization/outlining, then range-support caching and met
 **Merged newtypes work**
 
 Merge `cb39d71f1` brings in `rust-core` through `48126eec5` without conflicts. The final `lib/squat` sources match the measured navigation commit exactly. Post-merge checks passed: 16 binding tests across both implementations, the Rust navigation comparison, four Rust/C query comparisons, native unit/supertype/parser checks, and the native JSON query suite. Logs are under `build/navigation-query/`. The separate `rust-core` worktree was not modified.
+
+**Range support and metadata access — local experiments, 2026-09-22**
+
+Commits `72a2e388f` and `1e00caee2` implement two changes:
+
+- Cache range eligibility in `SQQuery`, copy it with the query, and refresh it
+  after pattern removal. Range setters remain effective during execution.
+  Removing rootless entries can enable ranges; alternatives in retained steps
+  still block them, preserving the existing behavior.
+- Read symbol names and named flags through internal inline accessors. Validated
+  node symbols index the language's existing tables, including aliases. The two
+  built-in error symbols retain their special handling. No new table or public
+  API change is needed.
+
+The baseline is `721c5ff8e`, adding small-state deduplication to `9d7a17168`.
+Range caching was measured against that baseline; metadata access was measured
+against range caching. These runs do not establish a deduplication gain.
+
+Local pilot: Core Ultra 7 165U, CPU 2 affinity, GCC 15.3.0, `-O2 -g`, assertions
+enabled. One JSON and one C corpus file, before/after/after/before order, five
+samples targeting 30 ms each. Timings exclude parsing, packing, and query
+compilation. Checksums agree across binaries and repetitions.
+
+The range experiment repeats `(_ (_) @child) @parent` once or 16 times, with
+general/planned execution, fresh/reused cursors, and matches/captures. Bounded
+byte ranges exclude the first and last source byte. Aggregating the four query
+operations per file and execution mode, 16-pattern bounded queries improve
+1.12–1.17×; single-pattern queries improve 1.00–1.04×. Unrestricted query totals
+across both files stay within 1%. This isolates repeated eligibility checks;
+it is not a representative highlight-query benchmark.
+
+The metadata experiment uses the same files with one unrestricted pattern.
+Attribute traversal improves 1.26× in aggregate. Query totals improve 1–4%,
+but traversal controls also vary by a few percent; those small gains are
+inconclusive. Broader corpus and release-build confirmation remain outstanding.
+
+Native unit/supertype/parser checks, native JSON/C query checks, and all four
+Rust/C query comparisons pass with both changes. Added tests cover query copying,
+repeated pattern removal, capture removal, byte/point/containing ranges, range
+changes during execution, aliases, and both built-in error symbols.
+
+Harness, binaries, raw samples, and summaries are in `build/query-range/`.
+`run.py` reproduces the range comparison; `metadata.py` compares metadata access.
+The next candidates are the small C-backed scan predicate changes, followed by
+internal cursor/navigation work if profiles justify it.
+
+**Flat scan predicates — local experiments, 2026-09-22**
+
+Commit `4e185fdc5` copies `FixedKindValues` from `FixedKindIds::flat`, matching the
+Rust core. Flat comparisons no longer borrow the predicate containing mutable
+posting cursors. The public API and indexed traversal are unchanged.
+
+Two changes were measured independently against `1e00caee2`, including range
+caching and direct metadata access. Passing only `KindStrategy`
+to the dynamic count fallback did not establish a useful gain and was reverted.
+
+The fixed-value confirmation uses 11 files/languages and 28,299 nodes on the same
+Core Ultra 7 165U, CPU 2 affinity, portable Cargo release, Rust 1.95.0. Each profile
+runs baseline/candidate/candidate/baseline with seven samples targeting 40 ms.
+Parsing and packing are excluded; the harness validates scans against scalar
+traversal and verifies input hashes and output counts. Speedups are baseline time
+divided by candidate time, averaging the two process medians per binary.
+
+| Workload | No index, frequent IDs | Normal index, frequent IDs | Sparse IDs |
+| --- | ---: | ---: | ---: |
+| Four kinds, forward nodes | 1.14× | 1.11× | 0.99× |
+| Four kinds, reverse nodes | 1.13× | 1.17× | 0.99× |
+| Eight kinds, fold | 0.97× | 1.01× | 0.98× |
+| Sixteen kinds, forward nodes | 1.20× | 1.21× | 1.03× |
+| Sixteen kinds, reverse nodes | 1.21× | 1.21× | 0.97× |
+| Sixteen kinds, fold | 1.14× | 1.10× | 0.99× |
+
+The larger enumeration gains repeated after the initial shorter screen. Sparse
+results are mixed, and the eight-kind no-index fold remains about 3% slower.
+Some controls and repetitions also vary by a few percent; small differences
+are not conclusive. These are local repeated-corpus results, not cloud or broad
+holdout measurements.
+
+All 18 release scan tests pass, including fixed and dynamic kind sets, indexed
+filters, mixed-end consumption, ranges, and storage variants. Formatting checks
+also pass.
+
+Artifacts are in `build/scan-predicates/`: isolated patches, binaries, raw samples,
+and summaries. `run.py fixed confirm` reproduces the longer comparison;
+`run.py dynamic` reproduces the rejected dynamic-count screen.
