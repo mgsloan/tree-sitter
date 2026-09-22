@@ -1,12 +1,5 @@
 #include "attributes.h"
 
-struct SQCursor {
-  SQNode node;
-  uint32_t *parents;
-  uint32_t depth;
-  uint32_t capacity;
-};
-
 SQCursor *sq_cursor_new(SQNode node) {
   if (!node.tree) {
     return NULL;
@@ -28,16 +21,15 @@ void sq_cursor_delete(SQCursor *cursor) {
 }
 
 SQNode sq_cursor_node(const SQCursor *cursor) {
-  return cursor ? cursor->node : sq_null();
+  return sq_cursor_node_internal(cursor);
 }
 
 SQNode sq_cursor_parent_node(const SQCursor *cursor) {
-  return cursor && cursor->depth ? (SQNode){cursor->node.tree, cursor->parents[cursor->depth - 1]}
-                                 : sq_null();
+  return sq_cursor_parent_node_internal(cursor);
 }
 
 uint32_t sq_cursor_depth(const SQCursor *cursor) {
-  return cursor ? cursor->depth : 0;
+  return sq_cursor_depth_internal(cursor);
 }
 
 void sq_cursor_reset(SQCursor *cursor, SQNode node) {

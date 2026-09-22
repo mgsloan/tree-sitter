@@ -24,6 +24,9 @@ static void fixed_layout_limit_tests(void) {
 }
 
 static void navigation_tests(SQGrammar *grammar) {
+  assert(sq_node_is_null(sq_cursor_node(NULL)));
+  assert(sq_node_is_null(sq_cursor_parent_node(NULL)));
+  assert(sq_cursor_depth(NULL) == 0);
   SQError error;
   SQTree *tree = sq_allocate(grammar, 3, false, &error);
   assert(tree && tree->layout.waste == SQ_WASTE_OFFSET);
@@ -69,6 +72,7 @@ static void navigation_tests(SQGrammar *grammar) {
       assert(cursor && sq_cursor_goto_first_child(cursor));
       for (uint32_t index = count - 1; index-- > 0;) {
         assert(sq_cursor_node(cursor).slot == slots[index]);
+        assert(sq_node_eq(sq_cursor_parent_node(cursor), root));
         assert(sq_cursor_depth(cursor) == 1);
         assert(sq_cursor_goto_next_sibling(cursor) == (index > 0));
       }

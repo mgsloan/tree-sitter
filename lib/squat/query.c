@@ -27,11 +27,11 @@ static SQNode query_identity_node(SQNode node) {
 }
 
 static SQNode query_tree_cursor_node(const QueryTreeCursor *cursor) {
-  return sq_cursor_node(cursor->cursor);
+  return sq_cursor_node_internal(cursor->cursor);
 }
 
 static SQNode query_tree_cursor_parent(const QueryTreeCursor *cursor) {
-  return sq_cursor_parent_node(cursor->cursor);
+  return sq_cursor_parent_node_internal(cursor->cursor);
 }
 
 static void query_tree_cursor_delete(QueryTreeCursor *cursor) {
@@ -4761,7 +4761,7 @@ static void sq_query_cursor__current_status(const QueryTreeCursor *cursor, const
   SQNode node = query_tree_cursor_node(cursor);
   *symbol = sq_decode_symbol(node.tree, sq_node_symbol_id(node));
   *is_named = sq_symbol_is_named(node.tree->language, *symbol);
-  *field = query->needs_fields && sq_cursor_depth(cursor->cursor) ? sq_node_field_id(node) : 0;
+  *field = query->needs_fields && sq_cursor_depth_internal(cursor->cursor) ? sq_node_field_id(node) : 0;
   (void)supertypes;
 
   // Exact supertype membership is tested against the slab below, without an
@@ -4792,7 +4792,7 @@ static bool sq_query_cursor__has_later_sibling(const QueryTreeCursor *cursor,
                                                QuerySiblingStatus *status, bool named) {
   if (!status->checked) {
     status->checked = true;
-    if (sq_cursor_depth(cursor->cursor)) {
+    if (sq_cursor_depth_internal(cursor->cursor)) {
       for (SQNode node = sq_node_next_sibling_including_empty(query_tree_cursor_node(cursor));
            node.tree; node = sq_node_next_sibling_including_empty(node)) {
         status->has_later = true;
@@ -4812,7 +4812,7 @@ static bool sq_query_cursor__has_later_sibling(const QueryTreeCursor *cursor,
 // when an active step needs the answer: a unique field can require walking
 // every remaining sibling.
 static bool sq_query_cursor__has_later_field(const QueryTreeCursor *cursor, TSFieldId field) {
-  if (!sq_cursor_depth(cursor->cursor)) {
+  if (!sq_cursor_depth_internal(cursor->cursor)) {
     return false;
   }
 

@@ -176,6 +176,26 @@ typedef struct {
 
 void sq_tree_scan_point_layout(const SQTree *, SQScanPointLayout *);
 
+struct SQCursor {
+  SQNode node;
+  uint32_t *parents;
+  uint32_t depth;
+  uint32_t capacity;
+};
+
+static inline SQNode sq_cursor_node_internal(const SQCursor *cursor) {
+  return cursor ? cursor->node : (SQNode){NULL, 0};
+}
+
+static inline SQNode sq_cursor_parent_node_internal(const SQCursor *cursor) {
+  return cursor && cursor->depth ? (SQNode){cursor->node.tree, cursor->parents[cursor->depth - 1]}
+                                 : (SQNode){NULL, 0};
+}
+
+static inline uint32_t sq_cursor_depth_internal(const SQCursor *cursor) {
+  return cursor ? cursor->depth : 0;
+}
+
 static inline uint32_t sq_symbols(const SQTree *tree) {
   return tree->language->symbol_count + tree->language->alias_count + 2;
 }
