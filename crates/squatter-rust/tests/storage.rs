@@ -176,3 +176,47 @@ fn packing_and_loading_match_reference() {
         }
     }
 }
+
+#[test]
+fn node_validation_matches_reference_for_corrupted_slabs() {
+    let language =
+        unsafe { tree_sitter::Language::from_raw(tree_sitter_json::LANGUAGE.into_raw()().cast()) };
+    let grammar = Grammar::new(&language).unwrap();
+    let reference = tree_squatter::Grammar::new(&language).unwrap();
+    let mut parser = tree_sitter::Parser::new();
+    parser.set_language(&language).unwrap();
+    let deep = format!("{}0{}", "[".repeat(70), "]".repeat(70));
+    let wide = format!("[{}0]", "[1],".repeat(80));
+    let siblings = format!("[{deep},[1],{deep},2]");
+    for source in ["[0,[1],2,[],3]", &deep, &wide, &siblings] {
+        let native = parser.parse(source, None).unwrap();
+        for points in [false, true] {
+            let tree = Tree::pack_with_options(
+                &grammar,
+                &native,
+                PackOptions {
+                    points,
+                    symbol_presence: false,
+                    repack: true,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            let mut bytes = tree.as_bytes().to_vec();
+            // Keep the layout header fixed while perturbing node columns and group bases.
+            for offset in 16..bytes.len() {
+                for mask in [1, 128] {
+                    bytes[offset] ^= mask;
+                    let expected =
+                        tree_squatter::Tree::from_bytes_safety_checked(&reference, &bytes).is_ok();
+                    assert_eq!(
+                        Tree::from_bytes_safety_checked(&grammar, &bytes).is_ok(),
+                        expected,
+                        "offset {offset}, mask {mask}, points {points}"
+                    );
+                    bytes[offset] ^= mask;
+                }
+            }
+        }
+    }
+}
