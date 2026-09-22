@@ -16,6 +16,17 @@
 
 - [x] Decide how much to use newtypes.
 
+- [ ] Should presence and points have magic? hmmmm.. Should tree even?
+
+- [ ] A deferred first writer can resurrect retired records after missing-file cleanup.
+  crates/persistence/src/store.rs:618 treats CurrentGuard::Missing as valid when the current record
+  is absent again. I reproduced: capture a deferred first load → publish another load → delete the
+  file and finish cleanup → publish the deferred load. Publication succeeds and restores the retired
+  records. The guard needs to distinguish “never published” from “published and subsequently
+  retired.”
+
+- [ ] Look into the unexpected cargo features
+
 ## Performance
 
 - [x] https://github.com/Dekker1/tree-feller
@@ -39,6 +50,8 @@
 - [ ] Forests
 
 ## Use in Zed
+
+- [ ] Change persistence path to .tree-sitter/squat.*?
 
 - [ ] Review and polish the traits
 
