@@ -388,6 +388,7 @@ struct SQQuery {
   Array(CaptureQuantifiers) capture_quantifiers;
   bool has_repeated_captures;
   bool needs_fields, needs_supertypes;
+  bool supports_ranges;
   Array(QueryStep) steps;
   Array(PatternEntry) pattern_map;
   Array(Slice) pattern_map_slices;
@@ -1564,6 +1565,23 @@ static void sq_query__index_pattern_map(SQQuery *self) {
 
     slice->length++;
   }
+}
+
+static bool sq_query__supports_ranges(const SQQuery *self) {
+  // Disabled patterns retain their steps, including range-blocking alternatives.
+  for (uint32_t index = 0; index < self->steps.size; index++) {
+    if (self->steps.contents[index].alternative_index != NONE) {
+      return false;
+    }
+  }
+
+  for (uint32_t index = 0; index < self->pattern_map.size; index++) {
+    if (!self->pattern_map.contents[index].is_rooted) {
+      return false;
+    }
+  }
+
+  return true;
 }
 
 // Walk the subgraph for this non-terminal, tracking all of the possible
@@ -3441,6 +3459,7 @@ SQQuery *sq_query_new(const TSLanguage *language, const char *source, uint32_t s
   sq_query__prepare_steps(self);
   sq_query__prepare_presence(self);
   sq_query__prepare_symbol_scan(self);
+  self->supports_ranges = sq_query__supports_ranges(self);
   return self;
 }
 
@@ -3483,6 +3502,7 @@ SQQuery *sq_query_copy(const SQQuery *self) {
       .has_repeated_captures = self->has_repeated_captures,
       .needs_fields = self->needs_fields,
       .needs_supertypes = self->needs_supertypes,
+      .supports_ranges = self->supports_ranges,
       .scan_filter = self->scan_filter,
   };
 
@@ -3705,6 +3725,9 @@ void sq_query_disable_pattern(SQQuery *self, uint32_t pattern_index) {
   }
 
   sq_query__index_pattern_map(self);
+  if (!self->supports_ranges) {
+    self->supports_ranges = sq_query__supports_ranges(self);
+  }
 }
 
 // QueryCursor
@@ -5683,23 +5706,12 @@ static bool query_execution_supported(SQQueryCursor *cursor) {
     return false;
   }
 
-  if (!sq_query__range_is_unrestricted(&cursor->included_range) ||
-      !sq_query__range_is_unrestricted(&cursor->containing_range)) {
-    for (uint32_t index = 0; index < cursor->query->steps.size; index++) {
-      if (cursor->query->steps.contents[index].alternative_index != NONE) {
-        cursor->error = SQ_QUERY_UNSUPPORTED_RANGE;
-        cursor->halted = true;
-        return false;
-      }
-    }
-
-    for (uint32_t index = 0; index < cursor->query->pattern_map.size; index++) {
-      if (!cursor->query->pattern_map.contents[index].is_rooted) {
-        cursor->error = SQ_QUERY_UNSUPPORTED_RANGE;
-        cursor->halted = true;
-        return false;
-      }
-    }
+  if ((!sq_query__range_is_unrestricted(&cursor->included_range) ||
+       !sq_query__range_is_unrestricted(&cursor->containing_range)) &&
+      !cursor->query->supports_ranges) {
+    cursor->error = SQ_QUERY_UNSUPPORTED_RANGE;
+    cursor->halted = true;
+    return false;
   }
 
   return true;

@@ -398,6 +398,68 @@ static void run_query(const TSLanguage *language, TSTree *tree, SQTree *packed,
   sq_query_delete(query);
 }
 
+static void check_range_support(const TSLanguage *language, SQTree *tree) {
+  const char *queries[] = {
+      "(_) @first\n(_) @node",
+      "((_) @first (_) @second)\n(_) @node",
+      "[(_) (_)] @first\n(_) @node",
+  };
+  for (unsigned index = 0; index < sizeof(queries) / sizeof(queries[0]); index++) {
+    query_source = queries[index];
+    uint32_t offset;
+    TSQueryError error;
+    SQQuery *query = sq_query_new(language, query_source, (uint32_t)strlen(query_source),
+                                  &offset, &error);
+    CHECK(query);
+    for (unsigned disabled = 0; disabled < 2; disabled++) {
+      if (disabled) {
+        sq_query_disable_pattern(query, 0);
+        sq_query_disable_pattern(query, 0);
+      }
+
+      // Removing rootless entries enables ranges; retained alternatives still block them.
+      bool supported = index == 0 || (index == 1 && disabled);
+      SQQuery *copy = sq_query_copy(query);
+      CHECK(copy);
+      sq_query_disable_capture(copy, "first", 5);
+      for (optimized = 0; optimized < 2; optimized++) {
+        for (mode = 0; mode < 4; mode++) {
+          SQQueryCursor *cursor = sq_query_cursor_new();
+          sq_query_cursor_set_optimized(cursor, optimized);
+          SQQueryMatch match;
+          uint32_t capture;
+          sq_query_cursor_exec(cursor, copy, sq_tree_root_node(tree));
+          sq_query_cursor_next_match(cursor, &match);
+          CHECK(sq_query_cursor_error(cursor) == SQ_QUERY_OK);
+          if (mode == 0) {
+            CHECK(sq_query_cursor_set_byte_range(cursor, 1, 12));
+          } else if (mode == 1) {
+            CHECK(sq_query_cursor_set_point_range(cursor, (TSPoint){0, 1}, (TSPoint){1, 0}));
+          } else if (mode == 2) {
+            CHECK(sq_query_cursor_set_containing_byte_range(cursor, 1, 12));
+          } else {
+            CHECK(sq_query_cursor_set_containing_point_range(
+                cursor, (TSPoint){0, 1}, (TSPoint){1, 0}));
+          }
+
+          bool found = sq_query_cursor_next_match(cursor, &match);
+          CHECK(supported || !found);
+          CHECK(sq_query_cursor_error(cursor) ==
+                (supported ? SQ_QUERY_OK : SQ_QUERY_UNSUPPORTED_RANGE));
+          sq_query_cursor_exec(cursor, copy, sq_tree_root_node(tree));
+          found = sq_query_cursor_next_capture(cursor, &match, &capture);
+          CHECK(supported || !found);
+          CHECK(sq_query_cursor_error(cursor) ==
+                (supported ? SQ_QUERY_OK : SQ_QUERY_UNSUPPORTED_RANGE));
+          sq_query_cursor_delete(cursor);
+        }
+      }
+      sq_query_delete(copy);
+    }
+    sq_query_delete(query);
+  }
+}
+
 static void exercise(const TSLanguage *language, const char *source, uint32_t length) {
   input_source = source;
   TSParser *parser = ts_parser_new();
@@ -411,6 +473,7 @@ static void exercise(const TSLanguage *language, const char *source, uint32_t le
   SQTree *packed = sq_tree_pack(grammar, tree, options, &error);
   CHECK(packed);
   Identities ids = identities(tree, packed);
+  check_range_support(language, packed);
   const char *queries[] = {
       "(_) @node",
       "(_) @one (_) @two",
