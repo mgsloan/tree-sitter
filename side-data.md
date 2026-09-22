@@ -345,9 +345,12 @@ assert_eq!(tree.root_node().start_position(), Point::new(0, root_byte));
 `LoadedFile` currently shares trees through `Arc`. Attach before sharing or
 publish a new owner; do not expose mutation through shared ownership. Borrowed
 and transaction-backed slabs remain usable without side data, with row-zero
-points; attachment initially targets owned `Tree` values, using existing
-detachment when needed. Background publication and a public C facade are outside
-this step. Any later C facade must enforce the same exclusion on the caller side.
+points. Both `Tree` and `BackedTree` expose exclusive sidecar setters and droppers.
+`BackedTree` must not expose `DerefMut<Target = Tree>`: replacing its inner tree
+would separate the descriptor from the backing owner. `BorrowedTree` remains
+read-only; repack it into an owned tree before attaching side data. Background
+publication and a public C facade are outside this step. Any later C facade must
+enforce the same exclusion on the caller side.
 
 ## Serialization and loading
 
@@ -442,8 +445,11 @@ Copied sidecars own their allocation; mapped sidecars retain the LMDB read
 transaction through their backing owner. Release loads do not attempt to prove
 bitmap or point contents semantically correct.
 
-Publish sidecars independently, including after the tree transaction. Cleanup can
-delete them independently and must tolerate late writers without resurrecting
+Publish sidecars independently, including after the tree transaction.
+`LoadedFile::evict_sidecar` selects `SidecarKind::Presence` or `SidecarKind::Points`
+and deletes that persisted sidecar without retiring the core or changing existing
+readers. Later loads or publishers can recreate it. Cleanup must tolerate late
+writers without resurrecting
 retired source generations or authoritative artifacts. Publication and cleanup
 never mutate allocations held by existing readers.
 
@@ -485,5 +491,9 @@ only debug builds scan payload contents.
 Test count/size rejection in both build modes. Debug builds must reject invalid
 contents even when counts match; release loading must not run a content scan.
 
-Measure explicit point materialization independently of accessor cost. Do not add
-lazy source lookup to preserve equivalence with absent point data.
+Measure explicit point materialization independently of accessor cost. The
+Rust `core-lifecycle-bench` workloads `source-points`, `point-build`, and
+`point-access` separate line-index construction, sidecar construction, and
+traversal reading materialized endpoints. See the
+[measurement contract](tools/squatter/README.md). Do not add lazy source lookup
+to preserve equivalence with absent point data.
