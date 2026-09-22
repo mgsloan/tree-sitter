@@ -2843,6 +2843,7 @@ pub struct FixedKindIds<const N: usize> {
     index: SymbolIndex,
     cursors: Option<[u32; N]>,
 }
+#[derive(Clone, Copy)]
 struct FixedKindValues<const N: usize> {
     ids: [u16; N],
     empty: bool,
@@ -2881,7 +2882,7 @@ impl<const N: usize> Predicate for FixedKindIds<N> {
     }
     #[inline(always)]
     fn flat(&self) -> impl Predicate {
-        &self.values
+        self.values
     }
     #[inline(always)]
     fn into_flat(self) -> impl Predicate {
