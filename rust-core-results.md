@@ -12,6 +12,69 @@ comparison crate. The default remains C-backed `tree-squatter`, and the C facade
 is deferred. Persistence and benchmarks can select the candidate with their
 `rust-core` feature. There is no native query execution fallback.
 
+## C emission experiments — 2026-09-22 UTC
+
+`1e9c80d16` retains inlining of C's `emit` and `emit_values` helpers into the
+traversal. The second experiment, capturing group metadata by value before
+closing its slots, is dropped. The baseline is `487670d5a`, whose C code is
+unchanged from `fa2e389641c6`; the Rust comparison retains all four optimizations
+from `d96b0793d`.
+
+The initial 264-file pack-reuse comparison improves 10.04% with inlining,
+1.87% with metadata capture alone, and 10.01% with both. Both process orders
+favor inlining. In the final comparison, metadata capture reduces cold-packing
+time by 0.67% but increases reuse time by 0.66%; trimming changes by only 0.11%. The
+alternate-layout results are mixed. The extra copies offer no consistent
+overall improvement after inlining, so only inlining is retained.
+
+| Operation | C before ms | C selected ms | Latest Rust ms | C time reduction |
+| --- | ---: | ---: | ---: | ---: |
+| pack-cold | 72.122 | 65.713 | 68.734 | 8.89% |
+| pack-reuse | 71.692 | 64.485 | 68.055 | 10.05% |
+| pack-trim | 72.223 | 64.877 | 68.237 | 10.17% |
+
+Times sum representative per-file milliseconds across the same 264 inputs and
+11 languages. C now takes 4.4–5.2% less time than Rust for default packing.
+Forward/reverse C reductions agree: cold 8.14% / 9.62%, reuse 9.40% / 10.69%,
+and trim 9.76% / 10.58%. Every language's reuse aggregate improves against C's
+baseline, from 7.96% for TypeScript to 13.09% for HTML.
+
+The 22-file profiles improve 8.2–11.8% without points and 10.6–11.6% without
+presence indexes. No-points cold/trim results vary substantially between rounds;
+their direction agrees, but their exact percentages are less stable.
+
+Ordinary cold/warm parsing improves 1.03% / 0.80% on the 22-file subset, with
+both orders agreeing. Direct cold parsing improves 1.50%, while direct warm
+parsing regresses 0.41%; that comparison covers only four eligible files. Rust
+remains faster for ordinary cold parsing in this subset, while selected C is
+faster for ordinary warm parsing.
+
+The [assembly follow-up](rust-core-assembly.md#c-emission-and-metadata-follow-ups)
+records the code-size cost: traversal plus its emission helpers grows from
+5,292 to 7,448 bytes. Both per-node helper calls disappear; frame initialization
+and group closing retain their previous code. Metadata capture removed builder
+reloads but introduced stack spills and a larger slot loop.
+
+All benchmarks ran on the Google Cloud e2-standard-4 VM, pinned to CPU 1 under
+the shared lock. The screen uses five 15 ms samples per file/workload; the final
+packing run uses five 10 ms samples. Tables average two process medians per file.
+Stage order rotates by language and reverses in the second round, along with
+input and language order. All four builds were included in the final packing
+run. No laptop benchmarks ran.
+
+All 2,110 eligible corpus comparisons pass, with the two pre-existing shared Go
+capture exclusions unchanged. The native unit, supertype, and parser suites
+pass at `-O3 -Wall -Wextra -Werror`, including allocation failures. All eight
+C-backed binding tests and both Rust/C byte-compatibility storage tests pass.
+The committed source matches the measured patch; result hashes and binary
+identities verify. The cloud VM was stopped after collection.
+
+The [formatted C report](build/c-packing-candidates/report.html) and
+[Markdown report](build/c-packing-candidates/report.md) contain all profiles,
+language tables, incremental metadata comparisons, parsing results, and source
+identities. Patches, binaries, raw samples, assembly, and test logs are preserved
+under `build/c-packing-candidates/`.
+
 ## Four packing optimizations — 2026-09-21
 
 All four assembly candidates are retained, with one commit each. The baseline

@@ -223,3 +223,46 @@ helps in combination. [Baseline assembly](build/packing-candidates/baseline/asse
 [symbol sizes](build/packing-candidates/selected/assembly.json), and
 [loop counts](build/packing-candidates/loop-counts.json) retain the static evidence.
 Conversion remains entirely in Rust.
+
+## C emission and metadata follow-ups
+
+Two C experiments start from `487670d5a`, whose C implementation is unchanged
+from `fa2e389641c6`. `1e9c80d16` retains forced inlining of `emit` and
+`emit_values`. The compiler-specific annotation is local to `pack.c`, with an
+ordinary-inline fallback. The linked traversal no longer calls either helper
+per node. Group closing, dictionary lookup, and frame initialization remain
+conditional calls.
+
+| Area | Baseline C | Inline emission | Capture metadata alone |
+| --- | ---: | ---: | ---: |
+| `pack_tree` code bytes | 3,338 | 7,448 | 3,338 |
+| `pack_tree` fixed local stack bytes | 952 | 1,016 | 952 |
+| Separate `emit` / `emit_values` code bytes | 260 / 1,694 | Inlined | 260 / 1,694 |
+| Group-close code bytes | 927 | 927 | 1,008 |
+| Group-close fixed local stack bytes | 8 | 8 | 56 |
+| Points-loop instructions per slot | 31 | 31 | 36 |
+| Points-loop stack-memory instructions per slot | 0 | 0 | 7 |
+| No-points-loop instructions per slot | 17 | 17 | 19 |
+
+Inlining duplicates emission at traversal call sites: total code for the three
+functions grows from 5,292 to 7,448 bytes. The selected build reduces default
+packing time by 8.9–10.2% in the cloud comparison.
+
+The metadata trial copies `builder->count`, `builder->base`, and `builder->max`
+before group closing's slot loop. This removes the count read and seven
+base/extrema reads from the points loop, but introduces seven stack-memory
+instructions and increases its instruction count. The no-points loop also
+grows despite needing no stack-memory instructions. The combined cloud trials
+show no consistent additional benefit after inlining, so metadata capture is
+dropped. Its independent improvement does not carry over to the selected build.
+
+Counts include the normal loop back edge and exclude setup and error paths.
+Fixed stack figures exclude saved registers and return addresses. Other
+packing helpers retain their previous sizes in these trials.
+
+The [C experiment report](build/c-packing-candidates/report.html) records
+independent and combined timings, including a comparison with the latest Rust
+implementation. [Baseline assembly](build/c-packing-candidates/baseline/assembly.txt),
+[selected assembly](build/c-packing-candidates/selected/assembly.txt),
+[metadata trial](build/c-packing-candidates/metadata/assembly.txt), and
+[loop counts](build/c-packing-candidates/loop-counts.json) retain the evidence.
