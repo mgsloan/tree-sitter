@@ -266,3 +266,69 @@ implementation. [Baseline assembly](build/c-packing-candidates/baseline/assembly
 [selected assembly](build/c-packing-candidates/selected/assembly.txt),
 [metadata trial](build/c-packing-candidates/metadata/assembly.txt), and
 [loop counts](build/c-packing-candidates/loop-counts.json) retain the evidence.
+
+## Rust follow-up after C emission inlining
+
+The baseline is `8162ad00e`: its Rust packing executable is byte-identical to
+the previous selected `d96b0793d` build; C includes `1e9c80d16` emission inlining.
+Four opportunities remain visible in this assembly:
+
+| Area | Rust baseline | Trial | C |
+| --- | --- | --- | --- |
+| Child masks with at most 64 supertypes | Calls an 810-byte helper with six saved registers and 72 local stack bytes | Inline the zero/one-word paths; outline allocation for larger masks | Already part of frame initialization |
+| One-word dictionary lookup | Generic hash loop and `bcmp` | Specialize the comparison to `cmp`, optionally inline the lookup | Generic hash loop and `memcmp` |
+| Per-node symbol/field/grammar stores | Two slab-address loads, or three with a separate grammar column | Capture one address through the existing borrowed writer | Retained column cursors |
+| Group-close points loop | 40 instructions and ten stack-memory instructions per slot | Encode point columns in a separate pass | 31 instructions and no stack-memory instructions |
+
+The child-mask wrapper becomes `inline(always)` while `child_mask_words`
+remains outlined. Ordinary frame initialization avoids the allocation helper's
+prologue, return-value staging, and error check. Its own fixed stack allocation
+is unchanged. Larger masks retain the existing allocation and inheritance logic.
+
+Dictionary specialization exposes a constant one-element slice to the existing
+hash/probing code. The outlined variant removes `bcmp` for that case; the inline
+variant additionally removes the lookup call. Neither is selected: inspection
+of the exact benchmark grammar libraries finds zero to seven supertypes in
+every language. Those builds never execute dictionary lookup. Their timing
+differences can reflect code placement but cannot demonstrate a lookup speedup.
+This candidate needs a corpus with 9–64 supertypes.
+
+The per-node writer trial captures column offsets and the separate-grammar flag
+before writing IDs. Its borrow excludes slab relocation while the addresses are
+used. Unlike C's retained cursors, it still computes the destination from the
+slot and column offset for every node.
+
+| Rust function | Baseline code / local stack bytes | Child-mask trial | Writer trial | Separate-points trial |
+| --- | ---: | ---: | ---: | ---: |
+| Traversal | 5,239 / 312 | 5,239 / 312 | 5,231 / 312 | 5,239 / 312 |
+| Frame initialization | 1,491 / 120 | 1,648 / 120 | 1,491 / 120 | 1,491 / 120 |
+| Group close | 1,061 / 104 | 1,061 / 104 | 1,061 / 104 | 1,383 / 104 |
+
+The separate-points trial emits 17 instructions per slot for non-point columns,
+then either 20 scalar instructions per point pair or 52 vector instructions per
+four pairs. Those loop bodies have no stack-memory accesses. The extra pass,
+vectorization guards, setup, and scalar tail still cost time; the smaller loop
+bodies alone cannot establish a speedup. Counts include normal back edges and
+exclude setup and error paths. Fixed stack allocations exclude saved registers
+and return addresses.
+
+The cloud comparison retains child-mask inlining (`dd20ec429`), ID writer
+caching (`c622d51eb`), and separate point encoding (`e07cb3011`). Together they
+reduce default packing time by 4.6–5.2%, bringing Rust within 0.6% of optimized
+C. Removing either writer caching or the point pass slows every measured
+profile in both process orders. Writer caching adds little after child-mask
+inlining alone; its benefit is clearer after splitting point encoding.
+
+[Original Rust assembly](build/rust-asm-followup/baseline/assembly.txt),
+[selected Rust assembly](build/rust-asm-followup/selected/assembly.txt),
+[C assembly](build/rust-asm-followup/c/assembly.txt),
+[C dictionary assembly](build/rust-asm-followup/c/dictionary.asm.txt),
+[loop counts](build/rust-asm-followup/loop-counts.json), and
+[grammar facts](build/rust-asm-followup/grammar-facts.json) retain the evidence.
+The [cloud report](build/rust-asm-followup/report.html) records selection,
+individual and combined trials, and final comparisons.
+
+Two further candidates remain unmeasured: retain ID-column cursors for the open
+group, as C does, and change point staging to reduce the gathers in the vector
+loop. Retained cursors must be refreshed after slab growth; point staging must
+preserve group-fit extrema and exact output bytes.

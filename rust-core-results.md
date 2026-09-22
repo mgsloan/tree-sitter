@@ -12,6 +12,75 @@ comparison crate. The default remains C-backed `tree-squatter`, and the C facade
 is deferred. Persistence and benchmarks can select the candidate with their
 `rust-core` feature. There is no native query execution fallback.
 
+## Rust assembly follow-up — 2026-09-22 UTC
+
+Three changes are retained on `c-optimizations`, with conversion entirely in Rust:
+
+| Change | Commit | Assembly effect |
+| --- | --- | --- |
+| Inline common child-mask propagation | `dd20ec429` | Zero/one-word masks avoid an allocation-capable helper and its six saved registers. |
+| Capture the writer for node IDs | `c622d51eb` | Symbol, field, and optional grammar stores share one slab-address load. |
+| Encode point deltas separately | `e07cb3011` | The slot loops lose stack accesses; point encoding can use four-lane vectors. |
+
+The baseline is `8162ad00e`, whose Rust executable matches the previously selected
+`d96b0793d` build. C includes emission inlining from `1e9c80d16`. Default packing
+uses the same 264 files and 11 languages:
+
+| Operation | Rust before ms | Rust selected ms | C ms | Rust time reduction | Rust / C |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| pack-cold | 65.457 | 62.071 | 62.095 | 5.17% | 1.000× |
+| pack-reuse | 64.958 | 61.986 | 61.689 | 4.57% | 1.005× |
+| pack-trim | 65.394 | 62.314 | 61.945 | 4.71% | 1.006× |
+
+Times sum per-file milliseconds, averaging two process medians. Rust is now
+within 0.6% of C for default packing: cold packing is effectively tied, while
+reuse and trim take 0.5–0.6% longer. All three Rust improvements agree in both
+process orders. Every language aggregate improves, though CSS varies by order.
+
+Child-mask inlining alone reduces default reuse time by 2.40% in the initial
+screen. Separate point encoding adds 0.97–1.32% across default modes after that
+change. Writer caching adds little after child-mask inlining alone, but adds
+0.56–1.22% once point encoding is split. Removing either addition from the final
+combination slows every measured profile in both orders; these effects are not
+additive.
+
+The 22-file alternate-layout subsets improve 3.0–3.5% without points and
+4.9–5.7% without presence indexes. Rust still takes 6.4–6.6% longer than C without
+points and 2.7–3.0% longer without presence indexes.
+
+Two dictionary experiments replace generic one-word comparisons with scalar
+`cmp`, including an inline variant. They remain uncommitted: the exact corpus
+grammars have zero to seven supertypes and never exercise dictionary lookup.
+Timing differences for those builds cannot establish a lookup speedup. A corpus
+with 9–64 supertypes is needed to evaluate this candidate.
+
+Ordinary cold parsing on the 22-file subset initially regresses 1.20%, then
+improves 0.64% in a confirmation run with the same binaries and reversed orders.
+Warm parsing changes by -0.03% and +0.10%. The four-file direct subset also varies:
+its initial warm gain of 2.77% becomes a 0.24% regression on confirmation. These
+results do not establish an end-to-end parse speedup or a repeatable regression.
+Both batches remain in the report.
+
+All 2,110 eligible corpus comparisons and 26 focused release tests pass,
+including byte-for-byte C compatibility. The two pre-existing shared Go capture
+exclusions are unchanged. No new unsafe code is introduced. The selected source
+patch and all three executable identities match the measured build.
+
+All timings ran on the Google Cloud e2-standard-4 VM, pinned to CPU 1 under the
+shared lock. The first screen uses five 15 ms samples; combination and final
+runs use five 10 ms samples, in two reversed process orders. Final packing
+compares baseline Rust, child-mask inlining, each addition, their combination,
+and optimized C contemporaneously. No laptop benchmarks ran. The VM was stopped
+after verified collection.
+
+The [formatted report](build/rust-asm-followup/report.html) and
+[Markdown report](build/rust-asm-followup/report.md) include all layouts,
+per-language results, incremental comparisons, both parse runs, and source
+identities. The [assembly follow-up](rust-core-assembly.md#rust-follow-up-after-c-emission-inlining)
+records function sizes, loop counts, and remaining opportunities. Patches,
+binaries, raw samples, assembly, grammar facts, and test logs are retained under
+`build/rust-asm-followup/`.
+
 ## C emission experiments — 2026-09-22 UTC
 
 `1e9c80d16` retains inlining of C's `emit` and `emit_values` helpers into the
