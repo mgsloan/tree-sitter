@@ -4435,6 +4435,112 @@ static bool sq_query_cursor__group_has_unique_start(const SQQueryCursor *self, u
   return capture_id != UINT32_MAX;
 }
 
+// Small state sets do not build capture indexes. Keep their pairwise loop out
+// of the indexed path so it carries no hash-bucket or bitmap state.
+static inline bool sq_query_cursor__compare_states_unindexed(SQQueryCursor *self,
+                                                              uint64_t dirty_patterns) {
+  uint32_t group_depth = UINT32_MAX, group_pattern = UINT32_MAX;
+  bool group_has_unique_start = false;
+  bool did_match = false;
+
+  for (uint32_t state_index = 0; state_index < self->states.size; state_index++) {
+    QueryState *state = &self->states.contents[state_index];
+    if (state->removed ||
+        !(dirty_patterns & (UINT64_C(1) << (state->pattern_index % 64)))) {
+      continue;
+    }
+
+    if (state->dead) {
+      self->dirty_patterns |= UINT64_C(1) << (state->pattern_index % 64);
+      state->removed = true;
+      continue;
+    }
+
+    if (state->start_depth != group_depth || state->pattern_index != group_pattern) {
+      group_depth = state->start_depth;
+      group_pattern = state->pattern_index;
+      group_has_unique_start = sq_query_cursor__group_has_unique_start(self, state_index);
+    }
+
+    bool did_remove = false;
+    const CaptureList *state_captures =
+        capture_list_pool_get(&self->capture_list_pool, state->capture_list_id);
+    for (uint32_t other_index = state_index + 1; other_index < self->states.size;
+         other_index++) {
+      QueryState *other_state = &self->states.contents[other_index];
+      if (other_state->removed) {
+        continue;
+      }
+
+      if (other_state->start_depth != state->start_depth ||
+          other_state->pattern_index != state->pattern_index) {
+        break;
+      }
+
+      const CaptureList *other_captures =
+          capture_list_pool_get(&self->capture_list_pool, other_state->capture_list_id);
+      if (state_captures->size > 0 && other_captures->size > 0 &&
+          ((group_has_unique_start &&
+            other_captures->first_start_byte > state_captures->first_start_byte) ||
+           other_captures->first_start_byte >=
+               capture_list_pool_last_end_byte(&self->capture_list_pool,
+                                               state->capture_list_id))) {
+        break;
+      }
+
+      CaptureContainment containment =
+          sq_query_cursor__compare_captures(self, state_captures, other_captures);
+      if (containment.left_contains_right) {
+        if (state->step_index == other_state->step_index &&
+            (other_state->seeking_immediate_match || !state->seeking_immediate_match)) {
+          LOG("  drop shorter state. pattern: %u, step_index: %u\n", state->pattern_index,
+              state->step_index);
+          capture_list_pool_release(&self->capture_list_pool, other_state->capture_list_id);
+          self->dirty_patterns |= UINT64_C(1) << (state->pattern_index % 64);
+          other_state->removed = true;
+          continue;
+        }
+
+        other_state->has_in_progress_alternatives = true;
+      }
+
+      if (containment.right_contains_left) {
+        if (state->step_index == other_state->step_index &&
+            (state->seeking_immediate_match || !other_state->seeking_immediate_match)) {
+          LOG("  drop shorter state. pattern: %u, step_index: %u\n", state->pattern_index,
+              state->step_index);
+          capture_list_pool_release(&self->capture_list_pool, state->capture_list_id);
+          self->dirty_patterns |= UINT64_C(1) << (state->pattern_index % 64);
+          state->removed = true;
+          did_remove = true;
+          break;
+        }
+
+        state->has_in_progress_alternatives = true;
+      }
+    }
+
+    if (!did_remove) {
+      LOG("  keep state. pattern: %u, start_depth: %u, step_index: %u, capture_count: %u\n",
+          state->pattern_index, state->start_depth, state->step_index, state_captures->size);
+      QueryStep *next_step = &self->query->steps.contents[state->step_index];
+      if (next_step->depth == PATTERN_DONE_MARKER) {
+        if (state->has_in_progress_alternatives) {
+          LOG("  defer finishing pattern %u\n", state->pattern_index);
+        } else {
+          LOG("  finish pattern %u\n", state->pattern_index);
+          sq_query_cursor__push_finished_state(self, state);
+          self->dirty_patterns |= UINT64_C(1) << (state->pattern_index % 64);
+          state->removed = true;
+          did_match = true;
+        }
+      }
+    }
+  }
+
+  return did_match;
+}
+
 static uint32_t sq_query_cursor__add_state(SQQueryCursor *self, const PatternEntry *pattern) {
   QueryStep *step = array_get(&self->query->steps, pattern->step_index);
   uint32_t start_depth = self->depth - step->depth;
@@ -5363,10 +5469,14 @@ static inline bool sq_query_cursor__advance(SQQueryCursor *self, bool stop_on_de
           }
 
           sq_query_cursor__index_capture_lists(self);
+          uint32_t indexed_state_count = self->capture_comparison_index.size;
+          if (!self->capture_comparison_index.size) {
+            did_match |= sq_query_cursor__compare_states_unindexed(self, dirty_patterns);
+          }
 
           uint32_t group_depth = UINT32_MAX, group_pattern = UINT32_MAX;
           bool group_has_unique_start = false;
-          for (unsigned j = 0; j < self->states.size; j++) {
+          for (unsigned j = 0; j < indexed_state_count; j++) {
             QueryState *state = array_get(&self->states, j);
             if (state->removed ||
                 !(dirty_patterns & (UINT64_C(1) << (state->pattern_index % 64)))) {
@@ -5389,9 +5499,7 @@ static inline bool sq_query_cursor__advance(SQQueryCursor *self, bool stop_on_de
             // repeated nodes, this is necessary to avoid multiple redundant states, where
             // one state has a strict subset of another state's captures.
             bool did_remove = false;
-            uint32_t next_in_bucket = self->capture_comparison_index.size
-                                          ? self->capture_comparison_index.contents[j].next
-                                          : self->states.size;
+            uint32_t next_in_bucket = self->capture_comparison_index.contents[j].next;
             const CaptureList *state_captures =
                 capture_list_pool_get(&self->capture_list_pool, state->capture_list_id);
             uint32_t comparison_block = UINT32_MAX;
@@ -5421,16 +5529,10 @@ static inline bool sq_query_cursor__advance(SQQueryCursor *self, bool stop_on_de
               // the other, so there is nothing to drop and no longest-match alternative to
               // record. Stop scanning `state` against the rest of the group.
               const CaptureComparisonEntry *other_entry =
-                  self->capture_comparison_index.size ? &self->capture_comparison_index.contents[k]
-                                                      : NULL;
-              const CaptureList *other_captures =
-                  other_entry ? NULL
-                              : capture_list_pool_get(&self->capture_list_pool,
-                                                      other_state->capture_list_id);
-              uint32_t other_count =
-                  other_entry ? other_entry->capture_count : other_captures->size;
-              uint32_t other_start =
-                  other_entry ? other_entry->first_start_byte : other_captures->first_start_byte;
+                  &self->capture_comparison_index.contents[k];
+              const CaptureList *other_captures = NULL;
+              uint32_t other_count = other_entry->capture_count;
+              uint32_t other_start = other_entry->first_start_byte;
               if (state_captures->size > 0 && other_count > 0 &&
                   ((group_has_unique_start && other_start > state_captures->first_start_byte) ||
                    other_start >= capture_list_pool_last_end_byte(&self->capture_list_pool,
@@ -5465,8 +5567,8 @@ static inline bool sq_query_cursor__advance(SQQueryCursor *self, bool stop_on_de
                     capture_list_pool_get(&self->capture_list_pool, other_state->capture_list_id);
               }
 
-              if (self->capture_comparison_index.size && state_captures->prefix_id &&
-                  other_captures->prefix_id && state_captures->size == other_captures->size &&
+              if (state_captures->prefix_id && other_captures->prefix_id &&
+                  state_captures->size == other_captures->size &&
                   state_captures->capture_hash != other_captures->capture_hash) {
                 while (next_in_bucket <= k) {
                   next_in_bucket = self->capture_comparison_index.contents[next_in_bucket].next;
