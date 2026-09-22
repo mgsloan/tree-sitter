@@ -299,7 +299,7 @@ impl Walk<'_> {
         }
     }
 
-    #[inline]
+    #[inline(always)]
     fn child_mask(&mut self, mask: Mask, visible: bool, symbol: u16) -> Result<Mask, Error> {
         if self.words == 0 {
             return Ok(Mask(0));
@@ -312,6 +312,16 @@ impl Walk<'_> {
             }
             return Ok(Mask(bits));
         }
+        self.child_mask_words(mask, visible, supertype)
+    }
+
+    #[inline(never)]
+    fn child_mask_words(
+        &mut self,
+        mask: Mask,
+        visible: bool,
+        supertype: u16,
+    ) -> Result<Mask, Error> {
         let masks = &mut self.scratch.masks;
         let offset = masks.len();
         reserve(masks, self.words)?;
