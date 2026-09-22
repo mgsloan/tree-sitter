@@ -266,3 +266,61 @@ also pass.
 Artifacts are in `build/scan-predicates/`: isolated patches, binaries, raw samples,
 and summaries. `run.py fixed confirm` reproduces the longer comparison;
 `run.py dynamic` reproduces the rejected dynamic-count screen.
+
+**Field scans, cursor access, and loading — local experiments, 2026-09-22**
+
+Baseline: `b4b0cd2d2`. These are targeted before/after experiments, not a fresh
+Rust/C comparison. Retained only the C cursor-access change; Rust scan and loader
+implementations are unchanged.
+
+C queries now read cursor node, parent, and depth through shared internal inline
+accessors. The cursor definition moves to the private header; public accessors
+use the same helpers. Null handling, allocation, traversal, and ownership remain
+unchanged. This does not reintroduce the rejected cursor-reuse experiment.
+
+The existing two-file JSON/C query pilot uses one unrestricted parent/child
+pattern, general/planned execution, and fresh/reused query cursors. Speedups below
+aggregate both files and execution modes. Two batches reverse process order:
+
+| Operation | Initial | Reversed-order confirmation |
+| --- | ---: | ---: |
+| Matches, fresh cursor | 1.052× | 1.040× |
+| Matches, reused cursor | 1.048× | 1.036× |
+| Captures, fresh cursor | 1.125× | 1.018× |
+| Captures, reused cursor | 1.143× | 1.016× |
+
+The match improvement repeats. The larger capture gain does not. Unchanged
+preorder traversal moved from 0.94× initially to 1.01× on confirmation; other
+confirmation traversal controls are within 1%. Broader confirmation is pending.
+
+Rust field trials use the 11-file, 28,299-node scan corpus:
+
+- Composing single-field comparisons for arrays of up to four fields improves
+  the targeted two/four-field operations by roughly 1.38–2.02×. Plain preorder
+  enumeration loses 18–22% throughput in those binaries, including a second build
+  without the loading change. The cause of that unrelated regression is not
+  isolated, so this version is rejected.
+- Copying fixed-field comparison values into flat scans is essentially neutral
+  on the targeted two/four-field operations and is also rejected.
+
+Rust loading trials use the same 11 files, including full/borrowed loading and
+compact copying as controls:
+
+- Omitting leaf entries from the validation stack gives 1.03–1.06× for safety
+  and backed loading initially, but only 1.01–1.02× on confirmation while full
+  and borrowed loads regress. Not retained.
+- A 64-entry inline validation stack with a reusable heap fallback gives
+  0.92–0.93× across loading operations. Not retained. All validation checks and
+  leaf entries were preserved in this separate trial.
+
+Runs use the Core Ultra 7 165U pinned to CPU 2. Rust binaries use portable Cargo
+release with Rust 1.95.0; the native C harness uses GCC 15.3.0 at `-O2 -g`.
+Scan/loading runs use seven samples targeting 30 ms; cursor runs use five.
+Parsing, conversion, and query compilation are outside timing. Raw results,
+binaries, scripts, and the last trial patch are under `build/nonconversion/`.
+
+Native unit/supertype/parser checks, JSON/C query comparisons, and 12 release
+Rust boundary/query/storage tests pass. A new corruption test perturbs node
+columns and compares safety-loader acceptance with C for shallow, wide, deep,
+and deep-sibling trees, with and without points. Cursor tests also cover null
+access and parent reads. Formatting and diff checks pass.
