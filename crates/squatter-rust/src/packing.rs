@@ -299,10 +299,13 @@ impl Builder {
                 .ok_or(Error::Language)?;
             let slot = self.distance();
             let data = self.tree.data_mut();
-            data.put_short(data.layout.symbol, slot, code.get());
-            data.put_short(data.layout.field, slot, event.field.map_or(0, FieldId::get));
-            if data.tables().separate != 0 {
-                data.put_short(data.layout.grammar, slot, event.grammar.get());
+            let layout = data.layout;
+            let separate = data.tables().separate != 0;
+            let mut writer = data.writer();
+            writer.put_short(layout.symbol, slot, code.get());
+            writer.put_short(layout.field, slot, event.field.map_or(0, FieldId::get));
+            if separate {
+                writer.put_short(layout.grammar, slot, event.grammar.get());
                 if event.grammar.get() != code.get() {
                     self.optional |= SEPARATE_GRAMMAR;
                 }
