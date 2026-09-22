@@ -379,7 +379,8 @@ impl Builder {
         }
 
         let mut writer = data.writer();
-        for (index, pending) in self.pending[..self.count as usize].iter().enumerate() {
+        let pending = &self.pending[..self.count as usize];
+        for (index, pending) in pending.iter().enumerate() {
             let value = pending.values;
             let slot = self.slot_base + index as u32;
             writer.put_byte(layout.span_delta, slot, (value.span - self.base.span) as u8);
@@ -394,7 +395,11 @@ impl Builder {
                 (self.maximum.end_byte - value.end_byte) as u16,
             );
             writer.put_short(layout.supertype, slot, pending.supertype);
-            if self.points {
+        }
+        if self.points {
+            for (index, pending) in pending.iter().enumerate() {
+                let value = pending.values;
+                let slot = self.slot_base + index as u32;
                 writer.put_short(
                     layout.start_point,
                     slot,
