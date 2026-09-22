@@ -307,6 +307,26 @@ impl PointData {
             point_length(tree)? - HEADER_BYTES,
         )?))
     }
+    pub(crate) fn grow(&mut self, groups: u32) -> Result<(), SideDataError> {
+        let slots = groups.checked_mul(GROUP_SIZE).ok_or(Error::Overflow)?;
+        let length = (slots as usize)
+            .checked_mul(2)
+            .and_then(|words| words.checked_add(HEADER_BYTES / 8))
+            .ok_or(Error::Overflow)?;
+        let Storage::Owned(words) = &mut self.0.storage else {
+            unreachable!();
+        };
+        debug_assert!(length >= words.len());
+        words
+            .try_reserve(length - words.len())
+            .map_err(|_| Error::Allocation)?;
+        words.resize(length, 0);
+        let bytes = self.0.bytes_mut();
+        bytes[4..8].copy_from_slice(&groups.to_le_bytes());
+        bytes[8..12].copy_from_slice(&slots.to_le_bytes());
+        Ok(())
+    }
+
     pub(crate) fn put(&mut self, slot: u32, start: Point, end: Point) -> Result<(), SideDataError> {
         let start = PackedPoint::from_point(start).ok_or(Error::Overflow)?;
         let end = PackedPoint::from_point(end).ok_or(Error::Overflow)?;

@@ -646,7 +646,7 @@ pub(super) fn pack_reductions(
         scratch,
         tables,
         words: tables.supertype_count.div_ceil(64) as usize,
-        points: builder.points,
+        points: builder.points.is_some(),
     };
     if walk.words > 1 {
         reserve(&mut walk.scratch.masks, walk.words)?;
@@ -735,7 +735,7 @@ pub(super) fn pack(
         scratch,
         tables,
         words: tables.supertype_count.div_ceil(64) as usize,
-        points: builder.points,
+        points: builder.points.is_some(),
     };
     if walk.words > 1 {
         reserve(&mut walk.scratch.masks, walk.words)?;

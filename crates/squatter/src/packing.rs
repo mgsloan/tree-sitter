@@ -155,8 +155,7 @@ struct Builder {
     missing: u64,
     has_error: bool,
     optional: u32,
-    points: bool,
-    native_points: Vec<(tree_sitter::Point, tree_sitter::Point)>,
+    points: Option<PointData>,
 }
 
 impl Builder {
@@ -174,8 +173,10 @@ impl Builder {
     }
 
     fn new(grammar: &Grammar, capacity: u32, points: bool) -> Result<Self, Error> {
+        let tree = Tree::empty(grammar, capacity)?;
+        let points = points.then(|| PointData::empty(&tree)).transpose()?;
         Ok(Self {
-            tree: Tree::empty(grammar, capacity)?,
+            tree,
             pending: [Pending::default(); GROUP_SIZE as usize],
             count: 0,
             slot_base: 0,
@@ -187,7 +188,6 @@ impl Builder {
             has_error: false,
             optional: 0,
             points,
-            native_points: Vec::new(),
         })
     }
 
@@ -269,15 +269,12 @@ impl Builder {
                 .symbol_code(event.symbol, event.grammar)
                 .ok_or(Error::Language)?;
             let slot = self.distance();
-            if self.points {
-                self.native_points
-                    .try_reserve(slot as usize + 1 - self.native_points.len())
-                    .map_err(|_| Error::Allocation)?;
-                self.native_points.resize(
-                    slot as usize + 1,
-                    (tree_sitter::Point::default(), tree_sitter::Point::default()),
-                );
-                self.native_points[slot as usize] = (
+            if let Some(points) = &mut self.points {
+                if slot % GROUP_SIZE == 0 {
+                    points.grow(slot / GROUP_SIZE + 1)?;
+                }
+                points.put(
+                    slot,
                     tree_sitter::Point::new(
                         event.start_point.row as usize,
                         event.start_point.column as usize,
@@ -286,7 +283,7 @@ impl Builder {
                         event.end_point.row as usize,
                         event.end_point.column as usize,
                     ),
-                );
+                )?;
             }
             let data = self.tree.data_mut();
             let layout = data.layout;
@@ -397,14 +394,7 @@ impl Builder {
             let cache = PresenceCache::build(&self.tree, None)?;
             self.tree.set_presence_cache(cache)?;
         }
-        if options.points {
-            let mut points = PointData::empty(&self.tree)?;
-            for group in 0..groups {
-                for slot in group * GROUP_SIZE..self.tree.data().group_end(group) {
-                    let (start, end) = self.native_points[slot as usize];
-                    points.put(slot, start, end)?;
-                }
-            }
+        if let Some(points) = self.points {
             self.tree.set_point_data(points)?;
         }
         Ok(self.tree)
