@@ -26,8 +26,8 @@
 use crate::{
     FieldId, FieldSet, GrammarKindId, KindId, KindSet, Node, PointData, SlotIx,
     native::GrammarView,
-    storage::{GROUP_SIZE, Layout, TreeData},
-    types::{GroupIx, GroupSlotIx, PackedPoint, RemappedKindId, SlabOffset},
+    storage::{ColumnPointer, GROUP_SIZE, Layout, TreeData},
+    types::{GroupIx, GroupSlotIx, PackedPoint, RemappedKindId},
 };
 use std::{
     iter::FusedIterator,
@@ -54,7 +54,7 @@ impl<'tree> Columns<'tree> {
     }
 
     #[inline]
-    fn layout(self) -> &'tree Layout {
+    fn layout(self) -> &'tree Layout<ColumnPointer> {
         &self.tree().layout
     }
 
@@ -69,8 +69,9 @@ impl<'tree> Columns<'tree> {
     }
 
     #[inline]
-    fn data(self) -> &'tree [u8] {
-        self.tree().slice()
+    fn slice(self, column: ColumnPointer, start: usize, length: usize) -> &'tree [u8] {
+        // Callers select valid slots from an allocated column in this borrowed tree.
+        unsafe { std::slice::from_raw_parts(column.as_ptr().add(start), length) }
     }
 
     #[inline]
@@ -79,18 +80,18 @@ impl<'tree> Columns<'tree> {
     }
 
     #[inline]
-    fn byte(self, offset: SlabOffset, index: u32) -> u8 {
-        self.tree().byte(offset, index)
+    fn byte(self, column: ColumnPointer, index: u32) -> u8 {
+        self.tree().byte(column, index)
     }
 
     #[inline]
-    fn short(self, offset: SlabOffset, index: u32) -> u16 {
-        self.tree().short(offset, index)
+    fn short(self, column: ColumnPointer, index: u32) -> u16 {
+        self.tree().short(column, index)
     }
 
     #[inline]
-    fn word(self, offset: SlabOffset, index: u32) -> u32 {
-        self.tree().word(offset, index)
+    fn word(self, column: ColumnPointer, index: u32) -> u32 {
+        self.tree().word(column, index)
     }
 
     #[inline]
@@ -314,19 +315,21 @@ impl<'tree> GroupRef<'tree> {
     }
 
     #[inline]
-    fn equal_ids(&self, offset: SlabOffset, shift: u32, target: u16, candidates: Mask) -> Mask {
+    fn equal_ids(&self, column: ColumnPointer, shift: u32, target: u16, candidates: Mask) -> Mask {
         if candidates.0.is_power_of_two() {
             return candidates.retain(|slot| {
-                self.columns.short(offset, self.first_slot().get() + slot) >> shift == target
+                self.columns.short(column, self.first_slot().get() + slot) >> shift == target
             });
         }
-        let start = offset.get() as usize + self.first_slot().get() as usize * 2;
-        let bytes = &self.columns.data()[start..start + self.columns.group_size() as usize * 2];
+        let start = self.first_slot().get() as usize * 2;
+        let bytes = self
+            .columns
+            .slice(column, start, self.columns.group_size() as usize * 2);
         let mut matches = 0;
         #[cfg(target_arch = "x86_64")]
         {
             use std::arch::x86_64::*;
-            // SSE2 is baseline on x86_64. The checked slice covers both unaligned
+            // SSE2 is baseline on x86_64. The group slice covers both unaligned
             // loads; full groups contain a multiple of 16 little-endian IDs.
             unsafe {
                 let target = _mm_set1_epi16(target as i16);
@@ -358,7 +361,7 @@ impl<'tree> GroupRef<'tree> {
     #[inline(always)]
     fn equal_id_set<I: crate::Id>(
         &self,
-        offset: SlabOffset,
+        column: ColumnPointer,
         shift: u32,
         targets: &[I],
         candidates: Mask,
@@ -367,20 +370,20 @@ impl<'tree> GroupRef<'tree> {
             return Mask::default();
         }
         if targets.len() == 1 {
-            return self.equal_ids(offset, shift, targets[0].raw(), candidates);
+            return self.equal_ids(column, shift, targets[0].raw(), candidates);
         }
         if targets.len() == 2 {
             return Mask(
-                self.equal_ids(offset, shift, targets[0].raw(), candidates)
+                self.equal_ids(column, shift, targets[0].raw(), candidates)
                     .0
                     | self
-                        .equal_ids(offset, shift, targets[1].raw(), candidates)
+                        .equal_ids(column, shift, targets[1].raw(), candidates)
                         .0,
             );
         }
         if candidates.0.is_power_of_two() {
             let slot = self.first_slot().get() + candidates.0.trailing_zeros();
-            let value = self.columns.short(offset, slot) >> shift;
+            let value = self.columns.short(column, slot) >> shift;
             return if targets.iter().any(|target| target.raw() == value) {
                 candidates
             } else {
@@ -390,10 +393,12 @@ impl<'tree> GroupRef<'tree> {
         #[cfg(target_arch = "x86_64")]
         {
             use std::arch::x86_64::*;
-            let start = offset.get() as usize + self.first_slot().get() as usize * 2;
-            let bytes = &self.columns.data()[start..start + self.columns.group_size() as usize * 2];
+            let start = self.first_slot().get() as usize * 2;
+            let bytes = self
+                .columns
+                .slice(column, start, self.columns.group_size() as usize * 2);
             let mut matches = 0;
-            // SSE2 is baseline. Each checked chunk contains both vector loads;
+            // SSE2 is baseline. Each group chunk contains both vector loads;
             // fixed-array callers expose the target count for loop unrolling.
             unsafe {
                 let shift = _mm_cvtsi32_si128(shift as i32);
@@ -417,19 +422,16 @@ impl<'tree> GroupRef<'tree> {
         #[cfg(not(target_arch = "x86_64"))]
         candidates.retain(|slot| {
             targets.iter().any(|target| {
-                target.raw() == self.columns.short(offset, self.first_slot().get() + slot) >> shift
+                target.raw() == self.columns.short(column, self.first_slot().get() + slot) >> shift
             })
         })
     }
     #[inline]
-    fn bitmap(self, offset: SlabOffset) -> u64 {
-        if offset.get() == 0 {
-            return 0;
-        }
+    fn bitmap(self, column: ColumnPointer) -> u64 {
         let start = self.first_slot().get() / 8;
         let mut bits = 0;
         for byte in 0..self.columns.group_size() / 8 {
-            bits |= u64::from(self.columns.byte(offset, start + byte)) << (byte * 8);
+            bits |= u64::from(self.columns.byte(column, start + byte)) << (byte * 8);
         }
         // Predicates intersect these bits with an already-valid candidate mask.
         bits
@@ -1340,28 +1342,28 @@ struct PointColumn<'tree, const END: bool, const STORED: bool> {
 
 #[derive(Clone, Copy)]
 struct ColumnDeltas<'tree> {
-    data: &'tree [u8],
-    start: usize,
+    pointer: ColumnPointer,
     length: usize,
+    borrow: PhantomData<&'tree [u8]>,
 }
 impl<'tree> ColumnDeltas<'tree> {
     #[inline]
     fn slice(self) -> &'tree [u8] {
-        // Rejected groups need only their bases, not delta-slice bounds checks.
-        &self.data[self.start..self.start + self.length]
+        // The group borrows a live tree and spans allocated column slots.
+        unsafe { std::slice::from_raw_parts(self.pointer.as_ptr(), self.length) }
     }
 }
 
 #[inline]
 fn column_deltas<'tree>(
     group: &GroupRef<'tree>,
-    offset: SlabOffset,
+    column: ColumnPointer,
     width: usize,
 ) -> ColumnDeltas<'tree> {
     ColumnDeltas {
-        data: group.columns.data(),
-        start: offset.get() as usize + group.first_slot().get() as usize * width,
+        pointer: column.add(group.first_slot().get() as usize * width),
         length: group.columns.group_size() as usize * width,
+        borrow: PhantomData,
     }
 }
 #[inline]
@@ -2707,7 +2709,7 @@ struct ArrayKindValues<const N: usize> {
 // Cache column parameters so singleton scans do not reread the grammar between groups.
 struct KindPredicate {
     target: RemappedKindId,
-    offset: SlabOffset,
+    column: ColumnPointer,
     shift: u32,
 }
 
@@ -2716,7 +2718,7 @@ impl KindPredicate {
     fn new(columns: Columns<'_>, target: RemappedKindId) -> Self {
         Self {
             target,
-            offset: columns.layout().symbol,
+            column: columns.layout().symbol,
             shift: columns.tables().symbol_shift as u32,
         }
     }
@@ -2726,7 +2728,7 @@ impl sealed::Predicate for KindPredicate {}
 impl Predicate for KindPredicate {
     #[inline(always)]
     fn retain_matches(&self, group: &GroupRef<'_>, candidates: Mask) -> Mask {
-        group.equal_ids(self.offset, self.shift, self.target.get(), candidates)
+        group.equal_ids(self.column, self.shift, self.target.get(), candidates)
     }
 }
 
@@ -3023,8 +3025,10 @@ fn retain_kind_set(group: &GroupRef<'_>, candidates: Mask, kinds: &KindSet) -> M
         return candidates.retain(|slot| kinds.contains(group.kind(slot)));
     }
     let layout = group.columns.layout();
-    let start = layout.symbol.get() as usize + group.first_slot().get() as usize * 2;
-    let bytes = &group.columns.data()[start..start + group.used() as usize * 2];
+    let start = group.first_slot().get() as usize * 2;
+    let bytes = group
+        .columns
+        .slice(layout.symbol, start, group.used() as usize * 2);
     let mut matches = 0;
     for (slot, bytes) in bytes.chunks_exact(2).enumerate() {
         let symbol = u32::from(u16::from_le_bytes([bytes[0], bytes[1]]))
@@ -3050,23 +3054,23 @@ impl sealed::Predicate for FieldIds<'_> {}
 impl Predicate for FieldIds<'_> {
     #[inline]
     fn retain_matches(&self, group: &GroupRef<'_>, candidates: Mask) -> Mask {
-        let offset = group.columns.layout().field;
+        let column = group.columns.layout().field;
         match self.0.ids.as_slice() {
             [] => Mask::default(),
-            &[field] => group.equal_ids(offset, 0, field.map_or(0, FieldId::get), candidates),
+            &[field] => group.equal_ids(column, 0, field.map_or(0, FieldId::get), candidates),
             fields if fields.len() <= 4 => {
                 fields.iter().fold(Mask::default(), |matches, &field| {
                     Mask(
                         matches.0
                             | group
-                                .equal_ids(offset, 0, field.map_or(0, FieldId::get), candidates)
+                                .equal_ids(column, 0, field.map_or(0, FieldId::get), candidates)
                                 .0,
                     )
                 })
             }
             _ => candidates.retain(|slot| {
                 self.0.contains(FieldId::new(
-                    group.columns.short(offset, group.first_slot().get() + slot),
+                    group.columns.short(column, group.first_slot().get() + slot),
                 ))
             }),
         }
@@ -3257,9 +3261,9 @@ mod tests {
     impl<'tree> From<&'tree [u8]> for ColumnDeltas<'tree> {
         fn from(data: &'tree [u8]) -> Self {
             Self {
-                data,
-                start: 0,
+                pointer: ColumnPointer(data.as_ptr().cast_mut()),
                 length: data.len(),
+                borrow: PhantomData,
             }
         }
     }

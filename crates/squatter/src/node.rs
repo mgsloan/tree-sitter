@@ -708,9 +708,10 @@ fn start_mask(data: &TreeData, group: u32, threshold: u8) -> u64 {
         use std::arch::x86_64::*;
         let target = _mm_set1_epi8(threshold as i8);
         let deltas = data
-            .bytes
+            .layout
+            .start_byte_delta
             .as_ptr()
-            .add(data.layout.start_byte_delta.get() as usize + (group * GROUP_SIZE) as usize);
+            .add((group * GROUP_SIZE) as usize);
         let mut mask = 0;
         for offset in (0..GROUP_SIZE).step_by(16) {
             let lanes = _mm_loadu_si128(deltas.add(offset as usize).cast());

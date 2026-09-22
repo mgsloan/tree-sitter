@@ -32,22 +32,22 @@ pub fn representation_id() -> u64 {
 }
 
 #[derive(Clone, Copy, Default, Debug)]
-pub(crate) struct Layout {
-    pub waste: SlabOffset,
-    pub start_byte_base: SlabOffset,
-    pub start_byte_delta: SlabOffset,
-    pub end_byte_base: SlabOffset,
-    pub end_byte_delta: SlabOffset,
-    pub span_base: SlabOffset,
-    pub span_delta: SlabOffset,
-    pub symbol: SlabOffset,
-    pub field: SlabOffset,
-    pub supertype: SlabOffset,
-    pub last: SlabOffset,
-    pub extra: SlabOffset,
-    pub error: SlabOffset,
-    pub missing: SlabOffset,
-    pub grammar: SlabOffset,
+pub(crate) struct Layout<Column> {
+    pub waste: Column,
+    pub start_byte_base: Column,
+    pub start_byte_delta: Column,
+    pub end_byte_base: Column,
+    pub end_byte_delta: Column,
+    pub span_base: Column,
+    pub span_delta: Column,
+    pub symbol: Column,
+    pub field: Column,
+    pub supertype: Column,
+    pub last: Column,
+    pub extra: Column,
+    pub error: Column,
+    pub missing: Column,
+    pub grammar: Column,
     pub end: SlabOffset,
 }
 
@@ -61,7 +61,7 @@ pub(crate) fn bit_bytes(count: u32) -> u64 {
     (count as u64).div_ceil(64) * 8
 }
 
-impl Layout {
+impl Layout<SlabOffset> {
     // The first column follows the fixed header, independent of capacity and flags.
     const WASTE: SlabOffset = SlabOffset(((16 + ALIGNMENT - 1) & !(ALIGNMENT - 1)) as u32);
 
@@ -114,7 +114,30 @@ impl Layout {
         Ok(result)
     }
 
-    fn columns(self, groups: u32, flags: u32) -> [(SlabOffset, usize); 15] {
+    fn resolve(self, bytes: NonNull<u8>) -> Layout<ColumnPointer> {
+        Layout {
+            waste: ColumnPointer(self.waste.pointer(bytes)),
+            start_byte_base: ColumnPointer(self.start_byte_base.pointer(bytes)),
+            start_byte_delta: ColumnPointer(self.start_byte_delta.pointer(bytes)),
+            end_byte_base: ColumnPointer(self.end_byte_base.pointer(bytes)),
+            end_byte_delta: ColumnPointer(self.end_byte_delta.pointer(bytes)),
+            span_base: ColumnPointer(self.span_base.pointer(bytes)),
+            span_delta: ColumnPointer(self.span_delta.pointer(bytes)),
+            symbol: ColumnPointer(self.symbol.pointer(bytes)),
+            field: ColumnPointer(self.field.pointer(bytes)),
+            supertype: ColumnPointer(self.supertype.pointer(bytes)),
+            last: ColumnPointer(self.last.pointer(bytes)),
+            extra: ColumnPointer(self.extra.pointer(bytes)),
+            error: ColumnPointer(self.error.pointer(bytes)),
+            missing: ColumnPointer(self.missing.pointer(bytes)),
+            grammar: ColumnPointer(self.grammar.pointer(bytes)),
+            end: self.end,
+        }
+    }
+}
+
+impl<Column: Copy> Layout<Column> {
+    fn columns(self, groups: u32, flags: u32) -> [(Column, usize); 15] {
         let slots = groups * GROUP_SIZE;
         [
             (self.waste, aligned_bytes(groups, 2) as usize),
@@ -164,9 +187,51 @@ impl Layout {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ColumnPointer(pub(crate) *mut u8);
+
+// Column access borrows the owning tree; published slabs are immutable.
+unsafe impl Send for ColumnPointer {}
+unsafe impl Sync for ColumnPointer {}
+
+impl ColumnPointer {
+    #[inline]
+    pub fn as_ptr(self) -> *mut u8 {
+        self.0
+    }
+
+    #[inline]
+    pub fn add(self, bytes: usize) -> Self {
+        Self(self.0.wrapping_add(bytes))
+    }
+
+    #[cfg(test)]
+    pub fn offset(self, bytes: NonNull<u8>) -> usize {
+        self.0 as usize - bytes.as_ptr() as usize
+    }
+}
+
+pub(crate) trait SlabAddress: Copy {
+    fn pointer(self, bytes: NonNull<u8>) -> *mut u8;
+}
+
+impl SlabAddress for SlabOffset {
+    #[inline]
+    fn pointer(self, bytes: NonNull<u8>) -> *mut u8 {
+        bytes.as_ptr().wrapping_add(self.get() as usize)
+    }
+}
+
+impl SlabAddress for ColumnPointer {
+    #[inline]
+    fn pointer(self, _bytes: NonNull<u8>) -> *mut u8 {
+        self.0
+    }
+}
+
 pub(crate) struct TreeData {
     pub grammar: Grammar,
-    pub layout: Layout,
+    pub layout: Layout<ColumnPointer>,
     pub bytes: NonNull<u8>,
     pub length: u32,
     // Small final shrinks retain the allocation; deallocation needs its original size.
@@ -184,20 +249,17 @@ pub(crate) struct SlabWriter<'tree> {
 }
 
 impl SlabWriter<'_> {
-    pub fn put_byte(&mut self, offset: SlabOffset, index: u32, value: u8) {
+    pub fn put_byte(&mut self, address: impl SlabAddress, index: u32, value: u8) {
         unsafe {
-            *self
-                .bytes
-                .as_ptr()
-                .add(offset.get() as usize + index as usize) = value;
+            *address.pointer(self.bytes).add(index as usize) = value;
         }
     }
 
-    pub fn put_short(&mut self, offset: SlabOffset, index: u32, value: u16) {
+    pub fn put_short(&mut self, address: impl SlabAddress, index: u32, value: u16) {
         unsafe {
-            self.bytes
-                .as_ptr()
-                .add(offset.get() as usize + index as usize * 2)
+            address
+                .pointer(self.bytes)
+                .add(index as usize * 2)
                 .cast::<u16>()
                 .write_unaligned(value.to_le());
         }
@@ -210,53 +272,48 @@ impl TreeData {
         self.grammar.tables()
     }
 
-    // Offsets are established by the encoder or loader before a descriptor is published.
+    // Column pointers are resolved on allocation and refreshed after slab relocation.
     #[inline]
-    pub fn byte(&self, offset: SlabOffset, index: u32) -> u8 {
-        unsafe {
-            *self
-                .bytes
-                .as_ptr()
-                .add(offset.get() as usize + index as usize)
-        }
+    pub fn byte(&self, address: impl SlabAddress, index: u32) -> u8 {
+        unsafe { *address.pointer(self.bytes).add(index as usize) }
     }
 
     #[inline]
-    pub fn short(&self, offset: SlabOffset, index: u32) -> u16 {
+    pub fn short(&self, address: impl SlabAddress, index: u32) -> u16 {
         u16::from_le(unsafe {
-            self.bytes
-                .as_ptr()
-                .add(offset.get() as usize + index as usize * 2)
+            address
+                .pointer(self.bytes)
+                .add(index as usize * 2)
                 .cast::<u16>()
                 .read_unaligned()
         })
     }
 
     #[inline]
-    pub fn word(&self, offset: SlabOffset, index: u32) -> u32 {
+    pub fn word(&self, address: impl SlabAddress, index: u32) -> u32 {
         u32::from_le(unsafe {
-            self.bytes
-                .as_ptr()
-                .add(offset.get() as usize + index as usize * 4)
+            address
+                .pointer(self.bytes)
+                .add(index as usize * 4)
                 .cast::<u32>()
                 .read_unaligned()
         })
     }
 
     #[inline]
-    pub fn long(&self, offset: SlabOffset, index: u32) -> u64 {
+    pub fn long(&self, address: impl SlabAddress, index: u32) -> u64 {
         u64::from_le(unsafe {
-            self.bytes
-                .as_ptr()
-                .add(offset.get() as usize + index as usize * 8)
+            address
+                .pointer(self.bytes)
+                .add(index as usize * 8)
                 .cast::<u64>()
                 .read_unaligned()
         })
     }
 
     #[inline]
-    pub fn bit(&self, offset: SlabOffset, index: u32) -> bool {
-        self.byte(offset, index / 8) & (1 << (index % 8)) != 0
+    pub fn bit(&self, address: impl SlabAddress, index: u32) -> bool {
+        self.byte(address, index / 8) & (1 << (index % 8)) != 0
     }
 
     #[inline]
@@ -352,40 +409,40 @@ impl TreeData {
         }
     }
 
-    pub(crate) fn put_byte(&mut self, offset: SlabOffset, index: u32, value: u8) {
-        self.writer().put_byte(offset, index, value);
+    pub(crate) fn put_byte(&mut self, address: impl SlabAddress, index: u32, value: u8) {
+        self.writer().put_byte(address, index, value);
     }
 
-    pub(crate) fn put_short(&mut self, offset: SlabOffset, index: u32, value: u16) {
-        self.writer().put_short(offset, index, value);
+    pub(crate) fn put_short(&mut self, address: impl SlabAddress, index: u32, value: u16) {
+        self.writer().put_short(address, index, value);
     }
 
-    pub(crate) fn put_word(&mut self, offset: SlabOffset, index: u32, value: u32) {
+    pub(crate) fn put_word(&mut self, address: impl SlabAddress, index: u32, value: u32) {
         unsafe {
-            self.bytes
-                .as_ptr()
-                .add(offset.get() as usize + index as usize * 4)
+            address
+                .pointer(self.bytes)
+                .add(index as usize * 4)
                 .cast::<u32>()
                 .write_unaligned(value.to_le());
         }
     }
 
-    pub(crate) fn put_long(&mut self, offset: SlabOffset, index: u32, value: u64) {
+    pub(crate) fn put_long(&mut self, address: impl SlabAddress, index: u32, value: u64) {
         unsafe {
-            self.bytes
-                .as_ptr()
-                .add(offset.get() as usize + index as usize * 8)
+            address
+                .pointer(self.bytes)
+                .add(index as usize * 8)
                 .cast::<u64>()
                 .write_unaligned(value.to_le());
         }
     }
 
-    pub(crate) fn put_bit(&mut self, offset: SlabOffset, index: u32, value: bool) {
+    pub(crate) fn put_bit(&mut self, address: impl SlabAddress, index: u32, value: bool) {
         let mask = 1 << (index % 8);
         self.put_byte(
-            offset,
+            address,
             index / 8,
-            (self.byte(offset, index / 8) & !mask) | if value { mask } else { 0 },
+            (self.byte(address, index / 8) & !mask) | if value { mask } else { 0 },
         );
     }
 }
@@ -428,7 +485,7 @@ impl Tree {
 
     fn allocate(
         grammar: &Grammar,
-        layout: Layout,
+        layout: Layout<SlabOffset>,
         length: u32,
         borrowed: Option<&[u8]>,
         zeroed: bool,
@@ -451,7 +508,7 @@ impl Tree {
         unsafe {
             pointer.cast::<TreeData>().as_ptr().write(TreeData {
                 grammar: grammar.clone(),
-                layout,
+                layout: layout.resolve(bytes),
                 bytes,
                 length,
                 allocation_length: length,
@@ -569,7 +626,13 @@ impl Tree {
         })
     }
 
-    unsafe fn copy_columns(&self, destination: *mut u8, next: Layout, flags: u32, padding: bool) {
+    unsafe fn copy_columns(
+        &self,
+        destination: *mut u8,
+        next: Layout<SlabOffset>,
+        flags: u32,
+        padding: bool,
+    ) {
         let data = self.data();
         unsafe {
             ptr::copy_nonoverlapping(data.bytes.as_ptr(), destination, 16);
@@ -590,7 +653,7 @@ impl Tree {
                     );
                 }
                 ptr::copy_nonoverlapping(
-                    data.bytes.as_ptr().add(offset.get() as usize),
+                    offset.as_ptr(),
                     destination.add(target.get() as usize),
                     length,
                 );
@@ -671,14 +734,14 @@ impl Tree {
             if flags & flag != 0 {
                 unsafe {
                     ptr::copy(
-                        data.bytes.as_ptr().add(source.get() as usize),
+                        source.as_ptr(),
                         data.bytes.as_ptr().add(destination.get() as usize),
                         (end.get() - destination.get()) as usize,
                     );
                 }
             }
         }
-        data.layout = next;
+        data.layout = next.resolve(data.bytes);
         data.length = length;
         data.put_word(SlabOffset(0), 0, flags);
         let allocated = data.allocation_length;
@@ -693,6 +756,7 @@ impl Tree {
             let pointer = self.0.as_ptr();
             let data = self.data_mut();
             data.bytes = unsafe { NonNull::new_unchecked(pointer.cast::<u8>().add(prefix())) };
+            data.layout = next.resolve(data.bytes);
             data.allocation_length = length;
         }
         Ok(())

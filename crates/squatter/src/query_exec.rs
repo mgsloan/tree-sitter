@@ -1,7 +1,7 @@
+#[cfg(not(feature = "typed-presence-scan"))]
+use crate::storage::ColumnPointer;
 #[cfg(any(feature = "typed-query-scan", feature = "typed-presence-scan"))]
 use crate::types::GroupIx;
-#[cfg(not(feature = "typed-presence-scan"))]
-use crate::types::SlabOffset;
 use crate::{
     FieldId, GrammarKindId, KindId, Node, Query, QueryCapture, QueryExecutionError, QueryMatch,
     RawNode, SlotIx,
@@ -2605,7 +2605,7 @@ impl<'query, 'tree> QueryExecution<'_, 'query, 'tree, '_> {
 #[cfg(not(feature = "typed-presence-scan"))]
 fn equal_column(
     data: &crate::storage::TreeData,
-    offset: SlabOffset,
+    address: ColumnPointer,
     group: u32,
     value: u16,
     mask: u16,
@@ -2617,10 +2617,7 @@ fn equal_column(
         use std::arch::x86_64::*;
         let target = _mm_set1_epi16(value as i16);
         let selected = _mm_set1_epi16(mask as i16);
-        let column = data
-            .bytes
-            .as_ptr()
-            .add(offset.get() as usize + (group * GROUP_SIZE) as usize * 2);
+        let column = address.as_ptr().add((group * GROUP_SIZE) as usize * 2);
         for lane in (0..GROUP_SIZE).step_by(16) {
             let low = _mm_and_si128(
                 _mm_loadu_si128(column.add(lane as usize * 2).cast()),
@@ -2637,7 +2634,8 @@ fn equal_column(
     }
     #[cfg(not(target_arch = "x86_64"))]
     for lane in 0..GROUP_SIZE {
-        matches |= ((data.short(offset, group * GROUP_SIZE + lane) & mask == value) as u64) << lane;
+        matches |=
+            ((data.short(address, group * GROUP_SIZE + lane) & mask == value) as u64) << lane;
     }
     matches & (u64::MAX >> (64 - GROUP_SIZE + data.waste(group)))
 }

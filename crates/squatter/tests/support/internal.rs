@@ -257,7 +257,7 @@ fn synthetic_symbol_encodings_and_optional_columns() {
                 } else {
                     tree.data().layout.symbol
                 };
-                invalid[offset.get() as usize..offset.get() as usize + 2]
+                invalid[offset.offset(tree.data().bytes)..offset.offset(tree.data().bytes) + 2]
                     .copy_from_slice(&u16::MAX.to_le_bytes());
                 assert!(Tree::from_bytes(grammar, &invalid).is_err());
                 assert!(Tree::from_bytes_safety_checked(grammar, &invalid).is_err());
@@ -389,7 +389,7 @@ fn exercise_columns(tree: &mut Tree, fill: bool) {
             };
             assert_eq!(actual, expected, "column {tag}, index {index}");
             if bits > 1 {
-                let start = offset.get() as usize + index as usize * (bits / 8);
+                let start = offset.offset(data.bytes) + index as usize * (bits / 8);
                 assert_eq!(
                     &data.slice()[start..start + bits / 8],
                     &expected.to_le_bytes()[..bits / 8]
@@ -442,7 +442,7 @@ fn invalid_waste_and_absent_fields() {
         );
         for waste in [GROUP_SIZE, GROUP_SIZE + 1, u16::MAX as u32] {
             let mut bytes = tree.as_bytes().to_vec();
-            let start = tree.data().layout.waste.get() as usize;
+            let start = tree.data().layout.waste.offset(tree.data().bytes);
             bytes[start..start + 2].copy_from_slice(&(waste as u16).to_le_bytes());
             assert!(Tree::from_bytes(&fixture.grammar, &bytes).is_err());
             assert!(Tree::from_bytes_borrowed(&fixture.grammar, &bytes).is_err());
