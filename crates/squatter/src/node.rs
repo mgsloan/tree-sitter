@@ -541,22 +541,32 @@ impl<'tree> Node<'tree> {
         if start > end {
             return None;
         }
-        if POINTS {
-            return Some(self.seek_descent::<true>(start, end, named));
-        }
         let data = self.data();
+        if POINTS && !data.has_points() {
+            return if start >> 32 == 0 && end >> 32 == 0 {
+                self.seek::<false>(start, end, named)
+            } else {
+                Some(self.seek_descent::<true>(start, end, named))
+            };
+        }
         if start < self.start_key::<POINTS>() || end > self.end_key::<POINTS>() {
             return Some(self);
         }
 
-        // Group start bases decrease in physical order. Point column minima
-        // need not coincide, so a tied row uses the earliest live node's point.
+        // Starts decrease in physical order. The last live slot has the
+        // group's earliest start, including for independently stored points.
         let first = self.first_slot();
         let mut low = first / GROUP_SIZE;
         let mut high = self.slot().group().get();
         while low < high {
             let middle = low + (high - low) / 2;
-            let after = data.word(data.layout.start_byte_base, middle) as u64 > start;
+            let after = if POINTS {
+                self.at(SlotIx::new(data.group_end(middle) - 1))
+                    .start_key::<true>()
+                    > start
+            } else {
+                data.word(data.layout.start_byte_base, middle) as u64 > start
+            };
             if after {
                 low = middle + 1;
             } else {
@@ -578,13 +588,20 @@ impl<'tree> Node<'tree> {
         }
         #[cfg(not(feature = "typed-seek"))]
         {
-            let base = data.word(data.layout.start_byte_base, low) as u64;
-            let mask = start_mask(data, low, (start - base).min(255) as u8) >> (slot % GROUP_SIZE);
-            slot = if mask == 0 {
-                limit
+            if POINTS {
+                while slot < limit && self.at(SlotIx::new(slot)).start_key::<true>() > start {
+                    slot += 1;
+                }
             } else {
-                (slot + mask.trailing_zeros()).min(limit)
-            };
+                let base = data.word(data.layout.start_byte_base, low) as u64;
+                let mask =
+                    start_mask(data, low, (start - base).min(255) as u8) >> (slot % GROUP_SIZE);
+                slot = if mask == 0 {
+                    limit
+                } else {
+                    (slot + mask.trailing_zeros()).min(limit)
+                };
+            }
         }
         if slot == limit {
             slot = (low + 1) * GROUP_SIZE;
@@ -602,6 +619,20 @@ impl<'tree> Node<'tree> {
                 }
                 previous = previous.at(SlotIx::new(previous.previous_preorder_slot()));
             }
+        }
+
+        // Long point end scans can skip whole intervening subtrees through
+        // their parent spans. Byte end scans use the compact delta columns.
+        if POINTS && self.slot().get() - candidate.slot().get() > 512 * GROUP_SIZE {
+            while candidate.slot() < self.slot() {
+                let candidate_end = candidate.end_key::<true>();
+                if candidate_end >= end && candidate_end > start && (!named || candidate.is_named())
+                {
+                    return Some(candidate);
+                }
+                candidate = candidate.parent().unwrap_or(self);
+            }
+            return Some(self);
         }
 
         if candidate.slot() < self.slot() {
@@ -636,18 +667,31 @@ impl<'tree> Node<'tree> {
             }
             #[cfg(not(feature = "typed-seek"))]
             {
-                let base = data.word(data.layout.end_byte_base, group) as u64;
-                let threshold = (base >= end && base > start)
-                    .then(|| (base - end).min(base - start - 1) as u32);
-                if let Some(threshold) = threshold {
-                    let offset = data.layout.end_byte_delta;
+                if POINTS {
                     while candidate.slot().get() < limit {
-                        if data.short(offset, candidate.slot().get()) as u32 <= threshold
+                        let candidate_end = candidate.end_key::<true>();
+                        if candidate_end >= end
+                            && candidate_end > start
                             && (!named || candidate.is_named())
                         {
                             return Some(candidate);
                         }
                         candidate.raw.slot = SlotIx::new(candidate.raw.slot.get() + 1);
+                    }
+                } else {
+                    let base = data.word(data.layout.end_byte_base, group) as u64;
+                    let threshold = (base >= end && base > start)
+                        .then(|| (base - end).min(base - start - 1) as u32);
+                    if let Some(threshold) = threshold {
+                        let offset = data.layout.end_byte_delta;
+                        while candidate.slot().get() < limit {
+                            if data.short(offset, candidate.slot().get()) as u32 <= threshold
+                                && (!named || candidate.is_named())
+                            {
+                                return Some(candidate);
+                            }
+                            candidate.raw.slot = SlotIx::new(candidate.raw.slot.get() + 1);
+                        }
                     }
                 }
             }

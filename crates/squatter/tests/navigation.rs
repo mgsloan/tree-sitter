@@ -113,6 +113,31 @@ fn navigation_and_indexed_ranges_survive_loading() {
                 .step_by((actual.root_node().descendant_count() / 10).max(1))
             {
                 let reference = expected.node_at_slot(root.slot()).unwrap();
+                use tree_sitter::Point;
+                for (start, end) in [
+                    (
+                        Point::new(u32::MAX as usize, 0),
+                        Point::new(u32::MAX as usize, u32::MAX as usize),
+                    ),
+                    (Point::new(1, 0), Point::new(0, u32::MAX as usize)),
+                    (Point::new(0, u32::MAX as usize), Point::new(1, 0)),
+                    (Point::new(0, 500), Point::new(0, 501)),
+                ] {
+                    assert_eq!(
+                        root.descendant_for_point_range(start, end)
+                            .map(|node| u32::from(node.slot())),
+                        reference
+                            .descendant_for_point_range(start, end)
+                            .map(|node| u32::from(node.slot())),
+                    );
+                    assert_eq!(
+                        root.named_descendant_for_point_range(start, end)
+                            .map(|node| u32::from(node.slot())),
+                        reference
+                            .named_descendant_for_point_range(start, end)
+                            .map(|node| u32::from(node.slot())),
+                    );
+                }
                 for start in (0..=source.len() + 1).step_by((source.len() / 40).max(1)) {
                     for length in [0, 1, 5, 1000] {
                         let end = start + length;
@@ -165,5 +190,76 @@ fn navigation_and_indexed_ranges_survive_loading() {
                 }
             }
         }
+    }
+}
+
+#[test]
+fn indexed_points_follow_attachment_across_wide_trees() {
+    use tree_sitter::Point;
+    use tree_squatter::{PointData, SourcePoints};
+
+    let language =
+        unsafe { tree_sitter::Language::from_raw(tree_sitter_json::LANGUAGE.into_raw()().cast()) };
+    let grammar = Grammar::new(&language).unwrap();
+    let mut parser = tree_sitter::Parser::new();
+    parser.set_language(&language).unwrap();
+    let source = format!("[{}0]\n", "\"é\",\r\n".repeat(20_000));
+    let native = parser.parse(&source, None).unwrap();
+    let index = SourcePoints::new(source.as_bytes()).unwrap();
+    let mut tree = Tree::pack_with_options(
+        &grammar,
+        &native,
+        PackOptions {
+            points: false,
+            ..PackOptions::default()
+        },
+    )
+    .unwrap();
+    let address = tree.as_bytes().as_ptr();
+
+    for stored in [false, true, false] {
+        if stored {
+            tree.set_point_data(PointData::build(&tree, &index, None).unwrap())
+                .unwrap();
+        } else {
+            tree.drop_point_data();
+        }
+        for (root, reference) in [
+            (tree.root_node(), native.root_node()),
+            (
+                tree.root_node().named_child(0).unwrap(),
+                native.root_node().named_child(0).unwrap(),
+            ),
+        ] {
+            for start in (0..=source.len()).step_by(997).chain([source.len()]) {
+                for end in [start, (start + 1).min(source.len()), source.len()] {
+                    let point = |byte| {
+                        if stored {
+                            index.point(byte).unwrap()
+                        } else {
+                            Point::new(0, byte)
+                        }
+                    };
+                    for named in [false, true] {
+                        let actual = if named {
+                            root.named_descendant_for_point_range(point(start), point(end))
+                        } else {
+                            root.descendant_for_point_range(point(start), point(end))
+                        };
+                        let expected = if named {
+                            reference.named_descendant_for_byte_range(start, end)
+                        } else {
+                            reference.descendant_for_byte_range(start, end)
+                        };
+                        assert_eq!(
+                            actual.map(|node| (node.byte_range(), node.kind_id().get())),
+                            expected.map(|node| (node.byte_range(), node.kind_id())),
+                            "stored={stored} named={named} {start}..{end}",
+                        );
+                    }
+                }
+            }
+        }
+        assert_eq!(tree.as_bytes().as_ptr(), address);
     }
 }
