@@ -3,6 +3,14 @@
 #include "../src/tree.h"
 #include <tree_feller.h>
 
+#if defined(_MSC_VER)
+#define SQ_ALWAYS_INLINE static __forceinline
+#elif defined(__GNUC__) || defined(__clang__)
+#define SQ_ALWAYS_INLINE static inline __attribute__((always_inline))
+#else
+#define SQ_ALWAYS_INLINE static inline
+#endif
+
 // Only the current group's absolute values are staged. Frame coordinates are
 // Point positions are computed once left-to-right, then consumed right-to-left
 // because multiline extents lose the starting column. Point-free frames
@@ -399,7 +407,7 @@ static inline uint32_t encode_symbol(const Builder *builder, TSSymbol symbol) {
                                                  : symbol;
 }
 
-static bool emit_values(Builder *builder, const EmitNode *frame, PackPosition end,
+SQ_ALWAYS_INLINE bool emit_values(Builder *builder, const EmitNode *frame, PackPosition end,
                         TSSymbol grammar, bool extra, bool missing, bool has_error) {
   uint16_t super;
   const uint64_t *mask = builder->words == 1 ? &frame->mask
@@ -486,7 +494,7 @@ static bool emit_values(Builder *builder, const EmitNode *frame, PackPosition en
   }
 }
 
-static bool emit(Builder *builder, const EmitNode *frame) {
+SQ_ALWAYS_INLINE bool emit(Builder *builder, const EmitNode *frame) {
   Subtree subtree = *frame->subtree;
   Length size;
   TSSymbol grammar;
