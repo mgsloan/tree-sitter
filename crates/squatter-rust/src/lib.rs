@@ -72,18 +72,21 @@ mod private {
 }
 impl private::Id for types::RemappedKindId {}
 impl Id for types::RemappedKindId {
+    #[inline]
     fn raw(self) -> u16 {
         self.get()
     }
 }
 impl private::Id for KindId {}
 impl Id for KindId {
+    #[inline]
     fn raw(self) -> u16 {
         self.get()
     }
 }
 impl private::Id for Option<FieldId> {}
 impl Id for Option<FieldId> {
+    #[inline]
     fn raw(self) -> u16 {
         self.map_or(0, FieldId::get)
     }

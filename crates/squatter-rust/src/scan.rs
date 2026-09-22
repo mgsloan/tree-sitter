@@ -822,6 +822,14 @@ pub trait GroupScan<'tree>: sealed::Source + Sized {
     fn next_slots(&mut self) -> Option<Self::Slots> {
         self.next_mask().map(Self::slots)
     }
+    /// Fold remaining groups after the iterator's current fragment.
+    #[inline]
+    fn fold_nodes<B, F>(self, accumulator: B, fold: F) -> B
+    where
+        F: FnMut(B, Node<'tree>) -> B,
+    {
+        fold_nodes(self, accumulator, fold)
+    }
     #[inline]
     fn count(self) -> usize {
         self.count_matches(Identity)
@@ -829,6 +837,20 @@ pub trait GroupScan<'tree>: sealed::Source + Sized {
     fn count_matches<P: Predicate>(self, predicate: P) -> usize {
         count_groups(self, predicate)
     }
+}
+#[inline]
+fn fold_nodes<'tree, S: GroupScan<'tree>, B, F>(mut source: S, mut accumulator: B, mut fold: F) -> B
+where
+    F: FnMut(B, Node<'tree>) -> B,
+{
+    let columns = source.group().columns;
+    while let Some(slots) = source.next_slots() {
+        let base = source.group().first_slot().get();
+        accumulator = slots.fold(accumulator, |accumulator, slot| {
+            fold(accumulator, columns.node(base + slot))
+        });
+    }
+    accumulator
 }
 #[inline(always)]
 fn count_groups<'tree, S: GroupScan<'tree>, P: Predicate>(
@@ -957,7 +979,7 @@ pub struct Nodes<'tree, S: GroupScan<'tree>> {
 impl<'tree, S: GroupScan<'tree>> Iterator for Nodes<'tree, S> {
     type Item = Node<'tree>;
     #[inline]
-    fn fold<B, F>(mut self, mut accumulator: B, mut fold: F) -> B
+    fn fold<B, F>(self, mut accumulator: B, mut fold: F) -> B
     where
         F: FnMut(B, Self::Item) -> B,
     {
@@ -965,14 +987,7 @@ impl<'tree, S: GroupScan<'tree>> Iterator for Nodes<'tree, S> {
         accumulator = self.slots.fold(accumulator, |accumulator, slot| {
             fold(accumulator, columns.node(self.base + slot))
         });
-        while let Some(slots) = self.source.next_slots() {
-            let group = self.source.group();
-            let base = group.first_slot().get();
-            accumulator = slots.fold(accumulator, |accumulator, slot| {
-                fold(accumulator, columns.node(base + slot))
-            });
-        }
-        accumulator
+        self.source.fold_nodes(accumulator, fold)
     }
     #[inline(always)]
     fn next(&mut self) -> Option<Self::Item> {
@@ -2487,6 +2502,21 @@ impl<'tree, S: GroupScan<'tree>, C: Coordinates, R: Relation<C::Position>> Group
 }
 
 pub trait Predicate: sealed::Predicate {
+    #[inline]
+    fn fold_nodes<'tree, S: GroupScan<'tree>, B, F>(self, source: S, accumulator: B, fold: F) -> B
+    where
+        Self: Sized,
+        F: FnMut(B, Node<'tree>) -> B,
+    {
+        fold_nodes(
+            Filtered {
+                source,
+                predicate: self,
+            },
+            accumulator,
+            fold,
+        )
+    }
     /// Comparison state without mutable index cursors.
     #[inline(always)]
     fn flat(&self) -> impl Predicate {
@@ -2730,6 +2760,14 @@ impl<'tree, S: GroupScan<'tree>, P: Predicate> GroupScan<'tree> for Filtered<S, 
     #[inline]
     fn group(&self) -> &GroupRef<'tree> {
         self.source.group()
+    }
+
+    #[inline]
+    fn fold_nodes<B, F>(self, accumulator: B, fold: F) -> B
+    where
+        F: FnMut(B, Node<'tree>) -> B,
+    {
+        self.predicate.fold_nodes(self.source, accumulator, fold)
     }
 
     #[inline(always)]
@@ -3082,6 +3120,41 @@ impl KindStrategy<'_> {
 }
 impl sealed::Predicate for KindIds<'_> {}
 impl Predicate for KindIds<'_> {
+    #[inline]
+    fn fold_nodes<'tree, S: GroupScan<'tree>, B, F>(self, source: S, accumulator: B, fold: F) -> B
+    where
+        F: FnMut(B, Node<'tree>) -> B,
+    {
+        if self.has_group_index() {
+            return fold_nodes(
+                Filtered {
+                    source,
+                    predicate: self,
+                },
+                accumulator,
+                fold,
+            );
+        }
+        // Keep strategy dispatch outside the group loop for flat consumers.
+        match self.strategy {
+            KindStrategy::Empty => accumulator,
+            KindStrategy::Single(single) => single.fold_nodes(source, accumulator, fold),
+            KindStrategy::Small { ids, length: 2, .. } => ArrayKindValues {
+                ids: [ids[0], ids[1]],
+                empty: false,
+            }
+            .fold_nodes(source, accumulator, fold),
+            KindStrategy::Small {
+                ids, length: 3..=4, ..
+            } => ArrayKindValues {
+                ids: [ids[0], ids[1], ids[2], ids[3]],
+                empty: false,
+            }
+            .fold_nodes(source, accumulator, fold),
+            strategy => strategy.fold_nodes(source, accumulator, fold),
+        }
+    }
+
     // Select the small count kernel once, outside the group loop.
     #[inline(always)]
     fn count_flat(self, source: Preorder<'_>) -> usize {

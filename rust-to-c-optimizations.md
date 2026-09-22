@@ -324,3 +324,76 @@ Rust boundary/query/storage tests pass. A new corruption test perturbs node
 columns and compares safety-loader acceptance with C for shallow, wide, deep,
 and deep-sibling trees, with and without points. Cursor tests also cover null
 access and parent reads. Formatting and diff checks pass.
+
+## Rust scan inlining and fold dispatch — 2026-09-22
+
+Baseline: `a411b40558ea4`. The preceding [Rust/C comparison and profiling](build/rust-vs-c-current/investigation.md)
+identified fixed-field scans and dynamic-kind folds as targets.
+
+Two changes are retained:
+
+- Inline the three `Id::raw` implementations across crate boundaries. The
+  four-field count kernel previously called an identity accessor four times per
+  full group, spilling SIMD intermediates around the calls. Its targets are now
+  broadcast once before the loop; normal group processing contains no calls.
+- Let a source specialize folding after `Nodes` drains its current fragment.
+  Flat dynamic-kind folds select empty, single-, two-, or four-kind kernels once
+  per scan. Indexed scans preserve their existing cursors and traversal; larger
+  sets keep the generic strategy. Other sources retain the existing slot loop.
+
+The final comparison uses all 264 files and 11 languages. Each profile runs
+original Rust / C / final Rust / final Rust / C / original Rust, with seven
+samples targeting 30 ms for each of 31 selected workloads. Workload order
+reverses on alternate processes. The table reports means of process medians;
+speedups above 1 favor the new Rust build. Full 267-workload frequent-selection
+comparisons were also used to evaluate each candidate independently.
+
+| Operation | Rust before / after | Without indexes | C / final Rust |
+| --- | --- | --- | --- |
+| fixed_field_1.nodes | 1.092× | 1.101× | 1.046× |
+| fixed_field_2.nodes | 1.244× | 1.242× | 1.106× |
+| fixed_field_2.count | 1.268× | 1.260× | 1.185× |
+| fixed_field_4.nodes | 1.389× | 1.364× | 1.120× |
+| fixed_field_4.count | 1.779× | 1.753× | 1.078× |
+| kind.fold | 1.261× | 1.218× | 1.162× |
+| dynamic_1.fold | 1.271× | 1.221× | 1.177× |
+| dynamic_2.fold | 1.193× | 1.174× | 1.141× |
+| dynamic_4.fold | 1.119× | 1.108× | 1.083× |
+| dynamic_8.fold | 1.111× | 1.101× | 1.047× |
+| dynamic_16.fold | 1.100× | 1.088× | 1.054× |
+
+Dynamic-kind `next` iteration is essentially unchanged and remains about 3–6%
+behind C in this run. Copying its prepared strategy into flat iterations was
+tested separately and rejected: multiple dynamic-kind cases lost 10–15%, with
+larger losses in some reverse cases.
+
+### Control regressions and assembly
+
+This is not an across-the-board benchmark improvement. Final/original throughput
+is 0.805× for `preorder.nodes`, 0.703× for `preorder.rev.fold`, 0.847× for
+`range.fold`, and 0.930× for `range_field.dynamic_4.count`. The no-index run
+repeats these losses. Unfiltered preorder count is neutral; forward folding
+improves by 1.126×.
+
+Assembly inspection found identical normalized instruction sequences in the
+unfiltered preorder-node control before/after accessor inlining, and in the
+reverse-fold control before/after fold specialization. Their addresses changed;
+the reverse-fold hot loop moved across a 64-byte boundary. Code placement is a
+plausible contributor, not proof of the entire cause. These are real losses in
+the measured binaries, even though the inspected loops do no additional work.
+No benchmark-specific padding or compiler flags were added. Other control losses
+have not been isolated; cross-machine or consumer-specific confirmation is still
+needed before claiming a general improvement.
+
+The full benchmark executable's text grows by about 3.2 KiB versus the baseline.
+All 20 release scan/pattern tests pass, including partial consumption, both
+directions, subtree/range restrictions, composed filters, indexed scans, and
+storage variants. Timed scan output counts match across the measured binaries;
+formatting and diff checks pass.
+
+Measurements use the local Core Ultra 7 165U, CPU 2, portable Cargo release,
+Rust 1.95.0 and GCC 15.3.0, without concurrent builds. They are not cloud timings.
+`perf` user-cycle samples and annotated assembly verify the changed hot paths.
+Sources, binary hashes, raw samples, repeat ratios, rejected-candidate results,
+and scripts are under `build/rust-scan-optimizations/`; the final tables are
+`final-frequent/summary.json` and `final-no-index/summary.json`.
