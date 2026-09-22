@@ -1,4 +1,4 @@
-use tree_squatter_rust::{Grammar, PackOptions, Tree};
+use tree_squatter::{Grammar, PackOptions, Tree};
 
 macro_rules! compare_attributes {
     ($actual:expr, $expected:expr; $($method:ident),* $(,)?) => {
@@ -7,11 +7,10 @@ macro_rules! compare_attributes {
 }
 
 #[test]
-fn navigation_and_indexed_ranges_match_reference() {
+fn navigation_and_indexed_ranges_survive_loading() {
     let language =
         unsafe { tree_sitter::Language::from_raw(tree_sitter_c::LANGUAGE.into_raw()().cast()) };
     let grammar = Grammar::new(&language).unwrap();
-    let reference_grammar = tree_squatter::Grammar::new(&language).unwrap();
     let mut parser = tree_sitter::Parser::new();
     parser.set_language(&language).unwrap();
     let wide = "int value;\n".repeat(1000);
@@ -41,26 +40,15 @@ fn navigation_and_indexed_ranges_match_reference() {
                 },
             )
             .unwrap();
-            let expected = tree_squatter::Tree::pack_with_options(
-                &reference_grammar,
-                &native,
-                tree_squatter::PackOptions {
-                    points,
-                    ..Default::default()
-                },
-            )
-            .unwrap();
+            let expected = Tree::from_bytes(&grammar, actual.as_bytes()).unwrap();
             let mut actual_cursor = actual.root_node().walk().unwrap();
             let mut expected_cursor = expected.root_node().walk().unwrap();
 
             for node in actual.root_node().preorder() {
-                let reference = expected.node_at_slot(u32::from(node.slot())).unwrap();
-                assert_eq!(node.kind_id().get(), reference.kind_id());
-                assert_eq!(node.grammar_id().get(), reference.grammar_id());
-                assert_eq!(
-                    node.field_id().map_or(0, tree_squatter_rust::FieldId::get),
-                    reference.field_id()
-                );
+                let reference = expected.node_at_slot(node.slot()).unwrap();
+                assert_eq!(node.kind_id(), reference.kind_id());
+                assert_eq!(node.grammar_id(), reference.grammar_id());
+                assert_eq!(node.field_id(), reference.field_id());
                 compare_attributes!(node, reference;
                     kind, grammar_name, field_name,
                     byte_range, start_position, end_position, is_named, is_extra,
@@ -118,7 +106,7 @@ fn navigation_and_indexed_ranges_match_reference() {
                 .nodes()
                 .step_by((actual.root_node().descendant_count() / 10).max(1))
             {
-                let reference = expected.node_at_slot(u32::from(root.slot())).unwrap();
+                let reference = expected.node_at_slot(root.slot()).unwrap();
                 for start in (0..=source.len() + 1).step_by((source.len() / 40).max(1)) {
                     for length in [0, 1, 5, 1000] {
                         let end = start + length;

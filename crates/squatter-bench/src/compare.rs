@@ -250,10 +250,7 @@ pub fn relationships<'tree, A: NodeLike<'tree>, B: NodeLike<'tree>>(
                 );
             }
             for field in 1..=language.field_count() {
-                #[cfg(feature = "rust-core")]
                 let field_id = tree_squatter::FieldId::new(field as u16).unwrap();
-                #[cfg(not(feature = "rust-core"))]
-                let field_id = field as u16;
                 let lookup = identity_a(a.child_by_field_id(field_id));
                 let packed = identity_b(b.child_by_field_id(field_id));
                 if lookup != packed {

@@ -1,7 +1,4 @@
 //! Separately linked measurements for construction, loading, and destruction.
-#[cfg(feature = "rust-core")]
-extern crate tree_squatter_rust as tree_squatter;
-
 use anyhow::{Context, Result, ensure};
 use clap::Parser;
 use corpus_analysis::{LoadedGrammar, Registry, digest, digest_file};

@@ -5,9 +5,6 @@
 //! optional deferred writes never hold a database transaction while queued.
 //! See the crate README for implemented scope and remaining design milestones.
 
-#[cfg(feature = "rust-core")]
-extern crate tree_squatter_rust as tree_sitter_squatter;
-
 mod identity;
 mod maintenance;
 mod snapshot;

@@ -452,3 +452,7 @@ impl Builder {
         Ok(self.tree)
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/support/internal.rs"]
+mod tests;

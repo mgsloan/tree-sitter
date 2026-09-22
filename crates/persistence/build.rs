@@ -32,11 +32,9 @@ fn main() {
     for path in [
         "lib/src",
         "lib/include",
-        "lib/squat",
         "lib/binding_rust/build.rs",
         "lib/tree_feller",
         "crates/squatter",
-        "crates/squatter-rust",
         "Cargo.toml",
         "Cargo.lock",
     ] {
@@ -51,7 +49,6 @@ fn main() {
         "TARGET_CFLAGS",
         "CC",
         "TARGET_CC",
-        "CARGO_FEATURE_RUST_CORE",
         "CARGO_ENCODED_RUSTFLAGS",
         "PROFILE",
         "OPT_LEVEL",

@@ -6,14 +6,20 @@ license.workspace = true
 publish = false
 build = "build.rs"
 
+[features]
+typed-query-scan = []
+typed-presence-scan = []
+typed-seek = []
+
 [dependencies]
 tree-sitter.workspace = true
 regex.workspace = true
 
 [build-dependencies]
+bindgen = { version = "0.72.1", default-features = false, features = ["runtime"] }
 cc.workspace = true
 
 [dev-dependencies]
-tree-sitter-c-sharp = "0.23.5"
 tree-sitter-json = "0.24"
 tree-sitter-c = "=0.24.2"
+tree-sitter-c-sharp = "0.23.5"

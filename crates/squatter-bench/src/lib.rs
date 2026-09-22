@@ -1,6 +1,3 @@
-#[cfg(feature = "rust-core")]
-extern crate tree_squatter_rust as tree_squatter;
-
 mod compare;
 mod measure;
 mod pressure;
@@ -24,11 +21,7 @@ use std::{
 use tree_sitter::Point;
 use tree_squatter::{PackContext, PackOptions, Tree};
 
-pub const BACKEND: &str = if cfg!(feature = "rust-core") {
-    "rust"
-} else {
-    "c"
-};
+pub const BACKEND: &str = "rust";
 
 const BENCHMARKS: &[&str] = &[
     "query-matches",

@@ -3,7 +3,7 @@ mod support;
 use std::collections::HashSet;
 use tree_sitter::Point;
 use tree_squatter::{
-    Grammar, IdSet, KindSet, Node, PackOptions, Tree,
+    FieldId, FieldSet, Grammar, GrammarKindId, KindId, KindSet, Node, PackOptions, Tree,
     scan::{GroupScan, Scan},
 };
 
@@ -81,7 +81,10 @@ fn check_pipeline<'tree, S: GroupScan<'tree>>(
         count += mask.count_ones() as usize;
         for node in fragment.nodes() {
             assert!(seen.insert(node.slot()));
-            assert_eq!(group.node(node.slot() - group.first_slot()), Some(node));
+            assert_eq!(
+                group.node(node.slot().get() - group.first_slot().get()),
+                Some(node)
+            );
         }
         assert_eq!(group.node(u32::MAX), None);
     }
@@ -195,7 +198,7 @@ fn check_ranges(tree: &Tree, source_len: usize) {
                 || root.postorder().overlapping_bytes(range.clone()),
                 &expected,
             );
-            for field in [0, 1, 2, u16::MAX] {
+            for field in [0, 1, 2, u16::MAX].map(FieldId::new) {
                 let expected = preorder
                     .iter()
                     .filter(overlaps)
@@ -295,7 +298,7 @@ fn empty_missing_and_error_nodes() {
             has_missing |= node.is_missing();
             has_error |= node.is_error();
         }
-        let kinds = KindSet::new([u16::MAX]);
+        let kinds = KindSet::new([KindId::ERROR]);
         let expected = reference_preorder(tree.root_node())
             .into_iter()
             .filter(|node| node.is_error())
@@ -308,7 +311,9 @@ fn empty_missing_and_error_nodes() {
         for kind in [
             language.node_kind_count() as u16,
             language.node_kind_count() as u16 + 1,
-        ] {
+        ]
+        .map(KindId::new)
+        {
             let kinds = KindSet::new([kind]);
             check_pipeline(|| tree.root_node().preorder().filter_kind_ids(&kinds), &[]);
         }
@@ -341,12 +346,12 @@ macro_rules! check_selection {
                 .all()
                 .$method(argument.clone())
                 .filter_kind_ids([$root.kind_id()])
-                .filter_field_id(0)
+                .filter_field_id(None)
                 .nodes()
                 .collect::<Vec<_>>(),
             expected
                 .into_iter()
-                .filter(|node| node.kind_id() == $root.kind_id() && node.field_id() == 0)
+                .filter(|node| node.kind_id() == $root.kind_id() && node.field_id().is_none())
                 .collect::<Vec<_>>()
         );
         let expected = $postorder
@@ -830,12 +835,12 @@ fn id_set_intersection() {
         ),
     ];
     for &(first, second, expected) in cases {
-        let first = IdSet::new(first.iter().copied());
-        let second = IdSet::new(second.iter().copied());
+        let first = KindSet::new(first.iter().copied().map(KindId::new));
+        let second = KindSet::new(second.iter().copied().map(KindId::new));
         for intersection in [first.intersection(&second), second.intersection(&first)] {
             assert_eq!(intersection.is_empty(), expected.is_empty());
             let actual = (0..=u16::MAX)
-                .filter(|&id| intersection.contains(id))
+                .filter(|&id| intersection.contains(KindId::new(id)))
                 .collect::<Vec<_>>();
             assert_eq!(actual, expected);
         }
@@ -851,12 +856,16 @@ fn dense_id_filters() {
     let language = json_language();
     let (_, tree) = parse(&language, &source, PackOptions::default());
     let root = tree.root_node();
+    let grammar = Grammar::new(&language).unwrap();
     let nodes = reference_preorder(root);
     let kinds = nodes
         .iter()
         .map(|node| node.kind_id())
         .collect::<HashSet<_>>();
-    for kind in kinds.into_iter().chain([u16::MAX - 1, 32768]) {
+    for kind in kinds
+        .into_iter()
+        .chain([KindId::new(u16::MAX - 1), KindId::new(32768)])
+    {
         let kinds = KindSet::new([kind]);
         let expected = nodes
             .iter()
@@ -865,7 +874,7 @@ fn dense_id_filters() {
             .collect::<Vec<_>>();
         check_pipeline(|| root.preorder().filter_kind_ids(&kinds), &expected);
     }
-    for field in [0, 1, 2, 32768, u16::MAX] {
+    for field in [0, 1, 2, 32768, u16::MAX].map(FieldId::new) {
         let expected = nodes
             .iter()
             .copied()
@@ -873,13 +882,24 @@ fn dense_id_filters() {
             .collect::<Vec<_>>();
         check_pipeline(|| root.preorder().filter_field_id(field), &expected);
     }
-    let number = language.id_for_node_kind("number", true);
+    let number = grammar.kind_id_for_name("number", true).unwrap();
     for ids in [
-        vec![number, u16::MAX],
-        vec![number, u16::MAX, u16::MAX - 1],
-        vec![number, u16::MAX, language.node_kind_count() as u16, 32768],
-        vec![number, u16::MAX, u16::MAX - 1, 32768, 32769],
-        vec![32768, 32769],
+        vec![number, KindId::ERROR],
+        vec![number, KindId::ERROR, KindId::new(u16::MAX - 1)],
+        vec![
+            number,
+            KindId::ERROR,
+            KindId::new(language.node_kind_count() as u16),
+            KindId::new(32768),
+        ],
+        vec![
+            number,
+            KindId::ERROR,
+            KindId::new(u16::MAX - 1),
+            KindId::new(32768),
+            KindId::new(32769),
+        ],
+        vec![KindId::new(32768), KindId::new(32769)],
     ] {
         let kinds = KindSet::new(ids);
         let expected = nodes
@@ -894,9 +914,14 @@ fn dense_id_filters() {
 #[test]
 fn sparse_kind_filters() {
     let language = json_language();
+    let grammar = Grammar::new(&language).unwrap();
     let source = format!("[{}null]", "[\"text\",true,false,1,null],".repeat(64));
-    let booleans = ["true", "false"].map(|name| language.id_for_node_kind(name, true));
-    let kinds = KindSet::new((0..language.node_kind_count() as u16).chain([32768, u16::MAX]));
+    let booleans = ["true", "false"].map(|name| grammar.kind_id_for_name(name, true).unwrap());
+    let kinds = KindSet::new(
+        (0..language.node_kind_count() as u16)
+            .chain([32768, u16::MAX])
+            .map(KindId::new),
+    );
     for symbol_presence in [false, true] {
         let (_, tree) = parse(
             &language,
@@ -947,12 +972,13 @@ fn sparse_kind_filters() {
 #[test]
 fn sparse_cursor_pipelines() {
     let language = json_language();
+    let grammar = Grammar::new(&language).unwrap();
     let source = format!(
         "[{}0]",
         format!("[{}true,false,null],", "1,".repeat(1400)).repeat(12)
     );
     let [truth, falsity, null] =
-        ["true", "false", "null"].map(|kind| language.id_for_node_kind(kind, true));
+        ["true", "false", "null"].map(|kind| grammar.kind_id_for_name(kind, true).unwrap());
     let ids = [truth, falsity, null, truth];
     let kinds = KindSet::new(ids);
     let other = KindSet::new([truth, null]);
@@ -1042,8 +1068,12 @@ fn prepared_kind_sets() {
         let other = KindSet::new(nodes.iter().step_by(3).map(|node| node.kind_id()));
         for length in [0, 1, 2, 3, 4, 5, 7, 8, 9, 15, 16, 17, 23] {
             for start in [0, 32768, u16::MAX - 23] {
-                let kinds = KindSet::new((start..start + length).chain([u16::MAX, u16::MAX - 1]));
-                let plain = KindSet::new(start..start + length);
+                let kinds = KindSet::new(
+                    (start..start + length)
+                        .chain([u16::MAX, u16::MAX - 1])
+                        .map(KindId::new),
+                );
+                let plain = KindSet::new((start..start + length).map(KindId::new));
                 for kinds in [&plain, &kinds] {
                     let expected = nodes
                         .iter()
@@ -1057,7 +1087,7 @@ fn prepared_kind_sets() {
                         .filter(|node| {
                             range.start <= node.start_byte()
                                 && node.end_byte() <= range.end
-                                && node.field_id() == 0
+                                && node.field_id().is_none()
                                 && !node.is_extra()
                                 && other.contains(node.kind_id())
                         })
@@ -1066,7 +1096,7 @@ fn prepared_kind_sets() {
                         || {
                             root.all()
                                 .within_bytes(range.clone())
-                                .filter_field_id(0)
+                                .filter_field_id(None)
                                 .filter_extra(false)
                                 .filter_kind_ids(kinds)
                                 .filter_kind_ids(&other)
@@ -1080,7 +1110,7 @@ fn prepared_kind_sets() {
                                 .filter_kind_ids(&other)
                                 .filter_kind_ids(kinds)
                                 .filter_extra(false)
-                                .filter_field_id(0)
+                                .filter_field_id(None)
                         },
                         &expected,
                     );
@@ -1101,7 +1131,7 @@ fn indexed_kind_filters() {
         "3,".repeat(5400),
     );
     let [truth, falsity, string, number, absent] = ["true", "false", "string", "number", "null"]
-        .map(|name| language.id_for_node_kind(name, true));
+        .map(|name| grammar.kind_id_for_name(name, true).unwrap());
     for symbol_presence in [false, true] {
         let (_, packed) = parse(
             &language,
@@ -1122,12 +1152,17 @@ fn indexed_kind_filters() {
                 .unwrap();
             for root in [tree.root_node(), subtree] {
                 for ids in [
-                    [truth, falsity, absent, 32768],
-                    [string, truth, absent, u16::MAX],
-                    [number, number, u16::MAX - 1, 32768],
-                    [absent, absent, 32768, u16::MAX],
+                    [truth, falsity, absent, KindId::new(32768)],
+                    [string, truth, absent, KindId::ERROR],
+                    [
+                        number,
+                        number,
+                        KindId::new(u16::MAX - 1),
+                        KindId::new(32768),
+                    ],
+                    [absent, absent, KindId::new(32768), KindId::ERROR],
                 ] {
-                    check_fixed_kinds(root, ids);
+                    check_array_kinds(root, ids);
                     let kinds = KindSet::new(ids);
                     let all = reference_preorder(root);
                     let expected = all
@@ -1206,7 +1241,7 @@ fn indexed_kind_filters() {
     }
 }
 
-fn check_fixed_kinds<const N: usize>(root: Node<'_>, ids: [u16; N]) {
+fn check_array_kinds<const N: usize>(root: Node<'_>, ids: [KindId; N]) {
     let expected = reference_preorder(root)
         .into_iter()
         .filter(|node| ids.contains(&node.kind_id()))
@@ -1229,7 +1264,7 @@ fn check_fixed_kinds<const N: usize>(root: Node<'_>, ids: [u16; N]) {
         .preorder()
         .overlapping_bytes(range.clone())
         .filter_kind_ids(&dynamic)
-        .filter_field_id(0)
+        .filter_field_id(None)
         .nodes()
         .collect::<Vec<_>>();
     check_pipeline(
@@ -1237,7 +1272,7 @@ fn check_fixed_kinds<const N: usize>(root: Node<'_>, ids: [u16; N]) {
             root.preorder()
                 .overlapping_bytes(range.clone())
                 .filter_kind_ids(ids)
-                .filter_field_id(0)
+                .filter_field_id(None)
         },
         &filtered,
     );
@@ -1252,8 +1287,9 @@ fn fixed_kind_sets() {
     );
     let (_, tree) = parse(&language, &source, PackOptions::default());
     let root = tree.root_node();
-    let number = language.id_for_node_kind("number", true);
-    let array = language.id_for_node_kind("array", true);
+    let grammar = Grammar::new(&language).unwrap();
+    let number = grammar.kind_id_for_name("number", true).unwrap();
+    let array = grammar.kind_id_for_name("array", true).unwrap();
     let roots = [
         root,
         root.preorder()
@@ -1263,35 +1299,35 @@ fn fixed_kind_sets() {
             .unwrap(),
     ];
     for root in roots {
-        check_fixed_kinds(root, []);
-        check_fixed_kinds(root, [number]);
-        check_fixed_kinds(root, [32768]);
-        check_fixed_kinds(root, [u16::MAX]);
-        check_fixed_kinds(root, [u16::MAX - 1]);
-        check_fixed_kinds(root, [32768, number]);
-        check_fixed_kinds(root, [number, array, 32768]);
-        check_fixed_kinds(root, [number, array, number, u16::MAX]);
-        check_fixed_kinds(
+        check_array_kinds(root, []);
+        check_array_kinds(root, [number]);
+        check_array_kinds(root, [KindId::new(32768)]);
+        check_array_kinds(root, [KindId::ERROR]);
+        check_array_kinds(root, [KindId::new(u16::MAX - 1)]);
+        check_array_kinds(root, [KindId::new(32768), number]);
+        check_array_kinds(root, [number, array, KindId::new(32768)]);
+        check_array_kinds(root, [number, array, number, KindId::ERROR]);
+        check_array_kinds(
             root,
             [
                 number,
                 array,
-                u16::MAX,
-                u16::MAX - 1,
-                32768,
-                32769,
+                KindId::ERROR,
+                KindId::new(u16::MAX - 1),
+                KindId::new(32768),
+                KindId::new(32769),
                 number,
                 array,
             ],
         );
-        check_fixed_kinds(root, [number; 16]);
-        check_fixed_kinds(root, [32768; 16]);
+        check_array_kinds(root, [number; 16]);
+        check_array_kinds(root, [KindId::new(32768); 16]);
     }
     use tree_squatter::traits::NodeLike;
     let (native, tree) = parse(&language, &source, PackOptions::default());
     let kinds = [number, array];
     let native_matches = NodeLike::descendants_matching_kinds(native.root_node(), kinds)
-        .map(|node| (node.kind_id(), node.start_byte(), node.end_byte()))
+        .map(|node| describe_node(node.kind_id(), node.byte_range()))
         .collect::<Vec<_>>();
     let packed_matches = NodeLike::descendants_matching_kinds(tree.root_node(), &kinds)
         .map(describe)
@@ -1303,14 +1339,14 @@ fn fixed_kind_sets() {
     );
 }
 
-fn check_field_set<const N: usize>(root: Node<'_>, fields: [u16; N]) {
+fn check_field_set<const N: usize>(root: Node<'_>, fields: [Option<FieldId>; N]) {
     let expected = reference_preorder(root)
         .into_iter()
         .filter(|node| fields.contains(&node.field_id()))
         .collect::<Vec<_>>();
     check_pipeline(|| root.preorder().filter_field_ids(fields), &expected);
     check_pipeline(|| root.preorder().filter_field_ids(&fields), &expected);
-    let dynamic = IdSet::new(fields);
+    let dynamic = FieldSet::new(fields);
     check_pipeline(|| root.preorder().filter_field_ids(&dynamic), &expected);
     let postorder = root
         .postorder()
@@ -1321,7 +1357,9 @@ fn check_field_set<const N: usize>(root: Node<'_>, fields: [u16; N]) {
     check_pipeline(|| root.postorder().filter_field_ids(&dynamic), &postorder);
     let kinds = [
         root.kind_id(),
-        expected.first().map_or(0, |node| node.kind_id()),
+        expected
+            .first()
+            .map_or(KindId::new(0), |node| node.kind_id()),
     ];
     let range = root.start_byte()..root.end_byte();
     let combined = expected
@@ -1354,23 +1392,33 @@ fn field_sets() {
     );
     let (_, tree) = parse(&language, &source, PackOptions::default());
     let root = tree.root_node();
-    let key = language.field_id_for_name("key").unwrap().get();
-    let value = language.field_id_for_name("value").unwrap().get();
+    let grammar = Grammar::new(&language).unwrap();
+    let key = Some(grammar.field_id_for_name("key").unwrap());
+    let value = Some(grammar.field_id_for_name("value").unwrap());
     let subtree = root
         .preorder()
-        .filter_kind_ids([language.id_for_node_kind("array", true)])
+        .filter_kind_ids([grammar.kind_id_for_name("array", true).unwrap()])
         .nodes()
         .next()
         .unwrap();
     for root in [root, subtree] {
         check_field_set(root, []);
-        check_field_set(root, [0]);
+        check_field_set(root, [None]);
         check_field_set(root, [key]);
         check_field_set(root, [key, value]);
-        check_field_set(root, [0, key, value]);
-        check_field_set(root, [key, value, key, 32768]);
-        check_field_set(root, [0, key, value, 32768, u16::MAX]);
-        check_field_set(root, [u16::MAX; 8]);
+        check_field_set(root, [None, key, value]);
+        check_field_set(root, [key, value, key, FieldId::new(32768)]);
+        check_field_set(
+            root,
+            [
+                None,
+                key,
+                value,
+                FieldId::new(32768),
+                FieldId::new(u16::MAX),
+            ],
+        );
+        check_field_set(root, [FieldId::new(u16::MAX); 8]);
     }
 }
 
@@ -1396,7 +1444,11 @@ fn supertype_membership() {
         exercised_direct |= !supertypes.is_empty() && supertypes.len() <= 8;
         exercised_dictionary |= supertypes.len() > 8;
         let mut matches = 0;
-        for supertype in supertypes.into_iter().chain([u16::MAX]) {
+        for supertype in supertypes
+            .into_iter()
+            .chain([u16::MAX])
+            .map(GrammarKindId::new)
+        {
             let expected = nodes
                 .iter()
                 .copied()

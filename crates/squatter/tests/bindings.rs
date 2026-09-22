@@ -1,6 +1,7 @@
 mod support;
 
 use std::error::Error;
+use tree_squatter::{FieldId, KindId};
 use tree_squatter::{
     KindSet, PackOptions, Tree,
     traits::{CursorLike, NodeLike},
@@ -26,7 +27,12 @@ fn check_shared_navigation<'tree, N: NodeLike<'tree>>(
             .is_none()
     );
     for node in expected.iter().step_by((expected.len() / 20).max(1)) {
-        let kinds = KindSet::new([node.kind_id(), root.kind_id(), node.kind_id(), u16::MAX]);
+        let kinds = KindSet::new([
+            node.kind_id(),
+            root.kind_id(),
+            node.kind_id(),
+            KindId::ERROR,
+        ]);
         let filtered: Vec<_> = expected
             .iter()
             .copied()
@@ -89,7 +95,8 @@ fn check_shared_navigation<'tree, N: NodeLike<'tree>>(
                     .filter(|node| node.is_named())
                     .collect::<Vec<_>>()
         );
-        for field in 0..=fields {
+        for field in 1..=fields {
+            let field = FieldId::new(field).unwrap();
             let filtered: Vec<_> = children
                 .iter()
                 .zip(&child_fields)

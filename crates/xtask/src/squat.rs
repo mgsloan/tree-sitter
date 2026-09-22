@@ -16,7 +16,6 @@ pub enum Command {
 pub enum TestLevel {
     Quick,
     Corpus,
-    Sanitize,
 }
 
 #[derive(Args)]
@@ -33,34 +32,24 @@ pub fn run(command: Command) -> Result<()> {
             level: TestLevel::Quick,
             ..
         }) => {
-            for (program, arguments) in [
-                (
-                    "cargo",
-                    vec![
-                        "test",
-                        "-p",
-                        "tree-squatter",
-                        "-p",
-                        "tree-squatter-rust",
-                        "-p",
-                        "tree-squatter-persistence",
-                        "-p",
-                        "corpus-analysis",
-                        "-p",
-                        "squatter-bench",
-                        "-p",
-                        "xtask",
-                    ],
-                ),
-                ("make", vec!["-C", "lib/squat", "check"]),
-            ] {
-                let status = Process::new(program)
-                    .args(arguments)
-                    .current_dir(crate::root_dir())
-                    .status()
-                    .with_context(|| format!("run {program}"))?;
-                ensure!(status.success(), "{program} failed: {status}");
-            }
+            let status = Process::new("cargo")
+                .args([
+                    "test",
+                    "-p",
+                    "tree-squatter",
+                    "-p",
+                    "tree-squatter-persistence",
+                    "-p",
+                    "corpus-analysis",
+                    "-p",
+                    "squatter-bench",
+                    "-p",
+                    "xtask",
+                ])
+                .current_dir(crate::root_dir())
+                .status()
+                .context("run cargo")?;
+            ensure!(status.success(), "cargo failed: {status}");
             Ok(())
         }
         Command::Test(test) => run::run(test.options, Some(test.level)),

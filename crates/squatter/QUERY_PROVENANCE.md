@@ -1,5 +1,9 @@
 # Query implementation provenance
 
+This records the original C adaptation. The compiler now lives in
+`native/query.c`; execution and plans live in `src/query_exec.rs` and
+`src/query_plan.rs`.
+
 The human explicitly authorized copying and adapting `../main` after completing
 the non-query work. The adaptation started after commit `a024015f4`.
 

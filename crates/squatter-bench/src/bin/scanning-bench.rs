@@ -1,7 +1,4 @@
 //! Corpus throughput for the group-scan prototype; parsing and packing are setup.
-#[cfg(feature = "rust-core")]
-extern crate tree_squatter_rust as tree_squatter;
-
 use anyhow::{Result, ensure};
 use clap::{Parser, ValueEnum};
 use corpus_analysis::{LoadedGrammar, Registry, digest, parse};
@@ -63,26 +60,10 @@ struct Arguments {
     #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u8).range(1..=100))]
     range_percent: u8,
 }
-#[cfg(feature = "rust-core")]
 use tree_squatter::{FieldSet, GrammarKindId, KindId};
-#[cfg(feature = "rust-core")]
 type FieldSelection = Option<tree_squatter::FieldId>;
-#[cfg(not(feature = "rust-core"))]
-use tree_squatter::IdSet as FieldSet;
-#[cfg(not(feature = "rust-core"))]
-type KindId = u16;
-#[cfg(not(feature = "rust-core"))]
-type GrammarKindId = u16;
-#[cfg(not(feature = "rust-core"))]
-type FieldSelection = u16;
-
-#[cfg(feature = "rust-core")]
 fn raw_field(field: FieldSelection) -> u16 {
     field.map_or(0, tree_squatter::FieldId::get)
-}
-#[cfg(not(feature = "rust-core"))]
-fn raw_field(field: FieldSelection) -> u16 {
-    field
 }
 
 #[derive(Deserialize, Serialize)]

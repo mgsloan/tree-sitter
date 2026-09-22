@@ -1,6 +1,3 @@
-#[cfg(feature = "rust-core")]
-extern crate tree_squatter_rust as tree_sitter_squatter;
-
 use std::mem::MaybeUninit;
 use tree_sitter::{Language, Point};
 use tree_sitter_squatter::{PackOptions, Query, QueryCursor, Tree};

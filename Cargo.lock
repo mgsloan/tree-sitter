@@ -2182,7 +2182,6 @@ dependencies = [
  "tree-sitter-c",
  "tree-sitter-json",
  "tree-squatter",
- "tree-squatter-rust",
 ]
 
 [[package]]
@@ -2572,6 +2571,7 @@ dependencies = [
 name = "tree-squatter"
 version = "0.1.0"
 dependencies = [
+ "bindgen",
  "cc",
  "regex",
  "tree-sitter",
@@ -2589,21 +2589,6 @@ dependencies = [
  "libc",
  "tempfile",
  "tree-sitter",
- "tree-sitter-c-sharp",
- "tree-sitter-json",
- "tree-squatter",
- "tree-squatter-rust",
-]
-
-[[package]]
-name = "tree-squatter-rust"
-version = "0.1.0"
-dependencies = [
- "bindgen",
- "cc",
- "regex",
- "tree-sitter",
- "tree-sitter-c",
  "tree-sitter-c-sharp",
  "tree-sitter-json",
  "tree-squatter",

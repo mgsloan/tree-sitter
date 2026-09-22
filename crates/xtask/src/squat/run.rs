@@ -14,9 +14,6 @@ use walkdir::WalkDir;
 
 #[derive(Args)]
 pub struct Options {
-    /// Use the Rust core for Rust corpus checks and benchmarks.
-    #[arg(long)]
-    rust_core: bool,
     /// Fresh directory for staged inputs, logs, and results.
     #[arg(long)]
     output: Option<PathBuf>,
@@ -304,6 +301,7 @@ pub fn run(options: Options, test: Option<TestLevel>) -> Result<()> {
         staged.push(json!({"path":input.path,"grammar":input.grammar,"bytes":input.bytes,"sha256":digest(&fs::read(destination)?)}));
     }
     for (grammar, filename) in [
+        ("csound", "csound-header.orc"),
         ("bash", "hidden-seek.sh"),
         ("css", "hidden-seek.css"),
         ("typescript", "inherited-field.ts"),
@@ -319,7 +317,7 @@ pub fn run(options: Options, test: Option<TestLevel>) -> Result<()> {
         };
         let path = format!("test/fixtures/{grammar}/{filename}");
         let source = root
-            .join("lib/squat/tests/fixtures")
+            .join("tools/squatter/fixtures")
             .join(if grammar == "tsx" {
                 "inherited-field.ts"
             } else {
@@ -328,7 +326,7 @@ pub fn run(options: Options, test: Option<TestLevel>) -> Result<()> {
         copy(&source, &output.join("corpus").join(&path))?;
         staged.push(json!({"path":path,"grammar":grammar,"bytes":fs::metadata(&source)?.len(),"sha256":digest(&fs::read(source)?)}));
     }
-    // Each run compiles its snapshot; later edits cannot change the measured C sources.
+    // Each run compiles its snapshot; later edits cannot change the measured sources.
     let paths = Command::new("git")
         .current_dir(&root)
         .args([
@@ -368,48 +366,41 @@ pub fn run(options: Options, test: Option<TestLevel>) -> Result<()> {
         timeout: options.timeout,
         manifest: json!({"schema":3,"partial":true,"image":image,"tool_sha":git(&root,&["rev-parse","HEAD"])?,
             "tool_dirty":!git(&root,&["status","--porcelain"])?.is_empty(),"source_sha256":digest(&serde_json::to_vec(&hashes)?),
-            "squatter_backend":if options.rust_core { "rust" } else { "c" },
+            "squatter_backend":"rust",
             "matrix_sha256":digest(&matrix_bytes),"code_corpora_sha":registry.code_corpora_sha,"inputs":staged,
             "coverage":coverage,"repositories":repositories,"seed":options.seed,"selection":"seed_for(staging), per split/grammar/size",
             "missing_repositories":repositories.iter().filter(|name| !["train","training","test"].iter().any(|split|corpus.join(split).join(name).is_dir())).collect::<Vec<_>>(),
             "operations":[],"grammars":{}}),
     };
     run.save()?;
-    let sanitize = test == Some(TestLevel::Sanitize);
-    let flags = if sanitize {
-        "-O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer"
-    } else {
-        "-O2 -g"
-    };
+    let flags = "-O2 -g";
     fs::create_dir_all(run.output.join("grammars"))?;
     fs::create_dir_all(run.output.join("queries"))?;
     let mut query_sources: BTreeMap<String, BTreeSet<PathBuf>> = BTreeMap::new();
-    if !sanitize {
-        for directory in [corpus.join("zed"), corpus.join("zed-extensions")] {
-            for entry in WalkDir::new(directory)
-                .into_iter()
-                .filter_entry(|entry| {
-                    ![".git", "node_modules", "target"]
-                        .contains(&entry.file_name().to_str().unwrap_or_default())
-                })
-                .filter_map(Result::ok)
+    for directory in [corpus.join("zed"), corpus.join("zed-extensions")] {
+        for entry in WalkDir::new(directory)
+            .into_iter()
+            .filter_entry(|entry| {
+                ![".git", "node_modules", "target"]
+                    .contains(&entry.file_name().to_str().unwrap_or_default())
+            })
+            .filter_map(Result::ok)
+        {
+            if entry.file_name() != "config.toml" {
+                continue;
+            }
+            let config = toml(entry.path())?;
+            if let Some(name) = config["grammar"]
+                .as_str()
+                .filter(|name| names.iter().any(|selected| selected == name))
             {
-                if entry.file_name() != "config.toml" {
-                    continue;
-                }
-                let config = toml(entry.path())?;
-                if let Some(name) = config["grammar"]
-                    .as_str()
-                    .filter(|name| names.iter().any(|selected| selected == name))
-                {
-                    for file in fs::read_dir(entry.path().parent().unwrap())? {
-                        let path = file?.path();
-                        if path.extension().is_some_and(|extension| extension == "scm") {
-                            query_sources
-                                .entry(name.to_owned())
-                                .or_default()
-                                .insert(path);
-                        }
+                for file in fs::read_dir(entry.path().parent().unwrap())? {
+                    let path = file?.path();
+                    if path.extension().is_some_and(|extension| extension == "scm") {
+                        query_sources
+                            .entry(name.to_owned())
+                            .or_default()
+                            .insert(path);
                     }
                 }
             }
@@ -465,118 +456,81 @@ pub fn run(options: Options, test: Option<TestLevel>) -> Result<()> {
     }
     write_json(&run.output.join("registry.json"), &registry)?;
     run.save()?;
-    if test.is_some() {
-        run.shell("build-native", "make -C /work/lib/squat -j4 BUILD=/out/native CFLAGS=\"$1\" all check /out/native/query-check /out/native/seek-check /out/native/context-check", &[flags.into()])?;
-        for (name, grammar) in &registry.grammars {
-            let mut files: Vec<_> = staged
-                .iter()
-                .filter(|input| input["grammar"] == *name)
-                .map(|input| format!("/out/corpus/{}", input["path"].as_str().unwrap()))
-                .collect();
-            if files.is_empty() {
+    let mut build = Command::new("cargo");
+    build
+        .current_dir(run.output.join("source"))
+        .args([
+            "build",
+            "--release",
+            "--locked",
+            "-p",
+            "squatter-bench",
+            "--target-dir",
+        ])
+        .arg(run.output.join("target"));
+    run.execute("build-rust", &mut build)?;
+    for profile in profiles {
+        for mutated in [false, true] {
+            if mutated && options.skip_mutated {
                 continue;
             }
-            fs::write(
-                run.output.join(format!("{name}-sources")),
-                files.join("\n") + "\n",
-            )?;
+            let label = format!(
+                "{}{}-{profile}",
+                if test.is_some() { "check-" } else { "" },
+                if mutated { "mutated" } else { "original" }
+            );
             let mut arguments = vec![
-                grammar.library.to_string_lossy().into_owned(),
-                grammar.symbol.clone(),
-            ];
-            arguments.append(&mut files);
-            run.shell(&format!("native-{name}"), "set -eu; /out/native/compare \"$@\"; /out/native/context-check \"$@\"; /out/native/query-check \"$1\" \"$2\"", &arguments)?;
-            run.shell(
-                &format!("seek-{name}"),
-                "/out/native/seek-check \"$@\"",
-                &[
-                    arguments[0].clone(),
-                    arguments[1].clone(),
-                    format!("/out/{name}-sources"),
-                ],
-            )?;
-        }
-    }
-    if !sanitize {
-        let mut build = Command::new("cargo");
-        build
-            .current_dir(run.output.join("source"))
-            .args([
-                "build",
-                "--release",
-                "--locked",
-                "-p",
-                "squatter-bench",
-                "--target-dir",
-            ])
-            .arg(run.output.join("target"));
-        if options.rust_core {
-            build.args(["--no-default-features", "--features", "rust-core"]);
-        }
-        run.execute("build-rust", &mut build)?;
-        for profile in profiles {
-            for mutated in [false, true] {
-                if mutated && options.skip_mutated {
-                    continue;
-                }
-                let label = format!(
-                    "{}{}-{profile}",
-                    if test.is_some() { "check-" } else { "" },
-                    if mutated { "mutated" } else { "original" }
-                );
-                let mut arguments = vec![
-                    format!(
-                        "/out/target/release/{}",
-                        if test.is_some() {
-                            "squatter-check"
-                        } else {
-                            "squatter-bench"
-                        }
-                    ),
-                    "--code-corpora".into(),
-                    "/out/corpus".into(),
-                    "--registry".into(),
-                    "/out/registry.json".into(),
-                    "--all".into(),
-                    "--output-directory".into(),
-                    "/out/bench-outputs".into(),
-                    "--output".into(),
-                    label.clone(),
-                    "--repeat".into(),
-                    options.repeat.to_string(),
-                    "--seed".into(),
-                    options.seed.to_string(),
-                    "--traversal-iterations".into(),
-                    options.traversal_iterations.to_string(),
-                    "--pressure".into(),
-                    text(&matrix["pressure"][&profile]["mode"])?.into(),
-                    "--pressure-label".into(),
-                    profile.clone(),
-                ];
-                for (flag, value) in [
-                    ("--pressure-bytes", options.pressure_bytes),
-                    ("--benchmark-cpu", options.benchmark_cpu),
-                    ("--pressure-cpu", options.pressure_cpu),
-                    (
-                        "--pressure-duty-percent",
-                        matrix["pressure"][&profile]["duty_percent"]
-                            .as_u64()
-                            .map(|value| value as usize),
-                    ),
-                ] {
-                    if let Some(value) = value {
-                        arguments.extend([flag.into(), value.to_string()]);
+                format!(
+                    "/out/target/release/{}",
+                    if test.is_some() {
+                        "squatter-check"
+                    } else {
+                        "squatter-bench"
                     }
+                ),
+                "--code-corpora".into(),
+                "/out/corpus".into(),
+                "--registry".into(),
+                "/out/registry.json".into(),
+                "--all".into(),
+                "--output-directory".into(),
+                "/out/bench-outputs".into(),
+                "--output".into(),
+                label.clone(),
+                "--repeat".into(),
+                options.repeat.to_string(),
+                "--seed".into(),
+                options.seed.to_string(),
+                "--traversal-iterations".into(),
+                options.traversal_iterations.to_string(),
+                "--pressure".into(),
+                text(&matrix["pressure"][&profile]["mode"])?.into(),
+                "--pressure-label".into(),
+                profile.clone(),
+            ];
+            for (flag, value) in [
+                ("--pressure-bytes", options.pressure_bytes),
+                ("--benchmark-cpu", options.benchmark_cpu),
+                ("--pressure-cpu", options.pressure_cpu),
+                (
+                    "--pressure-duty-percent",
+                    matrix["pressure"][&profile]["duty_percent"]
+                        .as_u64()
+                        .map(|value| value as usize),
+                ),
+            ] {
+                if let Some(value) = value {
+                    arguments.extend([flag.into(), value.to_string()]);
                 }
-                if mutated {
-                    arguments.push("--mutate".into());
-                }
-                if options.unoptimized_query {
-                    arguments.push("--unoptimized-query".into());
-                }
-                arguments.extend(options.benchmark.clone());
-                run.shell(&label, "/lib64/ld-linux-x86-64.so.2 \"$@\"", &arguments)?;
             }
+            if mutated {
+                arguments.push("--mutate".into());
+            }
+            if options.unoptimized_query {
+                arguments.push("--unoptimized-query".into());
+            }
+            arguments.extend(options.benchmark.clone());
+            run.shell(&label, "/lib64/ld-linux-x86-64.so.2 \"$@\"", &arguments)?;
         }
     }
     run.manifest["partial"] = false.into();

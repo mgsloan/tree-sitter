@@ -5,16 +5,13 @@ Rust `xtask` owns corpus selection, staging, grammar builds, and execution:
 ```sh
 cargo xtask squat test quick
 cargo xtask squat test corpus --output build/squat-check
-cargo xtask squat test sanitize --output build/squat-sanitize
 cargo xtask squat bench --output build/squat-bench --repeat 5
 ```
 
-`quick` runs hermetic Rust and native C tests, including binding tests against the
-packaged JSON and C grammars. `corpus` stages one selection and builds grammars once,
-then runs the C internal checks and Rust public-API comparisons against it.
-`sanitize` uses the same staging path for C checks under ASan/UBSan. C query edge
-cases use their bounded synthetic fixtures; Rust checks use actual grammar/Zed
-queries. The inherited-field and hidden-seek regression fixtures are also staged.
+`quick` runs hermetic Rust tests, including native grammar fixtures, slab layout,
+parser, query, and persistence checks. `corpus` stages one selection, builds its
+grammars, and runs public-API comparisons against Tree-sitter. The inherited-field,
+hidden-seek, and Csound regression fixtures are also staged.
 
 Corpus runs require Podman, the code-corpora checkout (default
 `../../code-corpora`), and its cached build image. Use `--image` to select another
@@ -27,48 +24,23 @@ Rust checks and benchmarks include original and deterministically mutated inputs
 omits the latter. Structural sampling remains a separate `corpus-analysis sample`
 command and is not run automatically.
 
-## Rust core comparison
+## Core benchmarks
 
-The default backend remains the C core. Pass `--rust-core` to `cargo xtask squat
-bench` or `test corpus` to select the Rust candidate. Both use the same workloads,
-validation, staged inputs, and pressure settings; manifests identify the backend.
-The reference native checks still run during corpus checks.
+Squatter uses the Rust core. Build the query, traversal, scanning, and lifecycle
+benchmarks with `cargo build --release -p squatter-bench`. Manifests record the
+backend and enabled scan experiments.
 
-For existing staged inputs, build separate executables with:
-
-```sh
-cargo build --release -p squatter-bench
-cargo build --release -p squatter-bench --no-default-features --features rust-core
-```
-
-Copy the first build's executables before the second build replaces them.
-Alternate process order and repeat reference runs to estimate measurement noise.
-`scanning-bench` uses the same feature selection.
-
-The focused `core-query-bench` links both cores and measures individual queries
-against one shared mainline tree. It checks completed matches before timing,
-warms both cores, alternates their order, and retains raw samples. Use external
-CPU pinning (`taskset` on Linux). `--baseline` compares the reference with itself.
-
-```sh
-cargo run --release -p squatter-bench --features core-comparison \
-  --bin core-query-bench -- --registry build/registry.json \
-  --output build/query-comparison.json path/to/source.c
-cargo test -p tree-squatter-persistence --no-default-features --features rust-core
-```
-
-The candidate's `typed-query-scan` and `typed-presence-scan` features independently
+`typed-query-scan` and `typed-presence-scan` features independently
 replace small root-union searches and bounded descendant-presence checks with the
 typed scan kernels. They are off by default. Forward them through `squatter-bench`
-when measuring either runner; paired reports record both selections. Presence
+when measuring; reports record both selections. Presence
 indexes, scan budgets, caches, and cancellation remain active in each variant.
 
 `typed-seek` independently substitutes coordinate masks within descendant range
 lookup. Binary search, immediate returns, empty-boundary descent, and the distant
 point-search fallback are preserved. This experiment is also off by default.
 
-`core-lifecycle-bench` uses the same reference/candidate build selection. It
-measures packing alone (cold/reused/trimmed scratch), full and safety-only loads,
+`core-lifecycle-bench` measures packing alone (cold/reused/trimmed scratch), full and safety-only loads,
 borrowed/backed loads, compact copying, repacking, grammar preparation/cache
 loading, and query construction, destruction, and disabling. Each operation
 includes destruction unless named `query-drop` or `query-disable-*`; those exclude
@@ -160,35 +132,29 @@ agrees with mainline's visible-child field lookup.
 
 ## Direct-parser checks
 
-`cargo test -p tree-squatter` compares tree-feller output with mainline-packed C
-trees, including aliases, fields, extras, empty input, deep trees, and packing
-options. It also checks parser reuse, ownership, unsupported grammars, and the
-separate mainline recovery path. `make -C lib/squat check` tests lexer fallback
-and injects allocation failures into parser construction and parsing.
+`cargo test -p tree-squatter` compares Tree-feller output with Tree-sitter packing,
+including aliases, fields, extras, empty input, deep trees, and packing options.
+It also checks parser reuse, ownership, lexer fallback, concurrent preparation,
+unsupported grammars, and the separate Tree-sitter recovery path. Corpus checks
+and parsing benchmarks validate direct-parser slabs against Tree-sitter packing.
 
-The standalone corpus runner compares complete reverse-preorder slabs with
-`repack=true`. On mismatches it compares topology, symbols, fields, positions,
-flags, and supertypes. It excludes mainline syntax errors and reports unsupported
-grammars separately. It requires a populated code-corpora checkout and a C compiler:
+## Endian compatibility
+
+The Rust probe exchanges all 16 packing variants between the host and a
+big-endian PowerPC64 process under QEMU. It checks exact bytes, copied and borrowed
+loads, attributes, navigation, and compact copying. It requires Zig, `qemu-ppc64`,
+a little-endian host, and the Rust target:
 
 ```sh
-make -C lib/squat ../../build/squat/feller-corpus
-python3 tools/squatter/feller-corpus.py inventory --output build/feller-corpus
-python3 tools/squatter/feller-corpus.py compare --output build/feller-corpus
-python3 tools/squatter/feller-corpus.py retry --output build/feller-corpus
+rustup target add powerpc64-unknown-linux-musl
+python3 tools/squatter/endian.py --output build/squat-endian
 ```
 
-The inventory directory must be new. `--corpus` selects the checkout;
-`--executable` overrides the compiled harness. Results are in `summary.json`,
-per-grammar JSONL logs, `failures.jsonl`, and `retries.jsonl`. Process exit status
-alone does not assert parity. Resource failures are retained in the report.
-
-The port's targeted check compared 1,599 valid inputs across 46 grammars and found
-byte-identical slabs throughout. It reused the `../postorder` corpus inventory,
-taking the first 50 previously successful files under 512 KiB per grammar, plus
-all 201 valid Csound inputs (including its 16 previous position mismatches).
-This was a correctness sample, not a full corpus rerun or a timing measurement.
-The small Csound regression is `lib/squat/tests/fixtures/csound-header.orc`.
+Use `--target-dir` to reuse Cargo artifacts. `--bits 32` uses a 32-bit
+little-endian peer and requires `rustup target add i686-unknown-linux-musl`.
+Group sizes and column alignment follow `CFLAGS`, for example
+`CFLAGS="-DSQ_GROUP_SIZE=64 -DSQ_COLUMN_ALIGNMENT=64"`.
+See [coverage](../../crates/squatter/tests/README.md) for the migrated C checks.
 
 ## Group-scan throughput
 

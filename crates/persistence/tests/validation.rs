@@ -1,6 +1,3 @@
-#[cfg(feature = "rust-core")]
-extern crate tree_squatter_rust as tree_sitter_squatter;
-
 use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},

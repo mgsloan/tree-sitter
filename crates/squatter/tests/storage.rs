@@ -1,0 +1,119 @@
+use tree_squatter::{Grammar, PackContext, PackOptions, Tree};
+
+#[test]
+fn packing_context_matches_fresh_packing_and_loading() {
+    let json =
+        unsafe { tree_sitter::Language::from_raw(tree_sitter_json::LANGUAGE.into_raw()().cast()) };
+    let c = unsafe { tree_sitter::Language::from_raw(tree_sitter_c::LANGUAGE.into_raw()().cast()) };
+    let c_sharp = unsafe {
+        tree_sitter::Language::from_raw(tree_sitter_c_sharp::LANGUAGE.into_raw()().cast())
+    };
+    let wide = format!("[{}0]", "{\"a\": 1, \"b\": true},\n".repeat(1000));
+    let deep = format!("{}0{}", "[".repeat(300), "]".repeat(300));
+    let sibling_depths = (29..=33)
+        .map(|depth| format!("{}0{}", "[".repeat(depth), "]".repeat(depth)))
+        .collect::<Vec<_>>()
+        .join(",");
+    let inline_boundary = format!("[{sibling_depths}]");
+    let long = format!("[\"{}\",\n\"{}\"]", "a".repeat(70000), "b".repeat(400));
+
+    for (language, sources) in [
+        (
+            json,
+            vec![
+                "0",
+                "{}",
+                "{\"a\": [1, true, null]}",
+                "[1,",
+                &wide,
+                &deep,
+                &inline_boundary,
+                &long,
+            ],
+        ),
+        (
+            c,
+            vec![
+                "",
+                "int f(int x) { /* extra */ return x + 1; }",
+                "int x = ;",
+                "int f() { return 1 }",
+            ],
+        ),
+        (
+            c_sharp,
+            vec![
+                "class C { int F(int x) => x + 1; }",
+                "class C { int x = ; }",
+            ],
+        ),
+    ] {
+        let grammar = Grammar::new(&language).unwrap();
+        let fresh_grammar = tree_squatter::Grammar::new(&language).unwrap();
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&language).unwrap();
+        let mut context = PackContext::new().unwrap();
+
+        for source in sources {
+            let tree = parser.parse(source, None).unwrap();
+            for points in [false, true] {
+                for symbol_presence in [false, true] {
+                    for repack in [false, true] {
+                        for initial_group_capacity in [0, 1] {
+                            let options = PackOptions {
+                                initial_group_capacity,
+                                repack,
+                                symbol_presence,
+                                points,
+                            };
+                            let expected =
+                                Tree::pack_with_options(&fresh_grammar, &tree, options).unwrap();
+                            let actual =
+                                context.pack_with_options(&grammar, &tree, options).unwrap();
+                            let description = format!("{} bytes, {options:?}", source.len());
+                            assert_eq!(
+                                actual.as_bytes().len(),
+                                expected.as_bytes().len(),
+                                "{description}"
+                            );
+                            assert!(
+                                actual.as_bytes() == expected.as_bytes(),
+                                "different slab: {description}, first difference {:?}",
+                                actual
+                                    .as_bytes()
+                                    .iter()
+                                    .zip(expected.as_bytes())
+                                    .position(|(a, b)| a != b)
+                            );
+
+                            let loaded = Tree::from_bytes(&grammar, expected.as_bytes()).unwrap();
+                            let borrowed =
+                                Tree::from_bytes_borrowed(&grammar, expected.as_bytes()).unwrap();
+                            assert_eq!(loaded.as_bytes(), borrowed.as_bytes());
+                            tree_squatter::Tree::from_bytes(&fresh_grammar, actual.as_bytes())
+                                .unwrap();
+
+                            let compact = actual.repack().unwrap();
+                            assert_eq!(compact.as_bytes(), expected.repack().unwrap().as_bytes());
+                            for group in 0..actual.group_count() {
+                                for symbol in 0..language.node_kind_count() as u16 {
+                                    assert_eq!(
+                                        actual.group_has_symbol(
+                                            group,
+                                            tree_squatter::KindId::new(symbol)
+                                        ),
+                                        expected.group_has_symbol(
+                                            group,
+                                            tree_squatter::KindId::new(symbol)
+                                        )
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            context.trim();
+        }
+    }
+}

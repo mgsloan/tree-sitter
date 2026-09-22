@@ -12,7 +12,7 @@ without range-based traversal pruning.
 This document describes the Rust scanning API in
 [scan.rs](crates/squatter/src/scan.rs).
 [scanning-design.md](scanning-design.md) covers the broader API. The descendant
-seeks in [node.c](lib/squat/node.c) and query-cursor range restrictions are separate
+seeks in [node.rs](crates/squatter/src/node.rs) and query-cursor range restrictions are separate
 implementations; these scans do not call them.
 
 ## Relations and boundaries
@@ -146,7 +146,7 @@ cover posting reuse, reverse scans, composed filters, and the added predicate st
 
 ### Coordinate columns and conservative bounds
 
-Packing in [pack.c](lib/squat/pack.c) stores starts as base plus delta and ends as
+Packing in [packing.rs](crates/squatter/src/packing.rs) stores starts as base plus delta and ends as
 base minus delta. The current column abstractions expose these bounds:
 
 | Column | Per-slot encoding | Minimum used by scans | Maximum used by scans |

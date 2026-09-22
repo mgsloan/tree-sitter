@@ -6,18 +6,9 @@ license.workspace = true
 publish = false
 
 [features]
-default = ["reference"]
-reference = ["dep:tree-squatter"]
-rust-core = ["dep:tree-squatter-rust"]
-core-comparison = ["dep:tree-squatter", "dep:tree-squatter-rust"]
-typed-query-scan = ["rust-core", "tree-squatter-rust/typed-query-scan"]
-typed-presence-scan = ["rust-core", "tree-squatter-rust/typed-presence-scan"]
-typed-seek = ["rust-core", "tree-squatter-rust/typed-seek"]
-
-[[bin]]
-name = "core-query-bench"
-path = "src/bin/core-query-bench.rs"
-required-features = ["core-comparison"]
+typed-query-scan = ["tree-squatter/typed-query-scan"]
+typed-presence-scan = ["tree-squatter/typed-presence-scan"]
+typed-seek = ["tree-squatter/typed-seek"]
 
 [dependencies]
 anyhow.workspace = true
@@ -27,9 +18,7 @@ libc = "0.2.182"
 serde.workspace = true
 serde_json.workspace = true
 tree-sitter.workspace = true
-tree-squatter = { path = "../squatter", default-features = false, optional = true }
-
-tree-squatter-rust = { path = "../squatter-rust", optional = true }
+tree-squatter = { path = "../squatter", default-features = false }
 
 [dev-dependencies]
 tree-sitter-c = "=0.24.2"

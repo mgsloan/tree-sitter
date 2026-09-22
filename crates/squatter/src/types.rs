@@ -20,7 +20,7 @@ integer_type!(
     /// A displayed node kind, including aliases, in a particular grammar.
     ///
     /// ```compile_fail
-    /// # fn example(root: tree_squatter_rust::Node<'_>) {
+    /// # fn example(root: tree_squatter::Node<'_>) {
     /// root.all().filter_kind_ids([root.grammar_id()]);
     /// # }
     /// ```
@@ -33,7 +33,7 @@ integer_type!(/// An absolute physical slot in a particular tree's reverse-preor
 /// A nonzero field identifier in a particular grammar. Absence is `None`.
 ///
 /// ```compile_fail
-/// # fn example(root: tree_squatter_rust::Node<'_>) {
+/// # fn example(root: tree_squatter::Node<'_>) {
 /// root.all().filter_field_id(root.kind_id());
 /// # }
 /// ```
