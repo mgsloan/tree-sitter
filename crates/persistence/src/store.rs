@@ -573,6 +573,58 @@ impl Store {
         tree_sitter_squatter::Grammar::from_cache(language, bytes).ok()
     }
 
+    fn publication_state(
+        &self,
+        request: &Request,
+        source: &[u8],
+        tree: &tree_sitter_squatter::Tree,
+        grammar: &Grammar,
+    ) -> Option<(bool, bool)> {
+        let tx = self.env.read_txn().ok()?;
+        if self.paths.get(&tx, &request.source_key[..32]).ok()?? != request.path
+            || self.sources.get(&tx, &request.source_key).ok()?? != source
+        {
+            return None;
+        }
+        let slab = request.decode(self.trees.get(&tx, &request.tree_key).ok()??)?;
+        let borrowed = tree_sitter_squatter::Tree::from_bytes_borrowed(&grammar.prepared, slab);
+        let copied;
+        let existing = match &borrowed {
+            Ok(tree) => &**tree,
+            Err(_) => {
+                copied =
+                    tree_sitter_squatter::Tree::from_bytes_safety_checked(&grammar.prepared, slab)
+                        .ok()?;
+                &copied
+            }
+        };
+        if existing
+            .root_node()
+            .preorder()
+            .nodes()
+            .any(|node| node.end_byte() > source.len())
+        {
+            return None;
+        }
+        // Compare with the completed sidecars supplied for publication. Loading
+        // here would copy payloads and rebuild precisely the missing records.
+        let matches = |database: Database, expected: Option<&[u8]>| {
+            expected.is_none_or(|bytes| {
+                database.get(&tx, &request.tree_key).ok().flatten() == Some(bytes)
+            })
+        };
+        Some((
+            matches(
+                self.presence,
+                tree.presence_cache().map(|cache| cache.as_bytes()),
+            ),
+            matches(
+                self.points,
+                tree.point_data().map(|points| points.as_bytes()),
+            ),
+        ))
+    }
+
     pub fn publish(
         &self,
         request: &Request,
@@ -594,10 +646,10 @@ impl Store {
         let Some(_guard) = gate(&self.writer)? else {
             return Ok(WriteOutcome::Busy);
         };
-        let existing = self.get_with_cancel(request, source, grammar, None);
+        let existing = self.publication_state(request, source, tree, grammar);
         let already_present = existing.is_some();
-        let has_sidecars = existing.as_ref().is_some_and(|(_, complete)| *complete);
-        if already_present && has_sidecars {
+        let (has_presence, has_points) = existing.unwrap_or((false, false));
+        if already_present && has_presence && has_points {
             return Ok(WriteOutcome::AlreadyPresent);
         }
         let core_publication = if already_present {
@@ -656,11 +708,11 @@ impl Store {
             self.current
                 .put(&mut tx, &request.source_key[..32], &request.source_key)?;
         }
-        if let Some(cache) = tree.presence_cache() {
+        if !has_presence && let Some(cache) = tree.presence_cache() {
             self.presence
                 .put(&mut tx, &request.tree_key, cache.as_bytes())?;
         }
-        if let Some(points) = tree.point_data() {
+        if !has_points && let Some(points) = tree.point_data() {
             self.points
                 .put(&mut tx, &request.tree_key, points.as_bytes())?;
         }
