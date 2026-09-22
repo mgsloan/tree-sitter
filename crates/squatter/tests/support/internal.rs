@@ -169,7 +169,7 @@ fn synthetic_supertype_emission_and_persistence() {
                     bits,
                 );
             }
-            for (offset, mask) in [(0, 1), (1, 4), (14, 1)] {
+            for (offset, mask) in [(0, 1), (0, 32), (0, 48), (1, 4), (14, 1)] {
                 let mut bytes = tree.as_bytes().to_vec();
                 bytes[offset] ^= mask;
                 assert!(Tree::from_bytes(grammar, &bytes).is_err());
@@ -230,6 +230,10 @@ fn synthetic_symbol_encodings_and_optional_columns() {
                         assert_eq!(
                             node.is_missing(),
                             flags & 4 != 0 && [2, 63 * GROUP_SIZE].contains(&slot)
+                        );
+                        assert_eq!(
+                            node.has_error(),
+                            flags & 8 != 0 && [0, 63].contains(&(slot / GROUP_SIZE))
                         );
                     }
                     let compact = tree.repack().unwrap();

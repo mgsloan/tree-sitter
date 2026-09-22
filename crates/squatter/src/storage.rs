@@ -13,7 +13,7 @@ use std::{
 };
 
 include!(concat!(env!("OUT_DIR"), "/format.rs"));
-pub(crate) const VERSION: u32 = 0x5351_0011
+pub(crate) const VERSION: u32 = 0x5351_0021
     | match GROUP_SIZE {
         32 => 2,
         64 => 4,
@@ -45,8 +45,8 @@ pub(crate) struct Layout {
     pub supertype: SlabOffset,
     pub last: SlabOffset,
     pub extra: SlabOffset,
-    pub missing: SlabOffset,
     pub error: SlabOffset,
+    pub missing: SlabOffset,
     pub grammar: SlabOffset,
     pub end: SlabOffset,
 }
@@ -93,13 +93,13 @@ impl Layout {
             } else {
                 0
             }),
-            missing: column(if flags & MISSING != 0 {
-                bit_bytes(slots)
+            error: column(if flags & ERRORS != 0 {
+                bit_bytes(capacity)
             } else {
                 0
             }),
-            error: column(if flags & ERRORS != 0 {
-                bit_bytes(capacity)
+            missing: column(if flags & MISSING != 0 {
+                bit_bytes(slots)
             } else {
                 0
             }),
@@ -137,17 +137,17 @@ impl Layout {
                 },
             ),
             (
-                self.missing,
-                if flags & MISSING != 0 {
-                    bit_bytes(slots) as usize
+                self.error,
+                if flags & ERRORS != 0 {
+                    bit_bytes(groups) as usize
                 } else {
                     0
                 },
             ),
             (
-                self.error,
-                if flags & ERRORS != 0 {
-                    bit_bytes(groups) as usize
+                self.missing,
+                if flags & MISSING != 0 {
+                    bit_bytes(slots) as usize
                 } else {
                     0
                 },
@@ -664,8 +664,8 @@ impl Tree {
         // Only the optional tail moves when capacity is unchanged. Copy from
         // left to right so removing columns cannot overwrite a later source.
         for (flag, source, destination, end) in [
-            (MISSING, previous.missing, next.missing, next.error),
-            (ERRORS, previous.error, next.error, next.grammar),
+            (ERRORS, previous.error, next.error, next.missing),
+            (MISSING, previous.missing, next.missing, next.grammar),
             (SEPARATE_GRAMMAR, previous.grammar, next.grammar, next.end),
         ] {
             if flags & flag != 0 {

@@ -109,17 +109,17 @@ struct Group {
 }
 ```
 
-The optional columns follow the point columns in the order `extra`,
-`missing`, `error`, `grammar_id`, before the symbol-presence index. `extra` and
+The optional columns end the core slab in the order `extra`,
+`error`, `missing`, `grammar_id`. `extra` and
 `missing` have one bit per physical slot; `error` has one bit per group. Each flag column is
 omitted when all its values are zero, as recorded by `SQ_EXTRAS`, `SQ_MISSING`, and
 `SQ_ERRORS` in the header. Missing nodes imply the error column is present.
 The builder reserves the three flag columns and, for fallback grammars, the
 grammar-ID column. Finalization removes unused columns. With unchanged group
 capacity, only retained optional columns move;
-the allocation is shrunk when the unused tail is at least 256 bytes, or grown
-to reserve the presence index. Smaller tails are excluded from serialization
-but retained in the allocation.
+the allocation is shrunk when the unused tail is at least 256 bytes.
+Smaller tails are excluded from serialization but retained in the allocation.
+Points and symbol-presence data use separate sidecar allocations.
 
 `has_error` is conservative: every node in a group shares the OR of the original
 visible nodes' `missing || error_cost > 0` predicates. This preserves error
