@@ -36,6 +36,21 @@ use std::{
 };
 use tree_sitter::Point;
 
+#[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+#[inline]
+unsafe fn avx2_short_mask(
+    low: std::arch::x86_64::__m256i,
+    high: std::arch::x86_64::__m256i,
+) -> u32 {
+    use std::arch::x86_64::*;
+
+    // packs operate within 128-bit lanes, so restore slot order before extracting bits.
+    unsafe {
+        let packed = _mm256_packs_epi16(low, high);
+        _mm256_movemask_epi8(_mm256_permute4x64_epi64(packed, 0xd8)) as u32
+    }
+}
+
 // Group views borrow the same descriptor as nodes. Keeping layout and grammar
 // metadata there avoids copying either into each scan and returned group.
 #[derive(Clone, Copy)]
@@ -329,6 +344,18 @@ impl<'tree> GroupRef<'tree> {
         #[cfg(target_arch = "x86_64")]
         {
             use std::arch::x86_64::*;
+            #[cfg(target_feature = "avx2")]
+            if GROUP_SIZE == 32 {
+                unsafe {
+                    let shift = _mm_cvtsi32_si128(shift as i32);
+                    let target = _mm256_set1_epi16(target as i16);
+                    let low = _mm256_loadu_si256(bytes.as_ptr().cast());
+                    let high = _mm256_loadu_si256(bytes.as_ptr().add(32).cast());
+                    let low = _mm256_cmpeq_epi16(_mm256_srl_epi16(low, shift), target);
+                    let high = _mm256_cmpeq_epi16(_mm256_srl_epi16(high, shift), target);
+                    return candidates.intersection(Mask(avx2_short_mask(low, high) as u64));
+                }
+            }
             // SSE2 is baseline on x86_64. The group slice covers both unaligned
             // loads; full groups contain a multiple of 16 little-endian IDs.
             unsafe {
@@ -397,6 +424,25 @@ impl<'tree> GroupRef<'tree> {
             let bytes = self
                 .columns
                 .slice(column, start, self.columns.group_size() as usize * 2);
+            #[cfg(target_feature = "avx2")]
+            if GROUP_SIZE == 32 {
+                unsafe {
+                    let shift = _mm_cvtsi32_si128(shift as i32);
+                    let low = _mm256_srl_epi16(_mm256_loadu_si256(bytes.as_ptr().cast()), shift);
+                    let high =
+                        _mm256_srl_epi16(_mm256_loadu_si256(bytes.as_ptr().add(32).cast()), shift);
+                    let mut low_matches = _mm256_setzero_si256();
+                    let mut high_matches = _mm256_setzero_si256();
+                    for &target in targets {
+                        let target = _mm256_set1_epi16(target.raw() as i16);
+                        low_matches = _mm256_or_si256(low_matches, _mm256_cmpeq_epi16(low, target));
+                        high_matches =
+                            _mm256_or_si256(high_matches, _mm256_cmpeq_epi16(high, target));
+                    }
+                    return candidates
+                        .intersection(Mask(avx2_short_mask(low_matches, high_matches) as u64));
+                }
+            }
             let mut matches = 0;
             // SSE2 is baseline. Each group chunk contains both vector loads;
             // fixed-array callers expose the target count for loop unrolling.
@@ -1442,6 +1488,38 @@ fn retain_deltas<const WIDE: bool>(
             use std::arch::x86_64::*;
             let mut matches = 0;
             let length = bounds.end - bounds.start;
+            #[cfg(target_feature = "avx2")]
+            if GROUP_SIZE == 32 && deltas.len() == (if WIDE { 64 } else { 32 }) {
+                unsafe {
+                    if WIDE {
+                        let lower = _mm256_set1_epi16((bounds.start as u16 ^ 0x8000) as i16);
+                        let upper = _mm256_set1_epi16((length as u16 ^ 0x8000) as i16);
+                        let equal = _mm256_set1_epi16(bounds.start as i16);
+                        let low = _mm256_loadu_si256(deltas.as_ptr().cast());
+                        let high = _mm256_loadu_si256(deltas.as_ptr().add(32).cast());
+                        let matching = |values| {
+                            if length == 1 {
+                                _mm256_cmpeq_epi16(values, equal)
+                            } else {
+                                _mm256_cmpgt_epi16(upper, _mm256_sub_epi16(values, lower))
+                            }
+                        };
+                        matches = avx2_short_mask(matching(low), matching(high)) as u64;
+                    } else {
+                        let lower = _mm256_set1_epi8((bounds.start as u8 ^ 0x80) as i8);
+                        let upper = _mm256_set1_epi8((length as u8 ^ 0x80) as i8);
+                        let equal = _mm256_set1_epi8(bounds.start as i8);
+                        let values = _mm256_loadu_si256(deltas.as_ptr().cast());
+                        let selected = if length == 1 {
+                            _mm256_cmpeq_epi8(values, equal)
+                        } else {
+                            _mm256_cmpgt_epi8(upper, _mm256_sub_epi8(values, lower))
+                        };
+                        matches = _mm256_movemask_epi8(selected) as u64;
+                    }
+                }
+                return candidates.intersection(Mask(matches));
+            }
             // Bias the wrapped delta-minus-lower by the sign bit so signed SIMD
             // comparisons implement an unsigned interval test. Checked chunks
             // cover complete groups; candidate clipping excludes waste lanes.
