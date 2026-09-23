@@ -421,8 +421,8 @@ impl TreeData {
     ))]
     #[inline]
     pub(crate) fn column_slice(&self, column: ColumnPointer, start: usize, length: usize) -> &[u8] {
-        let offset = column.as_ptr() as usize - self.bytes.as_ptr() as usize;
-        &self.slice()[offset + start..offset + start + length]
+        // Resolved column pointers and group offsets remain within the retained slab.
+        unsafe { std::slice::from_raw_parts(column.as_ptr().add(start), length) }
     }
 
     pub(crate) fn writer(&mut self) -> SlabWriter<'_> {
