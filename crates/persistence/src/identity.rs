@@ -31,7 +31,7 @@ pub(crate) fn path(path: &Path) -> Result<(PathBuf, Vec<u8>), crate::LoadError> 
             _ => return Err(crate::LoadError::InvalidPath),
         }
     }
-    if clean.as_os_str().is_empty() || clean.starts_with(".tree-squatter") {
+    if clean.as_os_str().is_empty() || clean.starts_with(".tree-sitter") {
         return Err(crate::LoadError::InvalidPath);
     }
     let mut encoded = vec![if cfg!(windows) { 1 } else { 0 }];
@@ -143,8 +143,8 @@ mod tests {
             "../a",
             "a/../b",
             "/a",
-            ".tree-squatter/a",
-            ".tree-squatter/big-endian/a",
+            ".tree-sitter/a",
+            ".tree-sitter/big-endian/a",
         ] {
             assert!(path(Path::new(invalid)).is_err(), "{invalid}");
         }

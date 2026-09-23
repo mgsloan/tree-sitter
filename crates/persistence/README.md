@@ -13,6 +13,10 @@ Uses heed 0.22.1 (pinned, default serialization features disabled), with
 `Database<Bytes, Bytes>` and the explicit cache encodings. Cargo.lock pins
 lmdb-master-sys 0.2.6; no direct sys-level transaction/cursor calls remain.
 
+Cache files are `.tree-sitter/squat.mdb`, `.tree-sitter/squat.mdb-lock`, and
+`.tree-sitter/squat.coop-lock` under the project root. Big-endian hosts
+use `.tree-sitter/big-endian/` because LMDB is endian-dependent.
+
 ```rust,no_run
 use std::path::Path;
 use tree_squatter_persistence::{GrammarFingerprint, LoadContext, LoadOptions, Options, Persistence};

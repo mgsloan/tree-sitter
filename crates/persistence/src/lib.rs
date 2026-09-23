@@ -32,9 +32,9 @@ use store::Store;
 
 /// Cache directory path for the target's native byte order.
 pub const CACHE_DIRECTORY: &str = if cfg!(target_endian = "big") {
-    ".tree-squatter/big-endian"
+    ".tree-sitter/big-endian"
 } else {
-    ".tree-squatter"
+    ".tree-sitter"
 };
 
 #[derive(Clone, Debug)]

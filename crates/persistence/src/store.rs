@@ -328,7 +328,7 @@ impl Store {
     fn open_impl(root: &Path, map_size: usize, create: bool) -> Result<Arc<Self>, CacheError> {
         let cache = root.join(crate::CACHE_DIRECTORY);
         if !create {
-            for name in ["data.mdb", "lock.mdb", "cooperation.lock"] {
+            for name in ["squat.mdb", "squat.mdb-lock", "squat.coop-lock"] {
                 fs::metadata(cache.join(name))?;
             }
         }
@@ -374,7 +374,7 @@ impl Store {
         let _ = canonical;
         // LMDB opens its own files. The initial backend assumes cooperating
         // writers in a trusted cache directory, not hostile leaf substitution.
-        for name in ["data.mdb", "lock.mdb", "cooperation.lock"] {
+        for name in ["squat.mdb", "squat.mdb-lock", "squat.coop-lock"] {
             no_link(&anchor.join(name), false)?;
         }
         let mut options = OpenOptions::new();
@@ -388,28 +388,29 @@ impl Store {
             use std::os::unix::fs::OpenOptionsExt;
             options.custom_flags(libc::O_NOFOLLOW).mode(0o600);
         }
-        let lock_file = options.open(anchor.join("cooperation.lock"))?;
+        let lock_file = options.open(anchor.join("squat.coop-lock"))?;
         let work = crate::work::WorkLocks::new(lock_file.try_clone()?);
         let writer = Mutex::new(lock_file);
         // Existing caches need no writer admission to open. In particular, a
         // background maintenance batch must not disable a foreground reader.
-        let guard = if anchor.join("data.mdb").exists() {
+        let guard = if anchor.join("squat.mdb").exists() {
             None
         } else {
             Some(gate(&writer)?.ok_or_else(|| {
                 io::Error::new(io::ErrorKind::WouldBlock, "cache initialization busy")
             })?)
         };
-        let existed = anchor.join("data.mdb").exists();
+        let existed = anchor.join("squat.mdb").exists();
         // Cooperating writers, trusted local directory, native locking/sync,
         // one retained environment per inode, and no resizing of live mappings.
         let env = unsafe {
             EnvOpenOptions::new()
                 .read_txn_without_tls()
+                .flags(heed::EnvFlags::NO_SUB_DIR)
                 .max_dbs(8)
                 .max_readers(256)
                 .map_size(map_size)
-                .open(&anchor)?
+                .open(anchor.join("squat.mdb"))?
         };
         let (paths, sources, trees, presence, points, grammars, current) = if existed {
             let tx = env.read_txn()?;

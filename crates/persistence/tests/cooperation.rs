@@ -33,7 +33,7 @@ fn owner(root: &Path) -> ChildProcess {
     ChildProcess::start(
         "child_work_owner",
         "TSQ_WORK_LOCK",
-        root.join(CACHE_DIRECTORY).join("cooperation.lock"),
+        root.join(CACHE_DIRECTORY).join("squat.coop-lock"),
     )
 }
 

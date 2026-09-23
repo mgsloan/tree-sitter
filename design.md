@@ -157,7 +157,7 @@ big-endian is very rare for host architecture, it is fine for it to
 have some performance impacts due to using a non-native
 representation.
 
-Persistence still uses `.tree-squatter/big-endian/` on big-endian hosts
+Persistence still uses `.tree-sitter/big-endian/` on big-endian hosts
 because LMDB itself is endian-dependent.
 
 # Symbol presence bitmaps

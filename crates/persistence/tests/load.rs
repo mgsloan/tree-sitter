@@ -20,7 +20,21 @@ fn miss_hit_and_old_reader_survives_update() {
     let root = tempfile::tempdir().unwrap();
     fs::write(root.path().join("file.json"), b"{\"old\": [1, 2]}\r\n").unwrap();
     let cache = Persistence::open(root.path(), Options::default()).unwrap();
-    let first = load(&cache);
+    let first = cache
+        .load_with_options(
+            Path::new("file.json"),
+            &grammar(),
+            &mut tree_sitter::Parser::new(),
+            LoadOptions {
+                pack: tree_sitter_squatter::PackOptions {
+                    initial_group_capacity: 128,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        )
+        .unwrap()
+        .file;
     assert!(!first.cache_hit());
     assert!(first.tree().group_capacity() > first.tree().group_count());
     let reader = load(&cache);
@@ -51,7 +65,7 @@ fn miss_hit_and_old_reader_survives_update() {
         .map(|entry| entry.unwrap().file_name())
         .collect();
     files.sort();
-    assert_eq!(files, ["cooperation.lock", "data.mdb", "lock.mdb"]);
+    assert_eq!(files, ["squat.coop-lock", "squat.mdb", "squat.mdb-lock"]);
 }
 
 #[test]
@@ -309,7 +323,7 @@ fn source_symlink_outside_root_and_cache_symlinks() {
     symlink(outside.path(), other.path().join(CACHE_DIRECTORY)).unwrap();
     let cache = Persistence::open(other.path(), Options::default()).unwrap();
     assert!(!load(&cache).cache_hit());
-    assert!(!outside.path().join("data.mdb").exists());
+    assert!(!outside.path().join("squat.mdb").exists());
 }
 
 #[test]
@@ -352,7 +366,7 @@ fn independent_reader_opens_while_writer_admission_is_held() {
     let lock = fs::OpenOptions::new()
         .read(true)
         .write(true)
-        .open(root.path().join(CACHE_DIRECTORY).join("cooperation.lock"))
+        .open(root.path().join(CACHE_DIRECTORY).join("squat.coop-lock"))
         .unwrap();
     lock.lock().unwrap();
     let output = std::process::Command::new(std::env::current_exe().unwrap())
@@ -405,7 +419,7 @@ fn writer_death_releases_admission_without_stale_files() {
     let child = ChildProcess::start(
         "child_writer_lock",
         "TSQ_TEST_LOCK",
-        root.path().join(CACHE_DIRECTORY).join("cooperation.lock"),
+        root.path().join(CACHE_DIRECTORY).join("squat.coop-lock"),
     );
     // Child owns admission, not an LMDB transaction. Parent must not block.
     let outcome = write.publish().unwrap();
