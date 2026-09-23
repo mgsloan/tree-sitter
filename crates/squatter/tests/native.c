@@ -4,6 +4,8 @@
 #undef NDEBUG
 #include <assert.h>
 
+_Static_assert(SQ_SLAB_FORMAT(0xFC, 0xAB) == UINT32_C(0xFCAB0000), "slab format fields");
+
 // Tiny compiled tables whose reductions permit every supertype to wrap every
 // other one. The analysis must compute the full power set, including cycles.
 typedef struct {
@@ -53,13 +55,17 @@ void sq_test_dictionaries(void) {
   uint8_t *cache_bytes = malloc(cache_size);
   assert(cache_size == 16 + sizeof(expected) && cache_bytes);
   assert(sq_native_grammar_copy_cache(grammar, cache_bytes, cache_size, &error));
+  assert(cache_bytes[0] == 0 && cache_bytes[1] == 0 && cache_bytes[2] == 0 && cache_bytes[3] == 0xFC);
   sq_native_grammar_delete(grammar);
   grammar = sq_native_grammar_new_with_cache(&fixture.language, cache_bytes, cache_size, &error);
   assert(grammar && !memcmp(expected, grammar->supertype_grammar->masks, sizeof(expected)));
   sq_native_grammar_delete(grammar);
-  cache_bytes[0] ^= 1;
-  assert(!sq_native_grammar_new_with_cache(&fixture.language, cache_bytes, cache_size, &error));
-  assert(error == SQ_ERROR_INVALID_SLAB);
+  for (unsigned bit = 0; bit < 32; bit++) {
+    cache_bytes[bit / 8] ^= 1u << (bit % 8);
+    assert(!sq_native_grammar_new_with_cache(&fixture.language, cache_bytes, cache_size, &error));
+    assert(error == SQ_ERROR_INVALID_SLAB);
+    cache_bytes[bit / 8] ^= 1u << (bit % 8);
+  }
   free(cache_bytes);
   SQSupertypeGrammar *second = sq_native_supertype_grammar_new(&fixture.language, 9, &error);
   assert(second && !memcmp(expected, second->masks, sizeof(expected)));

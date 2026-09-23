@@ -79,45 +79,6 @@ fn main() {
         build.file(feller.join("src").join(file));
     }
 
-    // Honor target-specific CFLAGS when selecting the slab representation.
-    let compiler = build.get_compiler();
-    let definition = |name: &str, default: u32| {
-        let mut value = default;
-        let mut arguments = compiler.args().iter();
-        while let Some(argument) = arguments.next() {
-            let argument = argument.to_str().unwrap_or("");
-            let Some(mut defined) = argument
-                .strip_prefix("-D")
-                .or_else(|| argument.strip_prefix("/D"))
-            else {
-                continue;
-            };
-            if defined.is_empty() {
-                defined = arguments
-                    .next()
-                    .and_then(|argument| argument.to_str())
-                    .unwrap_or("");
-            }
-            if let Some((key, literal)) = defined.split_once('=') {
-                if key == name {
-                    value = literal
-                        .trim_end_matches(['u', 'U', 'l', 'L'])
-                        .parse()
-                        .unwrap_or_else(|_| panic!("{name} must be an integer literal"));
-                }
-            }
-        }
-        value
-    };
-    let group_size = definition("SQ_GROUP_SIZE", 32);
-    let span_bits = definition("SQ_SPAN_BITS", 16);
-    let alignment = definition("SQ_COLUMN_ALIGNMENT", 8);
-    assert!(matches!(group_size, 16 | 32 | 64));
-    assert!(matches!(span_bits, 8 | 16));
-    assert!(matches!(alignment, 8 | 64));
-    fs::write(PathBuf::from(env::var_os("OUT_DIR").unwrap()).join("format.rs"),
-        format!("pub(crate) const GROUP_SIZE: u32 = {group_size};\npub(crate) const SPAN_BITS: u32 = {span_bits};\npub(crate) const ALIGNMENT: usize = {alignment};\n")).unwrap();
-
     println!("cargo:rerun-if-changed=native");
     println!("cargo:rerun-if-changed={}", feller.display());
     build.compile("squatter-native");

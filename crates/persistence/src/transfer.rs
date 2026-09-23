@@ -6,7 +6,7 @@ use std::io::{self, Read, Write};
 use std::sync::Arc;
 
 // Prototype formats stay at version 0; no persisted data needs backward compatibility.
-const MAGIC: &[u8; 8] = b"TSQXFR00";
+const TRANSFER_SIGNATURE: &[u8; 8] = b"TSQXFR00";
 const HEADER_LEN: usize = 176;
 const PREFIX_LEN: usize = 8 + 3 * 8 + HEADER_LEN;
 
@@ -27,7 +27,7 @@ impl PendingWrite {
     /// opening a transaction, or synchronizing storage. The sink must not retain
     /// only a borrowed buffer: publication may outlive this process.
     pub fn write_transfer(&self, mut output: impl Write) -> io::Result<()> {
-        output.write_all(MAGIC)?;
+        output.write_all(TRANSFER_SIGNATURE)?;
         for length in [
             self.request.path.len(),
             self.file.source().len(),
@@ -60,7 +60,7 @@ impl Persistence {
         }
         let mut prefix = [0; PREFIX_LEN];
         input.read_exact(&mut prefix)?;
-        if &prefix[..8] != MAGIC {
+        if &prefix[..8] != TRANSFER_SIGNATURE {
             return Err(invalid().into());
         }
         let length = |offset| -> io::Result<usize> {

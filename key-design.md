@@ -41,10 +41,10 @@ name, could distinguish these without creating a slot per build.
 
 ## Representation identity
 
-The existing `format_flags` header word combines `SQ_VERSION` with per-tree
-flags. `SQ_VERSION` already includes the slab version, group size, and column
-alignment. Exposing that word directly, with per-tree flags cleared, could replace
-the hashed representation identity without changing the slab layout.
+The `format_flags` header word contains a slab type, storage version, and
+optional-column flags. The storage version implies group size, field widths,
+and column alignment. `representation_id()` returns this word with the
+per-tree flags cleared; it could replace the hashed representation identity.
 
 Persisted options such as point storage and symbol-presence indexing remain
 separate key inputs. Allocation hints do not belong in identity. With no runtime

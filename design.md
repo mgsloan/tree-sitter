@@ -10,7 +10,7 @@ Tree-squatter provides a compact yet efficient representation for Tree-sitter
 trees.
 
 Nodes are listed in reverse-preorder in a contiguous allocation which does not
-use pointers. These are divided into groups of 16 nodes. For fields like
+use pointers. These are divided into groups of 32 nodes. For fields like
 `start_byte`, an absolute base is stored for the group, and the nodes store a
 single byte offset. If a node's value exceeds what is representable, some slots
 are wasted and it gets put in the next group.
@@ -42,10 +42,20 @@ stored in preorder. This was not done because it would cause physical node indic
 
 # Slab data
 
+The first word of each slab is little-endian: type in bits 31–24, storage
+version in bits 23–16, and flags in bits 15–0. Types are `FF` for trees,
+`FE` for symbol presence, `FD` for points, and `FC` for grammar dictionaries.
+All storage versions are currently 0.
+
+Tree version 0 uses 32-slot groups, 16-bit span deltas and supertype entries,
+and 8-byte column alignment. Its optional columns, in storage order, are extra,
+error, missing, and grammar, with flags in bits 3, 2, 1, and 0 respectively.
+Presence, point, and grammar dictionary slabs have no flags. Unrecognized
+types, versions, or flags are rejected.
+
 ```rs
 struct SlabHeader {
-  /// Little-endian format/version, point/group/alignment flags, optional index, supertype index width.
-  /// Point absence is stored per tree; point APIs then use byte offsets as columns on row zero.
+  /// Little-endian slab type, storage version, and optional-column flags.
   format_flags: u32,
   group_count: u32,
   /// Actual allocated capacity, including growth beyond the initial estimate.
@@ -66,7 +76,7 @@ struct Node {
   /// Distance to the subtree's lower physical boundary, including group waste.
   /// Add subtree_size_base to decode the span, then subtract it from this node's
   /// slot. The next sibling, when present, occupies the slot below that boundary.
-  subtree_size: u8,
+  subtree_size: u16,
   /// Start byte offset in the input text (add start_byte_base).
   start_byte: u8,
   /// End byte offset in the input text (subtract from end_byte_base).
@@ -296,8 +306,6 @@ The failure count is accumulated, but only the details of the first failure are 
 * ABI compatible drop-in
 
 * Make persistence work across BE vs LE?
-
-* How to compute magic value - is it a hash of representation version + grammar metadata?
 
 * Sampling was download weighted, but removed.  Consider
 

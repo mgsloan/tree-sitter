@@ -27,7 +27,7 @@ unsafe impl tree_sitter_squatter::StableSlab for TrackedSlab {
     }
 }
 fn tracked(bytes: &[u8], misaligned: bool, drops: Arc<AtomicUsize>) -> TrackedSlab {
-    let alignment = ((tree_sitter_squatter::representation_id() >> 40) & 0xff) as usize;
+    let alignment = 8;
     let mut storage = vec![0u64; (bytes.len() + alignment + 8).div_ceil(8)].into_boxed_slice();
     let offset = storage.as_ptr().cast::<u8>().align_offset(alignment) + usize::from(misaligned);
     unsafe {

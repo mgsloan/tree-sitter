@@ -1,13 +1,13 @@
 use crate::{
     Error, Tree,
-    storage::{GROUP_SIZE, StableSlab},
+    storage::{GROUP_SIZE, StableSlab, slab_format},
     types::PackedPoint,
 };
 use std::sync::atomic::{AtomicBool, Ordering};
 use tree_sitter::Point;
 
-const PRESENCE_MAGIC: u32 = 0x5052_0000;
-const POINT_MAGIC: u32 = 0x5054_0000;
+const PRESENCE_FORMAT: u32 = slab_format(0xfe, 0);
+const POINT_FORMAT: u32 = slab_format(0xfd, 0);
 const HEADER_BYTES: usize = 16;
 
 #[derive(Debug)]
@@ -68,7 +68,7 @@ struct Sidecar {
 
 impl Sidecar {
     fn new(
-        magic: u32,
+        format: u32,
         groups: u32,
         symbols: u32,
         payload_bytes: usize,
@@ -86,7 +86,7 @@ impl Sidecar {
             storage: Storage::Owned(buffer),
         };
         let bytes = result.bytes_mut();
-        bytes[0..4].copy_from_slice(&magic.to_le_bytes());
+        bytes[0..4].copy_from_slice(&format.to_le_bytes());
         bytes[4..8].copy_from_slice(&groups.to_le_bytes());
         bytes[8..12].copy_from_slice(
             &(groups.checked_mul(GROUP_SIZE).ok_or(Error::Overflow)?).to_le_bytes(),
@@ -112,20 +112,20 @@ impl Sidecar {
     fn put_word(&mut self, byte: usize, value: u64) {
         self.bytes_mut()[byte..byte + 8].copy_from_slice(&value.to_le_bytes());
     }
-    fn validate(&self, tree: &Tree, magic: u32, length: usize) -> Result<(), SideDataError> {
-        Self::validate_bytes(self.bytes(), tree, magic, length)
+    fn validate(&self, tree: &Tree, format: u32, length: usize) -> Result<(), SideDataError> {
+        Self::validate_bytes(self.bytes(), tree, format, length)
     }
     fn validate_bytes(
         bytes: &[u8],
         tree: &Tree,
-        magic: u32,
+        format: u32,
         length: usize,
     ) -> Result<(), SideDataError> {
         if bytes.len() != length || bytes.len() < HEADER_BYTES {
             return Err(SideDataError::InvalidTarget);
         }
         let header = |offset| u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap());
-        if header(0) != magic
+        if header(0) != format
             || header(4) != tree.group_count()
             || header(8) != tree.slot_count()
             || header(12) != tree.data().tables().symbol_count + 2
@@ -178,7 +178,7 @@ impl PresenceCache {
     pub fn build(tree: &Tree, cancel: Option<&AtomicBool>) -> Result<Self, SideDataError> {
         let symbols = tree.data().tables().symbol_count + 2;
         let mut sidecar = Sidecar::new(
-            PRESENCE_MAGIC,
+            PRESENCE_FORMAT,
             tree.group_count(),
             symbols,
             presence_length(tree)? - HEADER_BYTES,
@@ -204,14 +204,14 @@ impl PresenceCache {
         Ok(result)
     }
     pub fn copy_from_bytes(tree: &Tree, bytes: &[u8]) -> Result<Self, SideDataError> {
-        Sidecar::validate_bytes(bytes, tree, PRESENCE_MAGIC, presence_length(tree)?)?;
+        Sidecar::validate_bytes(bytes, tree, PRESENCE_FORMAT, presence_length(tree)?)?;
         let result = Self(Sidecar::copy_from_bytes(bytes)?);
         result.validate_loaded(tree)?;
         Ok(result)
     }
     fn validate_loaded(&self, tree: &Tree) -> Result<(), SideDataError> {
         self.0
-            .validate(tree, PRESENCE_MAGIC, presence_length(tree)?)?;
+            .validate(tree, PRESENCE_FORMAT, presence_length(tree)?)?;
         #[cfg(debug_assertions)]
         {
             let expected = Self::build(tree, None)?;
@@ -301,7 +301,7 @@ impl PointData {
     }
     pub(crate) fn empty(tree: &Tree) -> Result<Self, SideDataError> {
         Ok(Self(Sidecar::new(
-            POINT_MAGIC,
+            POINT_FORMAT,
             tree.group_count(),
             tree.data().tables().symbol_count + 2,
             point_length(tree)? - HEADER_BYTES,
@@ -350,13 +350,13 @@ impl PointData {
         Ok(result)
     }
     pub fn copy_from_bytes(tree: &Tree, bytes: &[u8]) -> Result<Self, SideDataError> {
-        Sidecar::validate_bytes(bytes, tree, POINT_MAGIC, point_length(tree)?)?;
+        Sidecar::validate_bytes(bytes, tree, POINT_FORMAT, point_length(tree)?)?;
         let result = Self(Sidecar::copy_from_bytes(bytes)?);
         result.validate_loaded(tree)?;
         Ok(result)
     }
     fn validate_loaded(&self, tree: &Tree) -> Result<(), SideDataError> {
-        self.0.validate(tree, POINT_MAGIC, point_length(tree)?)?;
+        self.0.validate(tree, POINT_FORMAT, point_length(tree)?)?;
         #[cfg(debug_assertions)]
         for group in 0..tree.group_count() {
             for slot in group * GROUP_SIZE..tree.data().group_end(group) {

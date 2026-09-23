@@ -3,11 +3,10 @@
 // little-endian cache header followed by count masks of words u64s each
 // The hash table is rebuilt on load rather than serialized.
 typedef struct {
-  uint32_t magic, supertype_count, count, words;
+  uint32_t format, supertype_count, count, words;
 } GrammarCacheHeader;
 
-// Prototype format version 0; no persisted data needs backward compatibility.
-#define GRAMMAR_CACHE_MAGIC UINT32_C(0x53514700)
+#define GRAMMAR_CACHE_FORMAT SQ_SLAB_FORMAT(0xFC, 0)
 
 // Grow an array geometrically without overflowing its u32 capacity or byte size.
 static bool reserve(void **data, uint32_t *capacity, uint32_t count, size_t size) {
@@ -91,8 +90,8 @@ bool sq_native_supertype_grammar_copy_cache(const SQSupertypeGrammar *g, void *d
     return false;
   }
 
-  GrammarCacheHeader header = {GRAMMAR_CACHE_MAGIC, g->supertype_count, g->count, g->words};
-  sq_native_set_u32(destination, 0, 0, header.magic);
+  GrammarCacheHeader header = {GRAMMAR_CACHE_FORMAT, g->supertype_count, g->count, g->words};
+  sq_native_set_u32(destination, 0, 0, header.format);
   sq_native_set_u32(destination, 0, 1, header.supertype_count);
   sq_native_set_u32(destination, 0, 2, header.count);
   sq_native_set_u32(destination, 0, 3, header.words);
@@ -633,7 +632,7 @@ SQSupertypeGrammar *sq_native_supertype_grammar_new_cached(const TSLanguage *lan
   header = (GrammarCacheHeader){sq_native_get_u32(data, 0, 0), sq_native_get_u32(data, 0, 1),
                                 sq_native_get_u32(data, 0, 2), sq_native_get_u32(data, 0, 3)};
   uint32_t words = (supertype_count + 63) / 64;
-  if (header.magic != GRAMMAR_CACHE_MAGIC || header.supertype_count != supertype_count ||
+  if (header.format != GRAMMAR_CACHE_FORMAT || header.supertype_count != supertype_count ||
       header.words != words || !header.count || header.count > 65536 ||
       header.count > (SIZE_MAX - sizeof(header)) / ((size_t)words * 8) ||
       length != sizeof(header) + (size_t)header.count * words * 8)

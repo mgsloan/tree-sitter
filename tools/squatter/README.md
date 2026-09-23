@@ -160,8 +160,7 @@ python3 tools/squatter/endian.py --output build/squat-endian
 
 Use `--target-dir` to reuse Cargo artifacts. `--bits 32` uses a 32-bit
 little-endian peer and requires `rustup target add i686-unknown-linux-musl`.
-Group sizes and column alignment follow `CFLAGS`, for example
-`CFLAGS="-DSQ_GROUP_SIZE=64 -DSQ_COLUMN_ALIGNMENT=64"`.
+Storage version 0 uses 32-slot groups, 16-bit span deltas, and 8-byte column alignment.
 See [coverage](../../crates/squatter/tests/README.md) for the migrated C checks.
 
 ## Group-scan throughput

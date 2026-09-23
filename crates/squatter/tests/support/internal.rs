@@ -62,6 +62,7 @@ impl Fixture {
 
 #[test]
 fn synthetic_grammar_dictionaries_aliases_and_limits() {
+    assert_eq!(slab_format(0xfc, 0xab), 0xfcab_0000);
     unsafe {
         sq_test_dictionaries();
         sq_test_terminal_aliases();
@@ -411,6 +412,7 @@ fn exercise_columns(tree: &mut Tree, fill: bool) {
 fn column_growth_compaction_and_little_endian_encoding() {
     let fixture = Fixture::symbols(32767);
     let mut tree = Tree::empty(&fixture.grammar, 3).unwrap();
+    assert_eq!(tree.data().flags(), 0xff00_000f);
     tree.data_mut().put_word(SlabOffset(0), 1, 2);
     exercise_columns(&mut tree, true);
     for capacity in [7, 19, 2, 31, 2] {

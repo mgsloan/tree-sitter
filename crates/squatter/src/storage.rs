@@ -12,24 +12,25 @@ use std::{
     ptr::{self, NonNull},
 };
 
-include!(concat!(env!("OUT_DIR"), "/format.rs"));
-pub(crate) const VERSION: u32 = 0x5351_0021
-    | match GROUP_SIZE {
-        32 => 2,
-        64 => 4,
-        _ => 0,
-    }
-    | if ALIGNMENT == 64 { 8 } else { 0 }
-    | if SPAN_BITS == 16 { 16 } else { 0 };
-pub(crate) const WIDE_SUPERTYPES: u32 = 0x400;
-pub(crate) const SEPARATE_GRAMMAR: u32 = 0x800;
-pub(crate) const EXTRAS: u32 = 0x1000;
-pub(crate) const MISSING: u32 = 0x2000;
-pub(crate) const ERRORS: u32 = 0x4000;
-pub(crate) const OPTIONAL: u32 = SEPARATE_GRAMMAR | EXTRAS | MISSING | ERRORS;
+// implied by tree storage version 0
+pub(crate) const GROUP_SIZE: u32 = 32;
+pub(crate) const SPAN_BITS: u32 = 16;
+pub(crate) const ALIGNMENT: usize = 8;
+
+// type: bits 31–24; version: bits 23–16; flags: bits 15–0
+pub(crate) const fn slab_format(slab_type: u8, version: u8) -> u32 {
+    ((slab_type as u32) << 24) | ((version as u32) << 16)
+}
+
+pub(crate) const TREE_FORMAT: u32 = slab_format(0xff, 0);
+pub(crate) const EXTRAS: u32 = 1 << 3;
+pub(crate) const ERRORS: u32 = 1 << 2;
+pub(crate) const MISSING: u32 = 1 << 1;
+pub(crate) const SEPARATE_GRAMMAR: u32 = 1;
+pub(crate) const OPTIONAL: u32 = EXTRAS | ERRORS | MISSING | SEPARATE_GRAMMAR;
 
 pub fn representation_id() -> u64 {
-    VERSION as u64 | ((GROUP_SIZE as u64) << 32) | ((ALIGNMENT as u64) << 40)
+    TREE_FORMAT as u64
 }
 
 #[derive(Clone, Copy, Default, Debug)]
@@ -535,11 +536,10 @@ impl Tree {
     pub(crate) fn empty(grammar: &Grammar, capacity: u32) -> Result<Self, Error> {
         // Reserve optional columns while packing. Their presence is only known
         // after traversal, when unused columns can be removed together.
-        let flags = VERSION
-            | WIDE_SUPERTYPES
+        let flags = TREE_FORMAT
             | EXTRAS
-            | MISSING
             | ERRORS
+            | MISSING
             | if grammar.tables().separate != 0 {
                 SEPARATE_GRAMMAR
             } else {
@@ -917,10 +917,9 @@ impl Tree {
         let flags = header(0);
         let groups = header(1);
         let capacity = header(2);
-        if flags & !(WIDE_SUPERTYPES | OPTIONAL) != VERSION
+        if flags & !OPTIONAL != TREE_FORMAT
             || groups == 0
             || groups > capacity
-            || flags & WIDE_SUPERTYPES == 0
             || (flags & MISSING != 0 && flags & ERRORS == 0)
             || (flags & SEPARATE_GRAMMAR != 0 && grammar.tables().separate == 0)
             || header(3) != grammar.tables().dictionary_count

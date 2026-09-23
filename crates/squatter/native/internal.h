@@ -11,6 +11,9 @@
 
 #define SQ_NONE UINT32_MAX
 
+// type: bits 31–24; version: bits 23–16; flags: bits 15–0
+#define SQ_SLAB_FORMAT(type, version) (((uint32_t)(type) << 24) | ((uint32_t)(version) << 16))
+
 // bit width of an inclusive maximum; zero needs no storage bits
 static inline uint8_t sq_native_width(uint32_t maximum) {
   uint8_t width = 0;

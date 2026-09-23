@@ -1,6 +1,43 @@
 use tree_squatter::{Grammar, PackContext, PackOptions, Tree};
 
 #[test]
+fn slab_headers_reject_incompatible_formats() {
+    use tree_squatter::{PointData, PresenceCache};
+
+    let language =
+        unsafe { tree_sitter::Language::from_raw(tree_sitter_json::LANGUAGE.into_raw()().cast()) };
+    let grammar = Grammar::new(&language).unwrap();
+    let mut parser = tree_sitter::Parser::new();
+    parser.set_language(&language).unwrap();
+    let native = parser.parse("[1]", None).unwrap();
+    let tree = Tree::pack(&grammar, &native).unwrap();
+    let presence = tree.presence_cache().unwrap();
+    let points = tree.point_data().unwrap();
+
+    for (bytes, expected, flags) in [
+        (tree.as_bytes(), 0xff00_0000, 0xf),
+        (presence.as_bytes(), 0xfe00_0000, 0),
+        (points.as_bytes(), 0xfd00_0000, 0),
+    ] {
+        let header = u32::from_le_bytes(bytes[..4].try_into().unwrap());
+        assert_eq!(header & !flags, expected);
+        for bit in 0..32 {
+            if flags & (1 << bit) != 0 {
+                continue;
+            }
+            let mut invalid = bytes.to_vec();
+            invalid[..4].copy_from_slice(&(header ^ (1 << bit)).to_le_bytes());
+            let rejected = match expected {
+                0xff00_0000 => Tree::from_bytes(&grammar, &invalid).is_err(),
+                0xfe00_0000 => PresenceCache::copy_from_bytes(&tree, &invalid).is_err(),
+                _ => PointData::copy_from_bytes(&tree, &invalid).is_err(),
+            };
+            assert!(rejected, "format {expected:#x}, bit {bit}");
+        }
+    }
+}
+
+#[test]
 fn packing_context_matches_fresh_packing_and_loading() {
     let json =
         unsafe { tree_sitter::Language::from_raw(tree_sitter_json::LANGUAGE.into_raw()().cast()) };
