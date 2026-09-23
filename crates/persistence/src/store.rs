@@ -480,6 +480,7 @@ impl Store {
             return CurrentGuard::Unchecked;
         };
         match self.current.get(&tx, &request.source_key[..32]) {
+            Ok(Some(bytes)) if bytes.len() == 8 => CurrentGuard::Retired(bytes.try_into().unwrap()),
             Ok(Some(bytes)) => bytes
                 .try_into()
                 .map(CurrentGuard::Current)
@@ -668,6 +669,10 @@ impl Store {
         let superseded = match &request.current_guard {
             CurrentGuard::Unchecked => false,
             CurrentGuard::Missing => current.is_some_and(|value| value != request.source_key),
+            CurrentGuard::Retired(expected) => {
+                current != Some(expected.as_slice())
+                    && current != Some(request.source_key.as_slice())
+            }
             CurrentGuard::Current(expected) => {
                 current != Some(expected.as_slice())
                     && current != Some(request.source_key.as_slice())

@@ -76,6 +76,7 @@ pub(crate) struct Request {
 pub(crate) enum CurrentGuard {
     Unchecked,
     Missing,
+    Retired([u8; 8]),
     Current([u8; 72]),
 }
 

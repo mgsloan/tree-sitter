@@ -349,7 +349,10 @@ impl Maintenance {
                         && first_key(&tx, self.store.sources, &self.path_id, &self.path_id)?
                             .is_none()
                     {
-                        self.store.current.delete(&mut tx, &self.path_id)?;
+                        // Retain a distinct marker for each retirement so deferred
+                        // writers cannot mistake it for their original absent state.
+                        let retired = (tx.id() as u64).to_le_bytes();
+                        self.store.current.put(&mut tx, &self.path_id, &retired)?;
                         self.store.paths.delete(&mut tx, &self.path_id)?;
                     }
                     phase = Phase::Done;

@@ -93,6 +93,49 @@ fn stale_cleanup_stops_and_late_writer_cannot_restore_retired_records() {
 }
 
 #[test]
+fn missing_cleanup_rejects_deferred_first_writers_across_recreations() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("file.json");
+    let cache = Persistence::open(root.path(), Options::default()).unwrap();
+
+    for _ in 0..3 {
+        fs::write(&path, "1").unwrap();
+        let deferred = cache
+            .load_with_options(
+                Path::new("file.json"),
+                &grammar(),
+                &mut tree_sitter::Parser::new(),
+                LoadOptions {
+                    write: WritePolicy::Deferred,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert!(!deferred.file.cache_hit());
+        let pending = deferred.pending_write.unwrap();
+        assert!(!load(&cache).cache_hit());
+        assert!(load(&cache).cache_hit());
+
+        fs::remove_file(&path).unwrap();
+        let mut cleanup = cache
+            .maintenance_missing(Path::new("file.json"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(finish(&mut cleanup), 2);
+        assert_eq!(pending.publish().unwrap(), WriteOutcome::AlreadyPresent);
+        assert!(
+            cache
+                .maintenance_missing(Path::new("file.json"))
+                .unwrap()
+                .is_none()
+        );
+    }
+    fs::write(&path, "1").unwrap();
+    assert!(!load(&cache).cache_hit());
+    assert!(load(&cache).cache_hit());
+}
+
+#[test]
 fn sweep_finds_deleted_sources_without_loading_them() {
     let root = tempfile::tempdir().unwrap();
     let path = root.path().join("file.json");
