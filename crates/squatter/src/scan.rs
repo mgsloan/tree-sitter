@@ -39,6 +39,9 @@ use tree_sitter::Point;
 #[cfg(target_arch = "x86_64")]
 use fearless_simd::{Level, prelude::*, u8x16};
 
+#[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+use fearless_simd::u8x32;
+
 // Bias 16-bit deltas so signed comparisons test an unsigned range.
 #[cfg(target_arch = "x86_64")]
 fearless_simd::kernel!(
@@ -62,6 +65,32 @@ fearless_simd::kernel!(
     }
 );
 
+// Bias 16-bit deltas so signed AVX2 comparisons test an unsigned range.
+#[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+fearless_simd::kernel!(
+    #[inline]
+    fn avx2_retain_wide(simd: Avx2, bytes: &[u8], start: u32, length: u32) -> u32 {
+        use std::arch::x86_64::*;
+
+        let lower = _mm256_set1_epi16((start as u16 ^ 0x8000) as i16);
+        let upper = _mm256_set1_epi16((length as u16 ^ 0x8000) as i16);
+        let equal = _mm256_set1_epi16(start as i16);
+        let low: __m256i = u8x32::from_slice(simd, &bytes[..32]).into();
+        let high: __m256i = u8x32::from_slice(simd, &bytes[32..64]).into();
+        let matching = |values| {
+            if length == 1 {
+                _mm256_cmpeq_epi16(values, equal)
+            } else {
+                _mm256_cmpgt_epi16(upper, _mm256_sub_epi16(values, lower))
+            }
+        };
+        _mm256_movemask_epi8(_mm256_permute4x64_epi64(
+            _mm256_packs_epi16(matching(low), matching(high)),
+            0xd8,
+        )) as u32
+    }
+);
+
 // Bias byte deltas so signed comparisons test an unsigned range.
 #[cfg(target_arch = "x86_64")]
 fearless_simd::kernel!(
@@ -79,6 +108,26 @@ fearless_simd::kernel!(
             _mm_cmpgt_epi8(upper, _mm_sub_epi8(values, lower))
         };
         _mm_movemask_epi8(selected) as u16
+    }
+);
+
+// Bias byte deltas so signed AVX2 comparisons test an unsigned range.
+#[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+fearless_simd::kernel!(
+    #[inline]
+    fn avx2_retain_narrow(simd: Avx2, bytes: &[u8], start: u32, length: u32) -> u32 {
+        use std::arch::x86_64::*;
+
+        let lower = _mm256_set1_epi8((start as u8 ^ 0x80) as i8);
+        let upper = _mm256_set1_epi8((length as u8 ^ 0x80) as i8);
+        let equal = _mm256_set1_epi8(start as i8);
+        let values: __m256i = u8x32::from_slice(simd, bytes).into();
+        let selected = if length == 1 {
+            _mm256_cmpeq_epi8(values, equal)
+        } else {
+            _mm256_cmpgt_epi8(upper, _mm256_sub_epi8(values, lower))
+        };
+        _mm256_movemask_epi8(selected) as u32
     }
 );
 
@@ -116,6 +165,27 @@ fearless_simd::kernel!(
     }
 );
 
+// Avx2 tokens require x86-64-v3; +avx2 builds can detect that level at runtime.
+// Shift encoded words before comparing remapped IDs across 32 slots.
+#[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+fearless_simd::kernel!(
+    #[inline]
+    fn avx2_equal_ids(simd: Avx2, bytes: &[u8], shift: u32, target: u16) -> u32 {
+        use std::arch::x86_64::*;
+
+        let shift = _mm_cvtsi32_si128(shift as i32);
+        let target = _mm256_set1_epi16(target as i16);
+        let low: __m256i = u8x32::from_slice(simd, &bytes[..32]).into();
+        let high: __m256i = u8x32::from_slice(simd, &bytes[32..64]).into();
+        let low = _mm256_cmpeq_epi16(_mm256_srl_epi16(low, shift), target);
+        let high = _mm256_cmpeq_epi16(_mm256_srl_epi16(high, shift), target);
+        _mm256_movemask_epi8(_mm256_permute4x64_epi64(
+            _mm256_packs_epi16(low, high),
+            0xd8,
+        )) as u32
+    }
+);
+
 // Keep shifted IDs in vectors for repeated target comparisons.
 #[cfg(target_arch = "x86_64")]
 fearless_simd::kernel!(
@@ -134,6 +204,24 @@ fearless_simd::kernel!(
     }
 );
 
+// Keep shifted IDs in vectors for repeated target comparisons.
+#[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+fearless_simd::kernel!(
+    #[inline]
+    fn avx2_shifted_ids(
+        simd: Avx2,
+        bytes: &[u8],
+        shift: u32,
+    ) -> (std::arch::x86_64::__m256i, std::arch::x86_64::__m256i) {
+        use std::arch::x86_64::*;
+
+        let shift = _mm_cvtsi32_si128(shift as i32);
+        let low: __m256i = u8x32::from_slice(simd, &bytes[..32]).into();
+        let high: __m256i = u8x32::from_slice(simd, &bytes[32..64]).into();
+        (_mm256_srl_epi16(low, shift), _mm256_srl_epi16(high, shift))
+    }
+);
+
 // Seed both comparison masks with the first target.
 #[cfg(target_arch = "x86_64")]
 fearless_simd::kernel!(
@@ -148,6 +236,26 @@ fearless_simd::kernel!(
 
         let target = _mm_set1_epi16(target as i16);
         (_mm_cmpeq_epi16(low, target), _mm_cmpeq_epi16(high, target))
+    }
+);
+
+// Seed both comparison masks with the first target.
+#[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+fearless_simd::kernel!(
+    #[inline]
+    fn avx2_first_match(
+        _simd: Avx2,
+        low: std::arch::x86_64::__m256i,
+        high: std::arch::x86_64::__m256i,
+        target: u16,
+    ) -> (std::arch::x86_64::__m256i, std::arch::x86_64::__m256i) {
+        use std::arch::x86_64::*;
+
+        let target = _mm256_set1_epi16(target as i16);
+        (
+            _mm256_cmpeq_epi16(low, target),
+            _mm256_cmpeq_epi16(high, target),
+        )
     }
 );
 
@@ -173,129 +281,6 @@ fearless_simd::kernel!(
     }
 );
 
-// Pack two 16-bit comparison vectors into one slot mask.
-#[cfg(target_arch = "x86_64")]
-fearless_simd::kernel!(
-    #[inline]
-    fn sse2_short_mask(
-        _simd: Sse2,
-        low_matches: std::arch::x86_64::__m128i,
-        high_matches: std::arch::x86_64::__m128i,
-    ) -> u16 {
-        use std::arch::x86_64::*;
-
-        _mm_movemask_epi8(_mm_packs_epi16(low_matches, high_matches)) as u16
-    }
-);
-
-#[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
-use fearless_simd::u8x32;
-
-// Avx2 tokens require x86-64-v3; +avx2 builds can detect that level at runtime.
-// Shift encoded words before comparing remapped IDs across 32 slots.
-#[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
-fearless_simd::kernel!(
-    #[inline]
-    fn avx2_equal_ids(simd: Avx2, bytes: &[u8], shift: u32, target: u16) -> u32 {
-        use std::arch::x86_64::*;
-
-        let shift = _mm_cvtsi32_si128(shift as i32);
-        let target = _mm256_set1_epi16(target as i16);
-        let low: __m256i = u8x32::from_slice(simd, &bytes[..32]).into();
-        let high: __m256i = u8x32::from_slice(simd, &bytes[32..64]).into();
-        let low = _mm256_cmpeq_epi16(_mm256_srl_epi16(low, shift), target);
-        let high = _mm256_cmpeq_epi16(_mm256_srl_epi16(high, shift), target);
-        _mm256_movemask_epi8(_mm256_permute4x64_epi64(
-            _mm256_packs_epi16(low, high),
-            0xd8,
-        )) as u32
-    }
-);
-
-// Bias 16-bit deltas so signed AVX2 comparisons test an unsigned range.
-#[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
-fearless_simd::kernel!(
-    #[inline]
-    fn avx2_retain_wide(simd: Avx2, bytes: &[u8], start: u32, length: u32) -> u32 {
-        use std::arch::x86_64::*;
-
-        let lower = _mm256_set1_epi16((start as u16 ^ 0x8000) as i16);
-        let upper = _mm256_set1_epi16((length as u16 ^ 0x8000) as i16);
-        let equal = _mm256_set1_epi16(start as i16);
-        let low: __m256i = u8x32::from_slice(simd, &bytes[..32]).into();
-        let high: __m256i = u8x32::from_slice(simd, &bytes[32..64]).into();
-        let matching = |values| {
-            if length == 1 {
-                _mm256_cmpeq_epi16(values, equal)
-            } else {
-                _mm256_cmpgt_epi16(upper, _mm256_sub_epi16(values, lower))
-            }
-        };
-        _mm256_movemask_epi8(_mm256_permute4x64_epi64(
-            _mm256_packs_epi16(matching(low), matching(high)),
-            0xd8,
-        )) as u32
-    }
-);
-
-// Bias byte deltas so signed AVX2 comparisons test an unsigned range.
-#[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
-fearless_simd::kernel!(
-    #[inline]
-    fn avx2_retain_narrow(simd: Avx2, bytes: &[u8], start: u32, length: u32) -> u32 {
-        use std::arch::x86_64::*;
-
-        let lower = _mm256_set1_epi8((start as u8 ^ 0x80) as i8);
-        let upper = _mm256_set1_epi8((length as u8 ^ 0x80) as i8);
-        let equal = _mm256_set1_epi8(start as i8);
-        let values: __m256i = u8x32::from_slice(simd, bytes).into();
-        let selected = if length == 1 {
-            _mm256_cmpeq_epi8(values, equal)
-        } else {
-            _mm256_cmpgt_epi8(upper, _mm256_sub_epi8(values, lower))
-        };
-        _mm256_movemask_epi8(selected) as u32
-    }
-);
-
-// Keep shifted IDs in vectors for repeated target comparisons.
-#[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
-fearless_simd::kernel!(
-    #[inline]
-    fn avx2_shifted_ids(
-        simd: Avx2,
-        bytes: &[u8],
-        shift: u32,
-    ) -> (std::arch::x86_64::__m256i, std::arch::x86_64::__m256i) {
-        use std::arch::x86_64::*;
-
-        let shift = _mm_cvtsi32_si128(shift as i32);
-        let low: __m256i = u8x32::from_slice(simd, &bytes[..32]).into();
-        let high: __m256i = u8x32::from_slice(simd, &bytes[32..64]).into();
-        (_mm256_srl_epi16(low, shift), _mm256_srl_epi16(high, shift))
-    }
-);
-
-// Seed both comparison masks with the first target.
-#[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
-fearless_simd::kernel!(
-    #[inline]
-    fn avx2_first_match(
-        _simd: Avx2,
-        low: std::arch::x86_64::__m256i,
-        high: std::arch::x86_64::__m256i,
-        target: u16,
-    ) -> (std::arch::x86_64::__m256i, std::arch::x86_64::__m256i) {
-        use std::arch::x86_64::*;
-
-        let target = _mm256_set1_epi16(target as i16);
-        (
-            _mm256_cmpeq_epi16(low, target),
-            _mm256_cmpeq_epi16(high, target),
-        )
-    }
-);
-
 // Accumulate target matches before extracting slot bits.
 #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
 fearless_simd::kernel!(
@@ -315,6 +300,21 @@ fearless_simd::kernel!(
             _mm256_or_si256(low_matches, _mm256_cmpeq_epi16(low, target)),
             _mm256_or_si256(high_matches, _mm256_cmpeq_epi16(high, target)),
         )
+    }
+);
+
+// Pack two 16-bit comparison vectors into one slot mask.
+#[cfg(target_arch = "x86_64")]
+fearless_simd::kernel!(
+    #[inline]
+    fn sse2_short_mask(
+        _simd: Sse2,
+        low_matches: std::arch::x86_64::__m128i,
+        high_matches: std::arch::x86_64::__m128i,
+    ) -> u16 {
+        use std::arch::x86_64::*;
+
+        _mm_movemask_epi8(_mm_packs_epi16(low_matches, high_matches)) as u16
     }
 );
 
