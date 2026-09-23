@@ -4,17 +4,9 @@
 
 - [ ] Review and polish design.md
 
-- [x] Library that uses tree-sitter instead of a fork
-
 - [ ] Document Send+Sync for scans
 
 - [ ] Separate viz branch for visualizer
-
-- [x] Can query compilation code be similar to upstream with a minimized diff?
-
-- [x] Port core to Rust.  Use the scan iterators to reduce code complexity
-
-- [x] Decide how much to use newtypes.
 
 - [ ] Should presence and points have magic? hmmmm.. Should tree even?
 
@@ -29,21 +21,11 @@
 
 ## Performance
 
-- [x] https://github.com/Dekker1/tree-feller
-
-      >   codex resume 01a0b257-8b8e-7123-bdd6-c5deddc08fb7
-
-- [ ] Try adding sibling / parent jump columns
-
 - [ ] slot count and field widths. Range scan benchmarks suggest 32 slots might
   be better for both space and time.
 
 - [ ] Make groups cache-line aligned via offsets and choice of initial group
   count capacity?
-
-## Query
-
-- [x] Range containment
 
 ## Injections
 
@@ -58,8 +40,6 @@
 - [ ] Make hot loops generic over representation
 
 - [ ] Test that Zed file decode/transform code works.  How to make sure it doesn't diverge? Divergence does not cause incorrectness, but does cause hash mismatches
-
-## Misc
 
 
 
@@ -126,6 +106,8 @@ Parse only the needed info.
 # Backburner
 
 - [ ] Dedupe query compiler with upstream TS?
+
+- [ ] Parent / previous sibling links (slot counts)
 
 ## Correctness
 
