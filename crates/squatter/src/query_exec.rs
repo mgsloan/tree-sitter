@@ -14,6 +14,26 @@ use std::{
 };
 use tree_sitter::Point;
 
+#[cfg(all(target_arch = "x86_64", not(feature = "typed-presence-scan")))]
+use fearless_simd::{Level, prelude::*, u8x16};
+
+#[cfg(all(target_arch = "x86_64", not(feature = "typed-presence-scan")))]
+fearless_simd::kernel!(
+    #[inline]
+    fn sse2_equal_column(simd: Sse2, bytes: &[u8], value: u16, mask: u16) -> u16 {
+        use std::arch::x86_64::*;
+
+        let target = _mm_set1_epi16(value as i16);
+        let selected = _mm_set1_epi16(mask as i16);
+        let low: __m128i = u8x16::from_slice(simd, &bytes[..16]).into();
+        let high: __m128i = u8x16::from_slice(simd, &bytes[16..32]).into();
+        let low = _mm_and_si128(low, selected);
+        let high = _mm_and_si128(high, selected);
+        let equal = _mm_packs_epi16(_mm_cmpeq_epi16(low, target), _mm_cmpeq_epi16(high, target));
+        _mm_movemask_epi8(equal) as u16
+    }
+);
+
 const NONE: u32 = u32::MAX;
 const DONE: u16 = u16::MAX;
 const SEEKING_IMMEDIATE: u16 = 1;
@@ -2613,23 +2633,15 @@ fn equal_column(
     use crate::storage::GROUP_SIZE;
     let mut matches = 0;
     #[cfg(target_arch = "x86_64")]
-    unsafe {
-        use std::arch::x86_64::*;
-        let target = _mm_set1_epi16(value as i16);
-        let selected = _mm_set1_epi16(mask as i16);
-        let column = address.as_ptr().add((group * GROUP_SIZE) as usize * 2);
-        for lane in (0..GROUP_SIZE).step_by(16) {
-            let low = _mm_and_si128(
-                _mm_loadu_si128(column.add(lane as usize * 2).cast()),
-                selected,
-            );
-            let high = _mm_and_si128(
-                _mm_loadu_si128(column.add(lane as usize * 2 + 16).cast()),
-                selected,
-            );
-            let equal =
-                _mm_packs_epi16(_mm_cmpeq_epi16(low, target), _mm_cmpeq_epi16(high, target));
-            matches |= (_mm_movemask_epi8(equal) as u64) << lane;
+    {
+        let column = data.column_slice(
+            address,
+            (group * GROUP_SIZE) as usize * 2,
+            GROUP_SIZE as usize * 2,
+        );
+        let simd = Level::baseline().as_sse2().unwrap();
+        for (index, bytes) in column.chunks_exact(32).enumerate() {
+            matches |= (sse2_equal_column(simd, bytes, value, mask) as u64) << (index * 16);
         }
     }
     #[cfg(not(target_arch = "x86_64"))]

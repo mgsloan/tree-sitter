@@ -415,6 +415,16 @@ impl TreeData {
         unsafe { std::slice::from_raw_parts(self.bytes.as_ptr(), self.length as usize) }
     }
 
+    #[cfg(all(
+        target_arch = "x86_64",
+        any(not(feature = "typed-seek"), not(feature = "typed-presence-scan"))
+    ))]
+    #[inline]
+    pub(crate) fn column_slice(&self, column: ColumnPointer, start: usize, length: usize) -> &[u8] {
+        let offset = column.as_ptr() as usize - self.bytes.as_ptr() as usize;
+        &self.slice()[offset + start..offset + start + length]
+    }
+
     pub(crate) fn writer(&mut self) -> SlabWriter<'_> {
         SlabWriter {
             bytes: self.bytes,

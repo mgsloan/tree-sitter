@@ -10,6 +10,22 @@ use crate::{
 use std::{marker::PhantomData, ops::Range, ptr::NonNull};
 use tree_sitter::Point;
 
+#[cfg(all(target_arch = "x86_64", not(feature = "typed-seek")))]
+use fearless_simd::{Level, prelude::*, u8x16};
+
+#[cfg(all(target_arch = "x86_64", not(feature = "typed-seek")))]
+fearless_simd::kernel!(
+    #[inline]
+    fn sse2_start_mask(simd: Sse2, bytes: &[u8], threshold: u8) -> u16 {
+        use std::arch::x86_64::*;
+
+        let target = _mm_set1_epi8(threshold as i8);
+        let lanes: __m128i = u8x16::from_slice(simd, bytes).into();
+        let matches = _mm_cmpeq_epi8(_mm_min_epu8(lanes, target), lanes);
+        _mm_movemask_epi8(matches) as u16
+    }
+);
+
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
 pub(crate) struct RawNode {
@@ -701,19 +717,16 @@ impl<'tree> Node<'tree> {
 #[cfg(not(feature = "typed-seek"))]
 fn start_mask(data: &TreeData, group: u32, threshold: u8) -> u64 {
     #[cfg(target_arch = "x86_64")]
-    unsafe {
-        use std::arch::x86_64::*;
-        let target = _mm_set1_epi8(threshold as i8);
-        let deltas = data
-            .layout
-            .start_byte_delta
-            .as_ptr()
-            .add((group * GROUP_SIZE) as usize);
+    {
+        let deltas = data.column_slice(
+            data.layout.start_byte_delta,
+            (group * GROUP_SIZE) as usize,
+            GROUP_SIZE as usize,
+        );
+        let simd = Level::baseline().as_sse2().unwrap();
         let mut mask = 0;
-        for offset in (0..GROUP_SIZE).step_by(16) {
-            let lanes = _mm_loadu_si128(deltas.add(offset as usize).cast());
-            let matches = _mm_cmpeq_epi8(_mm_min_epu8(lanes, target), lanes);
-            mask |= (_mm_movemask_epi8(matches) as u64) << offset;
+        for (index, bytes) in deltas.chunks_exact(16).enumerate() {
+            mask |= (sse2_start_mask(simd, bytes, threshold) as u64) << (index * 16);
         }
         mask
     }
