@@ -13,6 +13,7 @@ use tree_sitter::Point;
 #[cfg(all(target_arch = "x86_64", not(feature = "typed-seek")))]
 use fearless_simd::{Level, prelude::*, u8x16};
 
+// Unsigned byte minima mark start deltas at or below the threshold.
 #[cfg(all(target_arch = "x86_64", not(feature = "typed-seek")))]
 fearless_simd::kernel!(
     #[inline]

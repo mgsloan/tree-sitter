@@ -17,6 +17,7 @@ use tree_sitter::Point;
 #[cfg(all(target_arch = "x86_64", not(feature = "typed-presence-scan")))]
 use fearless_simd::{Level, prelude::*, u8x16};
 
+// Mask encoded IDs before packing column equality into slot bits.
 #[cfg(all(target_arch = "x86_64", not(feature = "typed-presence-scan")))]
 fearless_simd::kernel!(
     #[inline]

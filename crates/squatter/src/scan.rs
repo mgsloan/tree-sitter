@@ -39,6 +39,7 @@ use tree_sitter::Point;
 #[cfg(target_arch = "x86_64")]
 use fearless_simd::{Level, prelude::*, u8x16};
 
+// Bias 16-bit deltas so signed comparisons test an unsigned range.
 #[cfg(target_arch = "x86_64")]
 fearless_simd::kernel!(
     #[inline]
@@ -61,6 +62,7 @@ fearless_simd::kernel!(
     }
 );
 
+// Bias byte deltas so signed comparisons test an unsigned range.
 #[cfg(target_arch = "x86_64")]
 fearless_simd::kernel!(
     #[inline]
@@ -80,6 +82,7 @@ fearless_simd::kernel!(
     }
 );
 
+// Pack zero bit tests into a mask of slots without the supertype.
 #[cfg(target_arch = "x86_64")]
 fearless_simd::kernel!(
     #[inline]
@@ -96,6 +99,7 @@ fearless_simd::kernel!(
     }
 );
 
+// Shift encoded words before comparing remapped IDs.
 #[cfg(target_arch = "x86_64")]
 fearless_simd::kernel!(
     #[inline]
@@ -112,6 +116,7 @@ fearless_simd::kernel!(
     }
 );
 
+// Keep shifted IDs in vectors for repeated target comparisons.
 #[cfg(target_arch = "x86_64")]
 fearless_simd::kernel!(
     #[inline]
@@ -129,6 +134,7 @@ fearless_simd::kernel!(
     }
 );
 
+// Seed both comparison masks with the first target.
 #[cfg(target_arch = "x86_64")]
 fearless_simd::kernel!(
     #[inline]
@@ -145,6 +151,7 @@ fearless_simd::kernel!(
     }
 );
 
+// Accumulate target matches before extracting slot bits.
 #[cfg(target_arch = "x86_64")]
 fearless_simd::kernel!(
     #[inline]
@@ -166,6 +173,7 @@ fearless_simd::kernel!(
     }
 );
 
+// Pack two 16-bit comparison vectors into one slot mask.
 #[cfg(target_arch = "x86_64")]
 fearless_simd::kernel!(
     #[inline]
@@ -184,6 +192,7 @@ fearless_simd::kernel!(
 use fearless_simd::u8x32;
 
 // Avx2 tokens require x86-64-v3; +avx2 builds can detect that level at runtime.
+// Shift encoded words before comparing remapped IDs across 32 slots.
 #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
 fearless_simd::kernel!(
     #[inline]
@@ -203,6 +212,7 @@ fearless_simd::kernel!(
     }
 );
 
+// Bias 16-bit deltas so signed AVX2 comparisons test an unsigned range.
 #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
 fearless_simd::kernel!(
     #[inline]
@@ -228,6 +238,7 @@ fearless_simd::kernel!(
     }
 );
 
+// Bias byte deltas so signed AVX2 comparisons test an unsigned range.
 #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
 fearless_simd::kernel!(
     #[inline]
@@ -247,6 +258,7 @@ fearless_simd::kernel!(
     }
 );
 
+// Keep shifted IDs in vectors for repeated target comparisons.
 #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
 fearless_simd::kernel!(
     #[inline]
@@ -264,6 +276,7 @@ fearless_simd::kernel!(
     }
 );
 
+// Seed both comparison masks with the first target.
 #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
 fearless_simd::kernel!(
     #[inline]
@@ -283,6 +296,7 @@ fearless_simd::kernel!(
     }
 );
 
+// Accumulate target matches before extracting slot bits.
 #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
 fearless_simd::kernel!(
     #[inline]
@@ -304,6 +318,7 @@ fearless_simd::kernel!(
     }
 );
 
+// Restore slot order after lane-local AVX2 packing.
 #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
 fearless_simd::kernel!(
     #[inline]
@@ -314,7 +329,6 @@ fearless_simd::kernel!(
     ) -> u32 {
         use std::arch::x86_64::*;
 
-        // packs operate within 128-bit lanes, so restore slot order before extracting bits.
         let packed = _mm256_packs_epi16(low, high);
         _mm256_movemask_epi8(_mm256_permute4x64_epi64(packed, 0xd8)) as u32
     }
