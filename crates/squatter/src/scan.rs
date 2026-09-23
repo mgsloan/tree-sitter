@@ -36,6 +36,66 @@ use std::{
 };
 use tree_sitter::Point;
 
+#[cfg(target_arch = "x86_64")]
+use fearless_simd::{Level, prelude::*, u8x16};
+
+#[cfg(target_arch = "x86_64")]
+fearless_simd::kernel!(
+    #[inline]
+    fn sse2_retain_wide(simd: Sse2, bytes: &[u8], start: u32, length: u32) -> u16 {
+        use std::arch::x86_64::*;
+
+        let lower = _mm_set1_epi16((start as u16 ^ 0x8000) as i16);
+        let upper = _mm_set1_epi16((length as u16 ^ 0x8000) as i16);
+        let equal = _mm_set1_epi16(start as i16);
+        let low: __m128i = u8x16::from_slice(simd, &bytes[..16]).into();
+        let high: __m128i = u8x16::from_slice(simd, &bytes[16..32]).into();
+        let matching = |values| {
+            if length == 1 {
+                _mm_cmpeq_epi16(values, equal)
+            } else {
+                _mm_cmpgt_epi16(upper, _mm_sub_epi16(values, lower))
+            }
+        };
+        _mm_movemask_epi8(_mm_packs_epi16(matching(low), matching(high))) as u16
+    }
+);
+
+#[cfg(target_arch = "x86_64")]
+fearless_simd::kernel!(
+    #[inline]
+    fn sse2_retain_narrow(simd: Sse2, bytes: &[u8], start: u32, length: u32) -> u16 {
+        use std::arch::x86_64::*;
+
+        let lower = _mm_set1_epi8((start as u8 ^ 0x80) as i8);
+        let upper = _mm_set1_epi8((length as u8 ^ 0x80) as i8);
+        let equal = _mm_set1_epi8(start as i8);
+        let values: __m128i = u8x16::from_slice(simd, bytes).into();
+        let selected = if length == 1 {
+            _mm_cmpeq_epi8(values, equal)
+        } else {
+            _mm_cmpgt_epi8(upper, _mm_sub_epi8(values, lower))
+        };
+        _mm_movemask_epi8(selected) as u16
+    }
+);
+
+#[cfg(target_arch = "x86_64")]
+fearless_simd::kernel!(
+    #[inline]
+    fn sse2_absent_supertype(simd: Sse2, bytes: &[u8], bit: u16) -> u16 {
+        use std::arch::x86_64::*;
+
+        let bit = _mm_set1_epi16(bit as i16);
+        let zero = _mm_setzero_si128();
+        let low: __m128i = u8x16::from_slice(simd, &bytes[..16]).into();
+        let high: __m128i = u8x16::from_slice(simd, &bytes[16..32]).into();
+        let low = _mm_cmpeq_epi16(_mm_and_si128(low, bit), zero);
+        let high = _mm_cmpeq_epi16(_mm_and_si128(high, bit), zero);
+        _mm_movemask_epi8(_mm_packs_epi16(low, high)) as u16
+    }
+);
+
 #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
 #[inline]
 unsafe fn avx2_short_mask(
@@ -343,9 +403,9 @@ impl<'tree> GroupRef<'tree> {
         let mut matches = 0;
         #[cfg(target_arch = "x86_64")]
         {
-            use std::arch::x86_64::*;
             #[cfg(target_feature = "avx2")]
             if GROUP_SIZE == 32 {
+                use std::arch::x86_64::*;
                 unsafe {
                     let shift = _mm_cvtsi32_si128(shift as i32);
                     let target = _mm256_set1_epi16(target as i16);
@@ -356,6 +416,7 @@ impl<'tree> GroupRef<'tree> {
                     return candidates.intersection(Mask(avx2_short_mask(low, high) as u64));
                 }
             }
+            use std::arch::x86_64::*;
             // SSE2 is baseline on x86_64. The group slice covers both unaligned
             // loads; full groups contain a multiple of 16 little-endian IDs.
             unsafe {
@@ -1485,11 +1546,11 @@ fn retain_deltas<const WIDE: bool>(
     {
         let remaining = candidates.0 & (candidates.0 - 1);
         if remaining != 0 && !remaining.is_power_of_two() {
-            use std::arch::x86_64::*;
             let mut matches = 0;
             let length = bounds.end - bounds.start;
             #[cfg(target_feature = "avx2")]
             if GROUP_SIZE == 32 && deltas.len() == (if WIDE { 64 } else { 32 }) {
+                use std::arch::x86_64::*;
                 unsafe {
                     if WIDE {
                         let lower = _mm256_set1_epi16((bounds.start as u16 ^ 0x8000) as i16);
@@ -1523,37 +1584,16 @@ fn retain_deltas<const WIDE: bool>(
             // Bias the wrapped delta-minus-lower by the sign bit so signed SIMD
             // comparisons implement an unsigned interval test. Checked chunks
             // cover complete groups; candidate clipping excludes waste lanes.
-            unsafe {
-                if WIDE {
-                    let lower = _mm_set1_epi16((bounds.start as u16 ^ 0x8000) as i16);
-                    let upper = _mm_set1_epi16((length as u16 ^ 0x8000) as i16);
-                    let equal = _mm_set1_epi16(bounds.start as i16);
-                    let matching = |values| {
-                        if length == 1 {
-                            _mm_cmpeq_epi16(values, equal)
-                        } else {
-                            _mm_cmpgt_epi16(upper, _mm_sub_epi16(values, lower))
-                        }
-                    };
-                    for (index, bytes) in deltas.chunks_exact(32).enumerate() {
-                        let low = matching(_mm_loadu_si128(bytes.as_ptr().cast()));
-                        let high = matching(_mm_loadu_si128(bytes.as_ptr().add(16).cast()));
-                        matches |=
-                            (_mm_movemask_epi8(_mm_packs_epi16(low, high)) as u64) << (index * 16);
-                    }
-                } else {
-                    let lower = _mm_set1_epi8((bounds.start as u8 ^ 0x80) as i8);
-                    let upper = _mm_set1_epi8((length as u8 ^ 0x80) as i8);
-                    let equal = _mm_set1_epi8(bounds.start as i8);
-                    for (index, bytes) in deltas.chunks_exact(16).enumerate() {
-                        let values = _mm_loadu_si128(bytes.as_ptr().cast());
-                        let selected = if length == 1 {
-                            _mm_cmpeq_epi8(values, equal)
-                        } else {
-                            _mm_cmpgt_epi8(upper, _mm_sub_epi8(values, lower))
-                        };
-                        matches |= (_mm_movemask_epi8(selected) as u64) << (index * 16);
-                    }
+            let simd = Level::baseline().as_sse2().unwrap();
+            if WIDE {
+                for (index, bytes) in deltas.chunks_exact(32).enumerate() {
+                    matches |= (sse2_retain_wide(simd, bytes, bounds.start, length) as u64)
+                        << (index * 16);
+                }
+            } else {
+                for (index, bytes) in deltas.chunks_exact(16).enumerate() {
+                    matches |= (sse2_retain_narrow(simd, bytes, bounds.start, length) as u64)
+                        << (index * 16);
                 }
             }
             return candidates.intersection(Mask(matches));
@@ -3202,21 +3242,12 @@ fn retain_supertype_masks(masks: &[u8], candidates: Mask, bit: u16) -> Mask {
     {
         let remaining = candidates.0 & (candidates.0 - 1);
         if remaining != 0 && !remaining.is_power_of_two() {
-            use std::arch::x86_64::*;
             let mut absent = 0;
             // Each checked chunk covers both SSE2 loads. Candidate clipping
             // excludes waste and slots outside the subtree after mask extraction.
-            unsafe {
-                let bit = _mm_set1_epi16(bit as i16);
-                let zero = _mm_setzero_si128();
-                for (index, bytes) in masks.chunks_exact(32).enumerate() {
-                    let low = _mm_loadu_si128(bytes.as_ptr().cast());
-                    let high = _mm_loadu_si128(bytes.as_ptr().add(16).cast());
-                    let low = _mm_cmpeq_epi16(_mm_and_si128(low, bit), zero);
-                    let high = _mm_cmpeq_epi16(_mm_and_si128(high, bit), zero);
-                    absent |=
-                        (_mm_movemask_epi8(_mm_packs_epi16(low, high)) as u64) << (index * 16);
-                }
+            let simd = Level::baseline().as_sse2().unwrap();
+            for (index, bytes) in masks.chunks_exact(32).enumerate() {
+                absent |= (sse2_absent_supertype(simd, bytes, bit) as u64) << (index * 16);
             }
             return Mask(candidates.0 & !absent);
         }

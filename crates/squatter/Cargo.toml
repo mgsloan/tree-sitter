@@ -14,6 +14,7 @@ typed-seek = []
 [dependencies]
 tree-sitter.workspace = true
 regex.workspace = true
+fearless_simd = "1.0.0"
 
 [build-dependencies]
 bindgen = { version = "0.72.1", default-features = false, features = ["runtime"] }

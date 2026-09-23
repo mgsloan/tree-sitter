@@ -227,8 +227,8 @@ impl Grammar {
         };
         drop(unsafe { Language::from_raw(language) });
         let raw = NonNull::new(raw).ok_or_else(|| Error::from_code(error))?;
-        let view =
-            unsafe { NonNull::new_unchecked(sq_native_grammar_view(raw.as_ptr()).cast_mut()) };
+        let view = NonNull::new(unsafe { sq_native_grammar_view(raw.as_ptr()).cast_mut() })
+            .expect("valid grammar has a view");
         Ok(Self { raw, view })
     }
 

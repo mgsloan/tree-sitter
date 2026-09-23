@@ -515,8 +515,8 @@ impl Tree {
         };
         let pointer = NonNull::new(pointer).unwrap_or_else(|| handle_alloc_error(allocation));
         let bytes = match borrowed {
-            Some(bytes) => unsafe { NonNull::new_unchecked(bytes.as_ptr().cast_mut()) },
-            None => unsafe { NonNull::new_unchecked(pointer.as_ptr().add(prefix())) },
+            Some(bytes) => NonNull::from(bytes).cast(),
+            None => NonNull::new(pointer.as_ptr().wrapping_add(prefix())).unwrap(),
         };
         unsafe {
             pointer.cast::<TreeData>().as_ptr().write(TreeData {
@@ -767,7 +767,7 @@ impl Tree {
                 .cast();
             let pointer = self.0.as_ptr();
             let data = self.data_mut();
-            data.bytes = unsafe { NonNull::new_unchecked(pointer.cast::<u8>().add(prefix())) };
+            data.bytes = NonNull::new(pointer.cast::<u8>().wrapping_add(prefix())).unwrap();
             data.layout = next.resolve(data.bytes);
             data.allocation_length = length;
         }
