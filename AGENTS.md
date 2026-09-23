@@ -48,3 +48,16 @@ Documents should have similar concision and simplicity as comments. However, the
 # Commit style
 
 The body should be concise when possible, but also going into details that might be relevant to someone ending up on the commit via a blame in the future. These do not need to be PR style descriptions - these do not need to advocate for the change or persuade.
+
+# Benchmarking code layout
+
+* Hot-loop benchmarks can change with executable code layout. Before treating a small difference as an optimization or regression, rebuild both versions with the same set of fixed LLD section-shuffle seeds and compare the results across seeds.
+
+* For example, replace `101` with each seed and use the same build flags and benchmark workload for both versions:
+
+  ```bash
+  RUSTFLAGS="-C linker=clang -C link-arg=-fuse-ld=lld -C link-arg=-Wl,--shuffle-sections=.text.*=101" \
+    cargo build --release --bin scanning-bench
+  ```
+
+* Use several seeds (for example, 101–110) and alternate baseline and candidate runs. If the difference changes sign or is smaller than variation across seeds, do not infer a performance win. This shuffles link-time code sections, not instructions within functions.
