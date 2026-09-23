@@ -19,7 +19,8 @@ pub(crate) const VERSION: u32 = 0x5351_0021
         64 => 4,
         _ => 0,
     }
-    | if ALIGNMENT == 64 { 8 } else { 0 };
+    | if ALIGNMENT == 64 { 8 } else { 0 }
+    | if SPAN_BITS == 16 { 16 } else { 0 };
 pub(crate) const WIDE_SUPERTYPES: u32 = 0x400;
 pub(crate) const SEPARATE_GRAMMAR: u32 = 0x800;
 pub(crate) const EXTRAS: u32 = 0x1000;
@@ -83,7 +84,7 @@ impl Layout<SlabOffset> {
             end_byte_base: column(aligned_bytes(capacity, 4)),
             end_byte_delta: column(aligned_bytes(slots, 2)),
             span_base: column(aligned_bytes(capacity, 4)),
-            span_delta: column(aligned_bytes(slots, 1)),
+            span_delta: column(aligned_bytes(slots, SPAN_BITS / 8)),
             symbol: column(aligned_bytes(slots, 2)),
             field: column(aligned_bytes(slots, 2)),
             supertype: column(aligned_bytes(slots, 2)),
@@ -146,7 +147,10 @@ impl<Column: Copy> Layout<Column> {
             (self.end_byte_base, aligned_bytes(groups, 4) as usize),
             (self.end_byte_delta, aligned_bytes(slots, 2) as usize),
             (self.span_base, aligned_bytes(groups, 4) as usize),
-            (self.span_delta, aligned_bytes(slots, 1) as usize),
+            (
+                self.span_delta,
+                aligned_bytes(slots, SPAN_BITS / 8) as usize,
+            ),
             (self.symbol, aligned_bytes(slots, 2) as usize),
             (self.field, aligned_bytes(slots, 2) as usize),
             (self.supertype, aligned_bytes(slots, 2) as usize),
@@ -343,8 +347,16 @@ impl TreeData {
 
     #[inline]
     pub fn first_slot(&self, slot: u32) -> u32 {
-        slot - self.word(self.layout.span_base, slot / GROUP_SIZE)
-            - self.byte(self.layout.span_delta, slot) as u32
+        slot - self.word(self.layout.span_base, slot / GROUP_SIZE) - self.span_delta(slot)
+    }
+
+    #[inline]
+    pub fn span_delta(&self, slot: u32) -> u32 {
+        if SPAN_BITS == 16 {
+            self.short(self.layout.span_delta, slot) as u32
+        } else {
+            self.byte(self.layout.span_delta, slot) as u32
+        }
     }
 
     #[inline]
@@ -954,7 +966,7 @@ impl Tree {
                 while ends.last().is_some_and(|end| *end > slot) {
                     ends.pop();
                 }
-                let span = span_base + data.byte(data.layout.span_delta, slot) as u64;
+                let span = span_base + data.span_delta(slot) as u64;
                 if span > slot as u64 {
                     return Err(Error::InvalidSlab);
                 }

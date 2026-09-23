@@ -311,12 +311,9 @@ impl<'tree> Node<'tree> {
 
             // Reject a whole group if even its largest possible span cannot
             // reach this node. The first enclosing span is the nearest parent.
-            if slot as u64 <= self.slot().get() as u64 + base + 255 {
+            if slot as u64 <= self.slot().get() as u64 + base + ((1 << SPAN_BITS) - 1) as u64 {
                 while slot < end {
-                    if slot as u64
-                        <= self.slot().get() as u64
-                            + base
-                            + data.byte(data.layout.span_delta, slot) as u64
+                    if slot as u64 <= self.slot().get() as u64 + base + data.span_delta(slot) as u64
                     {
                         return Some(self.at(SlotIx::new(slot)));
                     }

@@ -109,12 +109,14 @@ fn main() {
         }
         value
     };
-    let group_size = definition("SQ_GROUP_SIZE", 16);
+    let group_size = definition("SQ_GROUP_SIZE", 32);
+    let span_bits = definition("SQ_SPAN_BITS", 16);
     let alignment = definition("SQ_COLUMN_ALIGNMENT", 8);
     assert!(matches!(group_size, 16 | 32 | 64));
+    assert!(matches!(span_bits, 8 | 16));
     assert!(matches!(alignment, 8 | 64));
     fs::write(PathBuf::from(env::var_os("OUT_DIR").unwrap()).join("format.rs"),
-        format!("pub(crate) const GROUP_SIZE: u32 = {group_size};\npub(crate) const ALIGNMENT: usize = {alignment};\n")).unwrap();
+        format!("pub(crate) const GROUP_SIZE: u32 = {group_size};\npub(crate) const SPAN_BITS: u32 = {span_bits};\npub(crate) const ALIGNMENT: usize = {alignment};\n")).unwrap();
 
     println!("cargo:rerun-if-changed=native");
     println!("cargo:rerun-if-changed={}", feller.display());

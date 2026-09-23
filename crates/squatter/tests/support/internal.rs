@@ -29,6 +29,14 @@ struct Fixture {
     _owner: LanguageOwner,
 }
 
+fn put_span_delta(data: &mut TreeData, slot: u32, value: u16) {
+    if SPAN_BITS == 16 {
+        data.put_short(data.layout.span_delta, slot, value);
+    } else {
+        data.put_byte(data.layout.span_delta, slot, value as u8);
+    }
+}
+
 impl Fixture {
     unsafe fn new(pointer: *const c_void, delete: unsafe extern "C" fn(*const c_void)) -> Self {
         let language = unsafe { tree_sitter::Language::from_raw(pointer.cast()) };
@@ -281,11 +289,11 @@ fn navigation_across_every_waste_boundary() {
                 for lane in 0..GROUP_SIZE - waste[group] {
                     let slot = group as u32 * GROUP_SIZE + lane;
                     slots.push(SlotIx::new(slot));
-                    data.put_byte(
-                        data.layout.span_delta,
+                    put_span_delta(
+                        data,
                         slot,
                         if group > 0 && lane == 0 {
-                            waste[group - 1] as u8
+                            waste[group - 1] as u16
                         } else {
                             0
                         },
@@ -294,7 +302,7 @@ fn navigation_across_every_waste_boundary() {
                 }
             }
             let root = *slots.last().unwrap();
-            data.put_byte(data.layout.span_delta, root.get(), root.get() as u8);
+            put_span_delta(data, root.get(), root.get() as u16);
             data.put_bit(data.layout.last, root.get(), true);
             assert_eq!(tree.root_node().slot(), root);
             let expected: Vec<_> = slots.iter().rev().copied().collect();
@@ -352,7 +360,7 @@ fn exercise_columns(tree: &mut Tree, fill: bool) {
         (layout.extra, 1, GROUP_SIZE),
         (layout.error, 1, 1),
         (layout.missing, 1, GROUP_SIZE),
-        (layout.span_delta, 8, GROUP_SIZE),
+        (layout.span_delta, SPAN_BITS as usize, GROUP_SIZE),
         (layout.start_byte_delta, 8, GROUP_SIZE),
         (layout.end_byte_delta, 16, GROUP_SIZE),
         (layout.supertype, 16, GROUP_SIZE),

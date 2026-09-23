@@ -214,7 +214,12 @@ impl Builder {
         // Reverse preorder makes start bytes nonincreasing; end bytes need both extrema.
         base.start_byte = value.start_byte;
         if maximum.start_byte - base.start_byte > 255
-            || !extend(value.span, &mut base.span, &mut maximum.span, 255)
+            || !extend(
+                value.span,
+                &mut base.span,
+                &mut maximum.span,
+                (1 << SPAN_BITS) - 1,
+            )
             || !extend(
                 value.end_byte,
                 &mut base.end_byte,
@@ -317,7 +322,7 @@ impl Builder {
         }
 
         // Keep small spans directly readable from the delta column.
-        if self.maximum.span <= 255 {
+        if self.maximum.span <= (1 << SPAN_BITS) - 1 {
             self.base.span = 0;
         }
 
@@ -358,7 +363,15 @@ impl Builder {
         for (index, pending) in pending.iter().enumerate() {
             let value = pending.values;
             let slot = self.slot_base + index as u32;
-            writer.put_byte(layout.span_delta, slot, (value.span - self.base.span) as u8);
+            if SPAN_BITS == 16 {
+                writer.put_short(
+                    layout.span_delta,
+                    slot,
+                    (value.span - self.base.span) as u16,
+                );
+            } else {
+                writer.put_byte(layout.span_delta, slot, (value.span - self.base.span) as u8);
+            }
             writer.put_byte(
                 layout.start_byte_delta,
                 slot,
