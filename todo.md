@@ -8,24 +8,7 @@
 
 - [ ] Separate viz branch for visualizer
 
-- [ ] Should presence and points have magic? hmmmm.. Should tree even?
-
-- [ ] A deferred first writer can resurrect retired records after missing-file cleanup.
-  crates/persistence/src/store.rs:618 treats CurrentGuard::Missing as valid when the current record
-  is absent again. I reproduced: capture a deferred first load → publish another load → delete the
-  file and finish cleanup → publish the deferred load. Publication succeeds and restores the retired
-  records. The guard needs to distinguish “never published” from “published and subsequently
-  retired.”
-
 - [ ] Look into the unexpected cargo features
-
-## Performance
-
-- [ ] slot count and field widths. Range scan benchmarks suggest 32 slots might
-  be better for both space and time.
-
-- [ ] Make groups cache-line aligned via offsets and choice of initial group
-  count capacity?
 
 ## Injections
 
@@ -45,6 +28,11 @@
 
 
 # Post MVP
+
+## Cleanup
+
+- [ ] fearless_simd is mostly used for feature tokens and the kernel! macro, which could be provied
+  by far less code than that crate.
 
 ## Correctness
 
@@ -102,6 +90,7 @@ Parse only the needed info.
 
 - [ ] symbol presence optimizations - bitmap per group and then do a SIMD transpose?
 
+- [ ] PGO of the C parts? Switch back to C to allow use of PGO data within the crate?
 
 # Backburner
 
