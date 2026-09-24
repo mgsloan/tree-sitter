@@ -346,7 +346,9 @@ let mut injections = loaded.injections;
 
 // this consumer requires document points; source uses the host's captured bytes
 if !injections.forest().has_points() {
-    let points = PointData::build_forest(injections.forest(), &source, None)?;
+    let forest = injections.forest();
+    let sources: Vec<_> = forest.trees().map(|_| &source).collect();
+    let points = PointData::build_forest(forest, &sources, None)?;
     injections.set_point_data(points)?;
 }
 

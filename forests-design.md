@@ -4,11 +4,14 @@ Step 2 of 3: [side data](side-data.md) → forests →
 [injections](injections-design.md). Assume step 1 is implemented, including
 optional materialized points and independently owned side data.
 
-Decision draft for `crates/squatter-rust`, not implemented API. Rust excerpts
-show additions; routine constructors, errors, and unchanged methods are omitted.
+Decision draft for `crates/squatter`, not implemented API. Rust excerpts show
+proposed types and signatures; routine constructors and errors are omitted.
 Prototype formats remain at version 0, with no migration support.
 
-A forest owns multiple independent packed trees, grouped by exact grammar.
+A forest owns zero or more independent packed trees in caller-supplied order.
+Each region is a contiguous run of trees sharing an exact grammar; the same
+grammar may occur in several regions.
+Every core slab uses the forest representation, including single-tree slabs.
 It has no language resolver, discovery policy, logical layer graph, host tree,
 or application query configuration. Callers can use it without the third step.
 
@@ -16,22 +19,26 @@ or application query configuration. Callers can use it without the third step.
 
 ```rust
 pub struct Forest {
-    core: ForestSlab,
-    grammars: Vec<Grammar>,
-    presence_caches: Vec<Option<PresenceCache>>, // one independently owned entry per region
-    point_data: Option<PointData>,
+    data: Box<ForestData>,
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct TreeId(u32);   // local to one forest
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct RegionId(u32); // local to one forest
-pub struct TreeView<'forest> { /* borrowed tree interval and owner */ }
-pub struct GrammarRegion<'forest> { /* borrowed region and owner */ }
+#[derive(Clone, Copy)]
+pub struct Tree<'forest> {
+    forest: &'forest ForestData,
+    id: TreeId,
+}
+#[derive(Clone, Copy)]
+pub struct ForestRegion<'forest> {
+    forest: &'forest ForestData,
+    id: RegionId,
+}
 
 pub struct PackInput<'tree> {
     pub grammar: &'tree Grammar,
-    pub tree: &'tree tree_sitter::Tree,
-    pub byte_origin: usize,
+    pub root: tree_sitter::Node<'tree>,
 }
 
 impl PackContext {
@@ -49,28 +56,46 @@ pub enum ForestError {
 }
 
 impl Forest {
-    pub fn tree(&self, id: TreeId) -> Option<TreeView<'_>>;
-    pub fn regions(&self) -> impl Iterator<Item = GrammarRegion<'_>>;
+    pub fn tree(&self, id: TreeId) -> Option<Tree<'_>>;
+    pub fn trees(&self) -> impl Iterator<Item = Tree<'_>>;
+    pub fn regions(&self) -> impl Iterator<Item = ForestRegion<'_>>;
     pub fn has_points(&self) -> bool;
 }
 
-impl<'forest> GrammarRegion<'forest> {
+impl<'forest> ForestRegion<'forest> {
     pub fn id(&self) -> RegionId;
     pub fn grammar(&self) -> &'forest Grammar;
-    pub fn trees(&self) -> impl Iterator<Item = TreeView<'forest>>;
+    pub fn trees(&self) -> impl Iterator<Item = Tree<'forest>>;
 }
 
-impl<'forest> TreeView<'forest> {
-    pub fn id(&self) -> TreeId;
-    pub fn root_node(&self) -> Node<'forest>;
-    pub fn has_points(&self) -> bool;
+impl<'forest> Tree<'forest> {
+    pub fn id(self) -> TreeId;
+    pub fn grammar(self) -> &'forest Grammar;
+    pub fn root_node(self) -> Node<'forest>;
+    pub fn has_points(self) -> bool;
 }
 ```
 
-The returned vector maps input order to physical tree IDs. Empty input is valid.
-Use deterministic region/tree ordering for the same ordered inputs and bindings.
-Each exact grammar gets one contiguous region; each tree gets a group-aligned
-interval. Grouping trees never combines their native parser inputs.
+Packing preserves input order; the returned vector maps that order to physical
+tree IDs. Empty input is valid. Adjacent inputs with the same exact grammar
+share a region; a grammar change starts another region. Each tree gets a
+group-aligned interval. Region boundaries and IDs are deterministic for the same
+ordered inputs and grammar bindings. Grouping never combines native parser inputs.
+
+The caller may group inputs by grammar or sort them before packing, but neither
+is required. Discovery can append trees as parsing completes, including when
+grammars recur through injection nesting. Direct-parser output can be encoded
+into the forest after each parse without retaining all parses for later grammar
+grouping. This does not require the parser itself to stream individual nodes.
+Source-order indexes can be built separately from physical packing order; no
+byte-order sorting or index is required by the initial forest representation.
+
+Each input packs the supplied node and its descendants as an independent tree;
+the node need not be a whole-tree root. Preserve its displayed kind/alias and
+subtree contents. Its packed root has no parent, siblings, parent field, or
+supertype context inherited from excluded ancestors. Relationships and supertype
+context within the subtree remain intact. Queries on the detached tree need not
+match queries that depended on its original ancestors.
 
 `PackOptions::symbol_presence` requests a completed cache for every grammar
 region; `points` requests completed point data for the forest. Both default to
@@ -78,22 +103,30 @@ true as in step 1. Requested sidecars use their own allocations, even when fille
 during forest packing. Failure to construct requested side data fails the
 operation. These flags do not change core grouping, IDs, or serialized bytes.
 
-Packing adds `byte_origin` to native byte coordinates with checked arithmetic.
-The core stores those resulting bytes; there is no additional placement applied
-by node access. This supports trees parsed from slices of a larger source without
-requiring any knowledge of why they were parsed separately. Nodes can span gaps
-in native included ranges; the forest does not retain parser requests.
+Packing preserves the supplied node's coordinate frame. The core stores its
+byte coordinates; requested point data preserves its native point coordinates.
+Callers place relative trees before packing, for example with
+`root_node_with_offset(origin_byte, origin_point)`, and check that translation
+before constructing the positioned node. There is no separate `byte_origin`
+parameter or additional placement during node access. Nodes can span gaps in
+native included ranges; the forest does not retain parser requests. Trees may
+come from unrelated sources and use independent byte and point coordinate frames,
+including within one region. Neither core storage nor point data requires a
+shared source or a forest-wide coordinate frame.
 
 Tree/region IDs identify descriptors only within their owner. Physical node IDs
 identify slots, including group waste; wasted slots do not produce nodes. None of
 these IDs is stable across rebuilding/reordering. The caller chooses a main tree
-if its application has one; grammar order makes no tree the document root.
+if its application has one; physical order makes no tree the document root.
 
 ```rust
+// placement checked before constructing the positioned root
+let positioned_second = second.root_node_with_offset(second_origin, second_point);
+let third_subtree = third.root_node().named_child(0).unwrap();
 let inputs = [
-    PackInput { grammar: &grammar_a, tree: &first, byte_origin: 0 },
-    PackInput { grammar: &grammar_b, tree: &second, byte_origin: second_origin },
-    PackInput { grammar: &grammar_a, tree: &third, byte_origin: third_origin },
+    PackInput { grammar: &grammar_a, root: first.root_node() },
+    PackInput { grammar: &grammar_b, root: positioned_second },
+    PackInput { grammar: &grammar_a, root: third_subtree },
 ];
 let options = PackOptions {
     symbol_presence: false,
@@ -102,12 +135,173 @@ let options = PackOptions {
 };
 let (forest, input_trees) = packer.pack_forest(&inputs, options, None)?;
 let second_root = forest.tree(input_trees[1]).unwrap().root_node();
-assert_eq!(second_root.start_byte(), second_origin + second.root_node().start_byte());
+assert_eq!(second_root.start_byte(), positioned_second.start_byte());
 ```
 
-Retain standalone `Tree` and its convenience packing API. Internally it follows
-the same storage and borrowing rules as a one-tree forest; callers need not
-construct a forest to use ordinary trees.
+Retain convenience packing for a single native tree, returning a one-tree
+`Forest`. `Tree<'forest>` replaces the standalone owning `Tree` from step 1; it
+always borrows one tree. There is one ownership implementation and no separate
+single-tree slab format. Serialization and side-data attachment belong to
+`Forest`. A borrowed tree's nodes outlive the temporary handle, up to the
+lifetime of its forest borrow.
+
+## Packing bounds
+
+Check grammar compatibility and coordinate bounds once per `PackInput`. Trust
+Tree-sitter's subtree containment; do not add a coordinate-validation pass or
+repeat these checks for every descendant. Packing does not verify coordinates
+against source text or prove that byte and point positions correspond.
+
+For bytes, compute the supplied node's start plus its native subtree byte size
+using checked or widened arithmetic, and require the result to fit `u32`.
+Do not use `root.end_byte()` as the overflow check: that accessor already adds
+the size in native-width arithmetic. The checked input bound then covers byte
+arithmetic throughout traversal. Placement that wrapped or truncated before the
+node reached packing cannot reliably be detected; checking that earlier
+translation belongs to the caller.
+
+When copying native points, check the supplied start row plus native subtree row
+extent once per input. The ending column does not bound columns on earlier
+lines. A conservative column bound is the supplied start column plus subtree
+byte size, computed with checked or widened arithmetic and required to fit
+`u32`. This can reject representable multiline inputs near the column limit;
+accept that conservatism rather than adding per-node overflow checks. Later
+lines retain Tree-sitter's valid columns without the initial column translation.
+Skip native point checks when points are not requested. Explicit point building
+from `LineIndex` uses source-derived coordinates instead.
+
+Check physical slot limits when opening/reserving each group, including all
+waste slots, so per-node slot increments and span subtraction stay within the
+established bounds. Input node counts alone do not bound physical slots because
+packing can close partially filled groups. Capacity growth also checks group
+counts, column offsets, and allocation sizes. Per-node delta-fit checks remain
+ordinary encoding decisions: a value that does not fit closes the current group
+and is retried in a new one, without repeated coordinate validation.
+
+## Storage ownership and read paths
+
+Keep allocation ownership separate from resolved reader addresses. Private
+fields below are illustrative; they do not prescribe allocation coalescing or
+the serialized descriptor layout.
+
+```rust
+enum Storage {
+    Owned(AlignedAllocation),
+    Backed(Box<dyn StableSlab>),
+}
+
+struct ForestData {
+    columns: Layout<ColumnPointer>,
+    bytes: NonNull<u8>,
+    byte_length: usize,
+    trees: TreeTable, // indexed view of core descriptors
+    regions: Vec<RegionData>,
+    point_data: Option<PointData>,
+    storage: Storage,
+}
+
+struct RegionData {
+    grammar: Grammar,
+    presence_cache: Option<PresenceCache>,
+    // region bounds and resolved reader metadata
+}
+
+impl Forest {
+    pub fn as_bytes(&self) -> &[u8];
+    pub fn from_bytes(grammars: &[Grammar], bytes: &[u8]) -> Result<Self, Error>;
+    pub fn from_backing(
+        grammars: &[Grammar],
+        backing: impl StableSlab,
+    ) -> Result<Self, Error>;
+}
+```
+
+Packing and `from_bytes` allocate core storage; `from_backing` retains immutable
+storage with the existing `StableSlab` contract. Both return `Forest`, with no
+public `BackedForest` variant. Resolve column and descriptor-table addresses at
+construction. Nodes read these addresses directly; `as_bytes()` uses the cached
+base and length. Neither path matches on `Storage` or calls `StableSlab::bytes()`.
+Side-data readers likewise cache their payload addresses so backing selection
+stays out of point and presence access.
+
+The enum occupies owner metadata and is used during construction, destruction,
+and explicitly storage-dependent operations. Retained backing can require a
+box and dynamic destruction, but adds no per-node dispatch or pointer hop.
+Reader addresses remain valid and immutable while borrowed. Packing may relocate
+storage only before publication and must refresh resolved addresses afterward.
+Side-data replacement refreshes its reader metadata under exclusive forest
+access. Moving `Forest` does not move `ForestData` or its retained storage.
+
+Externally borrowed bytes require a separate lifetime-bearing wrapper if that
+loading API is retained; they cannot enter `Forest` through `StableSlab` without
+a retained owner. This does not require another tree representation.
+
+## Nodes and tree lookup
+
+```rust
+#[derive(Clone, Copy)]
+pub struct Node<'forest> {
+    forest: &'forest ForestData,
+    tree: TreeId,
+    slot: SlotIx, // physical slot within the forest
+}
+
+#[derive(Clone, Copy)]
+struct TreeContext<'forest> {
+    forest: &'forest ForestData,
+    tree: TreeId,
+    descriptor: &'forest TreeDescriptor,
+    region: &'forest RegionData,
+}
+
+pub struct Cursor<'forest> {
+    context: TreeContext<'forest>,
+    slot: SlotIx,
+    // traversal state
+}
+
+pub struct QueryCursor {
+    // reusable scratch, independent of any forest
+}
+
+pub struct QueryExecution<'cursor, 'forest> {
+    cursor: &'cursor mut QueryCursor,
+    context: TreeContext<'forest>,
+    // query, source, and matching state
+}
+
+impl ForestData {
+    fn tree_context(&self, tree: TreeId) -> TreeContext<'_>;
+}
+
+impl<'forest> Node<'forest> {
+    pub fn walk(self) -> Result<Cursor<'forest>, Error>;
+}
+
+impl<'forest> Cursor<'forest> {
+    pub fn node(&self) -> Node<'forest>;
+}
+```
+
+Column access follows `Node → ForestData.columns → column bytes`, without going
+through a `Tree` handle or tree descriptor. A forest reference and two 32-bit
+indices can fit in 16 bytes on a 64-bit target; verify the implemented layout.
+Node equality and hashing use forest identity and physical slot. Construction
+ensures the slot is live and belongs to the carried tree ID.
+
+Tree-dependent operations index the tree table by `TreeId`; its descriptor
+provides group bounds and `RegionId`. The region supplies grammar and presence
+metadata. No containing-tree search by slot is needed. Standalone operations
+such as `node.parent()` resolve this context when called.
+
+Cursors, scans, and query executions resolve context once at construction and
+retain direct descriptor and region references. Repeated traversal, structural
+matching, and grammar interpretation use that context rather than repeating
+tree-table lookups through standalone node methods. Bounds may be copied into
+execution state when useful. Returned nodes and captures retain the compact
+forest/tree/slot representation. Resolve a new context when starting work on
+another tree; the reusable query cursor retains no forest borrow between
+executions. None of this requires duplicating column pointers per tree.
 
 ## Ownership, navigation, and queries
 
@@ -122,7 +316,7 @@ backing owners as in step 1. Dropping a region cache frees its owned storage or
 releases its backing handle independently of other regions and point data.
 
 ```rust
-impl TreeLike for TreeView<'_> {
+impl TreeLike for Tree<'_> {
     type Node<'tree> = Node<'tree> where Self: 'tree;
 
     fn root(&self) -> Node<'_>;
@@ -143,34 +337,38 @@ Start with existing per-tree query cursors behind the region iterator. The calle
 selects a query for each tree and decides how to order results. Equal grammars
 do not imply equal application query configurations. Skip unqueried regions and
 unselected trees; a tree requiring fallback must not disable fast execution for
-unrelated trees. Grammar iteration is not source order.
+unrelated trees. Region iteration follows physical input order, which need not
+be source order; a grammar may appear more than once.
 
-Forests do not prove source provenance or require that every tree came from one
-source. Source is needed for explicit point-data construction, not node access.
-A shared-source forest can reuse one line index during construction. Point
-accessors and point-bounded queries use attached coordinates or the row-zero
-frame from step 1. Callers requiring document points check `has_points()`;
-query source bytes do not supply missing points.
+Forests do not retain or prove source provenance. Source is needed for explicit
+point-data construction and text queries, not node access. The caller selects
+the source and byte/point query bounds appropriate to each tree. Equal byte or
+point values in different trees need not identify the same source position;
+cross-tree source ordering and range indexes require caller-supplied context.
+Point accessors and point-bounded queries use that tree's attached coordinates
+or its row-zero frame from step 1. `has_points()` reports availability, not a
+common source or document frame. Query source bytes do not supply missing points.
 
 ## Extend side data to forests
 
-Keep the standalone builders and set/drop methods from step 1. Add region
-presence and whole-forest point builders using the same owned side-data types:
+Generalize step 1's builders and set/drop methods to region presence and
+whole-forest points, using the same owned side-data types. Single-tree forests
+use these same APIs:
 
 ```rust
 impl PresenceCache {
     pub fn build_region(
-        region: GrammarRegion<'_>,
+        region: ForestRegion<'_>,
         cancel: Option<&AtomicBool>,
     ) -> Result<Self, SideDataError>;
 
     pub fn from_region_backing(
-        region: GrammarRegion<'_>,
+        region: ForestRegion<'_>,
         backing: impl StableSlab,
     ) -> Result<Self, SideDataError>;
 
     pub fn copy_from_region_bytes(
-        region: GrammarRegion<'_>,
+        region: ForestRegion<'_>,
         bytes: &[u8],
     ) -> Result<Self, SideDataError>;
 }
@@ -178,7 +376,7 @@ impl PresenceCache {
 impl PointData {
     pub fn build_forest(
         forest: &Forest,
-        source: &LineIndex,
+        sources: &[&LineIndex],
         cancel: Option<&AtomicBool>,
     ) -> Result<Self, SideDataError>;
 
@@ -206,16 +404,26 @@ physical group in that region; tree views borrow them with a region-relative
 group offset. An uncached region uses ordinary symbol scanning even if other
 regions have caches.
 
-Point data covers the entire forest using one source. Build it only
-when every tree uses that source's coordinate frame. Ignore wasted slots.
-Attachment is all-or-nothing; `Forest::has_points()`, `TreeView::has_points()`,
+Regions with the same grammar share grammar handles and prepared tables, but
+each region has its own presence cache and group-relative indexing.
+
+Point data covers the entire forest, preserving a separate coordinate frame for
+each tree. Sources need not match, even within a region. Ignore wasted slots.
+Attachment is all-or-nothing; `Forest::has_points()`, `Tree::has_points()`,
 and its nodes report the same availability. Without point data they all use
 row-zero access, including forests containing trees from unrelated sources.
 
-The caller supplies point data for the matching forest and source. Point access
-performs no source lookup and needs no retained source bytes. Forests with unrelated
-sources can use explicit source conversion outside accessors, or separate owners when they need
-attached points. Per-tree point attachments are outside this initial interface.
+Packing copies points from each native input. For later source-derived
+construction, `build_forest` takes one `LineIndex` reference per tree in
+`forest.trees()` order; reject a source-count mismatch. Each source must match
+its tree's byte coordinate frame. Entries may reference different sources or
+reuse one source and line index for multiple trees. The resulting sidecar is
+one allocation indexed by physical slots and retains no source references.
+
+The caller supplies point data for the matching forest and each tree's intended
+source/frame. Point access performs no source lookup and needs no retained source
+bytes. Independent coordinate frames do not require separate point allocations
+or owners. Per-tree point attachment/removal remains outside this interface.
 
 Side data uses the `as_bytes` representation from step 1. The backing constructors
 read mapped payloads directly and retain their owners; the copy constructors
@@ -230,8 +438,9 @@ core. Failed attachment leaves current side data unchanged. Workers can build th
 values retain no borrow. Set/drop requires exclusive owner access after those
 borrows end. Set replaces existing data on success; drop frees owned storage or
 releases the mapped backing handle, returns nothing, and is a no-op when absent.
-Point attachment/removal preserves layout and IDs but switches the coordinate
-frame; presence attachment/removal preserves query results.
+Point attachment/removal preserves layout and IDs but switches each tree between
+its attached point coordinates and row-zero access; presence attachment/removal
+preserves query results.
 
 ## Representation and serialization
 
@@ -240,13 +449,14 @@ all participating grammars before packing: one byte if every grammar has at most
 254 symbols and aliases, otherwise two bytes. This includes both remapped error
 IDs. The grammar-symbol column is first in the optional tail and is omitted only
 when every emitted node has equal symbol and grammar-symbol IDs. Compressed
-absolute bytes remain in shared columns; points and presence remain outside the
-slab.
+byte coordinates remain in shared columns, in each tree's supplied frame;
+points and presence remain outside the slab.
 
 ```text
 forest
-  grammar A region: [tree 0 groups][tree 1 groups][tree 2 groups]
-  grammar B region: [tree 3 groups][tree 4 groups]
+  region 0, grammar A: [tree 0 groups]
+  region 1, grammar B: [tree 1 groups]
+  region 2, grammar A: [tree 2 groups][tree 3 groups]
 ```
 
 These intervals are independent trees, not child relationships. Proposed private
@@ -267,17 +477,22 @@ struct RegionDescriptor {
 struct TreeDescriptor {
     first_group: u32,
     group_count: u32,
+    region: RegionId,
 }
 
 impl Forest {
     pub fn to_bytes(&self) -> Result<Vec<u8>, Error>;
-    pub fn from_bytes(grammars: &[Grammar], bytes: &[u8]) -> Result<Self, Error>;
 }
 ```
 
 Region group bounds follow from its first and last trees. Tree node bounds follow
 from group size; the final occupied slot is the root under reverse-preorder
 encoding. Avoid redundant root/boundary tables unless measurements justify them.
+Store the region ID in each tree descriptor for direct grammar lookup. It must
+agree with the region's tree interval. Table access handles the serialized field
+encoding; runtime column pointers and `TreeContext` are never serialized.
+Multiple regions may use the same grammar index. Region grouping constrains
+grammar interpretation only, not source identity or coordinate order.
 
 Serialize fields explicitly in little-endian form. Release loading performs only
 cheap header/count/size checks, including checked arithmetic for table and column
@@ -286,7 +501,8 @@ extents. Do not scan descriptors, nodes, indexes, or coordinates for validity.
 Under `#[cfg(debug_assertions)]`, scan descriptors and contents: check alignment,
 offsets, column/index/coordinate bounds, and grammar references. Regions partition
 the tree table; trees partition used groups; topology stays inside each tree.
-These remain representation invariants; release loading does not revalidate them
+Check tree-to-region IDs against the region intervals. These remain
+representation invariants; release loading does not revalidate them
 by scanning the stored contents.
 An empty forest has no tree/region intervals. Loading retains supplied grammar
 handles; each grammar index selects a caller-supplied grammar. The caller must
@@ -299,27 +515,31 @@ overrides need tree/region scope and index relocation when copied. They remain
 authoritative data.
 
 Serialization contains the core alone; side-data loading and attachment are separate.
-The core serializer requires no LMDB or application manifest. Initially load
-forests into owned storage; compare a
-compact-tree archive with direct shared-column persistence before introducing
-transaction-backed forest ownership and its lifetime/validation machinery.
+The core serializer requires no LMDB or application manifest. Copies and retained
+backings use the same core layout and reader metadata. Integration with pinned
+LMDB transactions remains persistence work; it supplies a `StableSlab` owner
+without introducing another forest owning type.
 
 ## Implementation and verification
 
-1. Add forest descriptors, exact-grammar grouping, and input-to-tree mapping.
-2. Adapt nodes, cursors, scans, and queries to tree-bounded borrowed storage.
-3. Extend side data to regions and shared-source forests.
-4. Add checked serialization and retained grammar bindings.
+1. Add forest descriptors, adjacent exact-grammar runs, and input-to-tree mapping;
+   accept native subtree nodes with per-input coordinate and per-group slot bounds.
+2. Add compact forest/tree/slot nodes and cached tree context for traversal.
+3. Extend side data to regions and forests with independent per-tree sources.
+4. Add checked serialization, retained grammar bindings, and storage-independent
+   read paths for allocated and retained backing storage.
 
 Verify empty, single-tree, mixed-grammar, and repeated-grammar inputs without any
-discovery engine. Compare each packed tree with its native/standalone counterpart,
-including overlapping bytes, nonzero origins, errors, predicates, point bounds,
-and ties. Exercise every root/tree boundary, wasted slots, input mapping, changed
-grammar bindings, serialization round trips, malformed descriptors, overflow,
+discovery engine. Compare each packed tree with its native and one-tree forest
+counterparts, including overlapping bytes, positioned roots, arbitrary subtrees,
+errors, predicates, point bounds, and ties. Verify aliases and subtree contents
+survive detachment while excluded parent/sibling/field/supertype context does not.
+Exercise every root/tree boundary, wasted slots, input mapping, changed grammar
+bindings, serialization round trips, malformed descriptors, overflow,
 cancelled packing, and existing-reader lifetimes. Verify region-specific missing
 presence caches, invalid region/dimension rejection, and sidecar serialization
 round trips. Presence changes must preserve query results. Points must
-match explicit source conversion while attached and use row-zero coordinates
+match each tree's source conversion while attached and use row-zero coordinates
 before attachment and after removal; test point-bounded queries in both states.
 Byte-based matching and core contents must remain unchanged. Setting/replacing/
 dropping independently built or loaded sidecars must preserve the core allocation
@@ -328,6 +548,29 @@ flags and immediate reclamation of each sidecar while the forest remains alive.
 Check malformed counts/sizes in release and debug builds, and malformed contents
 with matching counts in debug builds. Release load paths must contain no content
 validation scan.
+
+Verify input-order preservation for grouped, interleaved, and byte-unsorted
+inputs, including an A/B/A/A grammar sequence producing three regions. Exercise
+independent region caches sharing one grammar. Pack trees from different sources
+with overlapping byte and point ranges, including within the same region. Check
+native point copying and rebuilding with distinct or repeated source references,
+source-count rejection, per-tree text queries, and sidecar round trips without
+source retention or a common coordinate-frame requirement.
+
+Exercise input byte and row bounds, conservative column rejection for multiline
+inputs, and point-free packing without native point checks. Test slot exhaustion
+at group reservation, including partial-group waste, and layout overflow during
+capacity growth. Coordinate checks must stay outside descendant traversal;
+physical slot-limit checks belong at group reservation.
+
+Verify node identity for overlapping trees, tree/region lookup, and equivalent
+standalone-node and cached-context traversal at every tree boundary. Reuse query
+cursors across forests and trees without retaining stale context. Check compact
+node layout and that traversal loops reuse resolved context. Exercise owned and
+retained backing loads, moves of the forest owner, and backing release after
+the last owner is dropped. Check that core and side-data reads use cached
+addresses without backing dispatch and that side-data replacement cannot leave
+stale reader pointers.
 
 Later, compare per-tree/segmented queries with shared candidate scanning and
 contiguous reassembly. Include viewport selection, predicates, merging, copying,
