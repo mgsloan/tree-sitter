@@ -186,7 +186,11 @@ impl Builder {
             extra: 0,
             missing: 0,
             has_error: false,
-            optional: 0,
+            optional: if grammar.tables().encoding == 2 {
+                SEPARATE_GRAMMAR
+            } else {
+                0
+            },
             points,
         })
     }
@@ -294,7 +298,12 @@ impl Builder {
             let layout = data.layout;
             let separate = data.tables().separate != 0;
             let mut writer = data.writer();
-            writer.put_short(layout.symbol, slot, code.get());
+            if layout.symbol_width == 1 {
+                writer.put_byte(layout.symbol, slot, event.symbol.get() as u8);
+                writer.put_byte(layout.grammar, slot, event.grammar.get() as u8);
+            } else {
+                writer.put_short(layout.symbol, slot, code.get());
+            }
             writer.put_short(layout.field, slot, event.field.map_or(0, FieldId::get));
             if separate {
                 writer.put_short(layout.grammar, slot, event.grammar.get());

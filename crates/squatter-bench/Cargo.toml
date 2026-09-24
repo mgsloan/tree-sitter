@@ -5,11 +5,6 @@ edition.workspace = true
 license.workspace = true
 publish = false
 
-[features]
-typed-query-scan = ["tree-squatter/typed-query-scan"]
-typed-presence-scan = ["tree-squatter/typed-presence-scan"]
-typed-seek = ["tree-squatter/typed-seek"]
-
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
@@ -18,7 +13,7 @@ libc = "0.2.182"
 serde.workspace = true
 serde_json.workspace = true
 tree-sitter.workspace = true
-tree-squatter = { path = "../squatter", default-features = false }
+tree-squatter = { path = "../squatter" }
 
 [dev-dependencies]
 tree-sitter-c = "=0.24.2"

@@ -1,20 +1,18 @@
-#[cfg(feature = "typed-seek")]
-use crate::types::GroupIx;
 use crate::{
     Error, FieldId, GrammarKindId, KindId, SlotIx, Tree,
     scan::{self, Postorder, Preorder, Scan},
     storage::*,
     traits,
-    types::PackedPoint,
+    types::{GroupIx, PackedPoint},
 };
 use std::{marker::PhantomData, ops::Range, ptr::NonNull};
 use tree_sitter::Point;
 
-#[cfg(all(target_arch = "x86_64", not(feature = "typed-seek")))]
+#[cfg(target_arch = "x86_64")]
 use fearless_simd::{Level, prelude::*, u8x16};
 
 // Unsigned byte minima mark start deltas at or below the threshold.
-#[cfg(all(target_arch = "x86_64", not(feature = "typed-seek")))]
+#[cfg(target_arch = "x86_64")]
 fearless_simd::kernel!(
     #[inline]
     fn sse2_start_mask(simd: Sse2, bytes: &[u8], threshold: u8) -> u16 {
@@ -590,32 +588,18 @@ impl<'tree> Node<'tree> {
 
         let mut slot = (low * GROUP_SIZE).max(first);
         let limit = data.group_end(low).min(self.slot().get() + 1);
-        #[cfg(feature = "typed-seek")]
-        {
+        if POINTS {
             let group = scan::GroupRef::new(self).at_group(GroupIx(low));
-            let mask = group.starts_before::<POINTS>(start).bits() >> (slot % GROUP_SIZE);
+            slot = (low * GROUP_SIZE + group.first_point_start_before(start, slot % GROUP_SIZE))
+                .min(limit);
+        } else {
+            let base = data.word(data.layout.start_byte_base, low) as u64;
+            let mask = start_mask(data, low, (start - base).min(255) as u8) >> (slot % GROUP_SIZE);
             slot = if mask == 0 {
                 limit
             } else {
                 (slot + mask.trailing_zeros()).min(limit)
             };
-        }
-        #[cfg(not(feature = "typed-seek"))]
-        {
-            if POINTS {
-                while slot < limit && self.at(SlotIx::new(slot)).start_key::<true>() > start {
-                    slot += 1;
-                }
-            } else {
-                let base = data.word(data.layout.start_byte_base, low) as u64;
-                let mask =
-                    start_mask(data, low, (start - base).min(255) as u8) >> (slot % GROUP_SIZE);
-                slot = if mask == 0 {
-                    limit
-                } else {
-                    (slot + mask.trailing_zeros()).min(limit)
-                };
-            }
         }
         if slot == limit {
             slot = (low + 1) * GROUP_SIZE;
@@ -662,52 +646,18 @@ impl<'tree> Node<'tree> {
         while candidate.slot() < self.slot() {
             let group = candidate.slot().group().get();
             let limit = data.group_end(group).min(self.slot().get());
-            #[cfg(feature = "typed-seek")]
-            {
-                let view = scan::GroupRef::new(self).at_group(GroupIx(group));
-                let first = candidate.slot().in_group().get();
-                let mut mask = view.ends_after::<POINTS>(start, end).bits() >> first;
-                while mask != 0 {
-                    let slot = group * GROUP_SIZE + first + mask.trailing_zeros();
-                    if slot >= limit {
-                        break;
-                    }
-                    let node = self.at(SlotIx::new(slot));
-                    if !named || node.is_named() {
-                        return Some(node);
-                    }
-                    mask &= mask - 1;
+            let view = scan::GroupRef::new(self).at_group(GroupIx(group));
+            let mut first = candidate.slot().in_group().get();
+            while let Some(offset) = view.first_end_after::<POINTS>(start, end, first) {
+                let slot = group * GROUP_SIZE + offset;
+                if slot >= limit {
+                    break;
                 }
-            }
-            #[cfg(not(feature = "typed-seek"))]
-            {
-                if POINTS {
-                    while candidate.slot().get() < limit {
-                        let candidate_end = candidate.end_key::<true>();
-                        if candidate_end >= end
-                            && candidate_end > start
-                            && (!named || candidate.is_named())
-                        {
-                            return Some(candidate);
-                        }
-                        candidate.raw.slot = SlotIx::new(candidate.raw.slot.get() + 1);
-                    }
-                } else {
-                    let base = data.word(data.layout.end_byte_base, group) as u64;
-                    let threshold = (base >= end && base > start)
-                        .then(|| (base - end).min(base - start - 1) as u32);
-                    if let Some(threshold) = threshold {
-                        let offset = data.layout.end_byte_delta;
-                        while candidate.slot().get() < limit {
-                            if data.short(offset, candidate.slot().get()) as u32 <= threshold
-                                && (!named || candidate.is_named())
-                            {
-                                return Some(candidate);
-                            }
-                            candidate.raw.slot = SlotIx::new(candidate.raw.slot.get() + 1);
-                        }
-                    }
+                let node = self.at(SlotIx::new(slot));
+                if !named || node.is_named() {
+                    return Some(node);
                 }
+                first = offset + 1;
             }
             candidate.raw.slot = SlotIx::new((group + 1) * GROUP_SIZE);
         }
@@ -715,7 +665,6 @@ impl<'tree> Node<'tree> {
     }
 }
 
-#[cfg(not(feature = "typed-seek"))]
 fn start_mask(data: &TreeData, group: u32, threshold: u8) -> u64 {
     #[cfg(target_arch = "x86_64")]
     {

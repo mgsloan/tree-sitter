@@ -50,12 +50,16 @@ All storage versions are currently 0.
 Tree version 0 uses 32-slot groups, 16-bit span deltas and supertype entries,
 and 8-byte column alignment. Its optional columns, in storage order, are extra,
 error, missing, and grammar, with flags in bits 3, 2, 1, and 0 respectively.
+Flag bit 4 selects separate byte-wide symbol and grammar columns when both IDs,
+including the reserved error IDs, fit in eight bits. The grammar column is always
+present in this layout. Other grammars retain 16-bit symbol codes and an optional
+16-bit grammar column when the combined encoding would overflow.
 Presence, point, and grammar dictionary slabs have no flags. Unrecognized
 types, versions, or flags are rejected.
 
 ```rs
 struct SlabHeader {
-  /// Little-endian slab type, storage version, and optional-column flags.
+  /// Little-endian slab type, storage version, and layout flags.
   format_flags: u32,
   group_count: u32,
   /// Actual allocated capacity, including growth beyond the initial estimate.
@@ -140,9 +144,10 @@ Tree-sitter's hidden nodes are omitted entirely since they are not helpful for
 the flat representation without incremental reparse. Their effects are recorded
 in `supertypes`, `is_last_child`, and `field`.
 
-Symbol codes combine public display IDs with grammar selectors when both fit
-in sixteen bits. Byte pairs allow direct reads; larger grammars use shared or
-local selector dictionaries.
+When both IDs fit in eight bits, separate byte columns store public display
+IDs and original grammar IDs. Otherwise, symbol codes combine display IDs with
+grammar selectors when they fit in sixteen bits, using shared or local selector
+dictionaries.
 
 When combined codes cannot fit, the symbol column stores display IDs and a
 separate u16 column stores original grammar IDs. The `SQ_SEPARATE_GRAMMAR`

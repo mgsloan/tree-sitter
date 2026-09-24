@@ -1,4 +1,4 @@
-//! Typed scans over stored columns. No decoded column arrays are retained.
+//! Group scans over stored columns. No decoded column arrays are retained.
 //!
 //! ```
 //! # fn example(root: tree_squatter::Node<'_>, kinds: &tree_squatter::KindSet) {
@@ -42,6 +42,75 @@ use fearless_simd::{Level, prelude::*, u8x16};
 #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
 use fearless_simd::u8x32;
 
+#[cfg(target_arch = "x86_64")]
+fearless_simd::kernel!(
+    #[inline]
+    fn sse2_equal_byte_ids(simd: Sse2, bytes: &[u8], targets: &[RemappedKindId]) -> u16 {
+        use std::arch::x86_64::*;
+
+        let values: __m128i = u8x16::from_slice(simd, bytes).into();
+        let mut matches = _mm_setzero_si128();
+        for target in targets {
+            matches = _mm_or_si128(
+                matches,
+                _mm_cmpeq_epi8(values, _mm_set1_epi8(target.get() as i8)),
+            );
+        }
+        _mm_movemask_epi8(matches) as u16
+    }
+);
+
+#[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+fearless_simd::kernel!(
+    #[inline]
+    fn avx2_equal_byte_ids(simd: Avx2, bytes: &[u8], targets: &[RemappedKindId]) -> u32 {
+        use std::arch::x86_64::*;
+
+        let values: __m256i = u8x32::from_slice(simd, bytes).into();
+        let mut matches = _mm256_setzero_si256();
+        for target in targets {
+            matches = _mm256_or_si256(
+                matches,
+                _mm256_cmpeq_epi8(values, _mm256_set1_epi8(target.get() as i8)),
+            );
+        }
+        _mm256_movemask_epi8(matches) as u32
+    }
+);
+
+#[inline]
+pub(crate) fn equal_byte_ids(bytes: &[u8], targets: &[RemappedKindId]) -> u64 {
+    debug_assert_eq!(bytes.len(), GROUP_SIZE as usize);
+    debug_assert!(targets.iter().all(|target| target.get() <= u8::MAX as u16));
+    #[cfg(target_arch = "x86_64")]
+    {
+        #[cfg(target_feature = "avx2")]
+        if GROUP_SIZE == 32 {
+            if let Some(simd) = Level::baseline()
+                .as_avx2()
+                .or_else(|| Level::new().as_avx2())
+            {
+                return avx2_equal_byte_ids(simd, bytes, targets) as u64;
+            }
+        }
+        let simd = Level::baseline().as_sse2().unwrap();
+        let mut matches = 0;
+        for (index, bytes) in bytes.chunks_exact(16).enumerate() {
+            matches |= (sse2_equal_byte_ids(simd, bytes, targets) as u64) << (index * 16);
+        }
+        matches
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    bytes.iter().enumerate().fold(0, |matches, (slot, &value)| {
+        matches
+            | (u64::from(
+                targets
+                    .iter()
+                    .any(|target| target.get() == u16::from(value)),
+            ) << slot)
+    })
+}
+
 // Bias 16-bit deltas so signed comparisons test an unsigned range.
 #[cfg(target_arch = "x86_64")]
 fearless_simd::kernel!(
@@ -51,16 +120,10 @@ fearless_simd::kernel!(
 
         let lower = _mm_set1_epi16((start as u16 ^ 0x8000) as i16);
         let upper = _mm_set1_epi16((length as u16 ^ 0x8000) as i16);
-        let equal = _mm_set1_epi16(start as i16);
+
         let low: __m128i = u8x16::from_slice(simd, &bytes[..16]).into();
         let high: __m128i = u8x16::from_slice(simd, &bytes[16..32]).into();
-        let matching = |values| {
-            if length == 1 {
-                _mm_cmpeq_epi16(values, equal)
-            } else {
-                _mm_cmpgt_epi16(upper, _mm_sub_epi16(values, lower))
-            }
-        };
+        let matching = |values| _mm_cmpgt_epi16(upper, _mm_sub_epi16(values, lower));
         _mm_movemask_epi8(_mm_packs_epi16(matching(low), matching(high))) as u16
     }
 );
@@ -74,20 +137,12 @@ fearless_simd::kernel!(
 
         let lower = _mm256_set1_epi16((start as u16 ^ 0x8000) as i16);
         let upper = _mm256_set1_epi16((length as u16 ^ 0x8000) as i16);
-        let equal = _mm256_set1_epi16(start as i16);
         let low: __m256i = u8x32::from_slice(simd, &bytes[..32]).into();
         let high: __m256i = u8x32::from_slice(simd, &bytes[32..64]).into();
-        let matching = |values| {
-            if length == 1 {
-                _mm256_cmpeq_epi16(values, equal)
-            } else {
-                _mm256_cmpgt_epi16(upper, _mm256_sub_epi16(values, lower))
-            }
-        };
-        _mm256_movemask_epi8(_mm256_permute4x64_epi64(
-            _mm256_packs_epi16(matching(low), matching(high)),
-            0xd8,
-        )) as u32
+        // A singleton equality branch makes LLVM narrow and then widen the masks.
+        let low = _mm256_cmpgt_epi16(upper, _mm256_sub_epi16(low, lower));
+        let high = _mm256_cmpgt_epi16(upper, _mm256_sub_epi16(high, lower));
+        avx2_short_mask(simd, low, high)
     }
 );
 
@@ -179,10 +234,7 @@ fearless_simd::kernel!(
         let high: __m256i = u8x32::from_slice(simd, &bytes[32..64]).into();
         let low = _mm256_cmpeq_epi16(_mm256_srl_epi16(low, shift), target);
         let high = _mm256_cmpeq_epi16(_mm256_srl_epi16(high, shift), target);
-        _mm256_movemask_epi8(_mm256_permute4x64_epi64(
-            _mm256_packs_epi16(low, high),
-            0xd8,
-        )) as u32
+        avx2_short_mask(simd, low, high)
     }
 );
 
@@ -524,65 +576,91 @@ pub struct GroupRef<'tree> {
     index: GroupIx,
 }
 impl<'tree> GroupRef<'tree> {
-    #[cfg(any(
-        feature = "typed-query-scan",
-        feature = "typed-presence-scan",
-        feature = "typed-seek"
-    ))]
     pub(crate) fn new(root: Node<'tree>) -> Self {
         let columns = Columns::new(root);
         columns.group(root.slot().group())
     }
 
-    #[cfg(any(
-        feature = "typed-query-scan",
-        feature = "typed-presence-scan",
-        feature = "typed-seek"
-    ))]
     pub(crate) fn at_group(mut self, index: GroupIx) -> Self {
         debug_assert!(index.get() < self.columns.root.data().groups());
         self.index = index;
         self
     }
 
-    #[cfg(feature = "typed-seek")]
-    pub(crate) fn starts_before<const POINTS: bool>(&self, start: u64) -> Mask {
-        let candidates = self.valid_mask();
-        if POINTS {
-            let start = PackedPoint(start);
-            PointPositions::<true> { group: self }
-                .start()
-                .retain(candidates, (Unbounded, Included(start)))
-        } else {
-            BytePositions(self)
-                .start()
-                .retain(candidates, (Unbounded, Included(start as usize)))
+    #[inline]
+    pub(crate) fn first_point_start_before(&self, start: u64, first: u32) -> u32 {
+        // Seek needs the first qualifying slot, not a mask of the whole group.
+        let points = self
+            .columns
+            .tree()
+            .point_data
+            .as_ref()
+            .unwrap()
+            .group(self.index.get());
+        let mut slot = first;
+        while slot < self.used() {
+            let offset = slot as usize * 16;
+            let position = u64::from_le_bytes(points[offset..offset + 8].try_into().unwrap());
+            if position <= start {
+                break;
+            }
+            slot += 1;
         }
+        slot
     }
 
-    #[cfg(feature = "typed-seek")]
-    pub(crate) fn ends_after<const POINTS: bool>(&self, start: u64, end: u64) -> Mask {
-        let candidates = self.valid_mask();
-        // Nonempty nodes ending exactly at the query start cannot contain it.
+    #[inline]
+    pub(crate) fn first_end_after<const POINTS: bool>(
+        &self,
+        start: u64,
+        end: u64,
+        first: u32,
+    ) -> Option<u32> {
         if POINTS {
-            let (start, end) = (PackedPoint(start), PackedPoint(end));
-            let lower = if start == end {
-                Excluded(start)
-            } else {
-                Included(end)
-            };
-            PointPositions::<true> { group: self }
-                .end()
-                .retain(candidates, (lower, Unbounded))
+            let points = self
+                .columns
+                .tree()
+                .point_data
+                .as_ref()
+                .unwrap()
+                .group(self.index.get());
+            let mut slot = first;
+            while slot < self.used() {
+                let offset = slot as usize * 16 + 8;
+                let position = u64::from_le_bytes(points[offset..offset + 8].try_into().unwrap());
+                if position >= end && position > start {
+                    return Some(slot);
+                }
+                slot += 1;
+            }
+            None
         } else {
-            let lower = if start == end {
-                Excluded(start as usize)
-            } else {
-                Included(end as usize)
-            };
-            BytePositions(self)
-                .end()
-                .retain(candidates, (lower, Unbounded))
+            let base = self
+                .columns
+                .word(self.columns.layout().end_byte_base, self.index.get())
+                as u64;
+            if base < end || base <= start {
+                return None;
+            }
+            let threshold = (base - end).min(base - start - 1);
+            let column = self.columns.layout().end_byte_delta;
+            let next = (first + 4).min(self.used());
+            // Nearby ancestors usually end the search before a full vector scan pays off.
+            for slot in first..next {
+                if u64::from(self.columns.short(column, self.first_slot().get() + slot))
+                    <= threshold
+                {
+                    return Some(slot);
+                }
+            }
+            let candidates = self.valid_mask().intersection(Mask(u64::MAX << next));
+            let mask = retain_deltas::<true>(
+                column_deltas(self, column, 2),
+                candidates,
+                0..(threshold + 1).min(65536) as u32,
+            )
+            .bits();
+            (mask != 0).then(|| mask.trailing_zeros())
         }
     }
 
@@ -607,9 +685,37 @@ impl<'tree> GroupRef<'tree> {
     #[inline]
     fn kind(self, slot: u32) -> KindId {
         let columns = self.columns;
-        let symbol = columns.short(columns.layout().symbol, self.first_slot().get() + slot)
-            >> columns.tables().symbol_shift;
-        columns.tables().decode_kind(RemappedKindId(symbol))
+        let symbol = columns.tree().symbol_index(self.first_slot().get() + slot);
+        columns.tables().decode_kind(symbol)
+    }
+
+    #[inline(always)]
+    pub(crate) fn equal_kind_ids(&self, targets: &[RemappedKindId], candidates: Mask) -> Mask {
+        if self.columns.layout().symbol_width == 1 {
+            if candidates.0.is_power_of_two() {
+                return candidates.retain(|slot| {
+                    targets.contains(
+                        &self
+                            .columns
+                            .tree()
+                            .symbol_index(self.first_slot().get() + slot),
+                    )
+                });
+            }
+            let bytes = self.columns.slice(
+                self.columns.layout().symbol,
+                self.first_slot().get() as usize,
+                GROUP_SIZE as usize,
+            );
+            candidates.intersection(Mask(equal_byte_ids(bytes, targets)))
+        } else {
+            self.equal_id_set(
+                self.columns.layout().symbol,
+                self.columns.tables().symbol_shift as u32,
+                targets,
+                candidates,
+            )
+        }
     }
 
     #[inline]
@@ -965,7 +1071,7 @@ fn count_groups<'tree, S: GroupScan<'tree>, P: Predicate>(
     count
 }
 
-/// A typed pipeline. Select ranges before filters, then consume nodes or groups.
+/// A column scan pipeline. Select ranges before filters, then consume nodes or groups.
 pub struct Scan<'tree, S> {
     source: S,
     lifetime: PhantomData<&'tree crate::Tree>,
@@ -3013,6 +3119,7 @@ struct KindPredicate {
     target: RemappedKindId,
     column: ColumnPointer,
     shift: u32,
+    width: u32,
 }
 
 impl KindPredicate {
@@ -3022,6 +3129,7 @@ impl KindPredicate {
             target,
             column: columns.layout().symbol,
             shift: columns.tables().symbol_shift as u32,
+            width: columns.layout().symbol_width,
         }
     }
 }
@@ -3030,7 +3138,11 @@ impl sealed::Predicate for KindPredicate {}
 impl Predicate for KindPredicate {
     #[inline(always)]
     fn retain_matches(&self, group: &GroupRef<'_>, candidates: Mask) -> Mask {
-        group.equal_ids(self.column, self.shift, self.target.get(), candidates)
+        if self.width == 1 {
+            group.equal_kind_ids(&[self.target], candidates)
+        } else {
+            group.equal_ids(self.column, self.shift, self.target.get(), candidates)
+        }
     }
 }
 
@@ -3042,12 +3154,7 @@ impl<const N: usize> Predicate for ArrayKindValues<N> {
             return Mask::default();
         }
 
-        group.equal_id_set(
-            group.columns.layout().symbol,
-            group.columns.tables().symbol_shift as u32,
-            &self.ids,
-            candidates,
-        )
+        group.equal_kind_ids(&self.ids, candidates)
     }
 }
 
@@ -3273,25 +3380,13 @@ impl Predicate for KindStrategy<'_> {
     // Inlining lets node consumers discard unused group metadata.
     #[inline(always)]
     fn retain_matches(&self, group: &GroupRef<'_>, candidates: Mask) -> Mask {
-        #[cfg(target_arch = "x86_64")]
-        let layout = group.columns.layout();
         match self {
             KindStrategy::Empty => Mask::default(),
             KindStrategy::Single(single) => single.retain_matches(group, candidates),
             #[cfg(target_arch = "x86_64")]
             KindStrategy::Small { ids, length, kinds } => match *length {
-                2 => group.equal_id_set(
-                    layout.symbol,
-                    group.columns.tables().symbol_shift as u32,
-                    &ids[..2],
-                    candidates,
-                ),
-                3..=4 => group.equal_id_set(
-                    layout.symbol,
-                    group.columns.tables().symbol_shift as u32,
-                    &ids[..4],
-                    candidates,
-                ),
+                2 => group.equal_kind_ids(&ids[..2], candidates),
+                3..=4 => group.equal_kind_ids(&ids[..4], candidates),
                 _ => retain_small_kind_set(group, candidates, &ids[..usize::from(*length)], kinds),
             },
             #[cfg(not(target_arch = "x86_64"))]
@@ -3312,13 +3407,7 @@ fn retain_small_kind_set(
     if ids.len() > 4 && candidates.at_most::<4>() {
         return candidates.retain(|slot| kinds.contains(group.kind(slot)));
     }
-    let layout = group.columns.layout();
-    group.equal_id_set(
-        layout.symbol,
-        group.columns.tables().symbol_shift as u32,
-        ids,
-        candidates,
-    )
+    group.equal_kind_ids(ids, candidates)
 }
 // Isolate the scalar membership loop from SIMD and index traversal state.
 #[inline(never)]
@@ -3327,6 +3416,9 @@ fn retain_kind_set(group: &GroupRef<'_>, candidates: Mask, kinds: &KindSet) -> M
         return candidates.retain(|slot| kinds.contains(group.kind(slot)));
     }
     let layout = group.columns.layout();
+    if layout.symbol_width == 1 {
+        return candidates.retain(|slot| kinds.contains(group.kind(slot)));
+    }
     let start = group.first_slot().get() as usize * 2;
     let bytes = group
         .columns
@@ -3485,6 +3577,22 @@ mod tests {
     use super::*;
 
     #[test]
+    fn byte_id_masks_match_scalar() {
+        let targets = [RemappedKindId(0), RemappedKindId(128), RemappedKindId(255)];
+        for base in 0..=255u8 {
+            let bytes: [u8; GROUP_SIZE as usize] =
+                std::array::from_fn(|slot| base.wrapping_add(slot as u8));
+            for length in 0..=targets.len() {
+                let targets = &targets[..length];
+                let expected = bytes.iter().enumerate().fold(0, |mask, (slot, &value)| {
+                    mask | (u64::from(targets.contains(&RemappedKindId(u16::from(value)))) << slot)
+                });
+                assert_eq!(equal_byte_ids(&bytes, targets), expected);
+            }
+        }
+    }
+
+    #[test]
     fn query_masks_match_indexed_masks_without_preparing_traversal() {
         let language = unsafe {
             tree_sitter::Language::from_raw(tree_sitter_json::LANGUAGE.into_raw()().cast())
@@ -3620,26 +3728,28 @@ mod tests {
         let bytes = (0..=u16::MAX)
             .flat_map(u16::to_le_bytes)
             .collect::<Vec<_>>();
-        for deltas in bytes.chunks_exact(128) {
-            check_column(
-                ByteColumn::<true> {
-                    base: 65535,
-                    deltas: deltas.into(),
-                },
-                64,
-                &[
-                    0,
-                    1,
-                    255,
-                    256,
-                    32767,
-                    32768,
-                    65534,
-                    65535,
-                    65536,
-                    usize::MAX,
-                ],
-            );
+        for length in [16, 32, 64] {
+            for deltas in bytes.chunks_exact(length * 2) {
+                check_column(
+                    ByteColumn::<true> {
+                        base: 65535,
+                        deltas: deltas.into(),
+                    },
+                    length as u32,
+                    &[
+                        0,
+                        1,
+                        255,
+                        256,
+                        32767,
+                        32768,
+                        65534,
+                        65535,
+                        65536,
+                        usize::MAX,
+                    ],
+                );
+            }
         }
     }
 

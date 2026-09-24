@@ -60,6 +60,7 @@ fn queries_match_with_and_without_plans() {
         "(identifier) @identifier",
         "(_) @node",
         "[ (identifier) (number_literal) ] @value",
+        "[ (identifier) (number_literal) (comment) (return_statement) ] @value",
         "(argument_list . (identifier) @first . (identifier) @second .)",
         "(function_definition declarator: (function_declarator declarator: (identifier) @name) body: (compound_statement) @body)",
         "(declaration declarator: (init_declarator declarator: (identifier) @name value: (_) @value))",
@@ -106,6 +107,45 @@ fn queries_match_with_and_without_plans() {
             matches!(&mut reference_cursor, &reference_query, reference, source),
             "disabled pattern: {pattern}"
         );
+    }
+}
+
+#[test]
+fn presence_scans_across_groups() {
+    let language =
+        unsafe { tree_sitter::Language::from_raw(tree_sitter_json::LANGUAGE.into_raw()().cast()) };
+    let grammar = Grammar::new(&language).unwrap();
+    let mut parser = tree_sitter::Parser::new();
+    parser.set_language(&language).unwrap();
+
+    for count in [1, 7, 31, 32, 33, 63, 64, 65, 255, 256, 257] {
+        let source = format!(
+            "[{}]",
+            (0..count)
+                .map(|index| match index % 3 {
+                    0 => "{\"a\":[0]}",
+                    1 => "{\"a\":[false]}",
+                    _ => "{\"a\":[true]}",
+                })
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+        let tree = Tree::parse(&grammar, &mut parser, &source).unwrap();
+        for pattern in [
+            "(object (pair value: (array (false) @value)))",
+            "(object (pair value: (array (null) @value)))",
+            "(array (object (pair value: (array (true) @value))))",
+        ] {
+            let query = Query::new(&language, pattern).unwrap();
+            let mut optimized = QueryCursor::new();
+            let mut reference = QueryCursor::new();
+            reference.set_optimized(false);
+            assert_eq!(
+                matches!(&mut optimized, &query, tree, source),
+                matches!(&mut reference, &query, tree, source),
+                "count={count}, {pattern}"
+            );
+        }
     }
 }
 

@@ -341,6 +341,11 @@ impl PointData {
     pub(crate) fn end(&self, slot: u32) -> PackedPoint {
         PackedPoint(self.0.word(HEADER_BYTES + slot as usize * 16 + 8))
     }
+    #[inline]
+    pub(crate) fn group(&self, group: u32) -> &[u8] {
+        let start = HEADER_BYTES + (group * GROUP_SIZE) as usize * 16;
+        &self.0.bytes()[start..start + GROUP_SIZE as usize * 16]
+    }
     pub fn as_bytes(&self) -> &[u8] {
         self.0.bytes()
     }

@@ -27,6 +27,7 @@ pub(crate) const EXTRAS: u32 = 1 << 3;
 pub(crate) const ERRORS: u32 = 1 << 2;
 pub(crate) const MISSING: u32 = 1 << 1;
 pub(crate) const SEPARATE_GRAMMAR: u32 = 1;
+pub(crate) const BYTE_IDS: u32 = 1 << 4;
 pub(crate) const OPTIONAL: u32 = EXTRAS | ERRORS | MISSING | SEPARATE_GRAMMAR;
 
 pub fn representation_id() -> u64 {
@@ -35,6 +36,7 @@ pub fn representation_id() -> u64 {
 
 #[derive(Clone, Copy, Default, Debug)]
 pub(crate) struct Layout<Column> {
+    pub symbol_width: u32,
     pub waste: Column,
     pub start_byte_base: Column,
     pub start_byte_delta: Column,
@@ -68,6 +70,7 @@ impl Layout<SlabOffset> {
     const WASTE: SlabOffset = SlabOffset(((16 + ALIGNMENT - 1) & !(ALIGNMENT - 1)) as u32);
 
     pub fn new(capacity: u32, flags: u32) -> Result<Self, Error> {
+        let symbol_width = if flags & BYTE_IDS != 0 { 1 } else { 2 };
         let slots = capacity
             .checked_mul(GROUP_SIZE)
             .filter(|_| capacity != 0)
@@ -79,6 +82,7 @@ impl Layout<SlabOffset> {
             offset
         };
         let mut result = Self {
+            symbol_width,
             waste: column(aligned_bytes(capacity, 2)),
             start_byte_base: column(aligned_bytes(capacity, 4)),
             start_byte_delta: column(aligned_bytes(slots, 1)),
@@ -86,7 +90,7 @@ impl Layout<SlabOffset> {
             end_byte_delta: column(aligned_bytes(slots, 2)),
             span_base: column(aligned_bytes(capacity, 4)),
             span_delta: column(aligned_bytes(slots, SPAN_BITS / 8)),
-            symbol: column(aligned_bytes(slots, 2)),
+            symbol: column(aligned_bytes(slots, symbol_width)),
             field: column(aligned_bytes(slots, 2)),
             supertype: column(aligned_bytes(slots, 2)),
             last: column(bit_bytes(slots)),
@@ -106,7 +110,7 @@ impl Layout<SlabOffset> {
                 0
             }),
             grammar: column(if flags & SEPARATE_GRAMMAR != 0 {
-                aligned_bytes(slots, 2)
+                aligned_bytes(slots, symbol_width)
             } else {
                 0
             }),
@@ -118,6 +122,7 @@ impl Layout<SlabOffset> {
 
     fn resolve(self, bytes: NonNull<u8>) -> Layout<ColumnPointer> {
         Layout {
+            symbol_width: self.symbol_width,
             waste: ColumnPointer(self.waste.pointer(bytes)),
             start_byte_base: ColumnPointer(self.start_byte_base.pointer(bytes)),
             start_byte_delta: ColumnPointer(self.start_byte_delta.pointer(bytes)),
@@ -152,7 +157,10 @@ impl<Column: Copy> Layout<Column> {
                 self.span_delta,
                 aligned_bytes(slots, SPAN_BITS / 8) as usize,
             ),
-            (self.symbol, aligned_bytes(slots, 2) as usize),
+            (
+                self.symbol,
+                aligned_bytes(slots, self.symbol_width) as usize,
+            ),
             (self.field, aligned_bytes(slots, 2) as usize),
             (self.supertype, aligned_bytes(slots, 2) as usize),
             (self.last, bit_bytes(slots) as usize),
@@ -183,7 +191,7 @@ impl<Column: Copy> Layout<Column> {
             (
                 self.grammar,
                 if flags & SEPARATE_GRAMMAR != 0 {
-                    aligned_bytes(slots, 2) as usize
+                    aligned_bytes(slots, self.symbol_width) as usize
                 } else {
                     0
                 },
@@ -372,24 +380,37 @@ impl TreeData {
 
     #[inline]
     pub fn symbol_code(&self, slot: u32) -> SymbolCode {
-        SymbolCode(self.short(self.layout.symbol, slot))
+        SymbolCode(if self.layout.symbol_width == 1 {
+            u16::from(self.byte(self.layout.symbol, slot))
+        } else {
+            self.short(self.layout.symbol, slot)
+        })
+    }
+
+    #[inline]
+    pub fn symbol_shift(&self) -> u8 {
+        if self.layout.symbol_width == 1 {
+            0
+        } else {
+            self.tables().symbol_shift
+        }
     }
 
     #[inline]
     pub fn symbol_index(&self, slot: u32) -> RemappedKindId {
-        RemappedKindId(self.symbol_code(slot).get() >> self.tables().symbol_shift)
+        RemappedKindId(self.symbol_code(slot).get() >> self.symbol_shift())
     }
 
     #[inline]
     pub fn grammar_index(&self, slot: u32) -> RemappedGrammarKindId {
         let tables = self.tables();
         let code = self.symbol_code(slot).get() as u32;
-        let kind = if self.flags() & SEPARATE_GRAMMAR != 0 {
+        let kind = if self.layout.symbol_width == 1 {
+            u16::from(self.byte(self.layout.grammar, slot))
+        } else if self.flags() & SEPARATE_GRAMMAR != 0 {
             self.short(self.layout.grammar, slot)
         } else if tables.separate != 0 {
             code as u16
-        } else if tables.encoding == 2 {
-            (code & 255) as u16
         } else {
             let selector = code & ((1 << tables.symbol_shift) - 1);
             unsafe {
@@ -415,10 +436,6 @@ impl TreeData {
         unsafe { std::slice::from_raw_parts(self.bytes.as_ptr(), self.length as usize) }
     }
 
-    #[cfg(all(
-        target_arch = "x86_64",
-        any(not(feature = "typed-seek"), not(feature = "typed-presence-scan"))
-    ))]
     #[inline]
     pub(crate) fn column_slice(&self, column: ColumnPointer, start: usize, length: usize) -> &[u8] {
         // Resolved column pointers and group offsets remain within the retained slab.
@@ -550,7 +567,9 @@ impl Tree {
             | EXTRAS
             | ERRORS
             | MISSING
-            | if grammar.tables().separate != 0 {
+            | if grammar.tables().encoding == 2 {
+                BYTE_IDS | SEPARATE_GRAMMAR
+            } else if grammar.tables().separate != 0 {
                 SEPARATE_GRAMMAR
             } else {
                 0
@@ -927,11 +946,15 @@ impl Tree {
         let flags = header(0);
         let groups = header(1);
         let capacity = header(2);
-        if flags & !OPTIONAL != TREE_FORMAT
+        if flags & !(OPTIONAL | BYTE_IDS) != TREE_FORMAT
             || groups == 0
             || groups > capacity
             || (flags & MISSING != 0 && flags & ERRORS == 0)
-            || (flags & SEPARATE_GRAMMAR != 0 && grammar.tables().separate == 0)
+            || ((flags & BYTE_IDS != 0) != (grammar.tables().encoding == 2))
+            || (flags & BYTE_IDS != 0 && flags & SEPARATE_GRAMMAR == 0)
+            || (flags & SEPARATE_GRAMMAR != 0
+                && grammar.tables().separate == 0
+                && flags & BYTE_IDS == 0)
             || header(3) != grammar.tables().dictionary_count
         {
             return Err(Error::InvalidSlab);
@@ -995,8 +1018,8 @@ impl Tree {
                 {
                     return Err(Error::InvalidSlab);
                 }
-                let code = data.short(data.layout.symbol, slot) as u32;
-                let symbol = code >> tables.symbol_shift;
+                let code = data.symbol_code(slot).get() as u32;
+                let symbol = code >> data.symbol_shift();
                 if symbol >= symbols
                     || field > tables.field_count
                     || (symbol < tables.symbol_count

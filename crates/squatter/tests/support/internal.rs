@@ -189,8 +189,65 @@ fn synthetic_supertype_emission_and_persistence() {
 }
 
 #[test]
+fn byte_ids_use_separate_columns() {
+    let fixture = Fixture::symbols(16);
+    let grammar = &fixture.grammar;
+    let mut builder = Builder::new(grammar, 1, false).unwrap();
+    for index in 0..3 * GROUP_SIZE {
+        let original = (index % 4) as u16;
+        builder
+            .emit(
+                &leaf(
+                    if original < 2 { 0 } else { original },
+                    original,
+                    0,
+                    u8::from(index == 0),
+                ),
+                builder.distance(),
+            )
+            .unwrap();
+    }
+    builder.emit(&leaf(0, 0, 0, 1), 0).unwrap();
+    let tree = builder.finish(PackOptions::default()).unwrap();
+    let data = tree.data();
+    assert_eq!(
+        data.flags() & (BYTE_IDS | SEPARATE_GRAMMAR),
+        BYTE_IDS | SEPARATE_GRAMMAR
+    );
+    assert_eq!(data.layout.symbol_width, 1);
+    let symbols = data.layout.symbol.offset(data.bytes);
+    let originals = data.layout.grammar.offset(data.bytes);
+    assert!(originals >= symbols + tree.slot_count() as usize);
+    for slot in 0..3 * GROUP_SIZE {
+        let original = (slot % 4) as u8;
+        assert_eq!(
+            tree.as_bytes()[symbols + slot as usize],
+            if original < 2 { 0 } else { original }
+        );
+        assert_eq!(tree.as_bytes()[originals + slot as usize], original);
+    }
+    assert_eq!(
+        Layout::new(4, TREE_FORMAT | BYTE_IDS | SEPARATE_GRAMMAR)
+            .unwrap()
+            .end,
+        Layout::new(4, TREE_FORMAT).unwrap().end,
+    );
+    for flag in [BYTE_IDS, SEPARATE_GRAMMAR] {
+        let mut bytes = tree.as_bytes().to_vec();
+        bytes[..4].copy_from_slice(&(data.flags() & !flag).to_le_bytes());
+        assert!(Tree::from_bytes(grammar, &bytes).is_err());
+        assert!(Tree::from_bytes_safety_checked(grammar, &bytes).is_err());
+    }
+    for column in [symbols, originals] {
+        let mut bytes = tree.as_bytes().to_vec();
+        bytes[column] = u8::MAX;
+        assert!(Tree::from_bytes(grammar, &bytes).is_err());
+    }
+}
+
+#[test]
 fn synthetic_symbol_encodings_and_optional_columns() {
-    for count in [16, 300, 32766, 32767] {
+    for count in [16, 254, 255, 300, 32766, 32767] {
         let fixture = Fixture::symbols(count);
         let grammar = &fixture.grammar;
         assert_eq!(grammar.tables().separate != 0, count == 32767);
@@ -223,6 +280,10 @@ fn synthetic_symbol_encodings_and_optional_columns() {
                         ..Default::default()
                     })
                     .unwrap();
+                assert_eq!(
+                    tree.data().layout.symbol_width,
+                    if count <= 254 { 1 } else { 2 }
+                );
                 for pass in 0..3 {
                     for node in tree.root_node().preorder().nodes().skip(1) {
                         let slot = node.slot().get();
@@ -266,8 +327,13 @@ fn synthetic_symbol_encodings_and_optional_columns() {
                 } else {
                     tree.data().layout.symbol
                 };
-                invalid[offset.offset(tree.data().bytes)..offset.offset(tree.data().bytes) + 2]
-                    .copy_from_slice(&u16::MAX.to_le_bytes());
+                let offset = offset.offset(tree.data().bytes);
+                if tree.data().layout.symbol_width == 1 {
+                    // ID 1 aliases ID 0, so it cannot appear in the symbol column.
+                    invalid[offset] = 1;
+                } else {
+                    invalid[offset..offset + 2].copy_from_slice(&u16::MAX.to_le_bytes());
+                }
                 assert!(Tree::from_bytes(grammar, &invalid).is_err());
                 assert!(Tree::from_bytes_safety_checked(grammar, &invalid).is_err());
             }
@@ -365,9 +431,9 @@ fn exercise_columns(tree: &mut Tree, fill: bool) {
         (layout.start_byte_delta, 8, GROUP_SIZE),
         (layout.end_byte_delta, 16, GROUP_SIZE),
         (layout.supertype, 16, GROUP_SIZE),
-        (layout.symbol, 16, GROUP_SIZE),
+        (layout.symbol, layout.symbol_width as usize * 8, GROUP_SIZE),
         (layout.field, 16, GROUP_SIZE),
-        (layout.grammar, 16, GROUP_SIZE),
+        (layout.grammar, layout.symbol_width as usize * 8, GROUP_SIZE),
     ]
     .into_iter()
     .enumerate()
@@ -410,21 +476,26 @@ fn exercise_columns(tree: &mut Tree, fill: bool) {
 
 #[test]
 fn column_growth_compaction_and_little_endian_encoding() {
-    let fixture = Fixture::symbols(32767);
-    let mut tree = Tree::empty(&fixture.grammar, 3).unwrap();
-    assert_eq!(tree.data().flags(), 0xff00_000f);
-    tree.data_mut().put_word(SlabOffset(0), 1, 2);
-    exercise_columns(&mut tree, true);
-    for capacity in [7, 19, 2, 31, 2] {
-        tree.resize(capacity, tree.data().flags(), 0, false)
-            .unwrap();
+    for count in [16, 32767] {
+        let fixture = Fixture::symbols(count);
+        let mut tree = Tree::empty(&fixture.grammar, 3).unwrap();
+        assert_eq!(
+            tree.data().flags(),
+            TREE_FORMAT | OPTIONAL | if count == 16 { BYTE_IDS } else { 0 }
+        );
+        tree.data_mut().put_word(SlabOffset(0), 1, 2);
+        exercise_columns(&mut tree, true);
+        for capacity in [7, 19, 2, 31, 2] {
+            tree.resize(capacity, tree.data().flags(), 0, false)
+                .unwrap();
+            exercise_columns(&mut tree, false);
+        }
+        assert_eq!(
+            tree.resize(u32::MAX, tree.data().flags(), 0, false),
+            Err(Error::Overflow)
+        );
         exercise_columns(&mut tree, false);
     }
-    assert_eq!(
-        tree.resize(u32::MAX, tree.data().flags(), 0, false),
-        Err(Error::Overflow)
-    );
-    exercise_columns(&mut tree, false);
 }
 
 #[test]
@@ -484,7 +555,16 @@ fn presence_ignores_waste_and_invalid_symbols() {
                     1
                 };
                 let code = unsafe { *grammar.tables().default_codes.add(original as usize) };
-                data.put_short(data.layout.symbol, group * GROUP_SIZE + lane, code);
+                if data.layout.symbol_width == 1 {
+                    data.put_byte(
+                        data.layout.symbol,
+                        group * GROUP_SIZE + lane,
+                        (code >> 8) as u8,
+                    );
+                    data.put_byte(data.layout.grammar, group * GROUP_SIZE + lane, code as u8);
+                } else {
+                    data.put_short(data.layout.symbol, group * GROUP_SIZE + lane, code);
+                }
             }
         }
         for indexed in [false, true] {

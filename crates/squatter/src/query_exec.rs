@@ -1,12 +1,9 @@
-#[cfg(not(feature = "typed-presence-scan"))]
-use crate::storage::ColumnPointer;
-#[cfg(any(feature = "typed-query-scan", feature = "typed-presence-scan"))]
-use crate::types::GroupIx;
 use crate::{
     FieldId, GrammarKindId, KindId, Node, Query, QueryCapture, QueryExecutionError, QueryMatch,
     RawNode, SlotIx,
     native::{Pattern, PatternEntry, Step, flags::*},
-    types::{CaptureId, MatchId, PackedPoint, PatternIndex, RemappedKindId},
+    storage::ColumnPointer,
+    types::{CaptureId, GroupIx, MatchId, PackedPoint, PatternIndex, RemappedKindId},
 };
 use std::{
     cmp::Ordering,
@@ -14,11 +11,11 @@ use std::{
 };
 use tree_sitter::Point;
 
-#[cfg(all(target_arch = "x86_64", not(feature = "typed-presence-scan")))]
+#[cfg(target_arch = "x86_64")]
 use fearless_simd::{Level, prelude::*, u8x16};
 
 // Mask encoded IDs before packing column equality into slot bits.
-#[cfg(all(target_arch = "x86_64", not(feature = "typed-presence-scan")))]
+#[cfg(target_arch = "x86_64")]
 fearless_simd::kernel!(
     #[inline]
     fn sse2_equal_column(simd: Sse2, bytes: &[u8], value: u16, mask: u16) -> u16 {
@@ -789,7 +786,8 @@ impl QueryCursor {
 
         // Store word-wide comparisons once, as their encoding depends on the
         // execution tree. Root searches reuse them across all scanned groups.
-        let shift = root.data().tables().symbol_shift;
+        let shift = root.data().symbol_shift();
+        let byte_ids = root.data().layout.symbol_width == 1;
         let scan_filter = std::array::from_fn(|index| {
             query
                 .program
@@ -797,10 +795,17 @@ impl QueryCursor {
                 .matches
                 .get(index)
                 .map_or((0, 0), |&(value, mask)| {
-                    (
-                        ((value << shift) as u64) * 0x0001_0001_0001_0001,
-                        ((mask << shift) as u64) * 0x0001_0001_0001_0001,
-                    )
+                    if byte_ids {
+                        (
+                            u64::from(value as u8) * 0x0101_0101_0101_0101,
+                            u64::from(mask as u8) * 0x0101_0101_0101_0101,
+                        )
+                    } else {
+                        (
+                            ((value << shift) as u64) * 0x0001_0001_0001_0001,
+                            ((mask << shift) as u64) * 0x0001_0001_0001_0001,
+                        )
+                    }
                 })
         });
         let started = self.timeout.map(|_| Instant::now());
@@ -1348,56 +1353,58 @@ impl<'query, 'tree> QueryExecution<'_, 'query, 'tree, '_> {
     }
 
     fn find_symbols(&mut self, start: u32, end: u32) -> u32 {
-        #[cfg(feature = "typed-query-scan")]
-        {
-            let targets = &self.query.program.scan_targets;
-            let decode = |symbol| {
-                self.root
-                    .data()
-                    .tables()
-                    .decode_kind(RemappedKindId(symbol))
-            };
-            // Fixed cardinalities keep comparison counts visible to the scan
-            // compiler. Larger unions retain the packed-word control kernel.
-            match targets.as_slice() {
-                &[first] => return self.find_symbols_typed(start, end, [decode(first)]),
-                &[first, second] => {
-                    return self.find_symbols_typed(start, end, [decode(first), decode(second)]);
-                }
-                &[first, second, third] => {
-                    return self.find_symbols_typed(
-                        start,
-                        end,
-                        [decode(first), decode(second), decode(third)],
-                    );
-                }
-                &[first, second, third, fourth] => {
-                    return self.find_symbols_typed(
-                        start,
-                        end,
-                        [decode(first), decode(second), decode(third), decode(fourth)],
-                    );
-                }
-                _ => {}
+        let targets = &self.query.program.scan_targets;
+        // Fixed cardinalities keep comparison counts visible to the scan
+        // compiler. Larger unions retain the packed-word control kernel.
+        match targets.as_slice() {
+            &[first] => return self.find_symbols_simd(start, end, [RemappedKindId(first)]),
+            &[first, second] => {
+                return self.find_symbols_simd(
+                    start,
+                    end,
+                    [RemappedKindId(first), RemappedKindId(second)],
+                );
             }
+            &[first, second, third] => {
+                return self.find_symbols_simd(
+                    start,
+                    end,
+                    [
+                        RemappedKindId(first),
+                        RemappedKindId(second),
+                        RemappedKindId(third),
+                    ],
+                );
+            }
+            &[first, second, third, fourth] => {
+                return self.find_symbols_simd(
+                    start,
+                    end,
+                    [
+                        RemappedKindId(first),
+                        RemappedKindId(second),
+                        RemappedKindId(third),
+                        RemappedKindId(fourth),
+                    ],
+                );
+            }
+            _ => {}
         }
         self.find_symbols_control(start, end)
     }
 
-    #[cfg(feature = "typed-query-scan")]
-    fn find_symbols_typed<const N: usize>(
+    fn find_symbols_simd<const N: usize>(
         &mut self,
         mut start: u32,
         end: u32,
-        targets: [KindId; N],
+        targets: [RemappedKindId; N],
     ) -> u32 {
-        use crate::scan::{GroupRef, IdSelection, Predicate};
+        use crate::scan::GroupRef;
         use crate::storage::GROUP_SIZE;
 
         let data = self.root.data();
         let total = self.total_slots();
         let groups = GroupRef::new(self.root);
-        let predicate = targets.into_kind_predicate(&groups);
 
         while start < end {
             if self.poll() {
@@ -1405,14 +1412,14 @@ impl<'query, 'tree> QueryExecution<'_, 'query, 'tree, '_> {
             }
             let index = (total - 1 - start) / GROUP_SIZE;
             let group_end = ((start / GROUP_SIZE + 1) * GROUP_SIZE).min(end);
-            if data.presence_cache.is_none()
-                || targets
+            if data.presence_cache.as_ref().is_none_or(|cache| {
+                targets
                     .iter()
-                    .any(|&symbol| data.group_has_symbol(index, symbol))
-            {
+                    .any(|symbol| cache.has(index, symbol.get() as usize, data.groups()))
+            }) {
                 let group = groups.at_group(GroupIx(index));
                 let base = group.first_slot().get();
-                let mut hits = predicate.retain_matches(&group, group.valid_mask()).bits();
+                let mut hits = group.equal_kind_ids(&targets, group.valid_mask()).bits();
                 let first = total - group_end - base;
                 let last = total - start - base;
                 hits &= u64::MAX << first;
@@ -1435,6 +1442,13 @@ impl<'query, 'tree> QueryExecution<'_, 'query, 'tree, '_> {
         let filter = &query.program.scan_filter.matches;
         let targets = &query.program.scan_targets;
         let total = self.total_slots();
+        let width = data.layout.symbol_width;
+        let lanes = 8 / width;
+        let low_bits = if width == 1 {
+            0x7f7f_7f7f_7f7f_7f7f
+        } else {
+            0x7fff_7fff_7fff_7fff
+        };
 
         while start < end {
             if self.poll() {
@@ -1463,23 +1477,21 @@ impl<'query, 'tree> QueryExecution<'_, 'query, 'tree, '_> {
                     start = self.normalize_position(start + 1);
                 }
             } else {
-                // Four u16 columns per word; high bits identify exact matching
-                // lanes without carries leaking between adjacent lanes.
+                // Lane high bits identify exact matches without carries leaking
+                // between adjacent byte or u16 IDs.
                 let low = total - group_end;
                 let high = total - start;
-                for word_index in (low / 4..=(high - 1) / 4).rev() {
+                for word_index in (low / lanes..=(high - 1) / lanes).rev() {
                     let word = data.long(data.layout.symbol, word_index);
                     let mut hits = 0;
                     for &(value, mask) in &self.scan_filter[..filter.len()] {
                         let difference = (word ^ value) & mask;
-                        hits |= !(((difference & 0x7fff_7fff_7fff_7fff)
-                            .wrapping_add(0x7fff_7fff_7fff_7fff))
-                            | difference)
-                            & 0x8000_8000_8000_8000;
+                        hits |= !(((difference & low_bits).wrapping_add(low_bits)) | difference)
+                            & !low_bits;
                     }
                     while hits != 0 {
                         let bit = 63 - hits.leading_zeros();
-                        let physical = word_index * 4 + bit / 16;
+                        let physical = word_index * lanes + bit / (8 * width);
                         if physical >= low && physical < high {
                             return total - 1 - physical;
                         }
@@ -1572,42 +1584,15 @@ impl<'query, 'tree> QueryExecution<'_, 'query, 'tree, '_> {
         let data = root.data();
         let group_size = crate::storage::GROUP_SIZE;
 
-        #[cfg(feature = "typed-presence-scan")]
-        let (groups, symbol_predicate, field_predicate) = {
-            use crate::scan::{FieldSelection, GroupRef, IdSelection};
-            let groups = GroupRef::new(root);
-            let symbol = [KindId::new(requirement.symbol)].into_kind_predicate(&groups);
-            (
-                groups,
-                symbol,
-                [FieldId::new(requirement.field)].into_field_predicate(),
-            )
-        };
-
         while position < scanned_end {
             let group = position / group_size;
             let group_start = group * group_size;
             let end = (group_start + group_size).min(scanned_end);
             let physical_group = data.groups() - 1 - group;
-            #[cfg(feature = "typed-presence-scan")]
-            let mut hits = {
-                use crate::scan::Predicate;
-                let group = groups.at_group(GroupIx(physical_group));
-                let mut hits = group.valid_mask();
-                if requirement.symbol != 0 {
-                    hits = symbol_predicate.retain_matches(&group, hits);
-                }
-                if requirement.field != 0 {
-                    hits = field_predicate.retain_matches(&group, hits);
-                }
-                hits.bits().reverse_bits() >> (64 - group_size)
-            };
-
-            #[cfg(not(feature = "typed-presence-scan"))]
             let mut hits = {
                 let mut hits = u64::MAX;
                 if requirement.symbol != 0 {
-                    let shift = data.tables().symbol_shift;
+                    let shift = data.symbol_shift();
                     hits = data
                         .tables()
                         .remap_kind(KindId::new(requirement.symbol))
@@ -1618,10 +1603,9 @@ impl<'query, 'tree> QueryExecution<'_, 'query, 'tree, '_> {
                                 physical_group,
                                 symbol.get() << shift,
                                 u16::MAX << shift,
+                                data.layout.symbol_width,
                             )
-                        })
-                        .reverse_bits()
-                        >> (64 - group_size);
+                        });
                 }
                 if requirement.field != 0 {
                     hits &= equal_column(
@@ -1630,18 +1614,16 @@ impl<'query, 'tree> QueryExecution<'_, 'query, 'tree, '_> {
                         physical_group,
                         requirement.field,
                         u16::MAX,
-                    )
-                    .reverse_bits()
-                        >> (64 - group_size);
+                        2,
+                    );
                 }
                 hits
             };
-            hits &= u64::MAX << (position - group_start);
-            if end - group_start < 64 {
-                hits &= (1 << (end - group_start)) - 1;
-            }
+            // Physical slots run opposite to preorder, so the highest hit comes first.
+            hits &= u64::MAX << (group_size - (end - group_start));
+            hits &= u64::MAX >> (64 - group_size + (position - group_start));
             if hits != 0 {
-                cache.next = group_start + hits.trailing_zeros();
+                cache.next = group_start + (hits.leading_zeros() - (64 - group_size));
                 cache.found = true;
                 self.cursor.presence[index] = cache;
                 return true;
@@ -2623,15 +2605,20 @@ impl<'query, 'tree> QueryExecution<'_, 'query, 'tree, '_> {
     }
 }
 
-#[cfg(not(feature = "typed-presence-scan"))]
 fn equal_column(
     data: &crate::storage::TreeData,
     address: ColumnPointer,
     group: u32,
     value: u16,
     mask: u16,
+    width: u32,
 ) -> u64 {
     use crate::storage::GROUP_SIZE;
+    if width == 1 {
+        let bytes = data.column_slice(address, (group * GROUP_SIZE) as usize, GROUP_SIZE as usize);
+        return crate::scan::equal_byte_ids(bytes, &[RemappedKindId(value)])
+            & (u64::MAX >> (64 - GROUP_SIZE + data.waste(group)));
+    }
     let mut matches = 0;
     #[cfg(target_arch = "x86_64")]
     {
@@ -2651,4 +2638,65 @@ fn equal_column(
             ((data.short(address, group * GROUP_SIZE + lane) & mask == value) as u64) << lane;
     }
     matches & (u64::MAX >> (64 - GROUP_SIZE + data.waste(group)))
+}
+
+#[cfg(test)]
+mod scan_tests {
+    use super::*;
+    use crate::{Grammar, PackOptions, Tree};
+
+    #[test]
+    fn root_search_respects_ranges_and_group_waste() {
+        let language = unsafe {
+            tree_sitter::Language::from_raw(tree_sitter_json::LANGUAGE.into_raw()().cast())
+        };
+        let grammar = Grammar::new(&language).unwrap();
+        assert_eq!(grammar.tables().encoding, 2);
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&language).unwrap();
+        let separator = format!(",{}", " ".repeat(300));
+        let source = format!("[{}]", ["1,\"text\",true"; 8].join(&separator));
+        let native = parser.parse(&source, None).unwrap();
+        assert!(!native.root_node().has_error());
+
+        for symbol_presence in [false, true] {
+            let tree = Tree::pack_with_options(
+                &grammar,
+                &native,
+                PackOptions {
+                    symbol_presence,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            assert!((0..tree.group_count()).any(|group| tree.data().waste(group) != 0));
+            for pattern in [
+                "(number) @value",
+                "[(number) (string)] @value",
+                "[(number) (string) (true)] @value",
+                "[(number) (string) (true) (null)] @value",
+                "(null) @value",
+            ] {
+                let query = Query::new(&language, pattern).unwrap();
+                let mut cursor = QueryCursor::new();
+                let mut execution = cursor.execute(&query, tree.root_node(), source.as_bytes());
+                let total = execution.total_slots();
+                for start in 0..=total {
+                    let start = execution.normalize_position(start);
+                    for end in start..=total {
+                        let expected = (start..end)
+                            .find(|&position| {
+                                execution.normalize_position(position) == position
+                                    && query.program.scan_targets.contains(
+                                        &tree.data().symbol_index(total - 1 - position).get(),
+                                    )
+                            })
+                            .unwrap_or(end);
+                        assert_eq!(execution.find_symbols(start, end), expected, "{pattern}");
+                        assert_eq!(execution.find_symbols_control(start, end), expected);
+                    }
+                }
+            }
+        }
+    }
 }

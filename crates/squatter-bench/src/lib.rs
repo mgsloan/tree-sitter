@@ -1157,7 +1157,7 @@ pub fn run(check_only: bool) -> Result<()> {
                     .or_else(|| std::env::current_exe().ok().and_then(|path| digest_file(path).ok()))}, "code_corpora": git_identity(&arguments.code_corpora),
         "machine": {"architecture": std::env::consts::ARCH, "os": std::env::consts::OS,
                     "cpuinfo": fs::read_to_string("/proc/cpuinfo").ok().and_then(|text| text.lines().find(|line| line.starts_with("model name")).map(str::to_owned))},
-        "build": {"debug_assertions": cfg!(debug_assertions), "package_version": env!("CARGO_PKG_VERSION"), "squatter_backend": BACKEND, "typed_query_scan": cfg!(feature = "typed-query-scan"), "typed_presence_scan": cfg!(feature = "typed-presence-scan"), "typed_seek": cfg!(feature = "typed-seek")},
+        "build": {"debug_assertions": cfg!(debug_assertions), "package_version": env!("CARGO_PKG_VERSION"), "squatter_backend": BACKEND},
         "pressure": pressure_report(&pressure, &batches),
         "field_contract": "field API differences expected only when squat agrees with mainline visible-child fields; ERROR parents have no fields",
         "timing_contract": "v4: cold-parse includes fresh parser and grammar preparation; warm-parse reuses independent parsers and scratch after one untimed warmup per source; direct output validated by compact slab equality; exact validation and snapshots outside timing; read kernels consume results with black_box; no identity lookups or result collections in timed reads",

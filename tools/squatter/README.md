@@ -28,17 +28,15 @@ command and is not run automatically.
 
 Squatter uses the Rust core. Build the query, traversal, scanning, and lifecycle
 benchmarks with `cargo build --release -p squatter-bench`. Manifests record the
-backend and enabled scan experiments.
+backend.
 
-`typed-query-scan` and `typed-presence-scan` features independently
-replace small root-union searches and bounded descendant-presence checks with the
-typed scan kernels. They are off by default. Forward them through `squatter-bench`
-when measuring; reports record both selections. Presence
-indexes, scan budgets, caches, and cancellation remain active in each variant.
+Query root searches for one to four kinds use specialized SIMD scan kernels;
+larger unions use the packed-word search. Presence indexes, scan budgets,
+caches, and cancellation remain active.
 
-`typed-seek` independently substitutes coordinate masks within descendant range
-lookup. Binary search, immediate returns, empty-boundary descent, and the distant
-point-search fallback are preserved. This experiment is also off by default.
+Byte lookup uses coordinate masks, and point-column scans stop at the first
+match. Binary search, immediate returns, empty-boundary descent, and the distant
+point-search fallback are preserved.
 
 `core-lifecycle-bench` measures packing alone (cold/reused/trimmed scratch), full and safety-only loads,
 borrowed/backed loads, compact copying, repacking, grammar preparation/cache
@@ -161,6 +159,8 @@ python3 tools/squatter/endian.py --output build/squat-endian
 Use `--target-dir` to reuse Cargo artifacts. `--bits 32` uses a 32-bit
 little-endian peer and requires `rustup target add i686-unknown-linux-musl`.
 Storage version 0 uses 32-slot groups, 16-bit span deltas, and 8-byte column alignment.
+Grammars whose symbol and grammar IDs fit in eight bits use separate byte columns;
+other grammars use 16-bit symbol codes and an optional 16-bit grammar column.
 See [coverage](../../crates/squatter/tests/README.md) for the migrated C checks.
 
 ## Group-scan throughput
