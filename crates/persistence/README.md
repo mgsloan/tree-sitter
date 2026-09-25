@@ -35,7 +35,7 @@ fn example(language: &tree_sitter::Language)
 }
 ```
 
-`GrammarIdentity` holds the language's name, optional version, and an XXH64
+`GrammarIdentity` holds the language's name, optional version, and an XXH3
 hash of its generated tables and identity values. The name argument supplies a
 fallback for ABI < 15 grammars. The hash does not cover
 native lexer or external scanner code, so clients must invalidate the cache when

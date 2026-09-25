@@ -10,7 +10,7 @@ build = "build.rs"
 tree-sitter.workspace = true
 regex.workspace = true
 fearless_simd = "1.0.0"
-xxhash-rust = { version = "0.8", features = ["xxh64"] }
+xxhash-rust = { version = "0.8", features = ["xxh3"] }
 
 [build-dependencies]
 bindgen = { version = "0.72.1", default-features = false, features = ["runtime"] }

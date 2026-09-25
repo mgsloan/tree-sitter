@@ -8,9 +8,9 @@ use std::{
     ptr::NonNull,
 };
 use tree_sitter::Language;
-use xxhash_rust::xxh64::Xxh64;
+use xxhash_rust::xxh3::Xxh3;
 
-/// XXH64 of generated grammar tables, embedded name/version metadata, and the
+/// XXH3 of generated grammar tables, embedded name/version metadata, and the
 /// effective name/version supplied by the caller when they are not embedded.
 ///
 /// This does not hash the generated lexer functions or external scanner code.
@@ -25,15 +25,15 @@ pub fn grammar_hash(
     fallback_version: Option<[u8; 3]>,
 ) -> GrammarHash {
     unsafe extern "C" fn visit(bytes: *const c_void, length: usize, context: *mut c_void) {
-        let hasher = unsafe { &mut *context.cast::<Xxh64>() };
+        let hasher = unsafe { &mut *context.cast::<Xxh3>() };
         let bytes = unsafe { std::slice::from_raw_parts(bytes.cast::<u8>(), length) };
         hasher.update(bytes);
     }
 
-    let mut hasher = Xxh64::new(0);
+    let mut hasher = Xxh3::new();
     let raw = language.clone().into_raw();
     unsafe {
-        sq_native_language_table_bytes(raw.cast(), visit, (&mut hasher as *mut Xxh64).cast());
+        sq_native_language_table_bytes(raw.cast(), visit, (&mut hasher as *mut Xxh3).cast());
         drop(Language::from_raw(raw));
     }
     match language.name() {
