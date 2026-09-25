@@ -21,16 +21,18 @@ or application query configuration. Callers can use it without the third step.
 pub struct Forest {
     data: Box<ForestData>,
 }
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(transparent)]
-pub struct TreeIx(u32);   // local to one forest
+pub struct TreeIx(u32);
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct RegionIx(u32); // local to one forest
+pub struct RegionIx(u32);
+
 #[derive(Clone, Copy)]
-pub struct Tree<'forest> {
-    forest: &'forest ForestData,
-    index: TreeIx,
-}
+#[repr(transparent)]
+pub struct Tree<'forest>(Node<'forest>);
+
 #[derive(Clone, Copy)]
 pub struct ForestRegion<'forest> {
     forest: &'forest ForestData,
@@ -70,10 +72,19 @@ impl<'forest> ForestRegion<'forest> {
 }
 
 impl<'forest> Tree<'forest> {
-    pub fn index(self) -> TreeIx;
     pub fn grammar(self) -> &'forest Grammar;
-    pub fn root_node(self) -> Node<'forest>;
+    pub fn root_node(self) -> Node<'forest> {
+        self.0
+    }
     pub fn has_points(self) -> bool;
+}
+
+impl<'forest> std::ops::Deref for Tree<'forest> {
+    type Target = Node<'forest>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
 }
 ```
 
@@ -148,6 +159,14 @@ always borrows one tree. There is one ownership implementation and no separate
 single-tree slab format. Serialization and side-data attachment belong to
 `Forest`. A borrowed tree's nodes outlive the temporary handle, up to the
 lifetime of its forest borrow.
+
+The `Tree` wrapper provides the same read-only `TreeLike` entry point as
+`tree_sitter::Tree`, so generic client code can specialize for either backend.
+It contains the root `Node` directly and dereferences to it, exposing all node
+operations. `root_node()` returns that node; `grammar()` and `has_points()`
+delegate to it. There is no separate `index()` method; the tree index is available
+through the node's `id().tree()`. The wrapper adds no allocation or indirection
+to node access. Its private field preserves the root-node invariant.
 
 ## Packing bounds
 
