@@ -36,355 +36,155 @@ use std::{
 };
 use tree_sitter::Point;
 
-#[cfg(target_arch = "x86_64")]
-use fearless_simd::{Level, prelude::*, u8x16};
+use fearless_simd::{
+    Level, dispatch, i8x16, i8x32, i16x16, i16x32, mask8x32, mask16x16, mask16x32, prelude::*,
+    u8x32, u16x16, u16x32,
+};
 
-#[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
-use fearless_simd::u8x32;
+trait WordMask<S: Simd>: SimdMask<S> {
+    fn slot_bits(self, simd: S) -> u64;
+}
 
-#[cfg(target_arch = "x86_64")]
-fearless_simd::kernel!(
-    #[inline]
-    fn sse2_equal_byte_ids(simd: Sse2, bytes: &[u8], targets: &[RemappedKindId]) -> u16 {
-        use std::arch::x86_64::*;
-
-        let values: __m128i = u8x16::from_slice(simd, bytes).into();
-        let mut matches = _mm_setzero_si128();
-        for target in targets {
-            matches = _mm_or_si128(
-                matches,
-                _mm_cmpeq_epi8(values, _mm_set1_epi8(target.get() as i8)),
-            );
-        }
-        _mm_movemask_epi8(matches) as u16
+impl<S: Simd> WordMask<S> for mask16x16<S> {
+    #[inline(always)]
+    fn slot_bits(self, _: S) -> u64 {
+        self.to_bitmask()
     }
-);
+}
 
-#[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
-fearless_simd::kernel!(
-    #[inline]
-    fn avx2_equal_byte_ids(simd: Avx2, bytes: &[u8], targets: &[RemappedKindId]) -> u32 {
-        use std::arch::x86_64::*;
-
-        let values: __m256i = u8x32::from_slice(simd, bytes).into();
-        let mut matches = _mm256_setzero_si256();
-        for target in targets {
-            matches = _mm256_or_si256(
-                matches,
-                _mm256_cmpeq_epi8(values, _mm256_set1_epi8(target.get() as i8)),
-            );
+impl<S: Simd> WordMask<S> for mask16x32<S> {
+    #[inline(always)]
+    fn slot_bits(self, simd: S) -> u64 {
+        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+        if simd.level().as_avx512().is_some() {
+            return self.to_bitmask();
         }
-        _mm256_movemask_epi8(matches) as u32
+        // Narrow before extracting bits to avoid two movemasks and PEXTs on AVX2.
+        let values = i16x32::from_slice(simd, &<[i16; 32]>::from(self));
+        let (low, high) = values.split();
+        mask8x32::from_slice(simd, &low.saturating_narrow(high).to_array()).to_bitmask()
     }
-);
+}
 
+#[inline]
+fn scan_level() -> Level {
+    // The Avx2 token needs all x86-64-v3 features, even in a +avx2 build.
+    #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+    if Level::baseline().as_avx2().is_none() {
+        return Level::new();
+    }
+    Level::baseline()
+}
+
+// Keep loads, target loops, and mask extraction in the same SIMD context.
+// Fixed lane counts match storage groups; each backend chooses the registers.
 #[inline]
 pub(crate) fn equal_byte_ids(bytes: &[u8], targets: &[RemappedKindId]) -> u64 {
     debug_assert_eq!(bytes.len(), GROUP_SIZE as usize);
     debug_assert!(targets.iter().all(|target| target.get() <= u8::MAX as u16));
-    #[cfg(target_arch = "x86_64")]
-    {
-        #[cfg(target_feature = "avx2")]
-        if GROUP_SIZE == 32 {
-            if let Some(simd) = Level::baseline()
-                .as_avx2()
-                .or_else(|| Level::new().as_avx2())
-            {
-                return avx2_equal_byte_ids(simd, bytes, targets) as u64;
-            }
-        }
-        let simd = Level::baseline().as_sse2().unwrap();
-        let mut matches = 0;
-        for (index, bytes) in bytes.chunks_exact(16).enumerate() {
-            matches |= (sse2_equal_byte_ids(simd, bytes, targets) as u64) << (index * 16);
-        }
-        matches
-    }
-    #[cfg(not(target_arch = "x86_64"))]
-    bytes.iter().enumerate().fold(0, |matches, (slot, &value)| {
-        matches
-            | (u64::from(
-                targets
-                    .iter()
-                    .any(|target| target.get() == u16::from(value)),
-            ) << slot)
-    })
+    dispatch!(scan_level(), simd => byte_id_mask(simd, bytes, targets))
 }
 
-// Bias 16-bit deltas so signed comparisons test an unsigned range.
-#[cfg(target_arch = "x86_64")]
-fearless_simd::kernel!(
-    #[inline]
-    fn sse2_retain_wide(simd: Sse2, bytes: &[u8], start: u32, length: u32) -> u16 {
-        use std::arch::x86_64::*;
-
-        let lower = _mm_set1_epi16((start as u16 ^ 0x8000) as i16);
-        let upper = _mm_set1_epi16((length as u16 ^ 0x8000) as i16);
-
-        let low: __m128i = u8x16::from_slice(simd, &bytes[..16]).into();
-        let high: __m128i = u8x16::from_slice(simd, &bytes[16..32]).into();
-        let matching = |values| _mm_cmpgt_epi16(upper, _mm_sub_epi16(values, lower));
-        _mm_movemask_epi8(_mm_packs_epi16(matching(low), matching(high))) as u16
+#[inline(always)]
+fn byte_id_mask<S: Simd>(simd: S, bytes: &[u8], targets: &[RemappedKindId]) -> u64 {
+    let values = u8x32::from_slice(simd, bytes);
+    let mut matches = <u8x32<S> as SimdBase<S>>::Mask::splat(simd, false);
+    for target in targets {
+        matches |= values.simd_eq(target.get() as u8);
     }
-);
+    matches.to_bitmask()
+}
 
-// Bias 16-bit deltas so signed AVX2 comparisons test an unsigned range.
-#[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
-fearless_simd::kernel!(
-    #[inline]
-    fn avx2_retain_wide(simd: Avx2, bytes: &[u8], start: u32, length: u32) -> u32 {
-        use std::arch::x86_64::*;
+#[inline(always)]
+fn load_words<S: Simd, V: SimdInt<S>>(simd: S, bytes: &[u8]) -> V
+where
+    V::Element: From<u8>,
+{
+    let values = V::from_bytes(V::ByteVector::from_slice(simd, bytes));
+    #[cfg(target_endian = "big")]
+    let values = (values << 8) | ((values >> 8) & V::Element::from(255));
+    values
+}
 
-        let lower = _mm256_set1_epi16((start as u16 ^ 0x8000) as i16);
-        let upper = _mm256_set1_epi16((length as u16 ^ 0x8000) as i16);
-        let low: __m256i = u8x32::from_slice(simd, &bytes[..32]).into();
-        let high: __m256i = u8x32::from_slice(simd, &bytes[32..64]).into();
-        // A singleton equality branch makes LLVM narrow and then widen the masks.
-        let low = _mm256_cmpgt_epi16(upper, _mm256_sub_epi16(low, lower));
-        let high = _mm256_cmpgt_epi16(upper, _mm256_sub_epi16(high, lower));
-        avx2_short_mask(simd, low, high)
+#[inline(always)]
+fn id_mask<S: Simd, I: crate::Id>(simd: S, bytes: &[u8], shift: u32, targets: &[I]) -> u64 {
+    let values = load_words::<_, u16x32<S>>(simd, bytes) >> shift;
+    let mut matches = values.simd_eq(targets[0].raw());
+    for target in &targets[1..] {
+        matches |= values.simd_eq(target.raw());
     }
-);
+    matches.slot_bits(simd)
+}
 
-// Bias byte deltas so signed comparisons test an unsigned range.
-#[cfg(target_arch = "x86_64")]
-fearless_simd::kernel!(
-    #[inline]
-    fn sse2_retain_narrow(simd: Sse2, bytes: &[u8], start: u32, length: u32) -> u16 {
-        use std::arch::x86_64::*;
+#[inline(always)]
+fn wide_range_mask<S: Simd, V: SimdInt<S, Element = i16>>(
+    simd: S,
+    bytes: &[u8],
+    start: u32,
+    length: u32,
+) -> u64
+where
+    V::Mask: WordMask<S>,
+{
+    // Bias the lower bound before subtracting so signed comparisons test an
+    // unsigned interval without biasing every loaded vector separately.
+    let lower = (start as u16 ^ 0x8000) as i16;
+    let upper = (length as u16 ^ 0x8000) as i16;
+    let mut matches = 0;
+    for (index, bytes) in bytes.chunks_exact(V::LEN * 2).enumerate() {
+        let values = load_words::<S, V>(simd, bytes);
+        matches |= (values - lower).simd_lt(upper).slot_bits(simd) << (index * V::LEN);
+    }
+    matches
+}
 
-        let lower = _mm_set1_epi8((start as u8 ^ 0x80) as i8);
-        let upper = _mm_set1_epi8((length as u8 ^ 0x80) as i8);
-        let equal = _mm_set1_epi8(start as i8);
-        let values: __m128i = u8x16::from_slice(simd, bytes).into();
+#[inline(always)]
+fn narrow_range_mask<S: Simd, V: SimdInt<S, Element = i8>>(
+    simd: S,
+    bytes: &[u8],
+    start: u32,
+    length: u32,
+) -> u64 {
+    let mut matches = 0;
+    for (index, bytes) in bytes.chunks_exact(V::LEN).enumerate() {
+        let values = V::from_bytes(V::ByteVector::from_slice(simd, bytes));
         let selected = if length == 1 {
-            _mm_cmpeq_epi8(values, equal)
+            values.simd_eq(start as i8)
         } else {
-            _mm_cmpgt_epi8(upper, _mm_sub_epi8(values, lower))
+            (values - (start as u8 ^ 0x80) as i8).simd_lt((length as u8 ^ 0x80) as i8)
         };
-        _mm_movemask_epi8(selected) as u16
+        matches |= selected.to_bitmask() << (index * V::LEN);
     }
-);
+    matches
+}
 
-// Bias byte deltas so signed AVX2 comparisons test an unsigned range.
-#[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
-fearless_simd::kernel!(
-    #[inline]
-    fn avx2_retain_narrow(simd: Avx2, bytes: &[u8], start: u32, length: u32) -> u32 {
-        use std::arch::x86_64::*;
-
-        let lower = _mm256_set1_epi8((start as u8 ^ 0x80) as i8);
-        let upper = _mm256_set1_epi8((length as u8 ^ 0x80) as i8);
-        let equal = _mm256_set1_epi8(start as i8);
-        let values: __m256i = u8x32::from_slice(simd, bytes).into();
-        let selected = if length == 1 {
-            _mm256_cmpeq_epi8(values, equal)
+#[inline(always)]
+fn range_mask<S: Simd, const WIDE: bool>(simd: S, bytes: &[u8], start: u32, length: u32) -> u64 {
+    if WIDE {
+        if bytes.len() == 32 {
+            wide_range_mask::<_, i16x16<S>>(simd, bytes, start, length)
         } else {
-            _mm256_cmpgt_epi8(upper, _mm256_sub_epi8(values, lower))
-        };
-        _mm256_movemask_epi8(selected) as u32
+            wide_range_mask::<_, i16x32<S>>(simd, bytes, start, length)
+        }
+    } else if bytes.len() == 16 {
+        narrow_range_mask::<_, i8x16<S>>(simd, bytes, start, length)
+    } else {
+        narrow_range_mask::<_, i8x32<S>>(simd, bytes, start, length)
     }
-);
+}
 
-// Pack zero bit tests into a mask of slots without the supertype.
-#[cfg(target_arch = "x86_64")]
-fearless_simd::kernel!(
-    #[inline]
-    fn sse2_absent_supertype(simd: Sse2, bytes: &[u8], bit: u16) -> u16 {
-        use std::arch::x86_64::*;
-
-        let bit = _mm_set1_epi16(bit as i16);
-        let zero = _mm_setzero_si128();
-        let low: __m128i = u8x16::from_slice(simd, &bytes[..16]).into();
-        let high: __m128i = u8x16::from_slice(simd, &bytes[16..32]).into();
-        let low = _mm_cmpeq_epi16(_mm_and_si128(low, bit), zero);
-        let high = _mm_cmpeq_epi16(_mm_and_si128(high, bit), zero);
-        _mm_movemask_epi8(_mm_packs_epi16(low, high)) as u16
+#[inline(always)]
+fn absent_mask<S: Simd, V: SimdInt<S, Element = u16>>(simd: S, bytes: &[u8], bit: u16) -> u64
+where
+    V::Mask: WordMask<S>,
+{
+    let mut absent = 0;
+    for (index, bytes) in bytes.chunks_exact(V::LEN * 2).enumerate() {
+        let values = load_words::<S, V>(simd, bytes);
+        absent |= (values & bit).simd_eq(0).slot_bits(simd) << (index * V::LEN);
     }
-);
-
-// Shift encoded words before comparing remapped IDs.
-#[cfg(target_arch = "x86_64")]
-fearless_simd::kernel!(
-    #[inline]
-    fn sse2_equal_ids(simd: Sse2, bytes: &[u8], shift: u32, target: u16) -> u16 {
-        use std::arch::x86_64::*;
-
-        let shift = _mm_cvtsi32_si128(shift as i32);
-        let target = _mm_set1_epi16(target as i16);
-        let low: __m128i = u8x16::from_slice(simd, &bytes[..16]).into();
-        let high: __m128i = u8x16::from_slice(simd, &bytes[16..32]).into();
-        let low = _mm_cmpeq_epi16(_mm_srl_epi16(low, shift), target);
-        let high = _mm_cmpeq_epi16(_mm_srl_epi16(high, shift), target);
-        _mm_movemask_epi8(_mm_packs_epi16(low, high)) as u16
-    }
-);
-
-// Avx2 tokens require x86-64-v3; +avx2 builds can detect that level at runtime.
-// Shift encoded words before comparing remapped IDs across 32 slots.
-#[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
-fearless_simd::kernel!(
-    #[inline]
-    fn avx2_equal_ids(simd: Avx2, bytes: &[u8], shift: u32, target: u16) -> u32 {
-        use std::arch::x86_64::*;
-
-        let shift = _mm_cvtsi32_si128(shift as i32);
-        let target = _mm256_set1_epi16(target as i16);
-        let low: __m256i = u8x32::from_slice(simd, &bytes[..32]).into();
-        let high: __m256i = u8x32::from_slice(simd, &bytes[32..64]).into();
-        let low = _mm256_cmpeq_epi16(_mm256_srl_epi16(low, shift), target);
-        let high = _mm256_cmpeq_epi16(_mm256_srl_epi16(high, shift), target);
-        avx2_short_mask(simd, low, high)
-    }
-);
-
-// Keep shifted IDs in vectors for repeated target comparisons.
-#[cfg(target_arch = "x86_64")]
-fearless_simd::kernel!(
-    #[inline]
-    fn sse2_shifted_ids(
-        simd: Sse2,
-        bytes: &[u8],
-        shift: u32,
-    ) -> (std::arch::x86_64::__m128i, std::arch::x86_64::__m128i) {
-        use std::arch::x86_64::*;
-
-        let shift = _mm_cvtsi32_si128(shift as i32);
-        let low: __m128i = u8x16::from_slice(simd, &bytes[..16]).into();
-        let high: __m128i = u8x16::from_slice(simd, &bytes[16..32]).into();
-        (_mm_srl_epi16(low, shift), _mm_srl_epi16(high, shift))
-    }
-);
-
-// Keep shifted IDs in vectors for repeated target comparisons.
-#[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
-fearless_simd::kernel!(
-    #[inline]
-    fn avx2_shifted_ids(
-        simd: Avx2,
-        bytes: &[u8],
-        shift: u32,
-    ) -> (std::arch::x86_64::__m256i, std::arch::x86_64::__m256i) {
-        use std::arch::x86_64::*;
-
-        let shift = _mm_cvtsi32_si128(shift as i32);
-        let low: __m256i = u8x32::from_slice(simd, &bytes[..32]).into();
-        let high: __m256i = u8x32::from_slice(simd, &bytes[32..64]).into();
-        (_mm256_srl_epi16(low, shift), _mm256_srl_epi16(high, shift))
-    }
-);
-
-// Seed both comparison masks with the first target.
-#[cfg(target_arch = "x86_64")]
-fearless_simd::kernel!(
-    #[inline]
-    fn sse2_first_match(
-        _simd: Sse2,
-        low: std::arch::x86_64::__m128i,
-        high: std::arch::x86_64::__m128i,
-        target: u16,
-    ) -> (std::arch::x86_64::__m128i, std::arch::x86_64::__m128i) {
-        use std::arch::x86_64::*;
-
-        let target = _mm_set1_epi16(target as i16);
-        (_mm_cmpeq_epi16(low, target), _mm_cmpeq_epi16(high, target))
-    }
-);
-
-// Seed both comparison masks with the first target.
-#[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
-fearless_simd::kernel!(
-    #[inline]
-    fn avx2_first_match(
-        _simd: Avx2,
-        low: std::arch::x86_64::__m256i,
-        high: std::arch::x86_64::__m256i,
-        target: u16,
-    ) -> (std::arch::x86_64::__m256i, std::arch::x86_64::__m256i) {
-        use std::arch::x86_64::*;
-
-        let target = _mm256_set1_epi16(target as i16);
-        (
-            _mm256_cmpeq_epi16(low, target),
-            _mm256_cmpeq_epi16(high, target),
-        )
-    }
-);
-
-// Accumulate target matches before extracting slot bits.
-#[cfg(target_arch = "x86_64")]
-fearless_simd::kernel!(
-    #[inline]
-    fn sse2_match_id(
-        _simd: Sse2,
-        low: std::arch::x86_64::__m128i,
-        high: std::arch::x86_64::__m128i,
-        low_matches: std::arch::x86_64::__m128i,
-        high_matches: std::arch::x86_64::__m128i,
-        target: u16,
-    ) -> (std::arch::x86_64::__m128i, std::arch::x86_64::__m128i) {
-        use std::arch::x86_64::*;
-
-        let target = _mm_set1_epi16(target as i16);
-        (
-            _mm_or_si128(low_matches, _mm_cmpeq_epi16(low, target)),
-            _mm_or_si128(high_matches, _mm_cmpeq_epi16(high, target)),
-        )
-    }
-);
-
-// Accumulate target matches before extracting slot bits.
-#[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
-fearless_simd::kernel!(
-    #[inline]
-    fn avx2_match_id(
-        _simd: Avx2,
-        low: std::arch::x86_64::__m256i,
-        high: std::arch::x86_64::__m256i,
-        low_matches: std::arch::x86_64::__m256i,
-        high_matches: std::arch::x86_64::__m256i,
-        target: u16,
-    ) -> (std::arch::x86_64::__m256i, std::arch::x86_64::__m256i) {
-        use std::arch::x86_64::*;
-
-        let target = _mm256_set1_epi16(target as i16);
-        (
-            _mm256_or_si256(low_matches, _mm256_cmpeq_epi16(low, target)),
-            _mm256_or_si256(high_matches, _mm256_cmpeq_epi16(high, target)),
-        )
-    }
-);
-
-// Pack two 16-bit comparison vectors into one slot mask.
-#[cfg(target_arch = "x86_64")]
-fearless_simd::kernel!(
-    #[inline]
-    fn sse2_short_mask(
-        _simd: Sse2,
-        low_matches: std::arch::x86_64::__m128i,
-        high_matches: std::arch::x86_64::__m128i,
-    ) -> u16 {
-        use std::arch::x86_64::*;
-
-        _mm_movemask_epi8(_mm_packs_epi16(low_matches, high_matches)) as u16
-    }
-);
-
-// Restore slot order after lane-local AVX2 packing.
-#[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
-fearless_simd::kernel!(
-    #[inline]
-    fn avx2_short_mask(
-        _simd: Avx2,
-        low: std::arch::x86_64::__m256i,
-        high: std::arch::x86_64::__m256i,
-    ) -> u32 {
-        use std::arch::x86_64::*;
-
-        let packed = _mm256_packs_epi16(low, high);
-        _mm256_movemask_epi8(_mm256_permute4x64_epi64(packed, 0xd8)) as u32
-    }
-);
+    absent
+}
 
 // Group views borrow the same descriptor as nodes. Keeping layout and grammar
 // metadata there avoids copying either into each scan and returned group.
@@ -729,35 +529,8 @@ impl<'tree> GroupRef<'tree> {
         let bytes = self
             .columns
             .slice(column, start, self.columns.group_size() as usize * 2);
-        let mut matches = 0;
-        #[cfg(target_arch = "x86_64")]
-        {
-            #[cfg(target_feature = "avx2")]
-            if GROUP_SIZE == 32 {
-                if let Some(simd) = Level::baseline()
-                    .as_avx2()
-                    .or_else(|| Level::new().as_avx2())
-                {
-                    return candidates
-                        .intersection(Mask(avx2_equal_ids(simd, bytes, shift, target) as u64));
-                }
-            }
-            let simd = Level::baseline().as_sse2().unwrap();
-            let mut chunks = bytes.chunks_exact(32);
-            // A 16-slot group needs no loop-carried mask or chunk offset.
-            if let Some(first) = chunks.next() {
-                matches = sse2_equal_ids(simd, first, shift, target) as u64;
-            }
-            for (index, bytes) in chunks.enumerate() {
-                matches |=
-                    (sse2_equal_ids(simd, bytes, shift, target) as u64) << ((index + 1) * 16);
-            }
-        }
-        #[cfg(not(target_arch = "x86_64"))]
-        for (slot, bytes) in bytes.chunks_exact(2).enumerate() {
-            let value = u16::from_le_bytes([bytes[0], bytes[1]]) >> shift;
-            matches |= u64::from(value == target) << slot;
-        }
+        let targets = [RemappedKindId(target)];
+        let matches = dispatch!(scan_level(), simd => id_mask(simd, bytes, shift, &targets));
         candidates.intersection(Mask(matches))
     }
     #[inline(always)]
@@ -774,6 +547,7 @@ impl<'tree> GroupRef<'tree> {
         if targets.len() == 1 {
             return self.equal_ids(column, shift, targets[0].raw(), candidates);
         }
+        // Specialize pairs to limit register pressure in composed predicates.
         if targets.len() == 2 {
             return Mask(
                 self.equal_ids(column, shift, targets[0].raw(), candidates)
@@ -792,55 +566,12 @@ impl<'tree> GroupRef<'tree> {
                 Mask::default()
             };
         }
-        #[cfg(target_arch = "x86_64")]
-        {
-            let start = self.first_slot().get() as usize * 2;
-            let bytes = self
-                .columns
-                .slice(column, start, self.columns.group_size() as usize * 2);
-            #[cfg(target_feature = "avx2")]
-            if GROUP_SIZE == 32 {
-                if let Some(simd) = Level::baseline()
-                    .as_avx2()
-                    .or_else(|| Level::new().as_avx2())
-                {
-                    let (low, high) = avx2_shifted_ids(simd, bytes, shift);
-                    let (mut low_matches, mut high_matches) =
-                        avx2_first_match(simd, low, high, targets[0].raw());
-                    for &target in &targets[1..] {
-                        (low_matches, high_matches) =
-                            avx2_match_id(simd, low, high, low_matches, high_matches, target.raw());
-                    }
-                    return candidates.intersection(Mask(avx2_short_mask(
-                        simd,
-                        low_matches,
-                        high_matches,
-                    ) as u64));
-                }
-            }
-            let mut matches = 0;
-            // Each group chunk covers both vector loads; fixed-array callers
-            // expose the target count for loop unrolling.
-            let simd = Level::baseline().as_sse2().unwrap();
-            for (index, bytes) in bytes.chunks_exact(32).enumerate() {
-                let (low, high) = sse2_shifted_ids(simd, bytes, shift);
-                let (mut low_matches, mut high_matches) =
-                    sse2_first_match(simd, low, high, targets[0].raw());
-                for &target in &targets[1..] {
-                    (low_matches, high_matches) =
-                        sse2_match_id(simd, low, high, low_matches, high_matches, target.raw());
-                }
-                matches |=
-                    (sse2_short_mask(simd, low_matches, high_matches) as u64) << (index * 16);
-            }
-            candidates.intersection(Mask(matches))
-        }
-        #[cfg(not(target_arch = "x86_64"))]
-        candidates.retain(|slot| {
-            targets.iter().any(|target| {
-                target.raw() == self.columns.short(column, self.first_slot().get() + slot) >> shift
-            })
-        })
+        let start = self.first_slot().get() as usize * 2;
+        let bytes = self
+            .columns
+            .slice(column, start, self.columns.group_size() as usize * 2);
+        let matches = dispatch!(scan_level(), simd => id_mask(simd, bytes, shift, targets));
+        candidates.intersection(Mask(matches))
     }
     #[inline]
     fn bitmap(self, column: ColumnPointer) -> u64 {
@@ -1851,43 +1582,10 @@ fn retain_deltas<const WIDE: bool>(
         return candidates;
     }
     let deltas = deltas.slice();
-    #[cfg(target_arch = "x86_64")]
-    {
-        let remaining = candidates.0 & (candidates.0 - 1);
-        if remaining != 0 && !remaining.is_power_of_two() {
-            let mut matches = 0;
-            let length = bounds.end - bounds.start;
-            #[cfg(target_feature = "avx2")]
-            if GROUP_SIZE == 32 && deltas.len() == (if WIDE { 64 } else { 32 }) {
-                if let Some(simd) = Level::baseline()
-                    .as_avx2()
-                    .or_else(|| Level::new().as_avx2())
-                {
-                    matches = if WIDE {
-                        avx2_retain_wide(simd, deltas, bounds.start, length) as u64
-                    } else {
-                        avx2_retain_narrow(simd, deltas, bounds.start, length) as u64
-                    };
-                    return candidates.intersection(Mask(matches));
-                }
-            }
-            // Bias the wrapped delta-minus-lower by the sign bit so signed SIMD
-            // comparisons implement an unsigned interval test. Checked chunks
-            // cover complete groups; candidate clipping excludes waste lanes.
-            let simd = Level::baseline().as_sse2().unwrap();
-            if WIDE {
-                for (index, bytes) in deltas.chunks_exact(32).enumerate() {
-                    matches |= (sse2_retain_wide(simd, bytes, bounds.start, length) as u64)
-                        << (index * 16);
-                }
-            } else {
-                for (index, bytes) in deltas.chunks_exact(16).enumerate() {
-                    matches |= (sse2_retain_narrow(simd, bytes, bounds.start, length) as u64)
-                        << (index * 16);
-                }
-            }
-            return candidates.intersection(Mask(matches));
-        }
+    if !candidates.at_most::<2>() {
+        let matches = dispatch!(scan_level(), simd =>
+            range_mask::<_, WIDE>(simd, deltas, bounds.start, bounds.end - bounds.start));
+        return candidates.intersection(Mask(matches));
     }
     candidates.retain(|slot| {
         let delta = if WIDE {
@@ -3383,20 +3081,16 @@ impl Predicate for KindStrategy<'_> {
         match self {
             KindStrategy::Empty => Mask::default(),
             KindStrategy::Single(single) => single.retain_matches(group, candidates),
-            #[cfg(target_arch = "x86_64")]
             KindStrategy::Small { ids, length, kinds } => match *length {
                 2 => group.equal_kind_ids(&ids[..2], candidates),
                 3..=4 => group.equal_kind_ids(&ids[..4], candidates),
                 _ => retain_small_kind_set(group, candidates, &ids[..usize::from(*length)], kinds),
             },
-            #[cfg(not(target_arch = "x86_64"))]
-            KindStrategy::Small { kinds, .. } => retain_kind_set(group, candidates, kinds),
             KindStrategy::Multiple(kinds) => retain_kind_set(group, candidates, kinds),
         }
     }
 }
 // Keep variable-length SIMD out of the singleton scan's register allocation.
-#[cfg(target_arch = "x86_64")]
 #[inline(never)]
 fn retain_small_kind_set(
     group: &GroupRef<'_>,
@@ -3514,19 +3208,15 @@ fn retain_supertype_masks(masks: &[u8], candidates: Mask, bit: u16) -> Mask {
     if candidates.is_empty() {
         return candidates;
     }
-    #[cfg(target_arch = "x86_64")]
-    {
-        let remaining = candidates.0 & (candidates.0 - 1);
-        if remaining != 0 && !remaining.is_power_of_two() {
-            let mut absent = 0;
-            // Each checked chunk covers both SSE2 loads. Candidate clipping
-            // excludes waste and slots outside the subtree after mask extraction.
-            let simd = Level::baseline().as_sse2().unwrap();
-            for (index, bytes) in masks.chunks_exact(32).enumerate() {
-                absent |= (sse2_absent_supertype(simd, bytes, bit) as u64) << (index * 16);
+    if !candidates.at_most::<2>() {
+        let absent = dispatch!(scan_level(), simd => {
+            if masks.len() == 32 {
+                absent_mask::<_, u16x16<_>>(simd, masks, bit)
+            } else {
+                absent_mask::<_, u16x32<_>>(simd, masks, bit)
             }
-            return Mask(candidates.0 & !absent);
-        }
+        });
+        return Mask(candidates.0 & !absent);
     }
     candidates.retain(|slot| {
         let offset = slot as usize * 2;
@@ -3575,6 +3265,95 @@ impl Predicate for SupertypeId {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn simd_kernels_match_scalar() {
+        let mut levels = vec![Level::baseline(), Level::new()];
+        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+        {
+            let available = Level::new();
+            if let Some(simd) = available.as_sse2() {
+                levels.push(Level::Sse2(simd));
+            }
+            if let Some(simd) = available.as_sse4_2() {
+                levels.push(Level::Sse4_2(simd));
+            }
+            if let Some(simd) = available.as_avx2() {
+                levels.push(Level::Avx2(simd));
+            }
+        }
+        for level in levels {
+            dispatch!(level, simd => check_simd_kernels(simd));
+        }
+    }
+
+    #[inline(always)]
+    fn check_simd_kernels<S: Simd>(simd: S) {
+        let values: [u16; 32] = std::array::from_fn(|slot| {
+            [0, 1, 127, 128, 255, 256, 32767, 32768, 65534, 65535][slot % 10]
+        });
+        let mut storage = [0u8; 128];
+        for offset in 0..32 {
+            let bytes = &mut storage[offset..offset + 64];
+            for (bytes, value) in bytes.chunks_exact_mut(2).zip(values) {
+                bytes.copy_from_slice(&value.to_le_bytes());
+            }
+            for shift in [0, 1, 7, 8, 15] {
+                let targets = [0, 1, 127, 128, 255, 256, 32767, 32768, 65535].map(RemappedKindId);
+                for length in 1..=targets.len() {
+                    let targets = &targets[..length];
+                    let expected = values.iter().enumerate().fold(0, |mask, (slot, value)| {
+                        mask | (u64::from(targets.contains(&RemappedKindId(value >> shift)))
+                            << slot)
+                    });
+                    assert_eq!(id_mask(simd, bytes, shift, targets), expected);
+                }
+            }
+            for bit in [1, 2, 128, 256, 32768] {
+                let expected = values.iter().enumerate().fold(0, |mask, (slot, value)| {
+                    mask | (u64::from(value & bit == 0) << slot)
+                });
+                assert_eq!(absent_mask::<_, u16x32<S>>(simd, bytes, bit), expected);
+            }
+            for bounds in [
+                0..1,
+                0..65535,
+                1..65536,
+                127..256,
+                32767..32769,
+                65535..65536,
+            ] {
+                let expected = values.iter().enumerate().fold(0, |mask, (slot, value)| {
+                    mask | (u64::from(bounds.contains(&u32::from(*value))) << slot)
+                });
+                assert_eq!(
+                    range_mask::<_, true>(simd, bytes, bounds.start, bounds.end - bounds.start),
+                    expected
+                );
+            }
+            for (slot, byte) in bytes[..32].iter_mut().enumerate() {
+                *byte = values[slot] as u8;
+            }
+            let bytes = &bytes[..32];
+            for bounds in [0..1, 0..255, 1..256, 127..129, 255..256] {
+                let expected = bytes.iter().enumerate().fold(0, |mask, (slot, value)| {
+                    mask | (u64::from(bounds.contains(&u32::from(*value))) << slot)
+                });
+                assert_eq!(
+                    range_mask::<_, false>(simd, bytes, bounds.start, bounds.end - bounds.start),
+                    expected
+                );
+            }
+            let targets = [0, 127, 128, 255].map(RemappedKindId);
+            for length in 0..=targets.len() {
+                let targets = &targets[..length];
+                let expected = bytes.iter().enumerate().fold(0, |mask, (slot, value)| {
+                    mask | (u64::from(targets.contains(&RemappedKindId(u16::from(*value)))) << slot)
+                });
+                assert_eq!(byte_id_mask(simd, bytes, targets), expected);
+            }
+        }
+    }
 
     #[test]
     fn byte_id_masks_match_scalar() {

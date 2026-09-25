@@ -61,9 +61,17 @@ directly. There is no `map_cached` operation or type-level column-cache machiner
 
 ## Operation reference
 
-SIMD below means explicit SSE2 kernels on x86_64. Other architectures use scalar
-fallbacks. "Inherited" means upstream predicates may use SIMD. Brace notation
+SIMD below uses fearless SIMD: SSE2 or wider x86 backends, NEON on AArch64,
+and Wasm SIMD when compiled with `+simd128`. Other targets use its scalar
+fallback. "Inherited" means upstream predicates may use SIMD. Brace notation
 groups byte and point counterparts, such as `overlapping_{bytes,points}`.
+
+Group kernels are generic over the SIMD backend, including loads, loops over
+ID targets, and mask extraction. Fixed 32-lane vectors match stored groups;
+backends split them across registers as needed. Dispatch uses the compilation
+baseline, with runtime detection for `+avx2` builds that do not guarantee all
+features required by fearless SIMD's AVX2 backend. Loads accept unaligned bytes;
+word decoding preserves the slab's little-endian representation.
 
 | Operation | Role / representation | SIMD | Important behavior |
 | --- | --- | --- | --- |
