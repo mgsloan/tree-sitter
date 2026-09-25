@@ -267,6 +267,7 @@ impl<'tree> Node<'tree> {
         (self.slot().get() - first + 1 - waste) as usize
     }
 
+    #[inline]
     pub fn next_preorder(self) -> Option<Self> {
         self.data()
             .previous_slot(self.slot().get())

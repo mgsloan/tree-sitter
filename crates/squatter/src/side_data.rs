@@ -146,13 +146,13 @@ impl Sidecar {
         if bytes.len() % 8 != 0 {
             return Err(SideDataError::InvalidTarget);
         }
-        let mut words = Vec::new();
+        let mut words = Vec::<u64>::new();
         words
             .try_reserve_exact(bytes.len() / 8)
             .map_err(|_| Error::Allocation)?;
-        words.resize(bytes.len() / 8, 0);
         unsafe {
             std::ptr::copy_nonoverlapping(bytes.as_ptr(), words.as_mut_ptr().cast(), bytes.len());
+            words.set_len(bytes.len() / 8);
         }
         Ok(Self {
             storage: Storage::Owned(words),
@@ -286,10 +286,11 @@ impl PointData {
         cancel: Option<&AtomicBool>,
     ) -> Result<Self, SideDataError> {
         let mut result = Self::empty(tree)?;
+        let root = tree.root_node();
         for group in 0..tree.group_count() {
             check_cancel(cancel)?;
             for slot in group * GROUP_SIZE..tree.data().group_end(group) {
-                let node = tree.node_at_slot(crate::SlotIx(slot)).unwrap();
+                let node = root.at(crate::SlotIx(slot));
                 result.put(
                     slot,
                     source.point(node.start_byte())?,
