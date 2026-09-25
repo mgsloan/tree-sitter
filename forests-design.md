@@ -19,21 +19,22 @@ or application query configuration. Callers can use it without the third step.
 
 ```rust
 pub struct Forest {
-    data: Box<TreeData>,
+    data: Box<ForestData>,
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct TreeId(u32);   // local to one forest
+#[repr(transparent)]
+pub struct TreeIx(u32);   // local to one forest
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct RegionId(u32); // local to one forest
+pub struct RegionIx(u32); // local to one forest
 #[derive(Clone, Copy)]
 pub struct Tree<'forest> {
-    forest: &'forest TreeData,
-    id: TreeId,
+    forest: &'forest ForestData,
+    index: TreeIx,
 }
 #[derive(Clone, Copy)]
 pub struct ForestRegion<'forest> {
-    forest: &'forest TreeData,
-    id: RegionId,
+    forest: &'forest ForestData,
+    index: RegionIx,
 }
 
 pub struct PackInput<'tree> {
@@ -47,7 +48,7 @@ impl PackContext {
         inputs: &[PackInput<'_>],
         options: PackOptions,
         cancel: Option<&AtomicBool>,
-    ) -> Result<(Forest, Vec<TreeId>), ForestError>;
+    ) -> Result<(Forest, Vec<TreeIx>), ForestError>;
 }
 
 pub enum ForestError {
@@ -56,20 +57,20 @@ pub enum ForestError {
 }
 
 impl Forest {
-    pub fn tree(&self, id: TreeId) -> Option<Tree<'_>>;
+    pub fn tree(&self, index: TreeIx) -> Option<Tree<'_>>;
     pub fn trees(&self) -> impl Iterator<Item = Tree<'_>>;
     pub fn regions(&self) -> impl Iterator<Item = ForestRegion<'_>>;
     pub fn has_points(&self) -> bool;
 }
 
 impl<'forest> ForestRegion<'forest> {
-    pub fn id(&self) -> RegionId;
+    pub fn index(&self) -> RegionIx;
     pub fn grammar(&self) -> &'forest Grammar;
     pub fn trees(&self) -> impl Iterator<Item = Tree<'forest>>;
 }
 
 impl<'forest> Tree<'forest> {
-    pub fn id(self) -> TreeId;
+    pub fn index(self) -> TreeIx;
     pub fn grammar(self) -> &'forest Grammar;
     pub fn root_node(self) -> Node<'forest>;
     pub fn has_points(self) -> bool;
@@ -77,7 +78,7 @@ impl<'forest> Tree<'forest> {
 ```
 
 Packing preserves input order; the returned vector maps that order to physical
-tree IDs. Empty input is valid. Adjacent inputs with the same exact grammar
+tree indices. Empty input is valid. Adjacent inputs with the same exact grammar
 share a region; a grammar change starts another region. Each tree gets a
 group-aligned interval. Region boundaries and IDs are deterministic for the same
 ordered inputs and grammar bindings. Grouping never combines native parser inputs.
@@ -115,10 +116,12 @@ come from unrelated sources and use independent byte and point coordinate frames
 including within one region. Neither core storage nor point data requires a
 shared source or a forest-wide coordinate frame.
 
-Tree/region IDs identify descriptors only within their owner. Physical node IDs
-identify slots, including group waste; wasted slots do not produce nodes. None of
-these IDs is stable across rebuilding/reordering. The caller chooses a main tree
-if its application has one; physical order makes no tree the document root.
+Tree indices and region indices identify runtime metadata only within their owner.
+`SlotIx` addresses a physical slot within the forest, including group waste;
+wasted slots do not produce nodes. `NodeId` combines a tree index and slot index
+and is local to one forest. None of these indices or IDs is stable across
+rebuilding/reordering. The caller chooses a main tree if its application has one;
+physical order makes no tree the document root.
 
 ```rust
 // placement checked before constructing the positioned root
@@ -193,21 +196,27 @@ enum Storage {
     Backed(Box<dyn StableSlab>),
 }
 
-struct TreeData {
+struct ForestData {
+    storage: Storage,
     columns: Layout<ColumnPointer>,
     bytes: NonNull<u8>,
     byte_length: usize,
-    trees: SmallVec<[TreeDescriptor; 1]>,
+    trees: SmallVec<[TreeData; 1]>,
     regions: SmallVec<[RegionData; 1]>,
     presence_cache: Option<PresenceCache>,
     point_data: Option<PointData>,
-    storage: Storage,
 }
 
 struct RegionData {
-    descriptor: RegionDescriptor,
+    slots: Range<SlotIx>,
+    trees: Range<TreeIx>,
     grammar: Grammar,
     presence: Option<NonNull<u8>>, // bitmap segment in the forest cache
+}
+
+struct TreeData {
+    region: RegionIx,
+    slots: Range<SlotIx>,
 }
 
 impl Forest {
@@ -222,13 +231,19 @@ impl Forest {
 
 Packing and `from_bytes` allocate core storage; `from_backing` retains immutable
 storage with the existing `StableSlab` contract. Both return `Forest`, with no
-public `BackedForest` variant. Resolve column addresses and populate the tree and
-region vectors at construction. A single-tree forest keeps both vectors inline
-in `TreeData`, without separate descriptor-vector allocations. Larger forests
-spill to heap storage. Nodes index these vectors; `as_bytes()` uses the cached
-base and length. Neither path matches on `Storage` or calls `StableSlab::bytes()`.
+public `BackedForest` variant. Resolve column addresses, decode region descriptors,
+and reconstruct runtime tree metadata at construction. A single-tree forest
+keeps both vectors inline in `ForestData`, without separate descriptor-vector
+allocations. Larger forests spill to heap storage. Nodes index these vectors;
+`as_bytes()` uses the cached base and length. Neither path matches on `Storage`
+or calls `StableSlab::bytes()`.
 Side-data readers likewise cache their payload addresses so backing selection
 stays out of point and presence access.
+
+Point reads index the cached payload base in the forest's `PointData` directly
+by global slot, without a region lookup. `RegionData` caches a presence pointer
+because those bitmap segments use region-relative group indices; it does not
+need a separate points pointer.
 
 The enum occupies owner metadata and is used during construction, destruction,
 and explicitly storage-dependent operations. Retained backing can require a
@@ -236,7 +251,7 @@ box and dynamic destruction, but adds no per-node dispatch or pointer hop.
 Reader addresses remain valid and immutable while borrowed. Packing may relocate
 storage only before publication and must refresh resolved addresses afterward.
 Side-data replacement refreshes its reader metadata under exclusive forest
-access. Moving `Forest` does not move `TreeData` or its retained storage.
+access. Moving `Forest` does not move `ForestData` or its retained storage.
 
 Externally borrowed bytes require a separate lifetime-bearing wrapper if that
 loading API is retained; they cannot enter `Forest` through `StableSlab` without
@@ -245,11 +260,32 @@ a retained owner. This does not require another tree representation.
 ## Nodes and tree lookup
 
 ```rust
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[repr(transparent)]
+pub struct NodeId(u64);
+
+impl NodeId {
+    pub const fn new(tree: TreeIx, slot: SlotIx) -> Self {
+        Self(((tree.get() as u64) << 32) | slot.get() as u64)
+    }
+
+    pub const fn tree(self) -> TreeIx {
+        TreeIx::new((self.0 >> 32) as u32)
+    }
+
+    pub const fn slot(self) -> SlotIx {
+        SlotIx::new(self.0 as u32)
+    }
+
+    pub const fn get(self) -> u64 {
+        self.0
+    }
+}
+
 #[derive(Clone, Copy)]
 pub struct Node<'forest> {
-    forest: &'forest TreeData,
-    tree: TreeId,
-    slot: SlotIx, // physical slot within the forest
+    forest: &'forest ForestData,
+    id: NodeId,
 }
 
 pub struct Cursor<'forest> {
@@ -268,6 +304,7 @@ pub struct QueryExecution<'cursor, 'forest> {
 }
 
 impl<'forest> Node<'forest> {
+    pub fn id(self) -> NodeId;
     pub fn walk(self) -> Result<Cursor<'forest>, Error>;
 }
 
@@ -276,19 +313,26 @@ impl<'forest> Cursor<'forest> {
 }
 ```
 
-Column access follows `Node → TreeData.columns → column bytes`, without going
-through a `Tree` handle or tree descriptor. A forest reference and two 32-bit
-indices can fit in 16 bytes on a 64-bit target; verify the implemented layout.
-Node equality and hashing use forest identity and physical slot. Construction
-ensures the slot is live and belongs to the carried tree ID.
+`NodeId` stores `TreeIx` in bits 63–32 and `SlotIx` in bits 31–0. The slot remains
+forest-global, not relative to the tree. Constructing an ID only combines the
+indices; constructing a node ensures the slot is live and belongs to that tree.
+The ID contains no forest identity or lifetime. Node equality and hashing use
+both forest identity and `NodeId`.
 
-Tree-dependent operations index `TreeData::trees` by `TreeId` for group bounds
-and `RegionId`, then index `TreeData::regions` for grammar and presence metadata.
+Column access follows `Node → ForestData.columns → column bytes`, indexed by
+`id.slot()`, without going through a `Tree` handle or tree descriptor. A forest
+reference and a 64-bit ID can fit in 16 bytes on a 64-bit target; verify the
+implemented layout.
+
+Tree-dependent operations index `ForestData::trees` by `id.tree()` for slot bounds
+and `RegionIx`, then index `ForestData::regions` for grammar and presence metadata.
 No containing-tree search by slot is needed. Nodes, cursors, scans, and query
 executions use these same lookups rather than retaining a separate resolved
 context or descriptor references. Returned nodes and captures retain the compact
-forest/tree/slot representation. The reusable query cursor retains no forest
-borrow between executions. Column pointers are stored once in `TreeData`.
+forest/ID representation. Cursor, scan, and query state carry nodes or `NodeId`s
+instead of storing separate tree and slot indices. The reusable query cursor
+retains no forest borrow between executions. Column pointers are stored once in
+`ForestData`.
 
 ## Ownership, navigation, and queries
 
@@ -472,20 +516,13 @@ descriptor fields, not public APIs or a frozen ABI:
 
 ```rust
 struct ForestHeader {
-    // version/configuration, table counts/offsets, group count,
+    // version/configuration, region count/table offset, group count,
     // column and auxiliary locations
 }
 
 struct RegionDescriptor {
     grammar_index: u32,
-    first_tree: u32,
-    tree_count: u32,
-}
-
-struct TreeDescriptor {
-    first_group: u32,
-    group_count: u32,
-    region: RegionId,
+    end_slot: SlotIx,
 }
 
 impl Forest {
@@ -493,29 +530,59 @@ impl Forest {
 }
 ```
 
-Region group bounds follow from its first and last trees. Tree node bounds follow
-from group size; the final occupied slot is the root under reverse-preorder
-encoding. Avoid redundant root/boundary tables unless measurements justify them.
-Store the region ID in each tree descriptor for direct grammar lookup. It must
-agree with the region's tree interval. Loading decodes the serialized descriptors
-into `TreeData::trees` and `TreeData::regions`; `SmallVec` internals, grammar
-handles, and runtime reader pointers are never serialized.
-Multiple regions may use the same grammar index. Region grouping constrains
-grammar interpretation only, not source identity or coordinate order.
+The slab contains only region descriptors; there is no serialized tree table.
+Each descriptor stores its region's exclusive `end_slot`. The first region
+starts at slot zero; later regions start at the preceding descriptor's end.
+Loading expands these boundaries into `RegionData::slots`, a half-open range
+including waste slots. No serialized descriptor is retained in `RegionData`.
+Exclusive ends let loading carry the previous end forward while providing the
+boundary needed to begin each region's backward tree walk.
 
-Serialize fields explicitly in little-endian form. Release loading performs only
-cheap header/count/size checks, including checked arithmetic for table and column
-extents. Populating runtime vectors requires reading descriptor metadata, not a
-full content-validation pass. Do not scan nodes, indexes, or coordinates for
-validity, or add a separate descriptor-validation pass in release builds.
+Both endpoints of every runtime range are on group boundaries. Regions are
+nonempty and partition the used groups in physical order; the final end equals
+the forest's used slot count. An empty forest has no regions and zero used
+groups. Group bounds follow by dividing the endpoints by `GROUP_SIZE`; group
+count is their difference divided by `GROUP_SIZE`. The exclusive end must fit
+`SlotIx`, which is included in the group-reservation limit. Runtime slot ranges
+allow direct membership checks without storing redundant group bounds or counts.
+
+Populate runtime `ForestData::trees` by walking each region from root to root.
+Each root's stored physical-slot span gives its tree's extent, including internal
+waste. Reverse-preorder encoding lets the walk proceed backward:
+
+1. Start at the region's exclusive end. The last group's waste count identifies
+   the final occupied slot, which is the last tree's root.
+2. Subtract that root's subtree span from its slot to find the tree's start.
+   Record `[start, end)` and the region index in `TreeData`.
+3. Continue backward with `end = start` until reaching the region's start.
+4. Reverse the recovered entries for that region so tree indices follow physical
+   input order. Record their index range in `RegionData::trees`.
+
+The walk reads the root slot span and final-group waste count once per tree,
+then jumps over that tree's descendants and groups. Reconstruction takes
+O(number of regions + number of trees), independent of descendant count.
+Packing can record the same metadata as trees complete. Runtime
+tree metadata, region tree-index ranges, `SmallVec` internals, grammar handles,
+and reader pointers are never serialized. Multiple regions may use the same
+grammar index; grouping constrains grammar interpretation only, not source
+identity or coordinate order.
+
+Serialize fields explicitly in little-endian form. Release loading checks
+header/count/size arithmetic and region extents. During tree reconstruction,
+check root accesses and span arithmetic, require tree starts within the region
+and strict backward progress, and bound the resulting tree count by `TreeIx`.
+These checks make reconstruction bounded without a full content scan.
+Do not traverse descendants or scan bitmap contents or coordinates for validity
+in release builds.
 
 Under `#[cfg(debug_assertions)]`, scan descriptors and contents: check alignment,
-offsets, column/index/coordinate bounds, and grammar references. Regions partition
-the tree table; trees partition used groups; topology stays inside each tree.
-Check tree-to-region IDs against the region intervals. These remain
-representation invariants; release loading does not revalidate them
-by scanning the stored contents.
-An empty forest has no tree/region intervals. Loading retains supplied grammar
+offsets, column/index/coordinate bounds, and grammar references. Reconstructed
+trees partition each region's groups; topology stays inside each tree. Check
+that serialized region ends and reconstructed region/tree bounds are on group
+boundaries. Release loading relies on this alignment invariant. Check strictly
+increasing region ends, the final end against the used slot count, and runtime
+tree-to-region mappings against the region intervals. Full topology and content
+validation remains debug-only. Loading retains supplied grammar
 handles; each grammar index selects a caller-supplied grammar. The caller must
 supply the matching grammars; persistent compatibility checks are separate work.
 
@@ -535,12 +602,13 @@ without introducing another forest owning type.
 
 1. Add forest descriptors, adjacent exact-grammar runs, and input-to-tree mapping;
    accept native subtree nodes with per-input coordinate and per-group slot bounds.
-2. Add compact forest/tree/slot nodes with descriptor lookups through `SmallVec`s
+2. Add compact forest/`NodeId` nodes with descriptor lookups through `SmallVec`s
    with inline capacity one for trees and regions.
 3. Add concatenated forest presence caches and point data with independent
    per-tree sources.
 4. Add checked serialization, retained grammar bindings, and storage-independent
-   read paths for allocated and retained backing storage.
+   read paths for allocated and retained backing storage. Serialize only region
+   descriptors and reconstruct runtime tree metadata from root spans.
 
 Verify empty, single-tree, mixed-grammar, and repeated-grammar inputs without any
 discovery engine. Compare each packed tree with its native and one-tree forest
@@ -560,7 +628,15 @@ address, serialized bytes, descriptor offsets, groups, and IDs. Test creation
 flags and immediate reclamation of each sidecar while the forest remains alive.
 Check malformed counts/sizes in release and debug builds, and malformed contents
 with matching counts in debug builds. Release load paths must contain no content
-validation scan.
+validation scan beyond the metadata and root-boundary checks needed for loading.
+
+Verify end-only region descriptors reconstruct the same runtime slot ranges,
+tree bounds, region mappings, and tree-index order as packing. Cover empty and
+single-region forests, several trees in one region, partial final groups, and
+repeated grammars. Reject misaligned or nonincreasing region ends and a final end
+that disagrees with the used slot count in debug builds. Reject invalid root
+accesses, span arithmetic, nonprogressing reconstruction, and tree-count overflow
+during loading without traversing descendants.
 
 Verify input-order preservation for grouped, interleaved, and byte-unsorted
 inputs, including an A/B/A/A grammar sequence producing three regions. Exercise
@@ -585,6 +661,10 @@ and retained backing loads, moves of the forest owner, and backing release after
 the last owner is dropped. Check that core and side-data reads use cached
 addresses without backing dispatch and that side-data replacement cannot leave
 stale reader pointers.
+
+Verify `NodeId` composition and extraction, including the high bits of each
+32-bit index. Equal IDs from different forests must not make their nodes equal;
+node construction must reject wasted slots and mismatched tree/slot pairs.
 
 Verify presence serialization is exactly the concatenation of region encodings,
 including empty, single-region, repeated-grammar, and differently sized regions.

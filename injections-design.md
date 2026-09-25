@@ -41,7 +41,7 @@ configurations can use one grammar. The main parse owns a one-tree host forest.
 All parsed injections for one discovery profile, including nested injections
 and all grammars, occupy a second forest owned by `Injections`. The host is never
 inserted into that forest. Both forests have independent lifetimes and side
-data; injection tree IDs refer only to the injection forest. Discovery, nesting,
+data; injection tree indices refer only to the injection forest. Discovery, nesting,
 source ranges, and parse requests live in this crate, not in core descriptors.
 
 ## Exact parser requests
@@ -119,7 +119,7 @@ pub struct LanguageConfig<'registry> {
 }
 
 pub enum LayerState {
-    Parsed { request: ParseRequest, tree: TreeId },
+    Parsed { request: ParseRequest, tree: TreeIx },
     Unresolved { selector: String },
 }
 
@@ -151,7 +151,7 @@ impl Injections {
     pub fn manifest(&self) -> &Manifest;
     pub fn layers(&self) -> &[Layer];
     pub fn has_unresolved(&self) -> bool;
-    pub fn take_native(&mut self, tree: TreeId) -> Option<tree_sitter::Tree>;
+    pub fn take_native(&mut self, tree: TreeIx) -> Option<tree_sitter::Tree>;
 
     pub fn set_presence_cache(&mut self, cache: PresenceCache) -> Result<(), SideDataError>;
     pub fn set_point_data(&mut self, points: PointData) -> Result<(), SideDataError>;
@@ -194,7 +194,7 @@ loading, anchors, buffer versions, UI configuration, and incremental edit handli
 remain in the adapter.
 
 The manifest stays outside the generic slab. It maps logical layers to forest
-tree IDs and retains application language, parsed/unresolved state, depth, outer
+tree indices and retains application language, parsed/unresolved state, depth, outer
 ranges, origin, and final included ranges as applicable. Several logical layers
 may reference one tree when exact parse requests agree. Persist source-relative
 ranges bound to the captured generation; reconstruct Zed anchors against the
@@ -229,7 +229,7 @@ node accessor or an implicit query fallback.
 
 The set/drop methods on `Injections` delegate to its forest. Callers supply point
 data built from the matching forest and captured source. Do not expose
-`&mut Forest`: replacing it could invalidate every tree ID in the
+`&mut Forest`: replacing it could invalidate every tree index in the
 manifest. Workers can build side data from `forest()` without mutable access;
 set/drop requires exclusive access to `Injections` and preserves the mapping.
 The presence sidecar concatenates all injection-region caches into one allocation;
@@ -320,7 +320,7 @@ invoking the parser.
 
 Host and injection owners have independent side data. Sidecar allocations are
 separate from their core slabs; loading/setting/replacing them cannot shift core
-columns, descriptors, or tree IDs. Sidecars are never coallocated with the core
+columns, descriptors, or tree indices. Sidecars are never coallocated with the core
 or each other, so dropping one immediately releases its storage.
 
 Loading honors the requested side-data flags on hits and misses: load matching
@@ -361,7 +361,7 @@ if !injections.forest().has_points() {
 }
 
 let forest = injections.forest();
-// layer order is independent of TreeId
+// layer order is independent of TreeIx
 for layer in injections.layers() {
     if let LayerState::Parsed { tree, .. } = &layer.state {
         let root = forest.tree(*tree).unwrap().root_node();
@@ -398,7 +398,7 @@ an explicit parent-layer ID in these entries. Its update machinery uses depth,
 anchored ranges, and parent parse steps.
 
 A forest must not replace this application index with grammar order. The adapter
-needs a mapping from logical layers to forest tree IDs. Application language
+needs a mapping from logical layers to forest tree indices. Application language
 configuration can differ even when layers share an exact grammar; it stays in
 the layer metadata.
 
