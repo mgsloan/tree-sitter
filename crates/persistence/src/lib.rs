@@ -11,7 +11,7 @@ mod snapshot;
 mod store;
 mod transfer;
 mod work;
-pub use identity::{Grammar, GrammarFingerprint};
+pub use identity::{GrammarIdentity, GrammarVersion, IdentifiedGrammar};
 pub use maintenance::{
     EvictionOutcome, Maintenance, MaintenanceProgress, MaintenanceState, MissingSweep, SidecarKind,
 };
@@ -213,7 +213,7 @@ pub enum LoadStep {
 pub struct PendingLoad {
     request: Arc<Request>,
     source: Arc<[u8]>,
-    grammar: Grammar,
+    grammar: IdentifiedGrammar,
     store: Option<Arc<Store>>,
     pack: tree_sitter_squatter::PackOptions,
     write: WritePolicy,
@@ -254,7 +254,7 @@ impl LoadContext {
 pub struct PendingWrite {
     store: Option<Arc<Store>>,
     request: Arc<Request>,
-    grammar: Grammar,
+    grammar: IdentifiedGrammar,
     file: LoadedFile,
 }
 impl PendingWrite {
@@ -297,17 +297,37 @@ impl Persistence {
     pub fn prepare_grammar(
         &self,
         language: &tree_sitter::Language,
-        fingerprint: GrammarFingerprint,
-    ) -> Result<Grammar, tree_sitter_squatter::Error> {
+        fallback_name: &str,
+    ) -> Result<IdentifiedGrammar, tree_sitter_squatter::Error> {
+        let identity = GrammarIdentity::new(language, fallback_name);
+        self.prepare_identified_grammar(language, identity)
+    }
+
+    /// Prepare a grammar with a version fallback for parsers without metadata.
+    pub fn prepare_grammar_with_version(
+        &self,
+        language: &tree_sitter::Language,
+        fallback_name: &str,
+        fallback_version: GrammarVersion,
+    ) -> Result<IdentifiedGrammar, tree_sitter_squatter::Error> {
+        let identity = GrammarIdentity::new_with_version(language, fallback_name, fallback_version);
+        self.prepare_identified_grammar(language, identity)
+    }
+
+    fn prepare_identified_grammar(
+        &self,
+        language: &tree_sitter::Language,
+        identity: GrammarIdentity,
+    ) -> Result<IdentifiedGrammar, tree_sitter_squatter::Error> {
         let prepared = match self
             .store
             .as_ref()
-            .and_then(|store| store.prepare_grammar(language, fingerprint))
+            .and_then(|store| store.prepare_grammar(language, identity.hash))
         {
             Some(prepared) => prepared,
             None => tree_sitter_squatter::Grammar::new(language)?,
         };
-        Ok(Grammar::new(prepared, fingerprint))
+        Ok(IdentifiedGrammar::new(prepared, identity))
     }
 
     pub fn sweep_missing(&self) -> Option<MissingSweep> {
@@ -366,7 +386,7 @@ impl Persistence {
     pub fn load(
         &self,
         path: &Path,
-        grammar: &Grammar,
+        grammar: &IdentifiedGrammar,
         parser: &mut tree_sitter::Parser,
     ) -> Result<LoadedFile, LoadError> {
         let options = LoadOptions {
@@ -383,7 +403,7 @@ impl Persistence {
     pub fn load_with_options(
         &self,
         path: &Path,
-        grammar: &Grammar,
+        grammar: &IdentifiedGrammar,
         parser: &mut tree_sitter::Parser,
         options: LoadOptions<'_>,
     ) -> Result<LoadResult, LoadError> {
@@ -393,7 +413,7 @@ impl Persistence {
     pub fn load_with_context(
         &self,
         path: &Path,
-        grammar: &Grammar,
+        grammar: &IdentifiedGrammar,
         context: &mut LoadContext,
         options: LoadOptions<'_>,
     ) -> Result<LoadResult, LoadError> {
@@ -409,7 +429,7 @@ impl Persistence {
     fn load_impl(
         &self,
         path: &Path,
-        grammar: &Grammar,
+        grammar: &IdentifiedGrammar,
         parser: &mut tree_sitter::Parser,
         options: LoadOptions<'_>,
         mut packing: Option<&mut Option<tree_sitter_squatter::PackContext>>,
@@ -442,7 +462,7 @@ impl Persistence {
     pub fn load_step(
         &self,
         path: &Path,
-        grammar: &Grammar,
+        grammar: &IdentifiedGrammar,
         parser: &mut tree_sitter::Parser,
         options: LoadOptions<'_>,
     ) -> Result<LoadStep, LoadError> {
@@ -454,7 +474,7 @@ impl Persistence {
     pub fn load_step_with_context(
         &self,
         path: &Path,
-        grammar: &Grammar,
+        grammar: &IdentifiedGrammar,
         context: &mut LoadContext,
         options: LoadOptions<'_>,
     ) -> Result<LoadStep, LoadError> {
@@ -465,7 +485,7 @@ impl Persistence {
     fn capture(
         &self,
         path: &Path,
-        grammar: &Grammar,
+        grammar: &IdentifiedGrammar,
         options: &LoadOptions<'_>,
     ) -> Result<PendingLoad, LoadError> {
         let (path, encoded) = identity::path(path)?;

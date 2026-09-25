@@ -11,8 +11,7 @@ use std::{
     },
 };
 use tree_squatter_persistence::{
-    CACHE_DIRECTORY, GrammarFingerprint, LoadError, LoadOptions, Options, Persistence,
-    WriteOutcome, WritePolicy,
+    CACHE_DIRECTORY, LoadError, LoadOptions, Options, Persistence, WriteOutcome, WritePolicy,
 };
 
 #[test]
@@ -441,12 +440,8 @@ fn worker_context_switches_grammars_and_loads_restored_dictionary() {
     let c_sharp_language = unsafe {
         tree_sitter::Language::from_raw(tree_sitter_c_sharp::LANGUAGE.into_raw()().cast())
     };
-    let json = cache
-        .prepare_grammar(&json_language, GrammarFingerprint([42; 32]))
-        .unwrap();
-    let c_sharp = cache
-        .prepare_grammar(&c_sharp_language, GrammarFingerprint([43; 32]))
-        .unwrap();
+    let json = cache.prepare_grammar(&json_language, "json").unwrap();
+    let c_sharp = cache.prepare_grammar(&c_sharp_language, "c_sharp").unwrap();
     let mut context = LoadContext::default();
     for _ in 0..3 {
         for (grammar, path, kind) in [
@@ -480,9 +475,7 @@ fn worker_context_switches_grammars_and_loads_restored_dictionary() {
         )
         .unwrap();
     assert!(matches!(result, LoadStep::Ready(_)));
-    let restored = cache
-        .prepare_grammar(&c_sharp_language, GrammarFingerprint([43; 32]))
-        .unwrap();
+    let restored = cache.prepare_grammar(&c_sharp_language, "c_sharp").unwrap();
     let hit = cache
         .load_with_context(
             Path::new("input.cs"),

@@ -19,7 +19,7 @@ pub use storage::{BackedTree, BorrowedTree, StableSlab, Tree, representation_id}
 pub mod query;
 mod query_exec;
 mod query_plan;
-pub use native::Grammar;
+pub use native::{Grammar, GrammarHash, grammar_hash};
 pub use query::{
     Query, QueryCapture, QueryCursor, QueryError, QueryExecution, QueryExecutionError, QueryMatch,
 };

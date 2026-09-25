@@ -8,6 +8,70 @@ use std::{
     ptr::NonNull,
 };
 use tree_sitter::Language;
+use xxhash_rust::xxh64::Xxh64;
+
+/// XXH64 of generated grammar tables, embedded name/version metadata, and the
+/// effective name/version supplied by the caller when they are not embedded.
+///
+/// This does not hash the generated lexer functions or external scanner code.
+/// Changes to either can change parse results without changing this hash.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GrammarHash(pub u64);
+
+/// Hash the generated grammar tables and identity metadata.
+pub fn grammar_hash(
+    language: &Language,
+    fallback_name: &str,
+    fallback_version: Option<[u8; 3]>,
+) -> GrammarHash {
+    unsafe extern "C" fn visit(bytes: *const c_void, length: usize, context: *mut c_void) {
+        let hasher = unsafe { &mut *context.cast::<Xxh64>() };
+        let bytes = unsafe { std::slice::from_raw_parts(bytes.cast::<u8>(), length) };
+        hasher.update(bytes);
+    }
+
+    let mut hasher = Xxh64::new(0);
+    let raw = language.clone().into_raw();
+    unsafe {
+        sq_native_language_table_bytes(raw.cast(), visit, (&mut hasher as *mut Xxh64).cast());
+        drop(Language::from_raw(raw));
+    }
+    match language.name() {
+        Some(name) => {
+            hasher.update(&[1]);
+            hasher.update(&(name.len() as u64).to_le_bytes());
+            hasher.update(name.as_bytes());
+        }
+        None => hasher.update(&[0]),
+    }
+    match language.metadata() {
+        Some(version) => hasher.update(&[
+            1,
+            version.major_version,
+            version.minor_version,
+            version.patch_version,
+        ]),
+        None => hasher.update(&[0]),
+    }
+    let name = language.name().unwrap_or(fallback_name);
+    hasher.update(&(name.len() as u64).to_le_bytes());
+    hasher.update(name.as_bytes());
+    let version = language.metadata().map(|metadata| {
+        [
+            metadata.major_version,
+            metadata.minor_version,
+            metadata.patch_version,
+        ]
+    });
+    match version.or(fallback_version) {
+        Some(version) => {
+            hasher.update(&[1]);
+            hasher.update(&version);
+        }
+        None => hasher.update(&[0]),
+    }
+    GrammarHash(hasher.digest())
+}
 
 #[repr(C)]
 pub(crate) struct GrammarHandle {
@@ -588,6 +652,11 @@ impl CompiledQuery {
 }
 
 unsafe extern "C" {
+    fn sq_native_language_table_bytes(
+        language: *const c_void,
+        visit: unsafe extern "C" fn(*const c_void, usize, *mut c_void),
+        context: *mut c_void,
+    );
     fn sq_native_grammar_new(language: *const c_void, error: *mut i32) -> *mut GrammarHandle;
     fn sq_native_grammar_new_with_cache(
         language: *const c_void,

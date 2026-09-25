@@ -1,7 +1,7 @@
 //! Read transactions are used only during construction, then sealed as storage.
 //! There is no fabricated Rust lifetime, reset/renew API, or shared LMDB handle.
 use crate::{
-    identity::{Grammar, Request},
+    identity::{IdentifiedGrammar, Request},
     store::Store,
 };
 use std::{
@@ -73,7 +73,7 @@ pub(crate) fn get(
     store: &Arc<Store>,
     request: &Request,
     source: &[u8],
-    grammar: &Grammar,
+    grammar: &IdentifiedGrammar,
     cancellation: Option<&AtomicBool>,
 ) -> Option<(BackedTree, bool)> {
     let snapshot = Arc::new(Snapshot::open(store)?);

@@ -19,13 +19,13 @@ use `.tree-sitter/big-endian/` because LMDB is endian-dependent.
 
 ```rust,no_run
 use std::path::Path;
-use tree_squatter_persistence::{GrammarFingerprint, LoadContext, LoadOptions, Options, Persistence};
+use tree_squatter_persistence::{LoadContext, LoadOptions, Options, Persistence};
 
-fn example(language: &tree_sitter::Language, fingerprint: GrammarFingerprint)
+fn example(language: &tree_sitter::Language)
     -> Result<(), Box<dyn std::error::Error>>
 {
     let cache = Persistence::open(".", Options::default())?;
-    let grammar = cache.prepare_grammar(language, fingerprint)?;
+    let grammar = cache.prepare_grammar(language, "json")?;
     let mut worker = LoadContext::default();
     let result = cache.load_with_context(
         Path::new("src/main.rs"), &grammar, &mut worker, LoadOptions::default(),
@@ -35,7 +35,13 @@ fn example(language: &tree_sitter::Language, fingerprint: GrammarFingerprint)
 }
 ```
 
-Grammar providers supply an exact implementation fingerprint through `Grammar`.
+`GrammarIdentity` holds the language's name, optional version, and an XXH64
+hash of its generated tables and identity values. The name argument supplies a
+fallback for ABI < 15 grammars. The hash does not cover
+native lexer or external scanner code, so clients must invalidate the cache when
+those implementations change.
+`GrammarIdentity::new_with_version` and `Persistence::prepare_grammar_with_version`
+also accept a fallback version for grammars without embedded metadata.
 Runtime identity is currently a conservative build-time digest of native sources
 and build inputs. Squatter exports its actual compiled layout configuration.
 
@@ -99,7 +105,7 @@ Remaining before the full design is implemented:
 - Tentative and chunked APIs, including transaction-owned cached source views.
 - Capacity/age-based eviction policy. Maintenance is caller-driven; a full map
   skips publication instead of automatically cleaning up or resizing.
-- Durable canonical fixtures, a real generated grammar fingerprint fixture,
+- Durable canonical fixtures, a real generated grammar hash fixture,
   cancellation/commit fault injection, fuzzing, and platform power-loss testing.
 - Complete Windows/macOS and adversarial path-opening validation. Current cache
   directories must be trusted, use local filesystems, and have cooperating writers.

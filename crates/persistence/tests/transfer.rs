@@ -81,7 +81,7 @@ fn transfer_rejects_bad_identity_lengths_and_truncation() {
             .read_transfer(overflow.as_slice(), &grammar(42), bytes.len())
             .is_err()
     );
-    bytes[208 + 1 + "file.json".len()] ^= 1; // captured source bytes
+    bytes[184 + 1 + "file.json".len()] ^= 1; // captured source bytes
     assert!(
         cache
             .read_transfer(bytes.as_slice(), &grammar(42), bytes.len())

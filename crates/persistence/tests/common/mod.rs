@@ -6,19 +6,22 @@ use std::{
     path::Path,
     process::{Child, Command, Stdio},
 };
-use tree_squatter_persistence::{Grammar, GrammarFingerprint, LoadedFile, Persistence};
+use tree_sitter_squatter::GrammarHash;
+use tree_squatter_persistence::{GrammarIdentity, IdentifiedGrammar, LoadedFile, Persistence};
 
-pub fn grammar() -> Grammar {
+pub fn grammar() -> IdentifiedGrammar {
     grammar_with_identity(42)
 }
 
-pub fn grammar_with_identity(identity: u8) -> Grammar {
+pub fn grammar_with_identity(identity: u8) -> IdentifiedGrammar {
     // Synthetic provider identity, paired with the packaged JSON parser.
     let language =
         unsafe { tree_sitter::Language::from_raw(tree_sitter_json::LANGUAGE.into_raw()().cast()) };
-    Grammar::new(
+    let mut grammar_identity = GrammarIdentity::new(&language, "json");
+    grammar_identity.hash = GrammarHash(identity as u64);
+    IdentifiedGrammar::new(
         tree_sitter_squatter::Grammar::new(&language).unwrap(),
-        GrammarFingerprint([identity; 32]),
+        grammar_identity,
     )
 }
 

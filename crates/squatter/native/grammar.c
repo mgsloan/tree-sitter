@@ -1,6 +1,177 @@
 #include "internal.h"
 #include <tree_feller.h>
 
+// Stream generated table contents without hashing pointers or structure padding.
+void sq_native_language_table_bytes(const TSLanguage *language,
+                                    void (*visit)(const void *, size_t, void *), void *context) {
+#define VALUE(value) visit(&(value), sizeof(value), context)
+#define ARRAY(pointer, count) do { \
+  uint64_t length = (uint64_t)(count); \
+  VALUE(length); \
+  if ((pointer) && length) visit((pointer), (size_t)length * sizeof(*(pointer)), context); \
+} while (0)
+  VALUE(language->abi_version);
+  VALUE(language->symbol_count);
+  VALUE(language->alias_count);
+  VALUE(language->token_count);
+  VALUE(language->external_token_count);
+  VALUE(language->state_count);
+  VALUE(language->large_state_count);
+  VALUE(language->production_id_count);
+  VALUE(language->field_count);
+  VALUE(language->max_alias_sequence_length);
+
+  uint32_t symbols = language->symbol_count + language->alias_count;
+  for (uint32_t index = 0; index < symbols; index++) {
+    const char *name = language->symbol_names[index];
+    uint64_t length = strlen(name);
+    VALUE(length);
+    visit(name, length, context);
+    const TSSymbolMetadata *metadata = &language->symbol_metadata[index];
+    VALUE(metadata->visible);
+    VALUE(metadata->named);
+    VALUE(metadata->supertype);
+  }
+  for (uint32_t index = 1; index <= language->field_count; index++) {
+    const char *name = language->field_names[index];
+    uint64_t length = strlen(name);
+    VALUE(length);
+    visit(name, length, context);
+  }
+  ARRAY(language->public_symbol_map, symbols);
+  ARRAY(language->parse_table, (size_t)language->large_state_count * language->symbol_count);
+
+  uint32_t action_end = language->parse_actions[0].entry.count + 1;
+  for (uint32_t state = 0; state < language->large_state_count; state++) {
+    const uint16_t *row = language->parse_table + (size_t)state * language->symbol_count;
+    for (uint32_t symbol = 0; symbol < language->token_count; symbol++) {
+      uint32_t index = row[symbol];
+      uint32_t end = index + language->parse_actions[index].entry.count + 1;
+      if (end > action_end) action_end = end;
+    }
+  }
+  uint32_t small_end = 0;
+  if (language->small_parse_table_map) {
+    uint32_t small_count = language->state_count - language->large_state_count;
+    ARRAY(language->small_parse_table_map, small_count);
+    for (uint32_t state = 0; state < small_count; state++) {
+      uint32_t offset = language->small_parse_table_map[state];
+      uint32_t groups = language->small_parse_table[offset++];
+      for (uint32_t group = 0; group < groups; group++) {
+        uint32_t value = language->small_parse_table[offset++];
+        uint32_t count = language->small_parse_table[offset++];
+        for (uint32_t index = 0; index < count; index++) {
+          uint16_t symbol = language->small_parse_table[offset++];
+          if (symbol < language->token_count) {
+            uint32_t end = value + language->parse_actions[value].entry.count + 1;
+            if (end > action_end) action_end = end;
+          }
+        }
+      }
+      if (offset > small_end) small_end = offset;
+    }
+  } else {
+    uint32_t zero = 0;
+    VALUE(zero);
+  }
+  ARRAY(language->small_parse_table, small_end);
+  for (uint32_t index = 0; index < action_end;) {
+    const TSParseActionEntry *entry = &language->parse_actions[index];
+    VALUE(entry->entry.count);
+    VALUE(entry->entry.reusable);
+    for (uint32_t action = 1; action <= entry->entry.count; action++) {
+      const TSParseAction *item = &language->parse_actions[index + action].action;
+      VALUE(item->type);
+      if (item->type == TSParseActionTypeShift) {
+        VALUE(item->shift.state);
+        VALUE(item->shift.extra);
+        VALUE(item->shift.repetition);
+      } else if (item->type == TSParseActionTypeReduce) {
+        VALUE(item->reduce.child_count);
+        VALUE(item->reduce.symbol);
+        VALUE(item->reduce.dynamic_precedence);
+        VALUE(item->reduce.production_id);
+      }
+    }
+    index += entry->entry.count + 1;
+  }
+
+  uint32_t field_end = 0;
+  if (language->field_map_slices) {
+    for (uint32_t index = 0; index < language->production_id_count; index++) {
+      TSMapSlice slice = language->field_map_slices[index];
+      VALUE(slice.index);
+      VALUE(slice.length);
+      if (slice.index + slice.length > field_end) field_end = slice.index + slice.length;
+    }
+  }
+  for (uint32_t index = 0; index < field_end; index++) {
+    TSFieldMapEntry entry = language->field_map_entries[index];
+    VALUE(entry.field_id);
+    VALUE(entry.child_index);
+    VALUE(entry.inherited);
+  }
+  ARRAY(language->alias_sequences,
+        (size_t)language->production_id_count * language->max_alias_sequence_length);
+  if (language->alias_map) {
+    uint32_t index = 0;
+    while (language->alias_map[index]) {
+      uint32_t count = language->alias_map[index + 1];
+      index += count + 2;
+    }
+    ARRAY(language->alias_map, index + 1);
+  }
+  if (language->abi_version >= LANGUAGE_VERSION_WITH_PRIMARY_STATES) {
+    ARRAY(language->primary_state_ids, language->state_count);
+  }
+  VALUE(language->keyword_capture_token);
+
+  uint32_t external_state_count = 0;
+  uint32_t reserved_set_count = 0;
+  for (uint32_t index = 0; index < language->state_count; index++) {
+    const TSLexMode *mode = &((const TSLexMode *)language->lex_modes)[index];
+    VALUE(mode->lex_state);
+    VALUE(mode->external_lex_state);
+    uint32_t external_end = (uint32_t)mode->external_lex_state + 1;
+    if (external_end > external_state_count) external_state_count = external_end;
+    if (language->abi_version >= 15) {
+      const TSLexerMode *mode = &language->lex_modes[index];
+      VALUE(mode->reserved_word_set_id);
+      uint32_t reserved_end = (uint32_t)mode->reserved_word_set_id + 1;
+      if (reserved_end > reserved_set_count) reserved_set_count = reserved_end;
+    }
+  }
+  if (language->external_token_count) {
+    ARRAY(language->external_scanner.states,
+          (size_t)external_state_count * language->external_token_count);
+    ARRAY(language->external_scanner.symbol_map, language->external_token_count);
+  }
+  if (language->abi_version >= 15) {
+    VALUE(language->max_reserved_word_set_size);
+    VALUE(language->supertype_count);
+    ARRAY(language->reserved_words,
+          (size_t)reserved_set_count * language->max_reserved_word_set_size);
+    ARRAY(language->supertype_symbols, language->supertype_count);
+    uint32_t supertype_end = 0;
+    if (language->supertype_map_slices) {
+      uint32_t slice_count = 0;
+      for (uint32_t index = 0; index < language->supertype_count; index++) {
+        uint32_t end = language->supertype_symbols[index] + 1;
+        if (end > slice_count) slice_count = end;
+      }
+      for (uint32_t index = 0; index < slice_count; index++) {
+        TSMapSlice slice = language->supertype_map_slices[index];
+        VALUE(slice.index);
+        VALUE(slice.length);
+        if (slice.index + slice.length > supertype_end) supertype_end = slice.index + slice.length;
+      }
+    }
+    ARRAY(language->supertype_map_entries, supertype_end);
+  }
+#undef ARRAY
+#undef VALUE
+}
+
 // Require a supported private language layout and room for the two built-in error IDs.
 bool sq_native_language_compatible(const TSLanguage *language) {
   return language && language->abi_version >= TREE_SITTER_MIN_COMPATIBLE_LANGUAGE_VERSION &&

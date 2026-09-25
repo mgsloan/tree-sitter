@@ -1,13 +1,14 @@
 //! Same-build process handoff. This framing is not a durable cache format.
 use crate::{
-    CacheError, Grammar, LoadedFile, LoadedTree, PendingWrite, Persistence, identity::Request,
+    CacheError, IdentifiedGrammar, LoadedFile, LoadedTree, PendingWrite, Persistence,
+    identity::Request,
 };
 use std::io::{self, Read, Write};
 use std::sync::Arc;
 
 // Prototype formats stay at version 0; no persisted data needs backward compatibility.
 const TRANSFER_SIGNATURE: &[u8; 8] = b"TSQXFR00";
-const HEADER_LEN: usize = 176;
+const HEADER_LEN: usize = 152;
 const PREFIX_LEN: usize = 8 + 3 * 8 + HEADER_LEN;
 
 fn invalid() -> io::Error {
@@ -52,7 +53,7 @@ impl Persistence {
     pub fn read_transfer(
         &self,
         mut input: impl Read,
-        grammar: &Grammar,
+        grammar: &IdentifiedGrammar,
         max_bytes: usize,
     ) -> Result<PendingWrite, CacheError> {
         if max_bytes < PREFIX_LEN {

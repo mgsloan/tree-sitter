@@ -381,7 +381,7 @@ impl Maintenance {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Grammar, GrammarFingerprint, Options, Persistence};
+    use crate::{GrammarIdentity, IdentifiedGrammar, Options, Persistence};
 
     #[test]
     fn cancellation_rolls_back_batch_and_continuation() {
@@ -391,9 +391,9 @@ mod tests {
         let language = unsafe {
             tree_sitter::Language::from_raw(tree_sitter_json::LANGUAGE.into_raw()().cast())
         };
-        let grammar = Grammar::new(
+        let grammar = IdentifiedGrammar::new(
             tree_sitter_squatter::Grammar::new(&language).unwrap(),
-            GrammarFingerprint([42; 32]),
+            GrammarIdentity::new(&language, "json"),
         );
         let mut parser = tree_sitter::Parser::new();
         std::fs::write(&path, "1").unwrap();

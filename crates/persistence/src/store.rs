@@ -9,7 +9,7 @@ use std::{
     },
 };
 
-use crate::identity::{CurrentGuard, Grammar, Request};
+use crate::identity::{CurrentGuard, IdentifiedGrammar, Request};
 use heed::{Env, EnvOpenOptions, WithoutTls, types::Bytes};
 
 pub(crate) type Database = heed::Database<Bytes, Bytes>;
@@ -37,7 +37,7 @@ pub(crate) struct Store {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::GrammarFingerprint;
+    use crate::GrammarIdentity;
 
     #[test]
     fn source_and_tree_publish_atomically_and_corruption_is_a_miss() {
@@ -46,9 +46,9 @@ mod tests {
         let language = unsafe {
             tree_sitter::Language::from_raw(tree_sitter_json::LANGUAGE.into_raw()().cast())
         };
-        let grammar = Grammar::new(
+        let grammar = IdentifiedGrammar::new(
             tree_sitter_squatter::Grammar::new(&language).unwrap(),
-            GrammarFingerprint([42; 32]),
+            GrammarIdentity::new(&language, "json"),
         );
         let mut parser = tree_sitter::Parser::new();
         parser.set_language(&language).unwrap();
@@ -82,7 +82,7 @@ mod tests {
             (
                 "grammars",
                 store.grammars,
-                crate::identity::grammar_key(grammar.fingerprint).as_slice(),
+                crate::identity::grammar_key(grammar.identity.hash).as_slice(),
             ),
             ("paths", store.paths, &request.source_key[..32]),
             ("current", store.current, &request.source_key[..32]),
@@ -121,7 +121,7 @@ mod tests {
         assert_eq!(
             store
                 .grammars
-                .get(&after, &crate::identity::grammar_key(grammar.fingerprint))
+                .get(&after, &crate::identity::grammar_key(grammar.identity.hash))
                 .unwrap(),
             Some([].as_slice())
         );
@@ -188,9 +188,9 @@ mod tests {
         let language = unsafe {
             tree_sitter::Language::from_raw(tree_sitter_c_sharp::LANGUAGE.into_raw()().cast())
         };
-        let grammar = Grammar::new(
+        let grammar = IdentifiedGrammar::new(
             tree_sitter_squatter::Grammar::new(&language).unwrap(),
-            GrammarFingerprint([7; 32]),
+            GrammarIdentity::new(&language, "json"),
         );
         let mut parser = tree_sitter::Parser::new();
         parser.set_language(&language).unwrap();
@@ -205,7 +205,7 @@ mod tests {
         drop(tree);
 
         let restored = store
-            .prepare_grammar(&language, grammar.fingerprint)
+            .prepare_grammar(&language, grammar.identity.hash)
             .unwrap();
         assert_eq!(restored.cache().unwrap(), expected);
         assert!(store.get(&request, b"class C {}", &grammar).is_some());
@@ -214,20 +214,18 @@ mod tests {
             .grammars
             .put(
                 &mut tx,
-                &crate::identity::grammar_key(grammar.fingerprint),
+                &crate::identity::grammar_key(grammar.identity.hash),
                 b"invalid",
             )
             .unwrap();
         tx.commit().unwrap();
         assert!(
             store
-                .prepare_grammar(&language, grammar.fingerprint)
+                .prepare_grammar(&language, grammar.identity.hash)
                 .is_none()
         );
         let persistence = crate::Persistence::open(root.path(), crate::Options::default()).unwrap();
-        let rebuilt = persistence
-            .prepare_grammar(&language, grammar.fingerprint)
-            .unwrap();
+        let rebuilt = persistence.prepare_grammar(&language, "c_sharp").unwrap();
         assert_eq!(rebuilt.prepared.cache().unwrap(), expected);
     }
 }
@@ -496,7 +494,7 @@ impl Store {
         &self,
         request: &Request,
         source: &[u8],
-        grammar: &Grammar,
+        grammar: &IdentifiedGrammar,
     ) -> Option<tree_sitter_squatter::Tree> {
         self.get_with_cancel(request, source, grammar, None)
             .map(|(tree, _)| tree)
@@ -506,7 +504,7 @@ impl Store {
         &self,
         request: &Request,
         source: &[u8],
-        grammar: &Grammar,
+        grammar: &IdentifiedGrammar,
         cancellation: Option<&AtomicBool>,
     ) -> Option<(tree_sitter_squatter::Tree, bool)> {
         let tx = self.env.read_txn().ok()?;
@@ -565,12 +563,12 @@ impl Store {
     pub fn prepare_grammar(
         &self,
         language: &tree_sitter::Language,
-        fingerprint: crate::GrammarFingerprint,
+        hash: tree_sitter_squatter::GrammarHash,
     ) -> Option<tree_sitter_squatter::Grammar> {
         let tx = self.env.read_txn().ok()?;
         let bytes = self
             .grammars
-            .get(&tx, &crate::identity::grammar_key(fingerprint))
+            .get(&tx, &crate::identity::grammar_key(hash))
             .ok()??;
         tree_sitter_squatter::Grammar::from_cache(language, bytes).ok()
     }
@@ -580,7 +578,7 @@ impl Store {
         request: &Request,
         source: &[u8],
         tree: &tree_sitter_squatter::Tree,
-        grammar: &Grammar,
+        grammar: &IdentifiedGrammar,
     ) -> Option<(bool, bool)> {
         let tx = self.env.read_txn().ok()?;
         if self.paths.get(&tx, &request.source_key[..32]).ok()?? != request.path
@@ -632,7 +630,7 @@ impl Store {
         request: &Request,
         source: &[u8],
         tree: &tree_sitter_squatter::Tree,
-        grammar: &Grammar,
+        grammar: &IdentifiedGrammar,
         cancelled: impl Fn() -> bool,
     ) -> Result<WriteOutcome, CacheError> {
         if tree.has_points() != request.points
@@ -708,7 +706,7 @@ impl Store {
                 })?;
             self.grammars.put(
                 &mut tx,
-                &crate::identity::grammar_key(grammar.fingerprint),
+                &crate::identity::grammar_key(grammar.identity.hash),
                 &grammar_cache,
             )?;
             self.current
