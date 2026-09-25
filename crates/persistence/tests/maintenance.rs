@@ -70,7 +70,7 @@ fn stale_cleanup_stops_and_late_writer_cannot_restore_retired_records() {
             LoadOptions {
                 pack: tree_sitter_squatter::PackOptions::default(),
                 write: WritePolicy::Deferred,
-                cancellation: None,
+                cancel: None,
             },
         )
         .unwrap();

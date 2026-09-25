@@ -81,7 +81,7 @@ fn deferred_disabled_and_cancelled_publication() {
             LoadOptions {
                 pack: tree_sitter_squatter::PackOptions::default(),
                 write: WritePolicy::Deferred,
-                cancellation: None,
+                cancel: None,
             },
         )
         .unwrap();
@@ -95,7 +95,7 @@ fn deferred_disabled_and_cancelled_publication() {
                 LoadOptions {
                     pack: tree_sitter_squatter::PackOptions::default(),
                     write: WritePolicy::Disabled,
-                    cancellation: None,
+                    cancel: None,
                 },
             )
             .unwrap()
@@ -125,7 +125,7 @@ fn stale_deferred_writer_cannot_create_wrong_hit() {
             LoadOptions {
                 pack: tree_sitter_squatter::PackOptions::default(),
                 write: WritePolicy::Deferred,
-                cancellation: None,
+                cancel: None,
             },
         )
         .unwrap();
@@ -181,7 +181,7 @@ fn cancellation_never_creates_entry() {
     let root = tempfile::tempdir().unwrap();
     fs::write(root.path().join("file.json"), "[1]").unwrap();
     let cache = Persistence::open(root.path(), Options::default()).unwrap();
-    let cancellation = AtomicBool::new(true);
+    let cancel = AtomicBool::new(true);
     let result = cache.load_with_options(
         Path::new("file.json"),
         &grammar(),
@@ -189,11 +189,11 @@ fn cancellation_never_creates_entry() {
         LoadOptions {
             pack: tree_sitter_squatter::PackOptions::default(),
             write: WritePolicy::Inline,
-            cancellation: Some(&cancellation),
+            cancel: Some(&cancel),
         },
     );
     assert!(matches!(result, Err(LoadError::Cancelled)));
-    cancellation.store(false, Ordering::Relaxed);
+    cancel.store(false, Ordering::Relaxed);
     assert!(!load(&cache).cache_hit());
 }
 
@@ -264,7 +264,7 @@ fn unavailable_cache_and_full_map_fall_back() {
             LoadOptions {
                 pack: tree_sitter_squatter::PackOptions::default(),
                 write: WritePolicy::Deferred,
-                cancellation: None,
+                cancel: None,
             },
         )
         .unwrap();
@@ -410,7 +410,7 @@ fn writer_death_releases_admission_without_stale_files() {
             LoadOptions {
                 pack: tree_sitter_squatter::PackOptions::default(),
                 write: WritePolicy::Deferred,
-                cancellation: None,
+                cancel: None,
             },
         )
         .unwrap();
@@ -506,7 +506,7 @@ fn side_data_policy_applies_to_hits_and_late_publication() {
                         ..tree_sitter_squatter::PackOptions::default()
                     },
                     write,
-                    cancellation: None,
+                    cancel: None,
                 },
             )
             .unwrap()

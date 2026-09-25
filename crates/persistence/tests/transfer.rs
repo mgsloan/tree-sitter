@@ -13,7 +13,7 @@ fn load(cache: &Persistence, write: WritePolicy) -> LoadResult {
             LoadOptions {
                 pack: tree_sitter_squatter::PackOptions::default(),
                 write,
-                cancellation: None,
+                cancel: None,
             },
         )
         .unwrap()

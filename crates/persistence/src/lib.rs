@@ -99,21 +99,20 @@ pub enum WritePolicy {
 pub struct LoadOptions<'a> {
     pub pack: tree_sitter_squatter::PackOptions,
     pub write: WritePolicy,
-    pub cancellation: Option<&'a AtomicBool>,
+    pub cancel: Option<&'a AtomicBool>,
 }
 impl Default for LoadOptions<'_> {
     fn default() -> Self {
         Self {
             pack: tree_sitter_squatter::PackOptions::default(),
             write: WritePolicy::default(),
-            cancellation: None,
+            cancel: None,
         }
     }
 }
 impl LoadOptions<'_> {
     fn cancelled(&self) -> bool {
-        self.cancellation
-            .is_some_and(|flag| flag.load(Ordering::Relaxed))
+        self.cancel.is_some_and(|flag| flag.load(Ordering::Relaxed))
     }
     fn check(&self) -> Result<(), LoadError> {
         if self.cancelled() {
@@ -183,13 +182,13 @@ impl LoadedFile {
     pub fn evict_sidecar(
         &self,
         kind: SidecarKind,
-        cancellation: Option<&AtomicBool>,
+        cancel: Option<&AtomicBool>,
     ) -> Result<EvictionOutcome, CacheError> {
-        if cancellation.is_some_and(|flag| flag.load(Ordering::Relaxed)) {
+        if cancel.is_some_and(|flag| flag.load(Ordering::Relaxed)) {
             return Err(CacheError::Cancelled);
         }
         match &self.cleanup {
-            Some((store, request)) => store.evict_sidecar(request, kind, cancellation),
+            Some((store, request)) => store.evict_sidecar(request, kind, cancel),
             None => Ok(EvictionOutcome::Absent),
         }
     }
@@ -268,7 +267,7 @@ impl PendingWrite {
     }
     pub fn publish_with_cancellation(
         &self,
-        cancellation: &AtomicBool,
+        cancel: &AtomicBool,
     ) -> Result<WriteOutcome, CacheError> {
         let store = self.store.as_ref().ok_or_else(|| {
             io::Error::new(
@@ -281,7 +280,7 @@ impl PendingWrite {
             self.file.source(),
             self.file.tree(),
             &self.grammar,
-            || cancellation.load(Ordering::Relaxed),
+            || cancel.load(Ordering::Relaxed),
         )
     }
 }
@@ -438,12 +437,7 @@ impl Persistence {
         let started = std::time::Instant::now();
         loop {
             let cooperate = started.elapsed() < self.options.cooperation_wait;
-            match pending.attempt(
-                parser,
-                options.cancellation,
-                cooperate,
-                packing.as_deref_mut(),
-            )? {
+            match pending.attempt(parser, options.cancel, cooperate, packing.as_deref_mut())? {
                 LoadStep::Ready(result) => return Ok(result),
                 LoadStep::Deferred(next) => {
                     pending = next;
@@ -467,7 +461,7 @@ impl Persistence {
         options: LoadOptions<'_>,
     ) -> Result<LoadStep, LoadError> {
         self.capture(path, grammar, &options)?
-            .resume(parser, options.cancellation)
+            .resume(parser, options.cancel)
     }
 
     /// Nonblocking load using reusable worker scratch.
@@ -479,7 +473,7 @@ impl Persistence {
         options: LoadOptions<'_>,
     ) -> Result<LoadStep, LoadError> {
         self.capture(path, grammar, &options)?
-            .resume_with_context(context, options.cancellation)
+            .resume_with_context(context, options.cancel)
     }
 
     fn capture(
@@ -557,18 +551,18 @@ impl PendingLoad {
     pub fn resume(
         self,
         parser: &mut tree_sitter::Parser,
-        cancellation: Option<&AtomicBool>,
+        cancel: Option<&AtomicBool>,
     ) -> Result<LoadStep, LoadError> {
-        self.attempt(parser, cancellation, true, None)
+        self.attempt(parser, cancel, true, None)
     }
 
     /// Explicit escape hatch for callers whose wait budget has expired.
     pub fn parse_now(
         self,
         parser: &mut tree_sitter::Parser,
-        cancellation: Option<&AtomicBool>,
+        cancel: Option<&AtomicBool>,
     ) -> Result<LoadResult, LoadError> {
-        match self.attempt(parser, cancellation, false, None)? {
+        match self.attempt(parser, cancel, false, None)? {
             LoadStep::Ready(result) => Ok(result),
             LoadStep::Deferred(_) => unreachable!("cooperation disabled"),
         }
@@ -577,11 +571,11 @@ impl PendingLoad {
     pub fn resume_with_context(
         self,
         context: &mut LoadContext,
-        cancellation: Option<&AtomicBool>,
+        cancel: Option<&AtomicBool>,
     ) -> Result<LoadStep, LoadError> {
         self.attempt(
             &mut context.parser,
-            cancellation,
+            cancel,
             true,
             Some(&mut context.packing),
         )
@@ -590,11 +584,11 @@ impl PendingLoad {
     pub fn parse_now_with_context(
         self,
         context: &mut LoadContext,
-        cancellation: Option<&AtomicBool>,
+        cancel: Option<&AtomicBool>,
     ) -> Result<LoadResult, LoadError> {
         match self.attempt(
             &mut context.parser,
-            cancellation,
+            cancel,
             false,
             Some(&mut context.packing),
         )? {
@@ -606,32 +600,27 @@ impl PendingLoad {
     fn attempt(
         self,
         parser: &mut tree_sitter::Parser,
-        cancellation: Option<&AtomicBool>,
+        cancel: Option<&AtomicBool>,
         cooperate: bool,
         packing: Option<&mut Option<tree_sitter_squatter::PackContext>>,
     ) -> Result<LoadStep, LoadError> {
         let options = LoadOptions {
             pack: self.pack,
             write: self.write,
-            cancellation,
+            cancel,
         };
         options.check()?;
         let store = self.store.clone();
         let hit = || {
             store.as_ref().and_then(|store| {
                 if self.read == ReadPolicy::PreferTransactionBacked
-                    && let Some((tree, complete)) = snapshot::get(
-                        store,
-                        &self.request,
-                        &self.source,
-                        &self.grammar,
-                        cancellation,
-                    )
+                    && let Some((tree, complete)) =
+                        snapshot::get(store, &self.request, &self.source, &self.grammar, cancel)
                 {
                     return Some((LoadedTree::Backed(Arc::new(tree)), complete));
                 }
                 store
-                    .get_with_cancel(&self.request, &self.source, &self.grammar, cancellation)
+                    .get_with_cancel(&self.request, &self.source, &self.grammar, cancel)
                     .map(|(tree, complete)| (LoadedTree::Owned(Arc::new(tree)), complete))
             })
         };
@@ -656,7 +645,7 @@ impl PendingLoad {
             if self.write == WritePolicy::Inline {
                 if let Some(write) = &pending_write {
                     let _ = write.publish_with_cancellation(
-                        options.cancellation.unwrap_or(&AtomicBool::new(false)),
+                        options.cancel.unwrap_or(&AtomicBool::new(false)),
                     );
                 }
                 LoadStep::Ready(LoadResult {
@@ -708,7 +697,7 @@ impl PendingLoad {
             &mut |offset, _| self.source.get(offset..).unwrap_or_default(),
             None,
             options
-                .cancellation
+                .cancel
                 .map(|_| tree_sitter::ParseOptions::new().progress_callback(&mut progress)),
         );
         let Some(tree) = tree else {
@@ -755,9 +744,8 @@ impl PendingLoad {
         };
         if options.write == WritePolicy::Inline {
             if let Some(write) = &pending_write {
-                let _ = write.publish_with_cancellation(
-                    options.cancellation.unwrap_or(&AtomicBool::new(false)),
-                );
+                let _ = write
+                    .publish_with_cancellation(options.cancel.unwrap_or(&AtomicBool::new(false)));
             }
             Ok(LoadStep::Ready(LoadResult {
                 file,

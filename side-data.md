@@ -431,7 +431,7 @@ Expose the same creation policy on persistence loads, including cache hits:
 pub struct LoadOptions<'a> {
     pub pack: PackOptions, // added; defaults to PackOptions::default()
     pub write: WritePolicy,
-    pub cancellation: Option<&'a AtomicBool>,
+    pub cancel: Option<&'a AtomicBool>,
 }
 ```
 

@@ -30,10 +30,10 @@ impl Store {
         &self,
         request: &Request,
         kind: SidecarKind,
-        cancellation: Option<&AtomicBool>,
+        cancel: Option<&AtomicBool>,
     ) -> Result<EvictionOutcome, CacheError> {
         let check = || {
-            if cancellation.is_some_and(|flag| flag.load(Ordering::Relaxed)) {
+            if cancel.is_some_and(|flag| flag.load(Ordering::Relaxed)) {
                 Err(CacheError::Cancelled)
             } else {
                 Ok(())
@@ -133,9 +133,9 @@ impl MissingSweep {
     pub fn step(
         &mut self,
         budget: usize,
-        cancellation: Option<&AtomicBool>,
+        cancel: Option<&AtomicBool>,
     ) -> Result<MaintenanceProgress, CacheError> {
-        if cancellation.is_some_and(|flag| flag.load(Ordering::Relaxed)) {
+        if cancel.is_some_and(|flag| flag.load(Ordering::Relaxed)) {
             return Err(CacheError::Cancelled);
         }
         let progress = |state, examined| MaintenanceProgress {
@@ -150,7 +150,7 @@ impl MissingSweep {
             return Ok(progress(MaintenanceState::More, 0));
         }
         if let Some(pending) = &mut self.pending {
-            let mut result = pending.step(budget, cancellation)?;
+            let mut result = pending.step(budget, cancel)?;
             if matches!(
                 result.state,
                 MaintenanceState::Complete | MaintenanceState::Superseded
@@ -249,10 +249,10 @@ impl Maintenance {
     pub fn step(
         &mut self,
         budget: usize,
-        cancellation: Option<&AtomicBool>,
+        cancel: Option<&AtomicBool>,
     ) -> Result<MaintenanceProgress, CacheError> {
         self.step_cancelled(budget, || {
-            cancellation.is_some_and(|flag| flag.load(Ordering::Relaxed))
+            cancel.is_some_and(|flag| flag.load(Ordering::Relaxed))
         })
     }
 

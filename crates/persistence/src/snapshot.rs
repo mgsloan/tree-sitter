@@ -74,7 +74,7 @@ pub(crate) fn get(
     request: &Request,
     source: &[u8],
     grammar: &IdentifiedGrammar,
-    cancellation: Option<&AtomicBool>,
+    cancel: Option<&AtomicBool>,
 ) -> Option<(BackedTree, bool)> {
     let snapshot = Arc::new(Snapshot::open(store)?);
     if store
@@ -129,8 +129,8 @@ pub(crate) fn get(
                     })
             });
         complete &= loaded.is_some();
-        let cache = loaded
-            .or_else(|| tree_sitter_squatter::PresenceCache::build(&tree, cancellation).ok())?;
+        let cache =
+            loaded.or_else(|| tree_sitter_squatter::PresenceCache::build(&tree, cancel).ok())?;
         tree.set_presence_cache(cache).ok()?;
     }
     if request.points {
@@ -152,7 +152,7 @@ pub(crate) fn get(
         complete &= loaded.is_some();
         let points = loaded.or_else(|| {
             let source_points = tree_sitter_squatter::SourcePoints::new(source).ok()?;
-            tree_sitter_squatter::PointData::build(&tree, &source_points, cancellation).ok()
+            tree_sitter_squatter::PointData::build(&tree, &source_points, cancel).ok()
         })?;
         tree.set_point_data(points).ok()?;
     }
