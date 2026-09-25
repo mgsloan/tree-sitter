@@ -19,7 +19,7 @@ or application query configuration. Callers can use it without the third step.
 
 ```rust
 pub struct Forest {
-    data: Box<ForestData>,
+    data: Box<TreeData>,
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct TreeId(u32);   // local to one forest
@@ -27,12 +27,12 @@ pub struct TreeId(u32);   // local to one forest
 pub struct RegionId(u32); // local to one forest
 #[derive(Clone, Copy)]
 pub struct Tree<'forest> {
-    forest: &'forest ForestData,
+    forest: &'forest TreeData,
     id: TreeId,
 }
 #[derive(Clone, Copy)]
 pub struct ForestRegion<'forest> {
-    forest: &'forest ForestData,
+    forest: &'forest TreeData,
     id: RegionId,
 }
 
@@ -97,11 +97,12 @@ supertype context inherited from excluded ancestors. Relationships and supertype
 context within the subtree remain intact. Queries on the detached tree need not
 match queries that depended on its original ancestors.
 
-`PackOptions::symbol_presence` requests a completed cache for every grammar
-region; `points` requests completed point data for the forest. Both default to
-true as in step 1. Requested sidecars use their own allocations, even when filled
-during forest packing. Failure to construct requested side data fails the
-operation. These flags do not change core grouping, IDs, or serialized bytes.
+`PackOptions::symbol_presence` requests one completed cache containing every
+region's presence data; `points` requests completed point data for the forest.
+Both default to true as in step 1. Presence and points each use their own
+allocation, even when filled during forest packing. Failure to construct
+requested side data fails the operation. These flags do not change core grouping,
+IDs, or serialized bytes.
 
 Packing preserves the supplied node's coordinate frame. The core stores its
 byte coordinates; requested point data preserves its native point coordinates.
@@ -185,25 +186,28 @@ fields below are illustrative; they do not prescribe allocation coalescing or
 the serialized descriptor layout.
 
 ```rust
+use smallvec::SmallVec;
+
 enum Storage {
     Owned(AlignedAllocation),
     Backed(Box<dyn StableSlab>),
 }
 
-struct ForestData {
+struct TreeData {
     columns: Layout<ColumnPointer>,
     bytes: NonNull<u8>,
     byte_length: usize,
-    trees: TreeTable, // indexed view of core descriptors
-    regions: Vec<RegionData>,
+    trees: SmallVec<[TreeDescriptor; 1]>,
+    regions: SmallVec<[RegionData; 1]>,
+    presence_cache: Option<PresenceCache>,
     point_data: Option<PointData>,
     storage: Storage,
 }
 
 struct RegionData {
+    descriptor: RegionDescriptor,
     grammar: Grammar,
-    presence_cache: Option<PresenceCache>,
-    // region bounds and resolved reader metadata
+    presence: Option<NonNull<u8>>, // bitmap segment in the forest cache
 }
 
 impl Forest {
@@ -218,8 +222,10 @@ impl Forest {
 
 Packing and `from_bytes` allocate core storage; `from_backing` retains immutable
 storage with the existing `StableSlab` contract. Both return `Forest`, with no
-public `BackedForest` variant. Resolve column and descriptor-table addresses at
-construction. Nodes read these addresses directly; `as_bytes()` uses the cached
+public `BackedForest` variant. Resolve column addresses and populate the tree and
+region vectors at construction. A single-tree forest keeps both vectors inline
+in `TreeData`, without separate descriptor-vector allocations. Larger forests
+spill to heap storage. Nodes index these vectors; `as_bytes()` uses the cached
 base and length. Neither path matches on `Storage` or calls `StableSlab::bytes()`.
 Side-data readers likewise cache their payload addresses so backing selection
 stays out of point and presence access.
@@ -230,7 +236,7 @@ box and dynamic destruction, but adds no per-node dispatch or pointer hop.
 Reader addresses remain valid and immutable while borrowed. Packing may relocate
 storage only before publication and must refresh resolved addresses afterward.
 Side-data replacement refreshes its reader metadata under exclusive forest
-access. Moving `Forest` does not move `ForestData` or its retained storage.
+access. Moving `Forest` does not move `TreeData` or its retained storage.
 
 Externally borrowed bytes require a separate lifetime-bearing wrapper if that
 loading API is retained; they cannot enter `Forest` through `StableSlab` without
@@ -241,22 +247,13 @@ a retained owner. This does not require another tree representation.
 ```rust
 #[derive(Clone, Copy)]
 pub struct Node<'forest> {
-    forest: &'forest ForestData,
+    forest: &'forest TreeData,
     tree: TreeId,
     slot: SlotIx, // physical slot within the forest
 }
 
-#[derive(Clone, Copy)]
-struct TreeContext<'forest> {
-    forest: &'forest ForestData,
-    tree: TreeId,
-    descriptor: &'forest TreeDescriptor,
-    region: &'forest RegionData,
-}
-
 pub struct Cursor<'forest> {
-    context: TreeContext<'forest>,
-    slot: SlotIx,
+    node: Node<'forest>,
     // traversal state
 }
 
@@ -266,12 +263,8 @@ pub struct QueryCursor {
 
 pub struct QueryExecution<'cursor, 'forest> {
     cursor: &'cursor mut QueryCursor,
-    context: TreeContext<'forest>,
+    root: Node<'forest>,
     // query, source, and matching state
-}
-
-impl ForestData {
-    fn tree_context(&self, tree: TreeId) -> TreeContext<'_>;
 }
 
 impl<'forest> Node<'forest> {
@@ -283,37 +276,33 @@ impl<'forest> Cursor<'forest> {
 }
 ```
 
-Column access follows `Node → ForestData.columns → column bytes`, without going
+Column access follows `Node → TreeData.columns → column bytes`, without going
 through a `Tree` handle or tree descriptor. A forest reference and two 32-bit
 indices can fit in 16 bytes on a 64-bit target; verify the implemented layout.
 Node equality and hashing use forest identity and physical slot. Construction
 ensures the slot is live and belongs to the carried tree ID.
 
-Tree-dependent operations index the tree table by `TreeId`; its descriptor
-provides group bounds and `RegionId`. The region supplies grammar and presence
-metadata. No containing-tree search by slot is needed. Standalone operations
-such as `node.parent()` resolve this context when called.
-
-Cursors, scans, and query executions resolve context once at construction and
-retain direct descriptor and region references. Repeated traversal, structural
-matching, and grammar interpretation use that context rather than repeating
-tree-table lookups through standalone node methods. Bounds may be copied into
-execution state when useful. Returned nodes and captures retain the compact
-forest/tree/slot representation. Resolve a new context when starting work on
-another tree; the reusable query cursor retains no forest borrow between
-executions. None of this requires duplicating column pointers per tree.
+Tree-dependent operations index `TreeData::trees` by `TreeId` for group bounds
+and `RegionId`, then index `TreeData::regions` for grammar and presence metadata.
+No containing-tree search by slot is needed. Nodes, cursors, scans, and query
+executions use these same lookups rather than retaining a separate resolved
+context or descriptor references. Returned nodes and captures retain the compact
+forest/tree/slot representation. The reusable query cursor retains no forest
+borrow between executions. Column pointers are stored once in `TreeData`.
 
 ## Ownership, navigation, and queries
 
 Forest owns all columns, retained grammar handles, and attached side data. Views,
 nodes, cursors, and scans borrow the owner; no view frees or retains a slab on its
 own. Sidecar handles live in the owner descriptor, outside the core slab.
-Each presence region and the point data have independently loadable allocations.
+The forest presence cache and point data have independently loadable allocations.
 Set/drop requires exclusive access to the forest and never shifts or rewrites
 its core columns, descriptor tables, groups, or IDs. Built/copied sidecars never
 share an allocation with the core or another sidecar. Mapped sidecars retain
-backing owners as in step 1. Dropping a region cache frees its owned storage or
-releases its backing handle independently of other regions and point data.
+backing owners as in step 1. Region presence views borrow slices of the forest
+cache and do not own allocations. Dropping the presence cache clears those views
+and frees its single allocation or releases its backing handle, independently
+of point data. Presence attachment and removal operate on the whole forest.
 
 ```rust
 impl TreeLike for Tree<'_> {
@@ -351,24 +340,24 @@ common source or document frame. Query source bytes do not supply missing points
 
 ## Extend side data to forests
 
-Generalize step 1's builders and set/drop methods to region presence and
-whole-forest points, using the same owned side-data types. Single-tree forests
-use these same APIs:
+Generalize step 1's builders and set/drop methods to whole-forest presence and
+points, using the same owned side-data types. Single-tree forests use these
+same APIs:
 
 ```rust
 impl PresenceCache {
-    pub fn build_region(
-        region: ForestRegion<'_>,
+    pub fn build_forest(
+        forest: &Forest,
         cancel: Option<&AtomicBool>,
     ) -> Result<Self, SideDataError>;
 
-    pub fn from_region_backing(
-        region: ForestRegion<'_>,
+    pub fn from_forest_backing(
+        forest: &Forest,
         backing: impl StableSlab,
     ) -> Result<Self, SideDataError>;
 
-    pub fn copy_from_region_bytes(
-        region: ForestRegion<'_>,
+    pub fn copy_from_forest_bytes(
+        forest: &Forest,
         bytes: &[u8],
     ) -> Result<Self, SideDataError>;
 }
@@ -394,18 +383,36 @@ impl PointData {
 impl Forest {
     pub fn set_presence_cache(&mut self, cache: PresenceCache) -> Result<(), SideDataError>;
     pub fn set_point_data(&mut self, points: PointData) -> Result<(), SideDataError>;
-    pub fn drop_presence_cache(&mut self, region: RegionId);
+    pub fn drop_presence_cache(&mut self);
     pub fn drop_point_data(&mut self);
 }
 ```
 
-Presence caches describe one region of the forest. Bitmaps have one bit per
-physical group in that region; tree views borrow them with a region-relative
-group offset. An uncached region uses ordinary symbol scanning even if other
-regions have caches.
+The forest presence cache concatenates the serialized region caches in region
+order into one allocation. Each segment retains the existing region header and
+bitmap layout, including alignment; no outer header or offset table is needed.
+A one-region forest uses the same bytes as a standalone region cache. An empty
+forest has an empty concatenation.
 
-Regions with the same grammar share grammar handles and prepared tables, but
-each region has its own presence cache and group-relative indexing.
+```text
+presence cache
+  [region 0 header + bitmaps][region 1 header + bitmaps][region 2 header + bitmaps]
+```
+
+Each segment's size follows from its group count and grammar symbol count.
+Construction computes the checked total size, allocates once, and fills each
+segment directly. Loading walks the expected regions, checks each header,
+dimensions, and segment extent, and requires the concatenation to consume the
+input exactly. Reject truncated, extra, or incompatible segments. Resolve region
+payload pointers once on attachment; reads do not walk earlier segments.
+Mapped loading retains one backing owner; copied loading uses one aligned
+allocation and copies the concatenation without rebuilding bitmaps.
+
+Bitmaps have one bit per physical group within their region; tree views use a
+region-relative group offset. Regions with the same grammar share grammar
+handles and prepared tables but have separate bitmap segments. All segments
+are attached or dropped together. Without a forest presence cache, every region
+uses ordinary symbol scanning.
 
 Point data covers the entire forest, preserving a separate coordinate frame for
 each tree. Sources need not match, even within a region. Ignore wasted slots.
@@ -428,15 +435,16 @@ or owners. Per-tree point attachment/removal remains outside this interface.
 Side data uses the `as_bytes` representation from step 1. The backing constructors
 read mapped payloads directly and retain their owners; the copy constructors
 allocate aligned storage and memcpy the same layout. Neither path decodes fields
-into another representation or reconstructs indexes. Release loading
-and attachment only check target kind, region counts, dimensions, alignment, and payload
-sizes. Content scans run only in debug builds, as in step 1. The caller supplies
-data built for the matching forest/region; count checks alone do not prove that
-pairing. Reordering trees/groups while rebuilding a core requires fresh side
-data or a correct remapping. Loading or setting side data does not rebuild the
-core. Failed attachment leaves current side data unchanged. Workers can build through immutable region/forest borrows; completed
-values retain no borrow. Set/drop requires exclusive owner access after those
-borrows end. Set replaces existing data on success; drop frees owned storage or
+into another representation or reconstructs indexes. Release loading and
+attachment only check target kind, region counts, dimensions, alignment, and
+payload sizes. Content scans run only in debug builds, as in step 1. The caller
+supplies data built for the matching forest and region order; count checks alone
+do not prove that pairing. Reordering trees/groups while rebuilding a core
+requires fresh side data or a correct remapping. Loading or setting side data
+does not rebuild the core. Failed attachment leaves current side data unchanged.
+Workers can build through immutable forest borrows; completed values retain no
+borrow. Set/drop requires exclusive owner access after those borrows end.
+Set replaces existing data on success; drop frees owned storage or
 releases the mapped backing handle, returns nothing, and is a no-op when absent.
 Point attachment/removal preserves layout and IDs but switches each tree between
 its attached point coordinates and row-zero access; presence attachment/removal
@@ -489,14 +497,17 @@ Region group bounds follow from its first and last trees. Tree node bounds follo
 from group size; the final occupied slot is the root under reverse-preorder
 encoding. Avoid redundant root/boundary tables unless measurements justify them.
 Store the region ID in each tree descriptor for direct grammar lookup. It must
-agree with the region's tree interval. Table access handles the serialized field
-encoding; runtime column pointers and `TreeContext` are never serialized.
+agree with the region's tree interval. Loading decodes the serialized descriptors
+into `TreeData::trees` and `TreeData::regions`; `SmallVec` internals, grammar
+handles, and runtime reader pointers are never serialized.
 Multiple regions may use the same grammar index. Region grouping constrains
 grammar interpretation only, not source identity or coordinate order.
 
 Serialize fields explicitly in little-endian form. Release loading performs only
 cheap header/count/size checks, including checked arithmetic for table and column
-extents. Do not scan descriptors, nodes, indexes, or coordinates for validity.
+extents. Populating runtime vectors requires reading descriptor metadata, not a
+full content-validation pass. Do not scan nodes, indexes, or coordinates for
+validity, or add a separate descriptor-validation pass in release builds.
 
 Under `#[cfg(debug_assertions)]`, scan descriptors and contents: check alignment,
 offsets, column/index/coordinate bounds, and grammar references. Regions partition
@@ -524,8 +535,10 @@ without introducing another forest owning type.
 
 1. Add forest descriptors, adjacent exact-grammar runs, and input-to-tree mapping;
    accept native subtree nodes with per-input coordinate and per-group slot bounds.
-2. Add compact forest/tree/slot nodes and cached tree context for traversal.
-3. Extend side data to regions and forests with independent per-tree sources.
+2. Add compact forest/tree/slot nodes with descriptor lookups through `SmallVec`s
+   with inline capacity one for trees and regions.
+3. Add concatenated forest presence caches and point data with independent
+   per-tree sources.
 4. Add checked serialization, retained grammar bindings, and storage-independent
    read paths for allocated and retained backing storage.
 
@@ -536,8 +549,8 @@ errors, predicates, point bounds, and ties. Verify aliases and subtree contents
 survive detachment while excluded parent/sibling/field/supertype context does not.
 Exercise every root/tree boundary, wasted slots, input mapping, changed grammar
 bindings, serialization round trips, malformed descriptors, overflow,
-cancelled packing, and existing-reader lifetimes. Verify region-specific missing
-presence caches, invalid region/dimension rejection, and sidecar serialization
+cancelled packing, and existing-reader lifetimes. Verify absent forest presence
+caches, invalid region/dimension rejection, and sidecar serialization
 round trips. Presence changes must preserve query results. Points must
 match each tree's source conversion while attached and use row-zero coordinates
 before attachment and after removal; test point-bounded queries in both states.
@@ -551,7 +564,7 @@ validation scan.
 
 Verify input-order preservation for grouped, interleaved, and byte-unsorted
 inputs, including an A/B/A/A grammar sequence producing three regions. Exercise
-independent region caches sharing one grammar. Pack trees from different sources
+separate bitmap segments sharing one grammar. Pack trees from different sources
 with overlapping byte and point ranges, including within the same region. Check
 native point copying and rebuilding with distinct or repeated source references,
 source-count rejection, per-tree text queries, and sidecar round trips without
@@ -563,14 +576,22 @@ at group reservation, including partial-group waste, and layout overflow during
 capacity growth. Coordinate checks must stay outside descendant traversal;
 physical slot-limit checks belong at group reservation.
 
-Verify node identity for overlapping trees, tree/region lookup, and equivalent
-standalone-node and cached-context traversal at every tree boundary. Reuse query
-cursors across forests and trees without retaining stale context. Check compact
-node layout and that traversal loops reuse resolved context. Exercise owned and
-retained backing loads, moves of the forest owner, and backing release after
+Verify node identity for overlapping trees and tree/region vector lookups in
+nodes, cursors, scans, and queries at every tree boundary. Check inline storage
+for empty and single-tree forests and spilled storage for larger forests,
+including multiple trees in one region. Reuse query cursors across forests and
+trees without retaining stale state. Check compact node layout. Exercise owned
+and retained backing loads, moves of the forest owner, and backing release after
 the last owner is dropped. Check that core and side-data reads use cached
 addresses without backing dispatch and that side-data replacement cannot leave
 stale reader pointers.
+
+Verify presence serialization is exactly the concatenation of region encodings,
+including empty, single-region, repeated-grammar, and differently sized regions.
+Check one allocation for the owned bitmap payload and one backing owner for
+mapped payloads. Exercise truncated segments, trailing bytes, extent overflow,
+and whole-cache replacement/removal without stale region views. Release loading
+may walk region headers but must not scan bitmap contents.
 
 Later, compare per-tree/segmented queries with shared candidate scanning and
 contiguous reassembly. Include viewport selection, predicates, merging, copying,
