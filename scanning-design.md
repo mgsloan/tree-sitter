@@ -71,7 +71,8 @@ ID targets, and mask extraction. Fixed 32-lane vectors match stored groups;
 backends split them across registers as needed. Dispatch uses the compilation
 baseline, with runtime detection for `+avx2` builds that do not guarantee all
 features required by fearless SIMD's AVX2 backend. Loads accept unaligned bytes;
-word decoding preserves the slab's little-endian representation.
+word decoding preserves the slab's little-endian representation. Node seeking
+uses the same backend selection for byte-start masks.
 
 | Operation | Role / representation | SIMD | Important behavior |
 | --- | --- | --- | --- |
@@ -303,8 +304,8 @@ Point filters pack query bounds into `u64` keys, with row in the high word and
 column in the low word, once per group. They translate these bounds into encoded
 `u16` delta intervals, handling row and column differences separately. Byte
 filters likewise translate bounds into `u8` start or `u16` end delta intervals.
-On x86_64, masks with at least three candidates use SSE2; smaller masks and other
-architectures use scalar delta comparisons. Bounds exceeding `u32` retain full
+Masks with at least three candidates use the SIMD backend; smaller masks use
+scalar delta comparisons. Bounds exceeding `u32` retain full
 `Point` comparisons to avoid truncation. No source text or conversion to byte
 offsets is needed. When the tree has no stored points, use the existing
 node-position convention `(0, byte_offset)` for the same comparisons.
@@ -357,8 +358,8 @@ membership indices. Kind predicates also fetch offsets for the optional persiste
 symbol index through one private C bridge call. No index is copied or allocated.
 
 `retain_matches` permits both dense group evaluation and scalar evaluation of
-surviving slots. Single-kind and field equality use SSE2 on x86_64, with a scalar
-fallback elsewhere. Fixed arrays specialize equality by cardinality: one target
+surviving slots. Single-kind and field equality use the SIMD backend. Fixed arrays
+specialize equality by cardinality: one target
 uses single equality, two combine equality masks, and larger arrays share column
 loads across comparisons. Dynamic sets of up to sixteen IDs reuse the same kernel,
 with their encoded targets stored inline in the predicate. Empty and singleton
@@ -369,7 +370,7 @@ than four targets visit only surviving slots when at most four remain. Singleton
 candidates and expensive predicates use scalar checks. Flags intersect already-valid candidate masks, so
 they need not reread group waste.
 
-Direct supertype masks use SSE2 bit tests for at least three candidates, with
+Direct supertype masks use SIMD bit tests for at least three candidates, with
 scalar checks for smaller masks. This applies to grammars with at most eight
 supertypes; dictionary-based membership remains scalar.
 

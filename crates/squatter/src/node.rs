@@ -8,22 +8,7 @@ use crate::{
 use std::{marker::PhantomData, ops::Range, ptr::NonNull};
 use tree_sitter::Point;
 
-#[cfg(target_arch = "x86_64")]
-use fearless_simd::{Level, prelude::*, u8x16};
-
-// Unsigned byte minima mark start deltas at or below the threshold.
-#[cfg(target_arch = "x86_64")]
-fearless_simd::kernel!(
-    #[inline]
-    fn sse2_start_mask(simd: Sse2, bytes: &[u8], threshold: u8) -> u16 {
-        use std::arch::x86_64::*;
-
-        let target = _mm_set1_epi8(threshold as i8);
-        let lanes: __m128i = u8x16::from_slice(simd, bytes).into();
-        let matches = _mm_cmpeq_epi8(_mm_min_epu8(lanes, target), lanes);
-        _mm_movemask_epi8(matches) as u16
-    }
-);
+use fearless_simd::{dispatch, prelude::*, u8x32};
 
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
@@ -666,30 +651,19 @@ impl<'tree> Node<'tree> {
 }
 
 fn start_mask(data: &TreeData, group: u32, threshold: u8) -> u64 {
-    #[cfg(target_arch = "x86_64")]
-    {
-        let deltas = data.column_slice(
-            data.layout.start_byte_delta,
-            (group * GROUP_SIZE) as usize,
-            GROUP_SIZE as usize,
-        );
-        let simd = Level::baseline().as_sse2().unwrap();
-        let mut mask = 0;
-        for (index, bytes) in deltas.chunks_exact(16).enumerate() {
-            mask |= (sse2_start_mask(simd, bytes, threshold) as u64) << (index * 16);
-        }
-        mask
-    }
-    #[cfg(not(target_arch = "x86_64"))]
-    {
-        let mut mask = 0;
-        for slot in 0..GROUP_SIZE {
-            mask |= ((data.byte(data.layout.start_byte_delta, group * GROUP_SIZE + slot)
-                <= threshold) as u64)
-                << slot;
-        }
-        mask
-    }
+    let deltas = data.column_slice(
+        data.layout.start_byte_delta,
+        (group * GROUP_SIZE) as usize,
+        GROUP_SIZE as usize,
+    );
+    dispatch!(crate::simd::level(), simd => start_delta_mask(simd, deltas, threshold))
+}
+
+#[inline(always)]
+fn start_delta_mask<S: Simd>(simd: S, deltas: &[u8], threshold: u8) -> u64 {
+    u8x32::from_slice(simd, deltas)
+        .simd_le(threshold)
+        .to_bitmask()
 }
 
 pub struct Children<'tree> {
@@ -815,5 +789,34 @@ impl<'tree> Cursor<'tree> {
         self.parents.push(self.node.slot());
         self.node = child;
         Some(index)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn start_masks_match_scalar() {
+        for level in crate::simd::test_levels() {
+            dispatch!(level, simd => check_start_masks(simd));
+        }
+    }
+
+    #[inline(always)]
+    fn check_start_masks<S: Simd>(simd: S) {
+        let mut storage = [0u8; 64];
+        for offset in 0..32 {
+            let bytes = &mut storage[offset..offset + 32];
+            for (slot, byte) in bytes.iter_mut().enumerate() {
+                *byte = (slot * 8 + offset) as u8;
+            }
+            for threshold in 0..=u8::MAX {
+                let expected = bytes.iter().enumerate().fold(0, |mask, (slot, value)| {
+                    mask | (u64::from(*value <= threshold) << slot)
+                });
+                assert_eq!(start_delta_mask(simd, bytes, threshold), expected);
+            }
+        }
     }
 }

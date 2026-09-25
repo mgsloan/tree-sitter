@@ -26,6 +26,7 @@
 use crate::{
     FieldId, FieldSet, GrammarKindId, KindId, KindSet, Node, PointData, SlotIx,
     native::GrammarView,
+    simd::{self, WordMask, load_words},
     storage::{ColumnPointer, GROUP_SIZE, Layout, TreeData},
     types::{GroupIx, GroupSlotIx, PackedPoint, RemappedKindId},
 };
@@ -36,45 +37,7 @@ use std::{
 };
 use tree_sitter::Point;
 
-use fearless_simd::{
-    Level, dispatch, i8x16, i8x32, i16x16, i16x32, mask8x32, mask16x16, mask16x32, prelude::*,
-    u8x32, u16x16, u16x32,
-};
-
-trait WordMask<S: Simd>: SimdMask<S> {
-    fn slot_bits(self, simd: S) -> u64;
-}
-
-impl<S: Simd> WordMask<S> for mask16x16<S> {
-    #[inline(always)]
-    fn slot_bits(self, _: S) -> u64 {
-        self.to_bitmask()
-    }
-}
-
-impl<S: Simd> WordMask<S> for mask16x32<S> {
-    #[inline(always)]
-    fn slot_bits(self, simd: S) -> u64 {
-        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-        if simd.level().as_avx512().is_some() {
-            return self.to_bitmask();
-        }
-        // Narrow before extracting bits to avoid two movemasks and PEXTs on AVX2.
-        let values = i16x32::from_slice(simd, &<[i16; 32]>::from(self));
-        let (low, high) = values.split();
-        mask8x32::from_slice(simd, &low.saturating_narrow(high).to_array()).to_bitmask()
-    }
-}
-
-#[inline]
-fn scan_level() -> Level {
-    // The Avx2 token needs all x86-64-v3 features, even in a +avx2 build.
-    #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
-    if Level::baseline().as_avx2().is_none() {
-        return Level::new();
-    }
-    Level::baseline()
-}
+use fearless_simd::{dispatch, i8x16, i8x32, i16x16, i16x32, prelude::*, u8x32, u16x16, u16x32};
 
 // Keep loads, target loops, and mask extraction in the same SIMD context.
 // Fixed lane counts match storage groups; each backend chooses the registers.
@@ -82,7 +45,7 @@ fn scan_level() -> Level {
 pub(crate) fn equal_byte_ids(bytes: &[u8], targets: &[RemappedKindId]) -> u64 {
     debug_assert_eq!(bytes.len(), GROUP_SIZE as usize);
     debug_assert!(targets.iter().all(|target| target.get() <= u8::MAX as u16));
-    dispatch!(scan_level(), simd => byte_id_mask(simd, bytes, targets))
+    dispatch!(simd::level(), simd => byte_id_mask(simd, bytes, targets))
 }
 
 #[inline(always)]
@@ -93,17 +56,6 @@ fn byte_id_mask<S: Simd>(simd: S, bytes: &[u8], targets: &[RemappedKindId]) -> u
         matches |= values.simd_eq(target.get() as u8);
     }
     matches.to_bitmask()
-}
-
-#[inline(always)]
-fn load_words<S: Simd, V: SimdInt<S>>(simd: S, bytes: &[u8]) -> V
-where
-    V::Element: From<u8>,
-{
-    let values = V::from_bytes(V::ByteVector::from_slice(simd, bytes));
-    #[cfg(target_endian = "big")]
-    let values = (values << 8) | ((values >> 8) & V::Element::from(255));
-    values
 }
 
 #[inline(always)]
@@ -530,7 +482,7 @@ impl<'tree> GroupRef<'tree> {
             .columns
             .slice(column, start, self.columns.group_size() as usize * 2);
         let targets = [RemappedKindId(target)];
-        let matches = dispatch!(scan_level(), simd => id_mask(simd, bytes, shift, &targets));
+        let matches = dispatch!(simd::level(), simd => id_mask(simd, bytes, shift, &targets));
         candidates.intersection(Mask(matches))
     }
     #[inline(always)]
@@ -570,7 +522,7 @@ impl<'tree> GroupRef<'tree> {
         let bytes = self
             .columns
             .slice(column, start, self.columns.group_size() as usize * 2);
-        let matches = dispatch!(scan_level(), simd => id_mask(simd, bytes, shift, targets));
+        let matches = dispatch!(simd::level(), simd => id_mask(simd, bytes, shift, targets));
         candidates.intersection(Mask(matches))
     }
     #[inline]
@@ -1583,7 +1535,7 @@ fn retain_deltas<const WIDE: bool>(
     }
     let deltas = deltas.slice();
     if !candidates.at_most::<2>() {
-        let matches = dispatch!(scan_level(), simd =>
+        let matches = dispatch!(simd::level(), simd =>
             range_mask::<_, WIDE>(simd, deltas, bounds.start, bounds.end - bounds.start));
         return candidates.intersection(Mask(matches));
     }
@@ -3209,7 +3161,7 @@ fn retain_supertype_masks(masks: &[u8], candidates: Mask, bit: u16) -> Mask {
         return candidates;
     }
     if !candidates.at_most::<2>() {
-        let absent = dispatch!(scan_level(), simd => {
+        let absent = dispatch!(simd::level(), simd => {
             if masks.len() == 32 {
                 absent_mask::<_, u16x16<_>>(simd, masks, bit)
             } else {
@@ -3268,21 +3220,7 @@ mod tests {
 
     #[test]
     fn simd_kernels_match_scalar() {
-        let mut levels = vec![Level::baseline(), Level::new()];
-        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-        {
-            let available = Level::new();
-            if let Some(simd) = available.as_sse2() {
-                levels.push(Level::Sse2(simd));
-            }
-            if let Some(simd) = available.as_sse4_2() {
-                levels.push(Level::Sse4_2(simd));
-            }
-            if let Some(simd) = available.as_avx2() {
-                levels.push(Level::Avx2(simd));
-            }
-        }
-        for level in levels {
+        for level in simd::test_levels() {
             dispatch!(level, simd => check_simd_kernels(simd));
         }
     }

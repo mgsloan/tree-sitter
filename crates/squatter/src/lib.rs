@@ -9,6 +9,7 @@ mod native;
 mod packing;
 mod parser;
 mod side_data;
+mod simd;
 mod storage;
 pub mod traits;
 pub use packing::{PackContext, PackOptions};
