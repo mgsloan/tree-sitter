@@ -4,19 +4,31 @@
 
 - [ ] Review and polish design.md
 
-- [ ] Document Send+Sync for scans
-
 - [ ] Separate viz branch for visualizer
 
-- [ ] Look into the unexpected cargo features
+- [x] Look into the unexpected cargo features
+
+- [ ] simplify grammar id / symbol id encoding??
+
+    * Consider interaction with forests - column widths can't vary
+
+- [ ] Define flat format that includes sidecars
+
+- [ ] Try OR-ing together presence bitmaps when appropriate
 
 ## Injections
 
 - [ ] Forests
 
-## Use in Zed
+- [ ] Figure out persistent cache sharing.
 
-- [ ] Change persistence path to .tree-sitter/squat.*?
+    * Root tree only invalidated by grammar differences.
+
+    * Injection trees and cache are invalidated by set of grammars / injection queries
+
+    * Gets kinda complex to do things optimally.  An application that doesn't need the injections can use the root tree straightforwardly, but it will write to the cache without injections.  An application that does need injections can read a solo tree and then add the injections.
+
+## Use in Zed
 
 - [ ] Review and polish the traits
 
@@ -91,6 +103,8 @@ Parse only the needed info.
 - [ ] symbol presence optimizations - bitmap per group and then do a SIMD transpose?
 
 - [ ] PGO of the C parts? Switch back to C to allow use of PGO data within the crate?
+
+- [ ] WASM / neon / etc simd
 
 # Backburner
 
