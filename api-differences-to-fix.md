@@ -1027,29 +1027,29 @@ results.
 
 Use these labels consistently in Rust documentation:
 
-- **tree-squatter behavior change:** for an observable result or contract
+- **Tree-squatter behavior change:** for an observable result or contract
   difference, including the behavior when point data is absent.
-- **tree-squatter only:** for an additional API or capability with no tree-sitter
+- **Tree-squatter only:** for an additional API or capability with no tree-sitter
   counterpart.
-- **tree-squatter API difference:** for an intentional signature/type difference,
+- **Tree-squatter API difference:** for an intentional signature/type difference,
   such as `ChildIx` or the grammar wrapper.
-- **tree-squatter performance difference:** for a different complexity or cost,
+- **Tree-squatter performance difference:** for a different complexity or cost,
   such as scanning to count children. Do not imply a measured slowdown without
   measurements.
 
 For example, these are separate additions to the corresponding API docs:
 
 ```rust
-/// **tree-squatter API difference:** Takes `ChildIx` instead of `u32`.
+/// **Tree-squatter API difference:** Takes `ChildIx` instead of `u32`.
 
-/// **tree-squatter performance difference:** Scans preceding children. Prefer
+/// **Tree-squatter performance difference:** Scans preceding children. Prefer
 /// child iteration when visiting several children.
 
-/// **tree-squatter behavior change:** Without point data, returns row zero with
+/// **Tree-squatter behavior change:** Without point data, returns row zero with
 /// the byte offset as the column. Check `has_points()` before using line/column
 /// coordinates.
 
-/// **tree-squatter only:** Returns this node's physical slot in the packed tree.
+/// **Tree-squatter only:** Returns this node's physical slot in the packed tree.
 ```
 
 An appended note must not contradict the copied text. For example, replace an
