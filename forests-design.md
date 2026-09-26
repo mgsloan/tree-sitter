@@ -421,38 +421,26 @@ same APIs:
 
 ```rust
 impl PresenceCache {
-    pub fn build_forest(
+    pub fn build(
         forest: &Forest,
         cancel: Option<&AtomicBool>,
     ) -> Result<Self, SideDataError>;
 
-    pub fn from_forest_retained(
-        forest: &Forest,
-        owner: impl StableSlab,
-    ) -> Result<Self, SideDataError>;
-
-    pub fn copy_from_forest_bytes(
-        forest: &Forest,
-        bytes: &[u8],
-    ) -> Result<Self, SideDataError>;
+    pub fn from_retained(owner: impl StableSlab) -> Result<Self, SideDataError>;
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, SideDataError>;
+    pub fn as_bytes(&self) -> &[u8];
 }
 
 impl PointData {
-    pub fn build_forest(
+    pub fn build(
         forest: &Forest,
         sources: &[&LineIndex],
         cancel: Option<&AtomicBool>,
     ) -> Result<Self, SideDataError>;
 
-    pub fn from_forest_retained(
-        forest: &Forest,
-        owner: impl StableSlab,
-    ) -> Result<Self, SideDataError>;
-
-    pub fn copy_from_forest_bytes(
-        forest: &Forest,
-        bytes: &[u8],
-    ) -> Result<Self, SideDataError>;
+    pub fn from_retained(owner: impl StableSlab) -> Result<Self, SideDataError>;
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, SideDataError>;
+    pub fn as_bytes(&self) -> &[u8];
 }
 
 impl Forest {
@@ -462,6 +450,12 @@ impl Forest {
     pub fn drop_point_data(&mut self);
 }
 ```
+
+`build` derives new data from an immutable forest borrow. `from_bytes` copies
+serialized data into owned storage, matching `Forest::from_bytes`;
+`from_retained` retains immutable storage without copying. Both loaders validate
+the serialized format without a forest. Setters check compatibility with the
+destination forest and perform forest-dependent debug validation before attachment.
 
 The forest presence cache concatenates the serialized region caches in region
 order into one allocation. Each segment retains the existing region header and
@@ -476,10 +470,11 @@ presence cache
 
 Each segment's size follows from its group count and grammar symbol count.
 Construction computes the checked total size, allocates once, and fills each
-segment directly. Loading walks the expected regions, checks each header,
+segment directly. Loading walks the serialized segments, checks each header,
 dimensions, and segment extent, and requires the concatenation to consume the
-input exactly. Reject truncated, extra, or incompatible segments. Resolve region
-payload pointers once on attachment; reads do not walk earlier segments.
+input exactly. Attachment checks segment counts and dimensions against the forest's
+regions, rejecting extra, missing, or incompatible segments. Resolve region payload
+pointers once on attachment; reads do not walk earlier segments.
 Mapped loading retains one storage owner; copied loading uses one aligned
 allocation and copies the concatenation without rebuilding bitmaps.
 
@@ -496,7 +491,7 @@ and its nodes report the same availability. Without point data they all use
 row-zero access, including forests containing trees from unrelated sources.
 
 Packing copies points from each native input. For later source-derived
-construction, `build_forest` takes one `LineIndex` reference per tree in
+construction, `PointData::build` takes one `LineIndex` reference per tree in
 `forest.trees()` order; reject a source-count mismatch. Each source must match
 its tree's byte coordinate frame. Entries may reference different sources or
 reuse one source and line index for multiple trees. The resulting sidecar is
@@ -510,15 +505,18 @@ or owners. Per-tree point attachment/removal remains outside this interface.
 Side data uses the `as_bytes` representation from step 1. Retained constructors
 read mapped payloads directly and retain their owners; copy constructors
 allocate aligned storage and memcpy the same layout. Neither path decodes fields
-into another representation or reconstructs indexes. Release loading and
-attachment only check target kind, region counts, dimensions, alignment, and
-payload sizes. Content scans run only in debug builds, as in step 1. The caller
-supplies data built for the matching forest and region order; count checks alone
+into another representation or reconstructs indexes. Release loading checks format,
+dimensions, alignment for retained storage, and payload sizes. Attachment compares
+the target kind, region counts, and dimensions with the forest. Content scans run
+only in debug builds, as in step 1. The caller supplies data built for the matching
+forest and region order; count checks alone
 do not prove that pairing. Reordering trees/groups while rebuilding a core
 requires fresh side data or a correct remapping. Loading or setting side data
 does not rebuild the core. Failed attachment leaves current side data unchanged.
-Workers can build through immutable forest borrows; completed values retain no
-borrow. Set/drop requires exclusive owner access after those borrows end.
+Workers can build through immutable forest borrows while other readers remain
+active; completed values are `Send` and retain no forest or source borrow.
+Set/drop requires exclusive owner access after all reader borrows end, including
+nodes, tree views, and cursors that would otherwise be used after attachment.
 Set replaces existing data on success; drop frees owned storage or
 releases the mapped storage owner, returns nothing, and is a no-op when absent.
 Point attachment/removal preserves layout and IDs but switches each tree between
@@ -703,6 +701,8 @@ Check one allocation for the owned bitmap payload and one storage owner for
 mapped payloads. Exercise truncated segments, trailing bytes, extent overflow,
 and whole-cache replacement/removal without stale region views. Release loading
 may walk region headers but must not scan bitmap contents.
+Load sidecars without a forest, then attach them to compatible and incompatible
+forests; rejected attachment must preserve existing side data.
 
 Later, compare per-tree/segmented queries with shared candidate scanning and
 contiguous reassembly. Include viewport selection, predicates, merging, copying,
