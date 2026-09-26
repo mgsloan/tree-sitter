@@ -728,12 +728,18 @@ impl Tree {
     pub(crate) fn finish_layout(
         &mut self,
         capacity: u32,
-        flags: u32,
+        optional_columns: u32,
         trailing: u32,
     ) -> Result<(), Error> {
-        if capacity != self.group_capacity() {
-            return self.resize(capacity, flags, trailing, false);
-        }
+        let data = self.data();
+        assert!(data.owned);
+        assert!(capacity >= data.groups());
+        assert!(capacity <= data.capacity());
+        assert_eq!(optional_columns & !OPTIONAL, 0);
+        assert_eq!(optional_columns & !data.flags(), 0);
+        assert!(trailing <= data.length - data.layout.end.get());
+
+        let flags = (data.flags() & !OPTIONAL) | optional_columns;
         let next = Layout::new(capacity, flags)?;
         let length = next
             .end
@@ -743,44 +749,69 @@ impl Tree {
         let data = self.data_mut();
         let previous = data.layout;
 
-        // Only the optional tail moves when capacity is unchanged. Copy from
-        // left to right so removing columns cannot overwrite a later source.
-        for (flag, source, destination, end) in [
-            (EXTRAS, previous.extra, next.extra, next.error),
-            (ERRORS, previous.error, next.error, next.missing),
-            (MISSING, previous.missing, next.missing, next.end),
-        ] {
-            if flags & flag != 0 {
+        // Shrinking capacity or removing columns only moves offsets earlier.
+        // Copy left to right so no destination overwrites a later column's source.
+        for ((source, _), (destination, length)) in previous
+            .columns(data.groups(), flags)
+            .into_iter()
+            .zip(next.columns(data.groups(), flags))
+        {
+            let destination = destination.pointer(data.bytes);
+            if source.as_ptr() != destination && length != 0 {
                 unsafe {
-                    ptr::copy(
-                        source.as_ptr(),
-                        data.bytes.as_ptr().add(destination.get() as usize),
-                        (end.get() - destination.get()) as usize,
-                    );
+                    ptr::copy(source.as_ptr(), destination, length);
                 }
             }
+        }
+        unsafe {
+            ptr::copy(
+                previous.end.pointer(data.bytes),
+                next.end.pointer(data.bytes),
+                trailing as usize,
+            );
         }
         data.layout = next.resolve(data.bytes);
         data.length = length;
         data.put_word(SlabOffset(0), 0, flags);
-        let allocated = data.allocation_length;
+        data.put_word(SlabOffset(0), 2, capacity);
+        self.shrink_allocation(next, 256)
+    }
 
-        if length > allocated || allocated - length >= 256 {
-            let old = allocation(allocated, true)?;
-            let new = allocation(length, true)?;
-            let pointer = unsafe { realloc(self.0.as_ptr().cast(), old, new.size()) };
-            self.0 = NonNull::new(pointer)
-                .unwrap_or_else(|| handle_alloc_error(new))
-                .cast();
-            let pointer = self.0.as_ptr();
-            let data = self.data_mut();
-            data.bytes = NonNull::new(pointer.cast::<u8>().wrapping_add(prefix())).unwrap();
-            data.layout = next.resolve(data.bytes);
-            data.allocation_length = length;
+    fn shrink_allocation(
+        &mut self,
+        layout: Layout<SlabOffset>,
+        threshold: u32,
+    ) -> Result<(), Error> {
+        let data = self.data();
+        let allocated = data.allocation_length;
+        let length = data.length;
+        let excess = allocated - length;
+        if excess == 0 || excess < threshold.min(allocated / 2) {
+            return Ok(());
         }
+        let old = allocation(allocated, true)?;
+        let new = allocation(length, true)?;
+        let pointer = unsafe { realloc(self.0.as_ptr().cast(), old, new.size()) };
+        self.0 = NonNull::new(pointer)
+            .unwrap_or_else(|| handle_alloc_error(new))
+            .cast();
+        let pointer = self.0.as_ptr();
+        let data = self.data_mut();
+        data.bytes = NonNull::new(pointer.cast::<u8>().wrapping_add(prefix())).unwrap();
+        data.layout = layout.resolve(data.bytes);
+        data.allocation_length = length;
         Ok(())
     }
 
+    /// Compact this tree's columns without copying its attached side data.
+    /// Small unused allocation tails may be retained.
+    pub fn repack_in_place(&mut self) -> Result<(), Error> {
+        let data = self.data();
+        let trailing = data.length - data.layout.end.get();
+        self.finish_layout(data.groups(), data.flags() & OPTIONAL, trailing)
+    }
+
+    /// Return a compact copy, preserving this tree and copying its attached side data.
     pub fn repack(&self) -> Result<Self, Error> {
         let layout = Layout::new(self.group_count(), self.data().flags())?;
         let mut result = Self::allocate(
@@ -1025,5 +1056,37 @@ impl Tree {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shrinking_respects_absolute_and_relative_thresholds() {
+        let language = unsafe {
+            tree_sitter::Language::from_raw(tree_sitter_json::LANGUAGE.into_raw()().cast())
+        };
+        let grammar = Grammar::new(&language).unwrap();
+        let layout = Layout::new(1, TREE_FORMAT | BYTE_IDS).unwrap();
+        let length = layout.end.get();
+        for (excess, threshold, shrink) in [
+            (0, 0, false),
+            (1, 0, true),
+            (255, 256, false),
+            (256, 256, true),
+            (length - 2, u32::MAX, false),
+            (length, u32::MAX, true),
+        ] {
+            let mut tree = Tree::allocate(&grammar, layout, length + excess, None, true).unwrap();
+            tree.data_mut().length = length;
+            tree.shrink_allocation(layout, threshold).unwrap();
+            assert_eq!(
+                tree.data().allocation_length,
+                if shrink { length } else { length + excess }
+            );
+            assert_eq!(tree.data().layout.end, layout.end);
+        }
     }
 }

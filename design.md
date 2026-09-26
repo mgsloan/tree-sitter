@@ -127,8 +127,11 @@ The optional columns end the core slab in the order `grammar_id`,
 omitted when all its values are zero, as recorded by `SQ_EXTRAS`, `SQ_MISSING`, and
 `SQ_ERRORS` in the header. Missing nodes imply the error column is present.
 The builder reserves all four optional columns. Finalization removes unused
-columns. With unchanged group capacity, only retained optional columns move;
-the allocation is shrunk when the unused tail is at least 256 bytes.
+columns. Columns move in place to their new offsets, including when packing
+requests reduced group capacity. The allocation is shrunk when the unused tail
+is at least `min(256, allocated_slab_bytes / 2)` bytes. `realloc` may move it.
+`Tree::repack_in_place` uses the same path and retains attached side data;
+`Tree::repack` returns a separate compact copy.
 Smaller tails are excluded from serialization but retained in the allocation.
 Points and symbol-presence data use separate sidecar allocations.
 

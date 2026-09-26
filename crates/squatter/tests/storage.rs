@@ -536,3 +536,43 @@ fn side_data_creation_flags_do_not_change_core_layout() {
         }
     }
 }
+
+#[test]
+fn repacking_in_place_preserves_nodes_and_side_data() {
+    let language =
+        unsafe { tree_sitter::Language::from_raw(tree_sitter_json::LANGUAGE.into_raw()().cast()) };
+    let grammar = Grammar::new(&language).unwrap();
+    let mut parser = tree_sitter::Parser::new();
+    parser.set_language(&language).unwrap();
+    let native = parser.parse("[1,\n2, 3]", None).unwrap();
+    let mut tree = Tree::pack_with_options(
+        &grammar,
+        &native,
+        PackOptions {
+            initial_group_capacity: 32,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let expected = tree.repack().unwrap();
+    let presence = tree.presence_cache().unwrap().as_bytes().as_ptr();
+    let points = tree.point_data().unwrap().as_bytes().as_ptr();
+    tree.repack_in_place().unwrap();
+    assert_eq!(tree.group_capacity(), tree.group_count());
+    assert_eq!(tree.presence_cache().unwrap().as_bytes().as_ptr(), presence);
+    assert_eq!(tree.point_data().unwrap().as_bytes().as_ptr(), points);
+    for (actual, expected) in tree
+        .root_node()
+        .preorder()
+        .nodes()
+        .zip(expected.root_node().preorder().nodes())
+    {
+        assert_eq!(actual.kind_id(), expected.kind_id());
+        assert_eq!(actual.grammar_id(), expected.grammar_id());
+        assert_eq!(actual.byte_range(), expected.byte_range());
+        assert_eq!(actual.start_position(), expected.start_position());
+        assert_eq!(actual.end_position(), expected.end_position());
+    }
+    Tree::from_bytes(&grammar, tree.as_bytes()).unwrap();
+    tree.repack_in_place().unwrap();
+}

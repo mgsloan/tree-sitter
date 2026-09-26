@@ -397,8 +397,7 @@ impl Builder {
         } else {
             self.tree.group_capacity()
         };
-        let flags = (self.tree.data().flags() & !OPTIONAL) | self.optional;
-        self.tree.finish_layout(capacity, flags, 0)?;
+        self.tree.finish_layout(capacity, self.optional, 0)?;
         if options.symbol_presence {
             let cache = PresenceCache::build(&self.tree, None)?;
             self.tree.set_presence_cache(cache)?;

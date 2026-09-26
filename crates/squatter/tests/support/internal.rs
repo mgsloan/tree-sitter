@@ -545,8 +545,13 @@ fn column_growth_compaction_and_little_endian_encoding() {
         tree.data_mut().put_word(SlabOffset(0), 1, 2);
         exercise_columns(&mut tree, true);
         for capacity in [7, 19, 2, 31, 2] {
-            tree.resize(capacity, tree.data().flags(), 0, false)
-                .unwrap();
+            if capacity < tree.group_capacity() {
+                tree.finish_layout(capacity, tree.data().flags() & OPTIONAL, 0)
+                    .unwrap();
+            } else {
+                tree.resize(capacity, tree.data().flags(), 0, false)
+                    .unwrap();
+            }
             exercise_columns(&mut tree, false);
         }
         assert_eq!(
