@@ -172,8 +172,7 @@ impl<'tree> Columns<'tree> {
 
     #[inline]
     fn slice(self, column: ColumnPointer, start: usize, length: usize) -> &'tree [u8] {
-        // Callers select valid slots from an allocated column in this borrowed tree.
-        unsafe { std::slice::from_raw_parts(column.as_ptr().add(start), length) }
+        self.tree().column_slice(column, start, length)
     }
 
     #[inline]
@@ -1416,16 +1415,12 @@ struct PointColumn<'tree, const END: bool, const STORED: bool> {
 }
 
 #[derive(Clone, Copy)]
-struct ColumnDeltas<'tree> {
-    pointer: ColumnPointer,
-    length: usize,
-    borrow: PhantomData<&'tree [u8]>,
-}
+struct ColumnDeltas<'tree>(&'tree [u8]);
+
 impl<'tree> ColumnDeltas<'tree> {
     #[inline]
     fn slice(self) -> &'tree [u8] {
-        // The group borrows a live tree and spans allocated column slots.
-        unsafe { std::slice::from_raw_parts(self.pointer.as_ptr(), self.length) }
+        self.0
     }
 }
 
@@ -1435,12 +1430,13 @@ fn column_deltas<'tree>(
     column: ColumnPointer,
     width: usize,
 ) -> ColumnDeltas<'tree> {
-    ColumnDeltas {
-        pointer: column.add(group.first_slot().get() as usize * width),
-        length: group.columns.group_size() as usize * width,
-        borrow: PhantomData,
-    }
+    ColumnDeltas(group.columns.slice(
+        column,
+        group.first_slot().get() as usize * width,
+        group.columns.group_size() as usize * width,
+    ))
 }
+
 #[inline]
 fn byte_cutoff(base: u64, position: u64, inclusive: bool, limit: u32) -> u32 {
     position.checked_sub(base).map_or(0, |delta| {
@@ -3336,11 +3332,7 @@ mod tests {
 
     impl<'tree> From<&'tree [u8]> for ColumnDeltas<'tree> {
         fn from(data: &'tree [u8]) -> Self {
-            Self {
-                pointer: ColumnPointer(data.as_ptr().cast_mut()),
-                length: data.len(),
-                borrow: PhantomData,
-            }
+            Self(data)
         }
     }
 

@@ -227,11 +227,6 @@ impl ColumnPointer {
         self.0
     }
 
-    #[inline]
-    pub fn add(self, bytes: usize) -> Self {
-        Self(self.0.wrapping_add(bytes))
-    }
-
     #[cfg(test)]
     pub fn offset(self, bytes: NonNull<u8>) -> usize {
         self.0 as usize - bytes.as_ptr() as usize

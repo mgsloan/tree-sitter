@@ -241,9 +241,7 @@ impl<'tree> Node<'tree> {
             return false;
         }
 
-        let symbols = unsafe {
-            std::slice::from_raw_parts(tables.supertypes, tables.supertype_count as usize)
-        };
+        let symbols = tables.supertypes();
         let Ok(index) = symbols.binary_search(&symbol.get()) else {
             return false;
         };

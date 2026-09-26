@@ -532,8 +532,8 @@ impl CompiledQuery {
     pub fn disable_pattern(&mut self, pattern: u32) {
         unsafe {
             sq_native_query_disable_pattern(self.raw.as_ptr(), pattern);
-            self.refresh();
         }
+        self.refresh();
     }
 
     pub fn disable_capture(&mut self, name: &str) {
@@ -548,7 +548,7 @@ impl CompiledQuery {
         self.validate();
     }
 
-    unsafe fn refresh(&mut self) {
+    fn refresh(&mut self) {
         unsafe {
             sq_native_query_view(self.raw.as_ptr(), &mut self.view);
         }

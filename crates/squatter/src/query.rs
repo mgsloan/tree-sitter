@@ -54,8 +54,6 @@ pub struct Query {
     general: Vec<Vec<QueryPredicate>>,
 }
 
-unsafe impl Send for Query {}
-unsafe impl Sync for Query {}
 impl Query {
     pub fn new(language: &Language, source: &str) -> Result<Self, QueryError> {
         let mut compiled = crate::native::CompiledQuery::new(language, source)?;
