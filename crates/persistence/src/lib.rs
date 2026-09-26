@@ -1,6 +1,6 @@
 //! Exact-disk-byte source/tree loading with atomic LMDB persistence.
 //!
-//! Owned cache hits are the default; transaction-backed hits are opt-in.
+//! Owned cache hits are the default; retaining an LMDB snapshot is opt-in.
 //! Cache errors fall back to parsing;
 //! optional deferred writes never hold a database transaction while queued.
 //! See the crate README for implemented scope and remaining design milestones.
@@ -68,19 +68,19 @@ pub enum ReadPolicy {
     Owned,
     /// Prefer a pinned LMDB snapshot. Misalignment or the per-environment local
     /// limit of 32 owners falls back to a copy. Live snapshots delay page reuse.
-    PreferTransactionBacked,
+    PreferRetained,
 }
 
 #[derive(Clone)]
 enum LoadedTree {
     Owned(Arc<tree_sitter_squatter::Tree>),
-    Backed(Arc<tree_sitter_squatter::BackedTree>),
+    Retained(Arc<tree_sitter_squatter::RetainedTree>),
 }
 impl LoadedTree {
     fn tree(&self) -> &tree_sitter_squatter::Tree {
         match self {
             Self::Owned(tree) => tree,
-            Self::Backed(tree) => tree,
+            Self::Retained(tree) => tree,
         }
     }
 }
@@ -159,13 +159,13 @@ impl LoadedFile {
     pub fn tree(&self) -> &tree_sitter_squatter::Tree {
         self.tree.tree()
     }
-    pub fn transaction_backed(&self) -> bool {
-        matches!(self.tree, LoadedTree::Backed(_))
+    pub fn retains_transaction(&self) -> bool {
+        matches!(self.tree, LoadedTree::Retained(_))
     }
     /// Return an owned copy. Existing aliases keep their snapshots until dropped.
     /// Auxiliary semantics are not revalidated while detaching.
     pub fn detach(&self) -> Result<Self, tree_sitter_squatter::Error> {
-        let LoadedTree::Backed(tree) = &self.tree else {
+        let LoadedTree::Retained(tree) = &self.tree else {
             return Ok(self.clone());
         };
         let tree = tree.detach()?;
@@ -624,11 +624,11 @@ impl PendingLoad {
         let store = self.store.clone();
         let hit = || {
             store.as_ref().and_then(|store| {
-                if self.read == ReadPolicy::PreferTransactionBacked
+                if self.read == ReadPolicy::PreferRetained
                     && let Some((tree, complete)) =
                         snapshot::get(store, &self.request, &self.source, &self.language, cancel)
                 {
-                    return Some((LoadedTree::Backed(Arc::new(tree)), complete));
+                    return Some((LoadedTree::Retained(Arc::new(tree)), complete));
                 }
                 store
                     .get_with_cancel(&self.request, &self.source, &self.language, cancel)

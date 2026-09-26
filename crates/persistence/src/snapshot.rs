@@ -11,15 +11,15 @@ use std::{
         atomic::{AtomicBool, Ordering},
     },
 };
-use tree_sitter_squatter::{BackedTree, StableSlab, Tree};
+use tree_sitter_squatter::{RetainedTree, StableSlab, Tree};
 
 // Leave most of the 256 environment reader slots available for short operations.
-pub(crate) const MAX_BACKED_READERS: usize = 32;
+pub(crate) const MAX_RETAINED_READERS: usize = 32;
 
 struct Permit(Arc<Store>);
 impl Drop for Permit {
     fn drop(&mut self) {
-        self.0.backed_readers.fetch_sub(1, Ordering::Relaxed);
+        self.0.retained_readers.fetch_sub(1, Ordering::Relaxed);
     }
 }
 
@@ -36,9 +36,9 @@ unsafe impl Sync for Snapshot {}
 impl Snapshot {
     fn open(store: &Arc<Store>) -> Option<Self> {
         store
-            .backed_readers
+            .retained_readers
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |count| {
-                (count < MAX_BACKED_READERS).then_some(count + 1)
+                (count < MAX_RETAINED_READERS).then_some(count + 1)
             })
             .ok()?;
         let permit = Permit(store.clone());
@@ -75,7 +75,7 @@ pub(crate) fn get(
     source: &[u8],
     language: &IdentifiedLanguage,
     cancel: Option<&AtomicBool>,
-) -> Option<(BackedTree, bool)> {
+) -> Option<(RetainedTree, bool)> {
     let snapshot = Arc::new(Snapshot::open(store)?);
     if store
         .paths
@@ -100,7 +100,7 @@ pub(crate) fn get(
     };
     // The native loader checks the actual address, not merely the envelope's
     // offset. Misaligned values release their snapshot and use the owned path.
-    let mut tree = Tree::from_owned_slab(&language.prepared, owner).ok()?;
+    let mut tree = Tree::from_retained(&language.prepared, owner).ok()?;
     if tree
         .root_node()
         .preorder()
@@ -122,7 +122,7 @@ pub(crate) fn get(
                     length: bytes.len(),
                     _snapshot: snapshot.clone(),
                 };
-                tree_sitter_squatter::PresenceCache::from_backing(&tree, owner)
+                tree_sitter_squatter::PresenceCache::from_retained(&tree, owner)
                     .ok()
                     .or_else(|| {
                         tree_sitter_squatter::PresenceCache::copy_from_bytes(&tree, bytes).ok()
@@ -145,7 +145,7 @@ pub(crate) fn get(
                     length: bytes.len(),
                     _snapshot: snapshot.clone(),
                 };
-                tree_sitter_squatter::PointData::from_backing(&tree, owner)
+                tree_sitter_squatter::PointData::from_retained(&tree, owner)
                     .ok()
                     .or_else(|| tree_sitter_squatter::PointData::copy_from_bytes(&tree, bytes).ok())
             });

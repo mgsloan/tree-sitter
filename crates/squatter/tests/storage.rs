@@ -256,32 +256,32 @@ fn sidecar_mapping_copy_and_failed_replacement() {
     };
     use tree_squatter::{LineIndex, PointData, PresenceCache, StableSlab};
 
-    struct Backing {
+    struct SlabOwner {
         words: Box<[u64]>,
         drops: Arc<AtomicUsize>,
     }
-    impl Drop for Backing {
+    impl Drop for SlabOwner {
         fn drop(&mut self) {
             self.drops.fetch_add(1, Ordering::Relaxed);
         }
     }
-    unsafe impl StableSlab for Backing {
+    unsafe impl StableSlab for SlabOwner {
         fn bytes(&self) -> &[u8] {
             unsafe { std::slice::from_raw_parts(self.words.as_ptr().cast(), self.words.len() * 8) }
         }
     }
-    struct MisalignedBacking(Box<[u64]>, usize);
-    unsafe impl StableSlab for MisalignedBacking {
+    struct MisalignedSlab(Box<[u64]>, usize);
+    unsafe impl StableSlab for MisalignedSlab {
         fn bytes(&self) -> &[u8] {
             unsafe { std::slice::from_raw_parts(self.0.as_ptr().cast::<u8>().add(1), self.1) }
         }
     }
-    fn backing(bytes: &[u8], drops: Arc<AtomicUsize>) -> Backing {
+    fn slab_owner(bytes: &[u8], drops: Arc<AtomicUsize>) -> SlabOwner {
         let mut words = vec![0u64; bytes.len() / 8].into_boxed_slice();
         unsafe {
             std::ptr::copy_nonoverlapping(bytes.as_ptr(), words.as_mut_ptr().cast(), bytes.len());
         }
-        Backing { words, drops }
+        SlabOwner { words, drops }
     }
 
     let language =
@@ -305,15 +305,15 @@ fn sidecar_mapping_copy_and_failed_replacement() {
         PointData::build(&tree, &LineIndex::new(source.as_bytes()).unwrap(), None).unwrap();
     let presence = PresenceCache::build(&tree, None).unwrap();
     let drops = Arc::new(AtomicUsize::new(0));
-    let mapped_backing = backing(points.as_bytes(), drops.clone());
-    let mapped_address = mapped_backing.bytes().as_ptr();
-    let mapped = PointData::from_backing(&tree, mapped_backing).unwrap();
+    let mapped_owner = slab_owner(points.as_bytes(), drops.clone());
+    let mapped_address = mapped_owner.bytes().as_ptr();
+    let mapped = PointData::from_retained(&tree, mapped_owner).unwrap();
     assert_eq!(mapped.as_bytes().as_ptr(), mapped_address);
     tree.set_point_data(mapped).unwrap();
     assert!(
-        PointData::from_backing(
+        PointData::from_retained(
             &tree,
-            MisalignedBacking(
+            MisalignedSlab(
                 vec![0; points.as_bytes().len() / 8 + 1].into_boxed_slice(),
                 points.as_bytes().len()
             )
@@ -323,9 +323,9 @@ fn sidecar_mapping_copy_and_failed_replacement() {
     let copied = PresenceCache::copy_from_bytes(&tree, presence.as_bytes()).unwrap();
     tree.set_presence_cache(copied).unwrap();
     let presence_drops = Arc::new(AtomicUsize::new(0));
-    let mapped_backing = backing(presence.as_bytes(), presence_drops.clone());
-    let mapped_address = mapped_backing.bytes().as_ptr();
-    let mapped = PresenceCache::from_backing(&tree, mapped_backing).unwrap();
+    let mapped_owner = slab_owner(presence.as_bytes(), presence_drops.clone());
+    let mapped_address = mapped_owner.bytes().as_ptr();
+    let mapped = PresenceCache::from_retained(&tree, mapped_owner).unwrap();
     assert_eq!(mapped.as_bytes().as_ptr(), mapped_address);
     tree.set_presence_cache(mapped).unwrap();
     let original_point = tree.root_node().start_position();
@@ -385,23 +385,23 @@ fn sidecar_mapping_copy_and_failed_replacement() {
     assert_eq!(tree.root_node().start_position(), original_point);
 
     let core_drops = Arc::new(AtomicUsize::new(0));
-    let owner = backing(tree.as_bytes(), core_drops.clone());
+    let owner = slab_owner(tree.as_bytes(), core_drops.clone());
     let core_address = owner.bytes().as_ptr();
-    let mut backed = Tree::from_owned_slab(&grammar, owner).unwrap();
-    backed
-        .set_presence_cache(PresenceCache::build(&backed, None).unwrap())
+    let mut retained = Tree::from_retained(&grammar, owner).unwrap();
+    retained
+        .set_presence_cache(PresenceCache::build(&retained, None).unwrap())
         .unwrap();
-    backed
-        .set_point_data(PointData::copy_from_bytes(&backed, points.as_bytes()).unwrap())
+    retained
+        .set_point_data(PointData::copy_from_bytes(&retained, points.as_bytes()).unwrap())
         .unwrap();
-    assert_eq!(backed.root_node().start_position(), original_point);
-    backed.drop_presence_cache();
-    backed.drop_point_data();
-    assert!(!backed.has_points());
-    assert!(backed.presence_cache().is_none());
-    assert_eq!(backed.as_bytes().as_ptr(), core_address);
+    assert_eq!(retained.root_node().start_position(), original_point);
+    retained.drop_presence_cache();
+    retained.drop_point_data();
+    assert!(!retained.has_points());
+    assert!(retained.presence_cache().is_none());
+    assert_eq!(retained.as_bytes().as_ptr(), core_address);
     assert_eq!(core_drops.load(Ordering::Relaxed), 0);
-    drop(backed);
+    drop(retained);
     assert_eq!(core_drops.load(Ordering::Relaxed), 1);
 }
 

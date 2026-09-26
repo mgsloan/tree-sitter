@@ -1,7 +1,7 @@
 # Cache validation boundary
 
 Persistence defaults to Squatter's copied `from_bytes_safety_checked` loader.
-Opt-in transaction-backed hits use `from_owned_slab` with the same validation.
+Opt-in retained hits use `from_retained` with the same validation.
 The existing `from_bytes` and `from_bytes_borrowed` retain their stricter behavior. Both policies require
 the exact matching grammar; persistence separately checks full implementation,
 representation, path, and captured-source identities. Neither loader reparses the
@@ -49,7 +49,7 @@ coverage-guided fuzzing, multi-grammar dictionary fixtures, and platform/layout
 qualification remain required. This validation is not a defense against another
 process maliciously modifying a live LMDB mapping; cache directories are trusted.
 
-## Transaction-backed ownership
+## Retained transaction ownership
 
 `snapshot.rs` uses heed's `env.clone().static_read_txn()`, which returns an owning
 `RoTxn<'static, WithoutTls>` retaining the environment. The static lifetime is
@@ -60,7 +60,7 @@ snapshot. The slab pointer and length are sealed in a `StableSlab` owner. There
 are no subsequent get/cursor/reset/renew calls; heed's final drop aborts the transaction
 before releasing the environment/admission permit.
 
-Squatter's `BackedTree` drops the native descriptor before its storage owner.
+Squatter's `RetainedTree` drops the native descriptor before its storage owner.
 `StableSlab` is an unsafe implementation contract: its slice must remain at the
 same address and be immutable until drop, including across owner moves. The LMDB
 implementation relies on normal copy-on-write operation, retained environment
