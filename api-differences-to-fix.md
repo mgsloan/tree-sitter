@@ -7,7 +7,8 @@ same operation. Differences should be limited to:
 - Behavior needed for those capabilities, such as operating without a point cache.
 - Necessary representation changes, such as a wrapper around `Language`.
 - Newtype wrappers around primitive values, including the planned `ChildIx(u32)`,
-  `NamedChildIx(u32)`, and `DescendantIx(u32)`.
+  `NamedChildIx(u32)`, `DescendantIx(u32)`, `CaptureIx(u32)`, `MatchId(u32)`,
+  and `MatchCaptureIx(u32)`.
 
 This proposal follows [the API comparison](api-comparison.md) and the current
 Rust implementations. Each group shows current tree-sitter, current tree-squatter,
@@ -407,6 +408,9 @@ impl Clone for Tree { /* preserve tree contents and optional side data */ }
 
 ```rust
 impl Query {
+    pub fn pattern_count(&self) -> usize;
+    pub fn disable_pattern(&mut self, index: usize);
+    pub fn disable_capture(&mut self, name: &str);
     pub const fn capture_names(&self) -> &[&str];
     pub fn capture_index_for_name(&self, name: &str) -> Option<u32>;
     pub const fn capture_quantifiers(&self, index: usize) -> &[CaptureQuantifier];
@@ -433,6 +437,9 @@ pub struct QueryError {
 
 ```rust
 impl Query {
+    pub fn pattern_count(&self) -> usize;
+    pub fn disable_pattern(&mut self, index: usize);
+    pub fn disable_capture(&mut self, name: &str);
     pub fn capture_names(&self) -> &[String];
     pub fn general_predicates(&self, pattern: usize) -> &[tree_sitter::QueryPredicate];
     // other inspection methods above and deep_clone are absent
@@ -447,8 +454,11 @@ pub struct QueryError {
 
 ```rust
 impl Query {
+    pub fn pattern_count(&self) -> usize;
+    pub fn disable_pattern(&mut self, index: usize);
+    pub fn disable_capture(&mut self, name: &str);
     pub const fn capture_names(&self) -> &[&str];
-    pub fn capture_index_for_name(&self, name: &str) -> Option<u32>;
+    pub fn capture_index_for_name(&self, name: &str) -> Option<CaptureIx>;
     pub const fn capture_quantifiers(&self, index: usize) -> &[CaptureQuantifier];
     pub const fn property_settings(&self, index: usize) -> &[QueryProperty];
     pub const fn property_predicates(&self, index: usize) -> &[(QueryProperty, bool)];
@@ -471,10 +481,153 @@ pub struct QueryError {
 
 - Return borrowed string slices rather than exposing internal string ownership.
 - Add capture, pattern, and property inspection; reuse tree-sitter metadata types
-  where their meaning is unchanged.
+  where their shape is unchanged. Property/predicate types need `CaptureIx`.
 - Put `set!` in settings and `is?`/`is-not?` in property predicates. Exclude those
   operators from general predicates, preserving host evaluation responsibilities.
 - Restore full compilation diagnostics and clone enabled-pattern/capture state.
+
+## Query capture indices and result types
+
+Use `CaptureIx(u32)` for query-global capture-name indices, `MatchId(u32)`
+for match identity, and `MatchCaptureIx(u32)` for positions within a match's
+capture slice. These are separate domains, even when their values coincide.
+
+**Current tree-sitter**
+
+```rust
+pub struct QueryCapture<'tree> {
+    pub node: Node<'tree>,
+    pub index: u32, // query-wide capture-name ID
+}
+pub struct QueryMatch<'cursor, 'tree> {
+    pub pattern_index: usize,
+    // private captures, match ID, and cursor
+}
+impl<'tree> QueryMatch<'_, 'tree> {
+    pub const fn id(&self) -> u32;
+    pub const fn captures(&self) -> &[QueryCapture<'tree>];
+    pub fn remove(&self);
+    pub fn nodes_for_capture_index(&self, capture_ix: u32)
+        -> impl Iterator<Item = Node<'tree>> + '_;
+}
+pub struct QueryProperty {
+    pub key: Box<str>,
+    pub value: Option<Box<str>>,
+    pub capture_id: Option<usize>, // also a query-wide capture-name ID
+}
+impl QueryProperty {
+    pub fn new(key: &str, value: Option<&str>, capture_id: Option<usize>) -> Self;
+}
+pub enum QueryPredicateArg {
+    Capture(u32), // query-wide capture-name ID
+    String(Box<str>),
+}
+pub struct QueryPredicate {
+    pub operator: Box<str>,
+    pub args: Box<[QueryPredicateArg]>,
+}
+// StreamingIterator associated item types, with generics omitted:
+// QueryMatches::Item = QueryMatch<'cursor, 'tree>
+// QueryCaptures::Item = (QueryMatch<'cursor, 'tree>, usize)
+// The tuple index selects an occurrence in found.captures().
+```
+
+**Current tree-squatter**
+
+```rust
+pub struct QueryCapture<'tree> {
+    pub node: Node<'tree>,
+    pub index: u32,
+}
+pub struct QueryMatch<'cursor, 'tree> {
+    pub id: u32,
+    pub pattern_index: usize,
+    pub captures: &'cursor [QueryCapture<'tree>],
+}
+impl<'tree> QueryMatch<'_, 'tree> {
+    pub fn nodes_for_capture_index(&self, index: u32)
+        -> impl Iterator<Item = Node<'tree>> + '_;
+}
+impl QueryExecution<'_, '_, '_, '_> {
+    pub fn next_match(&mut self) -> Option<QueryMatch<'_, 'tree>>;
+    pub fn next_capture(&mut self) -> Option<(QueryMatch<'_, 'tree>, usize)>;
+    pub fn remove_match(&mut self, id: u32);
+}
+// general_predicates exposes tree_sitter::QueryPredicate and QueryPredicateArg.
+// No property metadata API; internal CaptureId(u32) is private.
+```
+
+**Proposed tree-squatter**
+
+```rust
+pub struct CaptureIx(pub u32);
+pub struct MatchId(pub u32);
+pub struct MatchCaptureIx(pub u32);
+
+pub struct QueryCapture<'tree> {
+    pub node: Node<'tree>,
+    pub index: CaptureIx,
+}
+pub struct QueryMatch<'cursor, 'tree> {
+    pub pattern_index: usize,
+    // private captures, match ID, and removal state
+}
+impl<'tree> QueryMatch<'_, 'tree> {
+    pub const fn id(&self) -> MatchId;
+    pub const fn captures(&self) -> &[QueryCapture<'tree>];
+    pub fn remove(&self);
+    pub fn nodes_for_capture_index(&self, capture_ix: CaptureIx)
+        -> impl Iterator<Item = Node<'tree>> + '_;
+}
+pub struct QueryProperty {
+    pub key: Box<str>,
+    pub value: Option<Box<str>>,
+    pub capture_id: Option<CaptureIx>,
+}
+impl QueryProperty {
+    pub fn new(key: &str, value: Option<&str>, capture_id: Option<CaptureIx>) -> Self;
+}
+pub enum QueryPredicateArg {
+    Capture(CaptureIx),
+    String(Box<str>),
+}
+pub struct QueryPredicate {
+    pub operator: Box<str>,
+    pub args: Box<[QueryPredicateArg]>,
+}
+// QueryMatches::Item = QueryMatch<'cursor, 'tree>
+// QueryCaptures::Item = (QueryMatch<'cursor, 'tree>, MatchCaptureIx)
+impl<'tree> QueryExecution<'_, '_, 'tree, '_> {
+    pub fn next_match(&mut self) -> Option<QueryMatch<'_, 'tree>>;
+    pub fn next_capture(&mut self) -> Option<(QueryMatch<'_, 'tree>, MatchCaptureIx)>;
+    pub fn remove_match(&mut self, id: MatchId);
+}
+```
+
+- Add match accessors and removal through the match, retaining the explicit
+  executor interface. A match ID identifies an execution result; it is neither
+  a pattern index nor a capture-name ID.
+- Use `CaptureIx` consistently for `QueryCapture::index`,
+  `Query::capture_index_for_name`, `QueryMatch::nodes_for_capture_index`,
+  `QueryPredicateArg::Capture`, and `QueryProperty::capture_id` (including its
+  constructor). The last currently uses `usize` in tree-sitter despite referring
+  to the same capture-name domain.
+- `capture_names()[capture_id]` and
+  `capture_quantifiers(pattern_index)[capture_id]` use that same domain. A
+  newtype needs explicit conversion for slice indexing or typed accessors.
+  Pattern-index arguments and `pattern_index` remain a separate decision.
+- Use `MatchCaptureIx` for capture-event positions in both iteration APIs.
+  Convert its value to `usize` when indexing the match's capture slice. Repeated captures can have the same name ID and different
+  positions; `nodes_for_capture_index` returns all occurrences of that name.
+- Keep all three wrappers backed by `u32`. `CaptureIx` preserves zero-based
+  query-global indices without offset encoding. Tree-sitter returns match-local
+  positions as `u32`, although its match capture count is `u16`; do not adopt
+  that narrower count limit. Repetitions can yield many occurrences of one name.
+- Rename/unify the private `CaptureId` with `CaptureIx`; do not introduce two
+  types for the same domain. Expose `MatchId` consistently through
+  `QueryMatch::id()` and `QueryExecution::remove_match()`.
+- Define squatter-owned property/predicate types to carry `CaptureIx`;
+  tree-sitter's types cannot carry it. Keep their remaining shape unchanged.
 
 ## Query iteration and match access
 
@@ -523,7 +676,7 @@ while let Some(found) = matches.next() {
 }
 let mut captures = cursor.captures(&query, root, text_provider);
 while let Some((found, index)) = captures.next() {
-    let capture = found.captures()[*index];
+    let capture = found.captures()[index.0 as usize];
 }
 // execute and explicit status reporting remain additional capabilities
 ```
@@ -585,7 +738,6 @@ impl QueryCursor {
 
     pub fn try_set_byte_range(&mut self, range: Range<usize>) -> bool;
     pub fn try_set_point_range(&mut self, range: Range<Point>) -> bool;
-    pub fn set_timeout(&mut self, timeout: Option<Duration>);
     pub fn set_optimized(&mut self, enabled: bool);
 }
 let options = QueryCursorOptions::new().progress_callback(&mut progress);
@@ -598,8 +750,10 @@ let matches = cursor.matches_with_options(&query, root, text_provider, options);
 - Add containing ranges, the limit getter, and range setters on result iterators.
 - Support bounded branching/rootless queries through a compatible fallback when
   a specialized plan is ineligible.
-- Add progress options and compatible cancellation/resumption behavior. Timeout,
-  explicit status, and optimization control remain additions.
+- Add progress options and compatible cancellation/resumption behavior. Remove
+  `set_timeout`; callers can check a deadline in the progress callback. Poll
+  during execution so a long search with no results can still be cancelled.
+  Explicit status and optimization control remain additions.
 - Audit finite-limit eviction behavior against tree-sitter's public contract.
   Match guaranteed behavior; distinguish unspecified scheduling differences from
   promises made by the API.
@@ -826,9 +980,10 @@ new differential testing.
 - **Finite match limits:** discovery/eviction order can retain a different valid
   subset. Match guaranteed behavior and document any remaining scheduling details
   that tree-sitter leaves unspecified.
-- **Cancellation:** timeout/status replaces the Rust callback interface. Add
-  callback support and compatible stopping/resumption behavior; exact callback
-  cadence and work completed before cancellation may differ.
+- **Cancellation:** the current API uses timeout/status instead of Rust callbacks.
+  Replace `set_timeout` with callback support and compatible stopping/resumption
+  behavior; exact callback cadence and work completed before cancellation may
+  differ. Deadline cancellation belongs in the callback.
 - **Identity and ownership:** numerical identities differ across representations,
   repacking can change slots, and borrowed trees depend on their backing storage.
   Retain those necessary differences with explicit scopes and lifetimes.
