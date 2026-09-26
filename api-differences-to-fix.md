@@ -1,0 +1,914 @@
+# API differences to fix
+
+Tree-squatter should follow tree-sitter's Rust API wherever it implements the
+same operation. Differences should be limited to:
+
+- Additional capabilities, such as packing, persistence, scans, and side data.
+- Behavior needed for those capabilities, such as operating without a point cache.
+- Necessary representation changes, such as a wrapper around `Language`.
+- Newtype wrappers around primitive values, including the planned `ChildIx(u32)`,
+  `NamedChildIx(u32)`, and `DescendantIx(u32)`.
+
+This proposal follows [the API comparison](api-comparison.md) and the current
+Rust implementations. Each group shows current tree-sitter, current tree-squatter,
+and proposed tree-squatter APIs, followed by the changes. Declaration blocks are
+selected outlines, not compilable definitions; bodies, unrelated methods, and
+some generic/lifetime detail are omitted. Proposed names describe a target, not
+implemented functionality.
+
+Missing features remain gaps even when they require substantial work. Different
+implementation details or naming preferences do not justify changing a shared
+contract. Additions should extend the API without displacing shared operations.
+
+Review the cost of missing APIs before committing to add them. The proposed
+conveniences below are candidates, not a requirement to reproduce every method
+regardless of cost.
+
+## Cost review for scan-based APIs
+
+- Tree-sitter does not promise O(1) indexed child lookup. Its Rust documentation
+  describes `child(i)` and `named_child(i)` as logarithmic; the implementation
+  traverses internal children and uses stored visible/named counts to skip hidden
+  subtrees. This is not direct indexing into an array of visible children.
+- Tree-squatter's `child(i)` walks preceding children, taking O(i + 1) for an
+  in-range index. Named lookup also visits intervening unnamed children.
+- Tree-sitter's child counts are stored and O(1). Tree-squatter's counts scan
+  children and take O(number of children).
+- Tree-sitter's `field_name_for_child` also traverses to the child and resolves
+  field mappings; it is not an O(1) lookup. A straightforward packed equivalent
+  would scan to the child, then use its stored field ID. Reading `field_id()` on
+  an already available packed child is O(1); reading its name additionally scans
+  and validates the grammar's field-name string.
+- Repeated indexed lookup across every packed child can take quadratic time.
+  Prefer one children traversal and direct field access. Treat
+  `field_name_for_child` and `field_name_for_named_child` as pending cost-review
+  decisions rather than unconditional additions.
+- Matching `ExactSizeIterator` can introduce a counting pass before yielding the
+  first child. Review that tradeoff before adopting the shared iterator contract;
+  preserve an iteration path that does not require an initial count.
+
+These observations come from [tree-sitter's node implementation](lib/src/node.c),
+[its Rust binding](lib/binding_rust/lib.rs), and
+[tree-squatter's node implementation](crates/squatter/src/node.rs). They describe
+implementation costs, not measured runtime differences. For each costly API,
+decide whether to add it with explicit cost documentation, provide an index/cache,
+or defer it and point callers to iteration. Compatibility alone does not settle
+that decision.
+
+## Grammar and typed identifiers
+
+**Current tree-sitter**
+
+```rust
+impl Language {
+    pub fn id_for_node_kind(&self, kind: &str, named: bool) -> u16;
+    pub fn node_kind_for_id(&self, id: u16) -> Option<&str>;
+    pub fn field_id_for_name(&self, name: impl AsRef<[u8]>) -> Option<NonZeroU16>;
+    pub fn field_name_for_id(&self, id: u16) -> Option<&str>;
+}
+```
+
+**Current tree-squatter**
+
+```rust
+impl Grammar {
+    pub fn new(language: &tree_sitter::Language) -> Result<Self, Error>;
+    pub fn language(&self) -> tree_sitter::Language;
+    pub fn kind_id_for_name(&self, name: &str, named: bool) -> Option<KindId>;
+    pub fn grammar_kind_id_for_name(&self, name: &str, named: bool)
+        -> Option<GrammarKindId>;
+    pub fn field_id_for_name(&self, name: &str) -> Option<FieldId>;
+}
+```
+
+**Proposed tree-squatter**
+
+```rust
+impl Grammar {
+    pub fn new(language: &tree_sitter::Language) -> Result<Self, Error>;
+    pub fn language(&self) -> tree_sitter::Language;
+    pub fn id_for_node_kind(&self, kind: &str, named: bool) -> KindId;
+    pub fn node_kind_for_id(&self, id: KindId) -> Option<&str>;
+    pub fn field_id_for_name(&self, name: impl AsRef<[u8]>) -> Option<FieldId>;
+    pub fn field_name_for_id(&self, id: FieldId) -> Option<&str>;
+
+    pub fn kind_id_for_name(&self, name: &str, named: bool) -> Option<KindId>;
+    pub fn grammar_kind_id_for_name(&self, name: &str, named: bool)
+        -> Option<GrammarKindId>;
+}
+```
+
+- Keep the necessary grammar wrapper and domain-specific newtypes.
+- Add the shared lookup names, preserving tree-sitter's zero sentinel as
+  `KindId::new(0)` on unsuccessful `id_for_node_kind` lookup.
+- Keep checked lookup and underlying grammar-kind lookup as additions.
+- Accept byte-like field names, as tree-sitter does.
+- Forward other language metadata through the wrapper; retain grammar caching
+  and hashing as additions.
+
+## Node receivers, identity, and child lookup
+
+**Current tree-sitter**
+
+```rust
+impl<'tree> Node<'tree> {
+    pub fn id(&self) -> usize;
+    pub fn kind_id(&self) -> u16;
+    pub fn grammar_id(&self) -> u16;
+    pub fn child(&self, index: u32) -> Option<Self>;
+    pub fn named_child(&self, index: u32) -> Option<Self>;
+    pub fn child_count(&self) -> u32;
+    pub fn named_child_count(&self) -> usize;
+    pub fn child_by_field_name(&self, name: impl AsRef<[u8]>) -> Option<Self>;
+}
+```
+
+**Current tree-squatter**
+
+```rust
+impl<'tree> Node<'tree> {
+    pub fn slot(self) -> SlotIx;
+    pub fn kind_id(self) -> KindId;
+    pub fn grammar_id(self) -> GrammarKindId;
+    pub fn child(self, index: usize) -> Option<Self>;
+    pub fn named_child(self, index: usize) -> Option<Self>;
+    pub fn child_count(self) -> usize;
+    pub fn named_child_count(self) -> usize;
+    pub fn child_by_field_name(self, name: &str) -> Option<Self>;
+}
+```
+
+**Proposed tree-squatter**
+
+```rust
+pub struct ChildIx(u32);
+pub struct NamedChildIx(u32);
+pub struct DescendantIx(u32);
+// each index type provides new(u32) and get() -> u32
+impl ChildIx {
+    pub const fn new(value: u32) -> Self;
+    pub const fn get(self) -> u32;
+}
+
+impl<'tree> Node<'tree> {
+    pub fn slot(self) -> SlotIx;
+    pub fn kind_id(&self) -> KindId;
+    pub fn grammar_id(&self) -> GrammarKindId;
+    pub fn child(&self, index: ChildIx) -> Option<Self>;
+    pub fn named_child(&self, index: NamedChildIx) -> Option<Self>;
+    pub fn child_count(&self) -> ChildIx;
+    pub fn named_child_count(&self) -> NamedChildIx;
+    pub fn child_by_field_name(&self, name: impl AsRef<[u8]>) -> Option<Self>;
+}
+```
+
+- Match `&self` receivers on shared node methods, including those omitted here.
+  Copyable handles hide the difference at ordinary call sites, but not in method
+  references or generic interfaces.
+- Use `ChildIx(u32)` for indices among all children and `NamedChildIx(u32)`
+  for indices among named children. The same integer can select different nodes
+  in these two domains; do not implicitly convert between them.
+- Use `DescendantIx(u32)` for preorder descendant indices relative to a traversal
+  root, with zero identifying that root. Keep it distinct from physical slots.
+- These newtypes are intentional differences from tree-sitter's primitive indices.
+  Their widths follow enforced representation limits, not a bound inferred from
+  source byte length.
+- Return `ChildIx` from `child_count()` and `NamedChildIx` from
+  `named_child_count()`. These values are exclusive upper bounds in their
+  respective index domains, not valid child positions themselves. An empty
+  sequence returns the corresponding wrapper around zero.
+- Use `.get()` when a primitive count is needed. These wrappers do not imply that
+  a position exists, and remain distinct from descendant indices and physical slots.
+- Keep `slot()` as the inherent identity/addressing operation. Do not add an
+  inherent `Node::id()` or a `NodeId` type; shared identity goes through
+  `NodeLike::id()`.
+- Broaden field-name input without changing lookup behavior.
+
+## Node identity
+
+Do not add an inherent `Node::id()` or a separate `NodeId` type. For tree-squatter,
+`NodeLike::id()` returns `self.slot()` directly, preserving `SlotIx`. Use an
+associated `Id` type so the tree-sitter implementation can return its native
+`usize` identity without truncation:
+
+```rust
+impl<'tree> NodeLike<'tree> for tree_squatter::Node<'tree> {
+    type Id = SlotIx;
+    fn id(&self) -> Self::Id {
+        self.slot()
+    }
+    // other associated types and methods omitted
+}
+
+impl<'tree> NodeLike<'tree> for tree_sitter::Node<'tree> {
+    type Id = usize;
+    fn id(&self) -> Self::Id {
+        tree_sitter::Node::id(self)
+    }
+    // other associated types and methods omitted
+}
+```
+
+- Slot identity is scoped to one immutable tree snapshot. Equal slots from
+  different trees do not imply equal nodes, and repacking can change slots.
+- Existing `Node` equality and hashing include the tree descriptor and slot;
+  borrowed nodes can serve as keys spanning simultaneously live trees.
+- The shared trait promises identity within a tree, not preservation across edits,
+  reloads, or repacking. Tree-sitter's stronger guarantee for incrementally reused
+  nodes is backend-specific.
+- Copying an ID does not keep its tree alive. Calling `.id()` on a packed node
+  requires the `NodeLike` trait to be in scope; its inherent accessor is `.slot()`.
+
+## Children and cursor reuse
+
+**Current tree-sitter**
+
+```rust
+let root = tree.root_node();
+let mut cursor: TreeCursor<'_> = root.walk();
+let children = root.children(&mut cursor);
+let named = root.named_children(&mut cursor);
+let by_id = root.children_by_field_id(field.get(), &mut cursor);
+let by_name = root.children_by_field_name("body", &mut cursor);
+let field_name = root.field_name_for_child(0);
+let named_field_name = root.field_name_for_named_child(0);
+```
+
+**Current tree-squatter**
+
+```rust
+let root = tree.root_node();
+let mut cursor: Cursor<'_> = root.walk()?;
+let children = root.children();
+let named = root.named_children();
+let by_id = root.children_by_field_id(field);
+// no children_by_field_name or field_name_for_[named_]child
+
+let field_name = child.field_name();
+```
+
+**Proposed tree-squatter**
+
+```rust
+let root = tree.root_node();
+let mut cursor: TreeCursor<'_> = root.walk();
+let children = root.children(&mut cursor);
+let named = root.named_children(&mut cursor);
+let by_id = root.children_by_field_id(field, &mut cursor);
+let by_name = root.children_by_field_name("body", &mut cursor);
+let field_name = root.field_name_for_child(ChildIx::new(0));
+let named_field_name = root.field_name_for_named_child(NamedChildIx::new(0));
+
+let children = root.children_iter(); // additional cursor-free iteration
+let field_name = child.field_name();
+```
+
+- Rename the corresponding cursor type to `TreeCursor`.
+- Make `walk()` infallible: it currently creates an empty ancestor vector and
+  always returns `Ok`.
+- Restore cursor arguments, cursor side effects, and iterator contracts for
+  shared child methods. Each iterator above is an independent example; consume
+  or drop it before borrowing the cursor again.
+- Add name-based enumeration. Review child-index field-name accessors before
+  adding them; if included, they take `ChildIx` or `NamedChildIx` respectively
+  and document their scanning cost.
+- Keep direct node field inspection and cursor-free iteration as additions.
+  `children_iter` illustrates a distinct name; corresponding named/field variants
+  can follow that convention. Rust cannot overload methods by argument count.
+
+## Cursor inspection and movement
+
+**Current tree-sitter**
+
+```rust
+impl<'tree> TreeCursor<'tree> {
+    pub fn field_id(&self) -> Option<NonZeroU16>;
+    pub fn field_name(&self) -> Option<&'tree str>;
+    pub fn descendant_index(&self) -> usize;
+    pub fn goto_descendant(&mut self, index: usize);
+    pub fn reset_to(&mut self, cursor: &Self);
+    pub fn goto_first_child_for_byte(&mut self, byte: usize) -> Option<usize>;
+    pub fn goto_first_child_for_point(&mut self, point: Point) -> Option<usize>;
+}
+
+impl Clone for TreeCursor<'_> { /* independent cursor state */ }
+```
+
+**Current tree-squatter**
+
+```rust
+impl<'tree> Cursor<'tree> {
+    pub fn node(&self) -> Node<'tree>;
+    pub fn depth(&self) -> u32;
+    pub fn reset(&mut self, node: Node<'tree>);
+    pub fn goto_first_child_for_byte(&mut self, byte: usize) -> Option<usize>;
+    pub fn goto_first_child_for_point(&mut self, point: Point) -> Option<usize>;
+}
+
+// field_id is available through CursorLike or cursor.node().field_id()
+// no inherent field_name, descendant_index, goto_descendant, reset_to, or Clone
+```
+
+**Proposed tree-squatter**
+
+```rust
+impl<'tree> TreeCursor<'tree> {
+    pub fn field_id(&self) -> Option<FieldId>;
+    pub fn field_name(&self) -> Option<&'tree str>;
+    pub fn descendant_index(&self) -> DescendantIx;
+    pub fn goto_descendant(&mut self, index: DescendantIx);
+    pub fn reset_to(&mut self, cursor: &Self);
+    pub fn goto_first_child_for_byte(&mut self, byte: usize) -> Option<ChildIx>;
+    pub fn goto_first_child_for_point(&mut self, point: Point) -> Option<ChildIx>;
+}
+
+impl Clone for TreeCursor<'_> { /* independent cursor state */ }
+```
+
+- Expose shared field access as inherent methods, without requiring a trait import.
+- Add descendant navigation using `DescendantIx`, relative to the cursor's
+  traversal root. A physical slot is not a descendant index. Resetting the cursor
+  to a different root changes the index's interpretation.
+- Return `ChildIx` from child-positioning methods, consistently with child lookup.
+- Add reset-from-cursor and cloning with independent mutable traversal state.
+- Retain existing movement methods and additional bundled attribute access.
+
+## Tree views, coordinates, and source text
+
+**Current tree-sitter**
+
+```rust
+impl Tree {
+    pub fn walk(&self) -> TreeCursor<'_>;
+    pub fn language(&self) -> LanguageRef<'_>;
+    pub fn root_node_with_offset(&self, bytes: usize, extent: Point) -> Node<'_>;
+}
+impl<'tree> Node<'tree> {
+    pub fn language(&self) -> LanguageRef<'tree>;
+    pub fn range(&self) -> Range;
+    pub fn to_sexp(&self) -> String;
+    pub fn utf16_text<'source>(&self, source: &'source [u16]) -> &'source [u16];
+    pub fn has_error(&self) -> bool;
+}
+impl Clone for Tree { /* shared underlying tree storage */ }
+```
+
+**Current tree-squatter**
+
+```rust
+impl Tree {
+    pub fn root_node(&self) -> Node<'_>;
+    pub fn has_points(&self) -> bool;
+}
+impl<'tree> Node<'tree> {
+    pub fn start_position(self) -> Point;
+    pub fn end_position(self) -> Point;
+    pub fn has_points(self) -> bool;
+    pub fn has_error(self) -> bool; // conservative physical-block flag
+}
+// no Tree::walk, tree/node language access, offset view, range, to_sexp,
+// utf16_text, or Tree::clone
+```
+
+**Proposed tree-squatter**
+
+```rust
+impl Tree {
+    pub fn walk(&self) -> TreeCursor<'_>;
+    pub fn language(&self) -> &Grammar;
+    pub fn root_node_with_offset(&self, bytes: usize, extent: Point) -> Node<'_>;
+    pub fn has_points(&self) -> bool;
+}
+impl<'tree> Node<'tree> {
+    pub fn language(&self) -> &'tree Grammar;
+    pub fn range(&self) -> tree_sitter::Range;
+    pub fn to_sexp(&self) -> String;
+    pub fn utf16_text<'source>(&self, source: &'source [u16]) -> &'source [u16];
+    pub fn has_error(&self) -> bool; // exact node/subtree result
+    pub fn has_points(self) -> bool;
+}
+impl Clone for Tree { /* preserve tree contents and optional side data */ }
+```
+
+- Add navigation and formatting conveniences with tree-sitter semantics.
+- Return the necessary grammar wrapper from language accessors. The proposed
+  borrow exposes metadata without requiring an owned language clone.
+- Implement offset views explicitly; do not ignore offsets or mutate the source
+  tree to emulate a view.
+- Make `has_error()` exact. A conservative block test may remain as an explicitly
+  additional operation, but is not a substitute for subtree error detection.
+- Preserve optional point data. Without it, document the existing row-zero,
+  byte-as-column behavior across all point-dependent APIs; with it, require parity.
+- Add cloning with compatible observable semantics. Copying cost may differ;
+  preserve side data and keep fallible copying/detachment as additions.
+
+## Query compilation, metadata, and errors
+
+**Current tree-sitter**
+
+```rust
+impl Query {
+    pub const fn capture_names(&self) -> &[&str];
+    pub fn capture_index_for_name(&self, name: &str) -> Option<u32>;
+    pub const fn capture_quantifiers(&self, index: usize) -> &[CaptureQuantifier];
+    pub const fn property_settings(&self, index: usize) -> &[QueryProperty];
+    pub const fn property_predicates(&self, index: usize) -> &[(QueryProperty, bool)];
+    pub const fn general_predicates(&self, index: usize) -> &[QueryPredicate];
+    pub fn start_byte_for_pattern(&self, index: usize) -> usize;
+    pub fn end_byte_for_pattern(&self, index: usize) -> usize;
+    pub fn is_pattern_rooted(&self, index: usize) -> bool;
+    pub fn is_pattern_non_local(&self, index: usize) -> bool;
+    pub fn is_pattern_guaranteed_at_step(&self, offset: usize) -> bool;
+    pub fn deep_clone(&self) -> Self;
+}
+pub struct QueryError {
+    pub row: usize,
+    pub column: usize,
+    pub offset: usize,
+    pub message: String,
+    pub kind: QueryErrorKind,
+}
+```
+
+**Current tree-squatter**
+
+```rust
+impl Query {
+    pub fn capture_names(&self) -> &[String];
+    pub fn general_predicates(&self, pattern: usize) -> &[tree_sitter::QueryPredicate];
+    // other inspection methods above and deep_clone are absent
+}
+pub struct QueryError {
+    pub offset: usize,
+    pub message: String,
+}
+```
+
+**Proposed tree-squatter**
+
+```rust
+impl Query {
+    pub const fn capture_names(&self) -> &[&str];
+    pub fn capture_index_for_name(&self, name: &str) -> Option<u32>;
+    pub const fn capture_quantifiers(&self, index: usize) -> &[CaptureQuantifier];
+    pub const fn property_settings(&self, index: usize) -> &[QueryProperty];
+    pub const fn property_predicates(&self, index: usize) -> &[(QueryProperty, bool)];
+    pub const fn general_predicates(&self, index: usize) -> &[QueryPredicate];
+    pub fn start_byte_for_pattern(&self, index: usize) -> usize;
+    pub fn end_byte_for_pattern(&self, index: usize) -> usize;
+    pub fn is_pattern_rooted(&self, index: usize) -> bool;
+    pub fn is_pattern_non_local(&self, index: usize) -> bool;
+    pub fn is_pattern_guaranteed_at_step(&self, offset: usize) -> bool;
+    pub fn deep_clone(&self) -> Self;
+}
+pub struct QueryError {
+    pub row: usize,
+    pub column: usize,
+    pub offset: usize,
+    pub message: String,
+    pub kind: QueryErrorKind,
+}
+```
+
+- Return borrowed string slices rather than exposing internal string ownership.
+- Add capture, pattern, and property inspection; reuse tree-sitter metadata types
+  where their meaning is unchanged.
+- Put `set!` in settings and `is?`/`is-not?` in property predicates. Exclude those
+  operators from general predicates, preserving host evaluation responsibilities.
+- Restore full compilation diagnostics and clone enabled-pattern/capture state.
+
+## Query iteration and match access
+
+**Current tree-sitter**
+
+```rust
+use tree_sitter::StreamingIterator;
+
+let mut matches = cursor.matches(&query, root, text_provider);
+while let Some(found) = matches.next() {
+    let captures = found.captures();
+    found.remove(); // optional: suppress subsequent results for this match
+}
+let mut captures = cursor.captures(&query, root, text_provider);
+while let Some((found, index)) = captures.next() {
+    let capture = found.captures()[*index];
+}
+```
+
+**Current tree-squatter**
+
+```rust
+let mut execution = cursor.execute(&query, root, source_bytes);
+while let Some(found) = execution.next_match() {
+    let captures = found.captures;
+    let id = found.id;
+    execution.remove_match(id);
+}
+// alternative advancement on an execution
+while let Some((found, index)) = execution.next_capture() {
+    let capture = found.captures[index]; // provisional, unspecified event order
+}
+let error = execution.error();
+let cancelled = execution.did_cancel();
+```
+
+**Proposed tree-squatter**
+
+```rust
+use tree_squatter::StreamingIterator;
+
+let mut matches = cursor.matches(&query, root, text_provider);
+while let Some(found) = matches.next() {
+    let captures = found.captures();
+    found.remove();
+}
+let mut captures = cursor.captures(&query, root, text_provider);
+while let Some((found, index)) = captures.next() {
+    let capture = found.captures()[*index];
+}
+// execute and explicit status reporting remain additional capabilities
+```
+
+- Add `matches`/`captures` streaming iterators and a text-provider abstraction
+  with the same shape, accepting packed nodes. Providers for noncontiguous text
+  must remain possible; byte slices remain a convenient implementation.
+- Add `QueryMatch::captures()` and `remove()` with compatible borrowing and
+  removal behavior. Preserve capture/node lifetimes while adapting the executor.
+- Match capture ordering, snapshot contents, and duplicate behavior. A separately
+  named provisional-event extension may retain the current weaker contract.
+- Keep explicit execution diagnostics without making valid queries fail because
+  an optimization is unavailable.
+- The snippets show independent iteration modes. Drop an iterator before borrowing
+  its cursor again, and supply each iterator with its own text-provider value.
+
+## Query ranges, limits, and cancellation
+
+**Current tree-sitter**
+
+```rust
+impl QueryCursor {
+    pub fn match_limit(&self) -> u32;
+    pub fn set_byte_range(&mut self, range: Range<usize>) -> &mut Self;
+    pub fn set_point_range(&mut self, range: Range<Point>) -> &mut Self;
+    pub fn set_containing_byte_range(&mut self, range: Range<usize>) -> &mut Self;
+    pub fn set_containing_point_range(&mut self, range: Range<Point>) -> &mut Self;
+    pub fn set_max_start_depth(&mut self, depth: Option<u32>) -> &mut Self;
+}
+let options = QueryCursorOptions::new().progress_callback(&mut progress);
+let matches = cursor.matches_with_options(&query, root, text_provider, options);
+// captures_with_options is also available
+```
+
+**Current tree-squatter**
+
+```rust
+impl QueryCursor {
+    pub fn set_byte_range(&mut self, range: Range<usize>) -> bool;
+    pub fn set_point_range(&mut self, range: Range<Point>) -> bool;
+    pub fn set_max_start_depth(&mut self, depth: u32);
+    pub fn set_timeout(&mut self, timeout: Option<Duration>);
+    pub fn set_optimized(&mut self, enabled: bool);
+}
+// no match_limit getter, containing-range setters, or progress options
+// bounded branching/rootless queries can report UnsupportedRange
+```
+
+**Proposed tree-squatter**
+
+```rust
+impl QueryCursor {
+    pub fn match_limit(&self) -> u32;
+    pub fn set_byte_range(&mut self, range: Range<usize>) -> &mut Self;
+    pub fn set_point_range(&mut self, range: Range<Point>) -> &mut Self;
+    pub fn set_containing_byte_range(&mut self, range: Range<usize>) -> &mut Self;
+    pub fn set_containing_point_range(&mut self, range: Range<Point>) -> &mut Self;
+    pub fn set_max_start_depth(&mut self, depth: Option<u32>) -> &mut Self;
+
+    pub fn try_set_byte_range(&mut self, range: Range<usize>) -> bool;
+    pub fn try_set_point_range(&mut self, range: Range<Point>) -> bool;
+    pub fn set_timeout(&mut self, timeout: Option<Duration>);
+    pub fn set_optimized(&mut self, enabled: bool);
+}
+let options = QueryCursorOptions::new().progress_callback(&mut progress);
+let matches = cursor.matches_with_options(&query, root, text_provider, options);
+// captures_with_options uses the same options interface
+```
+
+- Restore chaining and use `None` to remove the depth limit. Keep stricter range
+  validation under additional checked setters; audit boundary conversion behavior.
+- Add containing ranges, the limit getter, and range setters on result iterators.
+- Support bounded branching/rootless queries through a compatible fallback when
+  a specialized plan is ineligible.
+- Add progress options and compatible cancellation/resumption behavior. Timeout,
+  explicit status, and optimization control remain additions.
+- Audit finite-limit eviction behavior against tree-sitter's public contract.
+  Match guaranteed behavior; distinguish unspecified scheduling differences from
+  promises made by the API.
+
+## Parser lifecycle and incremental edits
+
+These are larger compatibility targets, not just signature changes.
+
+**Current tree-sitter**
+
+```rust
+impl Parser {
+    pub fn new() -> Self;
+    pub fn set_language(&mut self, language: &Language) -> Result<(), LanguageError>;
+    pub fn language(&self) -> Option<LanguageRef<'_>>;
+    pub fn reset(&mut self);
+    pub fn parse(&mut self, source: impl AsRef<[u8]>, old_tree: Option<&Tree>)
+        -> Option<Tree>;
+    pub fn parse_with_options<T: AsRef<[u8]>, F: FnMut(usize, Point) -> T>(
+        &mut self, callback: &mut F, old_tree: Option<&Tree>, options: Option<ParseOptions>,
+    ) -> Option<Tree>;
+}
+impl Tree {
+    pub fn edit(&mut self, edit: &InputEdit);
+    pub fn changed_ranges(&self, other: &Self) -> impl ExactSizeIterator<Item = Range>;
+}
+```
+
+**Current tree-squatter**
+
+```rust
+impl Parser {
+    pub fn new(grammar: &Grammar) -> Result<Self, ParseError>;
+    pub fn parse(&mut self, source: impl AsRef<[u8]>) -> Result<Tree, ParseError>;
+    pub fn parse_with_options(&mut self, source: impl AsRef<[u8]>, options: PackOptions)
+        -> Result<Tree, ParseError>;
+    pub fn trim(&mut self);
+}
+// direct parser rejects syntax errors and some grammars
+// no edits, old-tree input, changed ranges, or change tracking
+```
+
+**Proposed tree-squatter**
+
+```rust
+impl Parser {
+    pub fn new() -> Self;
+    pub fn set_language(&mut self, language: &Grammar) -> Result<(), LanguageError>;
+    pub fn language(&self) -> Option<&Grammar>;
+    pub fn reset(&mut self);
+    pub fn parse(&mut self, source: impl AsRef<[u8]>, old_tree: Option<&Tree>)
+        -> Option<Tree>;
+    pub fn parse_with_options<T: AsRef<[u8]>, F: FnMut(usize, Point) -> T>(
+        &mut self, callback: &mut F, old_tree: Option<&Tree>, options: Option<ParseOptions>,
+    ) -> Option<Tree>;
+}
+impl Tree {
+    pub fn edit(&mut self, edit: &InputEdit);
+    pub fn changed_ranges(&self, other: &Self) -> impl ExactSizeIterator<Item = Range>;
+}
+impl DirectParser {
+    pub fn new(grammar: &Grammar) -> Result<Self, ParseError>;
+    pub fn parse(&mut self, source: impl AsRef<[u8]>) -> Result<Tree, ParseError>;
+    pub fn parse_with_pack_options(&mut self, source: impl AsRef<[u8]>, options: PackOptions)
+        -> Result<Tree, ParseError>;
+    pub fn trim(&mut self);
+}
+```
+
+- Match the compatible parser lifecycle using the necessary grammar wrapper.
+- Reserve `parse_with_options` for callback input and progress options. Give
+  packing controls a distinct name.
+- Keep the restricted direct parser as an explicit additional capability with
+  diagnostic errors. The compatible path must recover errors and support the
+  corresponding grammars; it may delegate to tree-sitter and pack the result.
+- Design retained parsing state and mutation before adding edit/reuse signatures.
+  Do not implement edits as no-ops or silently ignore an old tree. Borrowed
+  immutable slabs may require detachment or a separate parser representation.
+- Track node edits, change flags, included ranges, UTF-16/custom encoding input,
+  parse-state inspection, and lookahead support with this work.
+- Logging and DOT output are also missing conveniences. Raw pointers, allocator
+  hooks, and Wasm integration require backend-specific contracts; a packed tree
+  must never be presented as a `TSTree`.
+
+## Shared navigation traits
+
+**Current tree-sitter**
+
+```rust
+// concrete APIs; tree-sitter does not define these shared traits
+let root = tree.root_node();
+let identity = root.id();
+let mut cursor = root.walk();
+let children = root.children(&mut cursor);
+```
+
+**Current tree-squatter**
+
+```rust
+pub trait TreeLike {
+    type Node<'tree>: NodeLike<'tree> where Self: 'tree;
+    fn root(&self) -> Self::Node<'_>;
+}
+pub trait NodeLike<'tree>: Copy + Eq {
+    type Cursor: CursorLike<'tree, Node = Self>;
+    fn identity(self) -> usize;
+    fn cursor(self) -> Result<Self::Cursor, Error>;
+    fn children(self) -> impl Iterator<Item = Self>;
+    fn child_count(self) -> usize;
+}
+```
+
+**Proposed tree-squatter**
+
+```rust
+pub trait TreeLike {
+    type Node<'tree>: NodeLike<'tree> where Self: 'tree;
+    fn root_node(&self) -> Self::Node<'_>;
+}
+pub trait NodeLike<'tree>: Copy + Eq {
+    type Cursor: CursorLike<'tree, Node = Self>;
+    type Id: Copy + Eq + std::hash::Hash;
+    fn id(&self) -> Self::Id;
+    fn walk(&self) -> Self::Cursor;
+    fn children<'cursor>(&self, cursor: &'cursor mut Self::Cursor)
+        -> impl ExactSizeIterator<Item = Self> + 'cursor where Self: 'cursor;
+    fn child(&self, index: ChildIx) -> Option<Self>;
+    fn named_child(&self, index: NamedChildIx) -> Option<Self>;
+    fn child_count(&self) -> ChildIx;
+    fn named_child_count(&self) -> NamedChildIx;
+    fn children_iter(self) -> impl Iterator<Item = Self>;
+}
+```
+
+- Keep shared traits as an additional capability with implementations for both
+  representations. `NodeLike::id()` returns `SlotIx` from `slot()` for packed nodes
+  and the native `usize` ID for tree-sitter nodes.
+- Align names, receivers, and contracts with the corresponding inherent methods,
+  including distinct child/named-child indices and typed `CursorLike` positioning
+  results.
+- Update both implementations together; keep cursor-free traversal and scans
+  available without establishing a second set of names for shared operations.
+
+## Packed storage, scans, and side data
+
+**Current tree-sitter**
+
+```rust
+let tree = parser.parse(source, None).unwrap();
+let start = tree.root_node().start_position();
+// no packed slabs, attachable caches, or scan-builder API
+```
+
+**Current tree-squatter**
+
+```rust
+let mut tree = Tree::pack(&grammar, &native_tree)?;
+let slab = tree.as_bytes();
+let borrowed = Tree::from_bytes_borrowed(&grammar, slab)?;
+let owned = Tree::from_owned_slab(&grammar, backing)?;
+let count = tree.root_node().preorder().filter_kind_ids([kind]).count();
+
+let lines = LineIndex::new(source)?;
+let points = PointData::build(&tree, &lines, None)?;
+tree.set_point_data(points)?;
+tree.drop_presence_cache();
+tree.drop_point_data();
+```
+
+**Proposed tree-squatter**
+
+```rust
+let mut tree = Tree::pack(&grammar, &native_tree)?;
+let slab = tree.as_bytes();
+let borrowed = Tree::from_bytes_borrowed(&grammar, slab)?;
+let owned = Tree::from_owned_slab(&grammar, backing)?;
+let count = tree.root_node().preorder().filter_kind_ids([kind]).count();
+
+let lines = LineIndex::new(source)?;
+let points = PointData::build(&tree, &lines, None)?;
+tree.set_point_data(points)?;
+tree.drop_presence_cache();
+tree.drop_point_data();
+```
+
+- Retain these additions, including backing alignment, lifetime, and immutability
+  requirements. Release borrowed views before mutating their owning tree.
+- Retain packing options, reusable scratch, compaction, detachment, grammar caches,
+  postorder/reverse/range scans, masks, ID sets, supertype tests, and attributes.
+- Keep optional side data separate from slab bytes. Loading a slab does not
+  implicitly restore separately persisted caches.
+- Missing presence caches may change cost, never results. Missing point data is
+  an explicit capability state with documented coordinate behavior.
+
+## Behavior differences
+
+These are current differences and proposed dispositions, not results of exhaustive
+new differential testing.
+
+- **Error flags:** tree-squatter's block flag can report errors for an error-free
+  subtree. Make the shared `has_error()` exact.
+- **Missing points:** tree-squatter returns row zero with byte offset as column.
+  Keep optional points and document their effect on accessors, ranges, lookups,
+  and queries. Require ordinary coordinate parity when points are attached.
+- **Cache loading:** slab loading does not restore separate side data. Retain
+  this behavior and expose cache availability.
+- **Missing presence cache:** scanning still works. Preserve identical results
+  with or without the cache.
+- **Unknown kind:** checked tree-squatter lookup returns `None`; tree-sitter
+  returns zero. Add the shared sentinel-based lookup while retaining the checked
+  addition.
+- **Syntax errors and grammars:** direct parsing rejects syntax errors and requires
+  ABI 15 without external scanners or nonterminal extras. Preserve restrictions
+  only on the explicit direct-parser extension; they remain gaps for `Parser`.
+- **Change flags:** `has_changes()` always returns false. That describes fresh
+  snapshots, but cannot replace edited-tree behavior. Fix with incremental state.
+- **Capture events:** order, provisional snapshot contents, and duplicate counts
+  can differ. Restore the compatible capture contract; name provisional events
+  separately if retained.
+- **Bounded queries:** branching/rootless patterns can report `UnsupportedRange`.
+  Implement a compatible fallback rather than exposing optimizer limitations.
+- **Property metadata:** `set!` and `is?`/`is-not?` currently appear among general
+  predicates. Move them to the corresponding dedicated metadata interfaces.
+- **Range validation:** tree-squatter rejects invalid or out-of-width inputs;
+  tree-sitter's Rust wrapper casts coordinates to native widths and returns the
+  cursor. Audit shared boundary behavior and retain strict checks separately.
+- **Finite match limits:** discovery/eviction order can retain a different valid
+  subset. Match guaranteed behavior and document any remaining scheduling details
+  that tree-sitter leaves unspecified.
+- **Cancellation:** timeout/status replaces the Rust callback interface. Add
+  callback support and compatible stopping/resumption behavior; exact callback
+  cadence and work completed before cancellation may differ.
+- **Identity and ownership:** numerical identities differ across representations,
+  repacking can change slots, and borrowed trees depend on their backing storage.
+  Retain those necessary differences with explicit scopes and lifetimes.
+
+Allocation sizes, traversal cost, and copying cost can differ without changing
+results. A conservative answer from a shared method is a behavior difference,
+not merely a performance tradeoff.
+
+## Commit plan
+
+1. **API implementation commits.** Split changes into coherent commits: names,
+   receivers, index newtypes, cursor construction, and setters; navigation conveniences
+   approved by the cost review; query metadata and iteration; behavior fixes.
+   Update callers and relevant tests with each change. Design parsing, editing,
+   and ownership separately from the direct-parser extension before implementing
+   those larger targets. Record deferred APIs explicitly.
+2. **Documentation-copy commit.** After the selected API changes, copy the
+   corresponding tree-sitter documentation onto shared tree-squatter types and
+   methods. Use this checkout's Rust binding as the source and record its revision
+   in the commit body. Keep this commit focused on copying documentation, with no
+   implementation changes or editorial rewrites. Make only necessary accuracy
+   corrections, including broken links and examples requiring the grammar wrapper
+   or newtypes; identify those corrections in the commit body. Do not copy a claim
+   that is false for the implemented API.
+3. **Tree-squatter documentation commit.** Add clearly labeled notes for remaining
+   differences and document additional APIs. Preserve the copied documentation
+   untouched unless it is inaccurate. Append notes as separate paragraphs rather
+   than weaving tree-squatter commentary into upstream prose. Keep this commit
+   separate from both API implementation and the documentation copy.
+
+Use these labels consistently in Rust documentation:
+
+- **tree-squatter behavior change:** for an observable result or contract
+  difference, including the behavior when point data is absent.
+- **tree-squatter only:** for an additional API or capability with no tree-sitter
+  counterpart.
+- **tree-squatter API difference:** for an intentional signature/type difference,
+  such as `ChildIx` or the grammar wrapper.
+- **tree-squatter performance difference:** for a different complexity or cost,
+  such as scanning to count children. Do not imply a measured slowdown without
+  measurements.
+
+For example, these are separate additions to the corresponding API docs:
+
+```rust
+/// **tree-squatter API difference:** Takes `ChildIx` instead of `u32`.
+
+/// **tree-squatter performance difference:** Scans preceding children. Prefer
+/// child iteration when visiting several children.
+
+/// **tree-squatter behavior change:** Without point data, returns row zero with
+/// the byte offset as the column. Check `has_points()` before using line/column
+/// coordinates.
+
+/// **tree-squatter only:** Returns this node's physical slot in the packed tree.
+```
+
+An appended note must not contradict the copied text. For example, replace an
+inaccurate logarithmic-cost claim with the actual scanning cost; preserve the
+rest of that method's documentation. Additional APIs need original documentation
+and the `tree-squatter only` label, not an artificial upstream counterpart.
+
+## Verification
+
+Use existing navigation, binding, boundary, and query differential tests. Normalize
+newtypes and representation-specific identities, but preserve contractual ordering
+and duplicates. Cover optional side data, malformed packed input trees, empty and
+missing nodes, aliases, range boundaries, limits, cancellation, and both optimized
+and unoptimized execution.
+
+For the documentation commits, check rendered rustdoc, intra-doc links, and
+affected doctests. Review the copy commit against its recorded source revision,
+then verify that the annotation commit changes copied prose only where needed
+for accuracy. Documentation must describe the implemented API, not unimplemented
+targets from this proposal.
+
+The target is shared call sites that need only necessary grammar-wrapper and
+newtype adaptations. Additional capabilities should remain available without
+forcing unrelated changes to shared calls or behavior.
