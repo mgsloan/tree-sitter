@@ -317,17 +317,12 @@ impl Builder {
             return;
         }
 
-        // Keep small spans directly readable from the delta column.
-        if self.maximum.span <= (1 << SPAN_BITS) - 1 {
-            self.base.span = 0;
-        }
-
         let data = self.tree.data_mut();
         let group = data.groups();
         let layout = data.layout;
         data.put_word(SlabOffset(0), 1, group + 1);
         data.put_short(layout.waste, group, (GROUP_SIZE - self.count) as u16);
-        data.put_word(layout.span_base, group, self.base.span);
+        data.put_word(layout.span_max, group, self.maximum.span);
         data.put_word(layout.start_byte_base, group, self.base.start_byte);
         data.put_word(layout.end_byte_base, group, self.maximum.end_byte);
 
@@ -363,10 +358,14 @@ impl Builder {
                 writer.put_short(
                     layout.span_delta,
                     slot,
-                    (value.span - self.base.span) as u16,
+                    (self.maximum.span - value.span) as u16,
                 );
             } else {
-                writer.put_byte(layout.span_delta, slot, (value.span - self.base.span) as u8);
+                writer.put_byte(
+                    layout.span_delta,
+                    slot,
+                    (self.maximum.span - value.span) as u8,
+                );
             }
             writer.put_byte(
                 layout.start_byte_delta,

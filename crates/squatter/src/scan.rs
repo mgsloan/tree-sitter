@@ -981,18 +981,11 @@ impl<'tree> Preorder<'tree> {
                 }
                 self.group.index = GroupIx(self.groups.end - 1);
                 if predicate.excludes_subtrees(&self.group) {
-                    let span = self.group.columns.word(
-                        self.group.columns.layout().span_base,
-                        self.group.index.get(),
-                    );
-                    self.groups.end = if span == 0 {
-                        self.group.index.get()
-                    } else {
-                        (self.group.first_slot().get() - span)
-                            .div_ceil(self.group.columns.group_size())
-                            .min(self.group.index.get())
-                            .max(self.groups.start)
-                    };
+                    let boundary = self.group.columns.first_slot(self.group.first_slot().get());
+                    self.groups.end = boundary
+                        .div_ceil(self.group.columns.group_size())
+                        .min(self.group.index.get())
+                        .max(self.groups.start);
                     continue;
                 }
             }
@@ -1016,17 +1009,9 @@ impl<'tree> Preorder<'tree> {
             if SUBTREES && predicate.excludes_subtrees(&self.group) {
                 // The last node in preorder occupies the group's first slot.
                 // Its descendants end no later, so their whole groups can be skipped.
-                let span = self.group.columns.word(
-                    self.group.columns.layout().span_base,
-                    self.group.index.get(),
-                );
-                if span != 0 {
-                    // The base alone is a conservative span; avoid delta loads
-                    // and short jumps when all spans fit in a byte.
-                    let end = (self.group.first_slot().get() - span)
-                        .div_ceil(self.group.columns.group_size());
-                    self.groups.end = self.groups.end.min(end).max(self.groups.start);
-                }
+                let boundary = self.group.columns.first_slot(self.group.first_slot().get());
+                let end = boundary.div_ceil(self.group.columns.group_size());
+                self.groups.end = self.groups.end.min(end).max(self.groups.start);
                 continue;
             }
             let matches = predicate.retain_group(&self.group, || self.mask());

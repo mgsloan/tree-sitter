@@ -308,13 +308,14 @@ impl<'tree> Node<'tree> {
         while slot < data.groups() * GROUP_SIZE {
             let group = slot / GROUP_SIZE;
             let end = data.group_end(group);
-            let base = data.word(data.layout.span_base, group) as u64;
+            let maximum = data.word(data.layout.span_max, group) as u64;
 
             // Reject a whole group if even its largest possible span cannot
             // reach this node. The first enclosing span is the nearest parent.
-            if slot as u64 <= self.slot().get() as u64 + base + ((1 << SPAN_BITS) - 1) as u64 {
+            if slot as u64 <= self.slot().get() as u64 + maximum {
                 while slot < end {
-                    if slot as u64 <= self.slot().get() as u64 + base + data.span_delta(slot) as u64
+                    if slot as u64
+                        <= self.slot().get() as u64 + maximum - data.span_delta(slot) as u64
                     {
                         return Some(self.at(SlotIx::new(slot)));
                     }

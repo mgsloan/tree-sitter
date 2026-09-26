@@ -56,7 +56,7 @@ pub(crate) struct Layout<Column> {
     pub start_byte_delta: Column,
     pub end_byte_base: Column,
     pub end_byte_delta: Column,
-    pub span_base: Column,
+    pub span_max: Column,
     pub span_delta: Column,
     pub symbol: Column,
     pub field: Column,
@@ -102,7 +102,7 @@ impl Layout<SlabOffset> {
             start_byte_delta: column(aligned_bytes(slots, 1)),
             end_byte_base: column(aligned_bytes(capacity, 4)),
             end_byte_delta: column(aligned_bytes(slots, 2)),
-            span_base: column(aligned_bytes(capacity, 4)),
+            span_max: column(aligned_bytes(capacity, 4)),
             span_delta: column(aligned_bytes(slots, SPAN_BITS / 8)),
             symbol: column(aligned_bytes(slots, symbol_width)),
             field: column(aligned_bytes(slots, 2)),
@@ -142,7 +142,7 @@ impl Layout<SlabOffset> {
             start_byte_delta: ColumnPointer(self.start_byte_delta.pointer(bytes)),
             end_byte_base: ColumnPointer(self.end_byte_base.pointer(bytes)),
             end_byte_delta: ColumnPointer(self.end_byte_delta.pointer(bytes)),
-            span_base: ColumnPointer(self.span_base.pointer(bytes)),
+            span_max: ColumnPointer(self.span_max.pointer(bytes)),
             span_delta: ColumnPointer(self.span_delta.pointer(bytes)),
             symbol: ColumnPointer(self.symbol.pointer(bytes)),
             field: ColumnPointer(self.field.pointer(bytes)),
@@ -166,7 +166,7 @@ impl<Column: Copy> Layout<Column> {
             (self.start_byte_delta, aligned_bytes(slots, 1) as usize),
             (self.end_byte_base, aligned_bytes(groups, 4) as usize),
             (self.end_byte_delta, aligned_bytes(slots, 2) as usize),
-            (self.span_base, aligned_bytes(groups, 4) as usize),
+            (self.span_max, aligned_bytes(groups, 4) as usize),
             (
                 self.span_delta,
                 aligned_bytes(slots, SPAN_BITS / 8) as usize,
@@ -370,7 +370,7 @@ impl TreeData {
 
     #[inline]
     pub fn first_slot(&self, slot: u32) -> u32 {
-        slot - self.word(self.layout.span_base, slot / GROUP_SIZE) - self.span_delta(slot)
+        slot - (self.word(self.layout.span_max, slot / GROUP_SIZE) - self.span_delta(slot))
     }
 
     #[inline]
@@ -996,14 +996,16 @@ impl Tree {
         let root = data.group_end(data.groups() - 1) - 1;
         let mut ends = Vec::with_capacity(64);
         for group in (0..data.groups()).rev() {
-            let span_base = data.word(data.layout.span_base, group) as u64;
+            let span_max = data.word(data.layout.span_max, group) as u64;
             let start_base = data.word(data.layout.start_byte_base, group) as u64;
             let end_base = data.word(data.layout.end_byte_base, group);
             for slot in (group * GROUP_SIZE..data.group_end(group)).rev() {
                 while ends.last().is_some_and(|end| *end > slot) {
                     ends.pop();
                 }
-                let span = span_base + data.span_delta(slot) as u64;
+                let span = span_max
+                    .checked_sub(data.span_delta(slot) as u64)
+                    .ok_or(Error::InvalidSlab)?;
                 if span > slot as u64 {
                     return Err(Error::InvalidSlab);
                 }

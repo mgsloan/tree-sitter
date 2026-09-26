@@ -1558,6 +1558,31 @@ impl<'query, 'tree> QueryExecution<'_, 'query, 'tree, '_> {
         }
         cache.samples += 1;
 
+        let data = root.data();
+        let group_size = crate::storage::GROUP_SIZE;
+        if requirement.symbol != 0 {
+            if let Some(presence) = &data.presence_cache {
+                let slot = root.slot().get();
+                let group = slot / group_size;
+                let maximum = data.word(data.layout.span_max, group);
+                // The maximum covers this subtree without loading its span delta.
+                let groups = slot.saturating_sub(maximum) / group_size..group + 1;
+                let found = data
+                    .tables()
+                    .remap_kind(KindId::new(requirement.symbol))
+                    .is_some_and(|symbol| {
+                        presence
+                            .next_group(groups, symbol.get() as usize, data.groups(), false)
+                            .is_some()
+                    });
+                if !found {
+                    cache.rejections += 1;
+                    self.cursor.presence[index] = cache;
+                    return false;
+                }
+            }
+        }
+
         let mut begin = self.normalize_position(self.total_slots() - root.slot().get());
         let limit = self.node_end(root);
         if begin >= cache.start && begin <= cache.next {
@@ -1579,9 +1604,6 @@ impl<'query, 'tree> QueryExecution<'_, 'query, 'tree, '_> {
         // the ordinary matcher, and the known-empty prefix can be reused later.
         let scanned_end = begin + (limit - begin).min(256);
         let mut position = begin;
-        let data = root.data();
-        let group_size = crate::storage::GROUP_SIZE;
-
         while position < scanned_end {
             let group = position / group_size;
             let group_start = group * group_size;

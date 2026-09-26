@@ -32,7 +32,7 @@ can be computed directly without buffering.
 If the estimate was too little, it is grown and the data is copied inplace. If
 the estimate was too large, it is left that way, but can also be compacted.
 
-`min_subtree_size`, `max_byte`, `max_row`, `min_col`, and `max_col` are computed as it scans. `trailing_waste`, `min_byte`, and `min_row` are known on the last inserted node.
+`max_subtree_size`, `max_byte`, `max_row`, `min_col`, and `max_col` are computed as it scans. `trailing_waste`, `min_byte`, and `min_row` are known on the last inserted node.
 
 `supertypes` state is inherited on descent.
 
@@ -78,8 +78,8 @@ struct Node {
   is_missing: bool,
 
   /// Distance to the subtree's lower physical boundary, including group waste.
-  /// Add subtree_size_base to decode the span, then subtract it from this node's
-  /// slot. The next sibling, when present, occupies the slot below that boundary.
+  /// Subtract from subtree_size_max to decode the span, then subtract the span
+  /// from this node's slot. The next sibling occupies the slot below that boundary.
   subtree_size: u16,
   /// Start byte offset in the input text (add start_byte_base).
   start_byte: u8,
@@ -113,7 +113,7 @@ struct Group {
   has_error: bool,
   /// Number of trailing wasted slots, from 0 to 15. Could be a u8.
   trailing_waste: u4,
-  subtree_size_base: u32,
+  subtree_size_max: u32,
   start_byte_base: u32,
   end_byte_base: u32,
   start_point_base: u64,

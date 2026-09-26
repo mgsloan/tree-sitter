@@ -401,6 +401,34 @@ fn synthetic_symbol_ids_and_optional_columns() {
 }
 
 #[test]
+fn maximum_spans_roundtrip_and_reject_delta_underflow() {
+    let language =
+        unsafe { tree_sitter::Language::from_raw(tree_sitter_json::LANGUAGE.into_raw()().cast()) };
+    let grammar = Grammar::new(&language).unwrap();
+    let mut parser = tree_sitter::Parser::new();
+    parser.set_language(&language).unwrap();
+
+    let source = format!("[{}0]", "0,".repeat(33000));
+    let tree = Tree::parse(&grammar, &mut parser, &source).unwrap();
+    assert!(tree.root_node().slot().get() > u16::MAX as u32);
+    let loaded = Tree::from_bytes(&grammar, tree.as_bytes()).unwrap();
+    let array = loaded.root_node().named_child(0).unwrap();
+    assert_eq!(array.named_child_count(), 33001);
+    for index in [0, 33000] {
+        let child = array.named_child(index).unwrap();
+        assert_eq!(child.parent(), Some(array));
+        assert_eq!(child.start_byte(), 1 + index * 2);
+    }
+
+    let mut small = Tree::parse(&grammar, &mut parser, "0").unwrap();
+    let data = small.data_mut();
+    let maximum = data.word(data.layout.span_max, 0);
+    put_span_delta(data, 0, (maximum + 1) as u16);
+    assert!(Tree::from_bytes(&grammar, small.as_bytes()).is_err());
+    assert!(Tree::from_bytes_safety_checked(&grammar, small.as_bytes()).is_err());
+}
+
+#[test]
 fn navigation_across_every_waste_boundary() {
     let fixture = Fixture::symbols(16);
     let mut tree = Tree::empty(&fixture.grammar, 3).unwrap();
@@ -412,23 +440,25 @@ fn navigation_across_every_waste_boundary() {
             let data = tree.data_mut();
             for group in 0..3 {
                 data.put_short(data.layout.waste, group as u32, waste[group] as u16);
+                data.put_word(data.layout.span_max, group as u32, 3 * GROUP_SIZE);
                 for lane in 0..GROUP_SIZE - waste[group] {
                     let slot = group as u32 * GROUP_SIZE + lane;
                     slots.push(SlotIx::new(slot));
                     put_span_delta(
                         data,
                         slot,
-                        if group > 0 && lane == 0 {
-                            waste[group - 1] as u16
-                        } else {
-                            0
-                        },
+                        (3 * GROUP_SIZE) as u16
+                            - if group > 0 && lane == 0 {
+                                waste[group - 1] as u16
+                            } else {
+                                0
+                            },
                     );
                     data.put_bit(data.layout.last, slot, slot == 0);
                 }
             }
             let root = *slots.last().unwrap();
-            put_span_delta(data, root.get(), root.get() as u16);
+            put_span_delta(data, root.get(), (3 * GROUP_SIZE - root.get()) as u16);
             data.put_bit(data.layout.last, root.get(), true);
             assert_eq!(tree.root_node().slot(), root);
             let expected: Vec<_> = slots.iter().rev().copied().collect();
@@ -479,7 +509,7 @@ fn exercise_columns(tree: &mut Tree, fill: bool) {
     let layout = data.layout;
     for (tag, (offset, bits, scale)) in [
         (layout.waste, 16, 1),
-        (layout.span_base, 32, 1),
+        (layout.span_max, 32, 1),
         (layout.start_byte_base, 32, 1),
         (layout.end_byte_base, 32, 1),
         (layout.last, 1, GROUP_SIZE),
