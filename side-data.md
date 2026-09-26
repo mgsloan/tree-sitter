@@ -103,8 +103,8 @@ the core layout.
 Built or copied core, presence, and point data must use separate allocations,
 including when created together during conversion/parsing. Do not coallocate
 sidecars with the core or with each other. Mapped sidecars occupy separate LMDB
-values and retain their backing through an owner. `drop_*` immediately frees an
-owned sidecar allocation or releases its mapped backing handle, independently of
+values and retain their storage through an owner. `drop_*` immediately frees an
+owned sidecar allocation or releases its mapped storage owner, independently of
 the core. Releasing a mapped handle does not unmap the database or reclaim pages
 still held by other readers.
 
@@ -280,7 +280,7 @@ Completed values are `Send` and retain no tree/source borrow.
 replaces existing side data only on success. The caller supplies data for the
 matching tree and, for points, source. Count checks do not prove that pairing.
 Cancellation or a failed build/set leaves the tree
-unchanged. `drop_*` immediately frees owned storage or releases mapped backing and
+unchanged. `drop_*` immediately frees owned storage or releases mapped storage and
 returns nothing; dropping absent side data is a no-op. Neither operation changes the
 core slab, other sidecars, or node IDs.
 Dropping points restores the row-zero frame; dropping presence changes only
@@ -344,10 +344,10 @@ assert_eq!(tree.root_node().start_position(), Point::new(0, root_byte));
 
 `LoadedFile` currently shares trees through `Arc`. Attach before sharing or
 publish a new owner; do not expose mutation through shared ownership. Borrowed
-and transaction-backed slabs remain usable without side data, with row-zero
-points. Both `Tree` and `BackedTree` expose exclusive sidecar setters and droppers.
-`BackedTree` must not expose `DerefMut<Target = Tree>`: replacing its inner tree
-would separate the descriptor from the backing owner. `BorrowedTree` remains
+and retained slabs remain usable without side data, with row-zero
+points. Both `Tree` and `RetainedTree` expose exclusive sidecar setters and droppers.
+`RetainedTree` must not expose `DerefMut<Target = Tree>`: replacing its inner tree
+would separate the descriptor from the storage owner. `BorrowedTree` remains
 read-only; repack it into an owned tree before attaching side data. Background
 publication and a public C facade are outside this step. Any later C facade must
 enforce the same exclusion on the caller side.
@@ -362,33 +362,33 @@ decoding, pointer fixup, or reconstructed index when loading.
 ```rust
 impl PresenceCache {
     pub fn as_bytes(&self) -> &[u8];
-    pub fn from_backing(
+    pub fn from_retained(
         tree: &Tree,
-        backing: impl StableSlab,
+        owner: impl StableSlab,
     ) -> Result<Self, SideDataError>;
     pub fn copy_from_bytes(tree: &Tree, bytes: &[u8]) -> Result<Self, SideDataError>;
 }
 
 impl PointData {
     pub fn as_bytes(&self) -> &[u8];
-    pub fn from_backing(
+    pub fn from_retained(
         tree: &Tree,
-        backing: impl StableSlab,
+        owner: impl StableSlab,
     ) -> Result<Self, SideDataError>;
     pub fn copy_from_bytes(tree: &Tree, bytes: &[u8]) -> Result<Self, SideDataError>;
 }
 ```
 
-`as_bytes` borrows the existing layout without allocation. `from_backing` wraps
+`as_bytes` borrows the existing layout without allocation. `from_retained` wraps
 stable bytes without copying the payload, retaining their owner for the sidecar's
 lifetime. Reuse the existing `StableSlab` ownership contract: bytes remain valid
-at a stable address and immutable while retained. The LMDB backing owner holds
+at a stable address and immutable while retained. The LMDB storage owner holds
 the read transaction; node access reads the mmap directly.
 
 `copy_from_bytes` allocates suitably aligned storage and copies the complete
 layout with a memcpy. The result has no dependency on the input bytes or LMDB
 transaction. Use it when independent ownership is preferable or mapped bytes
-do not meet alignment requirements. `from_backing` rejects unsuitable alignment;
+do not meet alignment requirements. `from_retained` rejects unsuitable alignment;
 it does not silently allocate and copy. Both paths produce the same public
 sidecar type and use the same set/drop methods.
 
@@ -442,7 +442,7 @@ using ordinary symbol scanning or row-zero point access. A core-tree hit alone
 does not fulfill the side-data request. Materialization occurs during the
 requested creation/load operation, never as a hidden accessor fallback.
 Copied sidecars own their allocation; mapped sidecars retain the LMDB read
-transaction through their backing owner. Release loads do not attempt to prove
+transaction through their storage owner. Release loads do not attempt to prove
 bitmap or point contents semantically correct.
 
 Publish sidecars independently, including after the tree transaction.
@@ -480,11 +480,11 @@ address, serialized bytes, offsets, and IDs before setting/replacing/dropping
 separately built or loaded sidecars; all must remain unchanged. Exercise every
 combination of creation flags, including defaults, on conversion and parse paths.
 Verify requested sidecars are present on success, disabled ones are absent, and
-dropping one frees owned storage or releases mapped backing while the core and
+dropping one frees owned storage or releases mapped storage while the core and
 other sidecars remain alive.
 Verify mapped sidecars read the supplied payload without copying and retain its
 transaction for their lifetime. Copied sidecars must remain valid after the input
-backing is dropped. Check alignment rejection, relocation by memcpy, and matching
+storage owner is dropped. Check alignment rejection, relocation by memcpy, and matching
 results through both loading paths. Validation remains separate from decoding;
 only debug builds scan payload contents.
 

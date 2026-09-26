@@ -167,13 +167,13 @@ pub enum LoadedTree {
     // Tree owns its slab allocation; no database transaction is retained.
     Owned(Arc<tree_squatter::Tree>),
     // Tree reads LMDB bytes held alive by an owning read transaction.
-    Backed(Arc<tree_squatter::BackedTree>),
+    Retained(Arc<tree_squatter::RetainedTree>),
 }
 
 impl LoadedTree {
     pub fn tree(&self) -> &tree_squatter::Tree;
-    pub fn transaction_backed(&self) -> bool;
-    // Copies transaction-backed storage; existing aliases keep their snapshots.
+    pub fn retains_transaction(&self) -> bool;
+    // Copies retained storage; existing aliases keep their snapshots.
     pub fn detach(&self) -> Result<Self, tree_squatter::Error>;
 }
 

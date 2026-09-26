@@ -211,8 +211,8 @@ the serialized descriptor layout.
 use smallvec::SmallVec;
 
 enum Storage {
-    Owned(AlignedAllocation),
-    Backed(Box<dyn StableSlab>),
+    Owned(Vec<u64>),
+    Retained(Box<dyn Send + Sync>),
 }
 
 struct ForestData {
@@ -241,22 +241,34 @@ struct TreeData {
 impl Forest {
     pub fn as_bytes(&self) -> &[u8];
     pub fn from_bytes(grammars: &[Grammar], bytes: &[u8]) -> Result<Self, Error>;
-    pub fn from_backing(
+    pub fn from_retained(
         grammars: &[Grammar],
-        backing: impl StableSlab,
+        owner: impl StableSlab,
     ) -> Result<Self, Error>;
 }
 ```
 
-Packing and `from_bytes` allocate core storage; `from_backing` retains immutable
-storage with the existing `StableSlab` contract. Both return `Forest`, with no
-public `BackedForest` variant. Resolve column addresses, decode region descriptors,
+Packing and `from_bytes` use `Owned(Vec<u64>)` for core storage. The vector manages
+allocation, capacity, and destruction; initialized words are exposed as bytes.
+Capacity may exceed the logical slab length. Verify that `u64` alignment meets
+the slab's alignment requirement on supported targets.
+
+`from_retained` accepts `impl StableSlab` to establish that its bytes remain valid,
+stable, and immutable.
+Box the concrete owner, obtain its bytes and cache their address and length,
+then erase the owner to `Box<dyn Send + Sync>` in `Storage::Retained`. The stored
+owner only keeps the bytes alive and is dropped with the storage; it exposes no
+byte-access method.
+Presence and point sidecars use the same construction and ownership pattern.
+
+Both loading paths return `Forest`, with no public `RetainedForest` variant.
+Resolve column addresses, decode region descriptors,
 and reconstruct runtime tree metadata at construction. A single-tree forest
 keeps both vectors inline in `ForestData`, without separate descriptor-vector
 allocations. Larger forests spill to heap storage. Nodes index these vectors;
 `as_bytes()` uses the cached base and length. Neither path matches on `Storage`
 or calls `StableSlab::bytes()`.
-Side-data readers likewise cache their payload addresses so backing selection
+Side-data readers likewise cache their payload addresses so storage selection
 stays out of point and presence access.
 
 Point reads index the cached payload base in the forest's `PointData` directly
@@ -265,7 +277,7 @@ because those bitmap segments use region-relative group indices; it does not
 need a separate points pointer.
 
 The enum occupies owner metadata and is used during construction, destruction,
-and explicitly storage-dependent operations. Retained backing can require a
+and explicitly storage-dependent operations. Retained storage can require a
 box and dynamic destruction, but adds no per-node dispatch or pointer hop.
 Reader addresses remain valid and immutable while borrowed. Packing may relocate
 storage only before publication and must refresh resolved addresses afterward.
@@ -362,9 +374,9 @@ The forest presence cache and point data have independently loadable allocations
 Set/drop requires exclusive access to the forest and never shifts or rewrites
 its core columns, descriptor tables, groups, or IDs. Built/copied sidecars never
 share an allocation with the core or another sidecar. Mapped sidecars retain
-backing owners as in step 1. Region presence views borrow slices of the forest
+storage owners as in step 1. Region presence views borrow slices of the forest
 cache and do not own allocations. Dropping the presence cache clears those views
-and frees its single allocation or releases its backing handle, independently
+and frees its single allocation or releases its storage owner, independently
 of point data. Presence attachment and removal operate on the whole forest.
 
 ```rust
@@ -414,9 +426,9 @@ impl PresenceCache {
         cancel: Option<&AtomicBool>,
     ) -> Result<Self, SideDataError>;
 
-    pub fn from_forest_backing(
+    pub fn from_forest_retained(
         forest: &Forest,
-        backing: impl StableSlab,
+        owner: impl StableSlab,
     ) -> Result<Self, SideDataError>;
 
     pub fn copy_from_forest_bytes(
@@ -432,9 +444,9 @@ impl PointData {
         cancel: Option<&AtomicBool>,
     ) -> Result<Self, SideDataError>;
 
-    pub fn from_forest_backing(
+    pub fn from_forest_retained(
         forest: &Forest,
-        backing: impl StableSlab,
+        owner: impl StableSlab,
     ) -> Result<Self, SideDataError>;
 
     pub fn copy_from_forest_bytes(
@@ -468,7 +480,7 @@ segment directly. Loading walks the expected regions, checks each header,
 dimensions, and segment extent, and requires the concatenation to consume the
 input exactly. Reject truncated, extra, or incompatible segments. Resolve region
 payload pointers once on attachment; reads do not walk earlier segments.
-Mapped loading retains one backing owner; copied loading uses one aligned
+Mapped loading retains one storage owner; copied loading uses one aligned
 allocation and copies the concatenation without rebuilding bitmaps.
 
 Bitmaps have one bit per physical group within their region; tree views use a
@@ -495,8 +507,8 @@ source/frame. Point access performs no source lookup and needs no retained sourc
 bytes. Independent coordinate frames do not require separate point allocations
 or owners. Per-tree point attachment/removal remains outside this interface.
 
-Side data uses the `as_bytes` representation from step 1. The backing constructors
-read mapped payloads directly and retain their owners; the copy constructors
+Side data uses the `as_bytes` representation from step 1. Retained constructors
+read mapped payloads directly and retain their owners; copy constructors
 allocate aligned storage and memcpy the same layout. Neither path decodes fields
 into another representation or reconstructs indexes. Release loading and
 attachment only check target kind, region counts, dimensions, alignment, and
@@ -508,7 +520,7 @@ does not rebuild the core. Failed attachment leaves current side data unchanged.
 Workers can build through immutable forest borrows; completed values retain no
 borrow. Set/drop requires exclusive owner access after those borrows end.
 Set replaces existing data on success; drop frees owned storage or
-releases the mapped backing handle, returns nothing, and is a no-op when absent.
+releases the mapped storage owner, returns nothing, and is a no-op when absent.
 Point attachment/removal preserves layout and IDs but switches each tree between
 its attached point coordinates and row-zero access; presence attachment/removal
 preserves query results.
@@ -612,8 +624,8 @@ overrides need tree/region scope and index relocation when copied. They remain
 authoritative data.
 
 Serialization contains the core alone; side-data loading and attachment are separate.
-The core serializer requires no LMDB or application manifest. Copies and retained
-backings use the same core layout and reader metadata. Integration with pinned
+The core serializer requires no LMDB or application manifest. Copied and retained
+storage use the same core layout and reader metadata. Integration with pinned
 LMDB transactions remains persistence work; it supplies a `StableSlab` owner
 without introducing another forest owning type.
 
@@ -626,7 +638,7 @@ without introducing another forest owning type.
 3. Add concatenated forest presence caches and point data with independent
    per-tree sources.
 4. Add checked serialization, retained grammar bindings, and storage-independent
-   read paths for allocated and retained backing storage. Serialize only region
+   read paths for allocated and retained storage. Serialize only region
    descriptors and reconstruct runtime tree metadata from root spans.
 
 Verify empty, single-tree, mixed-grammar, and repeated-grammar inputs without any
@@ -676,9 +688,9 @@ nodes, cursors, scans, and queries at every tree boundary. Check inline storage
 for empty and single-tree forests and spilled storage for larger forests,
 including multiple trees in one region. Reuse query cursors across forests and
 trees without retaining stale state. Check compact node layout. Exercise owned
-and retained backing loads, moves of the forest owner, and backing release after
+and retained loads, moves of the forest owner, and storage release after
 the last owner is dropped. Check that core and side-data reads use cached
-addresses without backing dispatch and that side-data replacement cannot leave
+addresses without storage dispatch and that side-data replacement cannot leave
 stale reader pointers.
 
 Verify `NodeId` composition and extraction, including the high bits of each
@@ -687,7 +699,7 @@ node construction must reject wasted slots and mismatched tree/slot pairs.
 
 Verify presence serialization is exactly the concatenation of region encodings,
 including empty, single-region, repeated-grammar, and differently sized regions.
-Check one allocation for the owned bitmap payload and one backing owner for
+Check one allocation for the owned bitmap payload and one storage owner for
 mapped payloads. Exercise truncated segments, trailing bytes, extent overflow,
 and whole-cache replacement/removal without stale region views. Release loading
 may walk region headers but must not scan bitmap contents.

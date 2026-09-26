@@ -56,12 +56,12 @@ a resulting miss retains only its source identity, grammar, and features.
 not indicate whether speculative work can be reused. Text-dependent queries need
 the matching source snapshot.
 
-An `UncheckedTree` owns a `BackedTree`, retaining its read transaction during
-speculation and hash checking. A matching hash moves that backing into
-`LoadedTree::Backed`; callers can detach it afterward. A matching tree retains its
-original backing even if a different loader calls `check_hash`. That loader's
+An `UncheckedTree` owns a `RetainedTree`, retaining its read transaction during
+speculation and hash checking. A matching hash moves that tree into
+`LoadedTree::Retained`; callers can detach it afterward. A matching tree retains its
+original storage owner even if a different loader calls `check_hash`. That loader's
 `ReadPolicy` controls fallback exact lookup. Unchecked loading
-always uses backed storage and returns `None` when no usable backed tree is
+always uses retained storage and returns `None` when no usable retained tree is
 available, even if an exact load could copy the entry.
 
 Exact identity comprises path, processed hash and length, grammar/runtime/
@@ -83,15 +83,15 @@ Repeated opens reuse the live `Arc<Cache>` for the same root. This design resolv
 conflicting options by rejecting them with `io::ErrorKind::InvalidInput`; reuse
 never upgrades a storeless handle. Roots are not canonicalized by the library.
 
-Owned trees retain their slab and grammar; backed trees also retain an owning read
-transaction. Preferred backed reads may fall back to owned storage. `detach`
-copies backed storage without changing existing aliases. Error design must let
+Both tree variants retain their slab and grammar; `Retained` also holds an owning
+read transaction. `PreferRetained` reads may fall back to owned storage. `detach`
+copies retained storage without changing existing aliases. Error design must let
 callers distinguish cancellation, changed prepared input, unavailable storage,
 and malformed or incompatible cache data.
 
 ```rust
 use std::{io, path::{Path, PathBuf}, sync::Arc};
-use tree_sitter_squatter::{BackedTree, Tree, TreePacker};
+use tree_sitter_squatter::{RetainedTree, Tree, TreePacker};
 
 use source::{FileMetadata, ParserInput, Source, SourceIdentity};
 use store::Store;
@@ -133,7 +133,7 @@ impl Default for CacheOptions { /* defaults described above */ }
 pub enum ReadPolicy {
     #[default]
     Owned,
-    PreferTransactionBacked,
+    PreferRetained,
 }
 
 // Provider-supplied identity must cover all behavior-affecting language inputs.
@@ -205,7 +205,7 @@ pub struct UncheckedTree {
     language: Language,
     features: TreeFeatures,
     source_identity: SourceIdentity,
-    tree: BackedTree,
+    tree: RetainedTree,
 }
 
 impl UncheckedTree {
@@ -239,12 +239,12 @@ pub struct ParseOptions<'a> {
 #[derive(Clone)]
 pub enum LoadedTree {
     Owned(Arc<Tree>),
-    Backed(Arc<BackedTree>),
+    Retained(Arc<RetainedTree>),
 }
 
 impl LoadedTree {
     pub fn tree(&self) -> &Tree;
-    pub fn transaction_backed(&self) -> bool;
+    pub fn retains_transaction(&self) -> bool;
     pub fn detach(&self) -> Result<Self, tree_sitter_squatter::Error>;
 }
 

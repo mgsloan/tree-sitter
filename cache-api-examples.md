@@ -23,7 +23,7 @@ not a single program sharing consumed values.
 | Speculative structural work during verification | 13 |
 | Share the cache and drop packing scratch | 14 |
 | Cancellation | 15 |
-| Transaction-backed trees and detachment | 16 |
+| Trees retaining transactions and detachment | 16 |
 | Packing variants | 17 |
 | Source changes and unsaved buffers | 18 |
 | Queries needing source text | 19 |
@@ -407,24 +407,24 @@ let outcome = write.publish(PublishOptions::default())?;
 Cancellation after a commit does not undo publication. Parse cancellation produces
 no publication callback.
 
-## 16. Transaction-backed trees
+## 16. Trees retaining transactions
 
 ```rust
 let cache = Cache::open(
     root,
-    CacheOptions { read: ReadPolicy::PreferTransactionBacked, ..Default::default() },
+    CacheOptions { read: ReadPolicy::PreferRetained, ..Default::default() },
 )?;
-if tree.transaction_backed() {
+if tree.retains_transaction() {
     let alias = tree.clone();
     let detached = tree.detach()?;
-    assert!(!detached.transaction_backed());
+    assert!(!detached.retains_transaction());
     drop(tree);
     drop(alias);
 }
 ```
 
 `detached` owns its slab. Other aliases keep the original transaction pinned until
-dropped. Backed reads can fall back to owned storage; fresh parses are owned.
+dropped. Retained reads can fall back to owned storage; fresh parses are owned.
 
 ## 17. Packing variants
 
