@@ -381,28 +381,28 @@ impl Maintenance {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{GrammarIdentity, IdentifiedGrammar, Options, Persistence};
+    use crate::{IdentifiedLanguage, LanguageIdentity, Options, Persistence};
 
     #[test]
     fn cancellation_rolls_back_batch_and_continuation() {
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("file.json");
         let cache = Persistence::open(root.path(), Options::default()).unwrap();
-        let language = unsafe {
+        let tree_sitter_language = unsafe {
             tree_sitter::Language::from_raw(tree_sitter_json::LANGUAGE.into_raw()().cast())
         };
-        let grammar = IdentifiedGrammar::new(
-            tree_sitter_squatter::Grammar::new(&language).unwrap(),
-            GrammarIdentity::new(&language, "json"),
+        let language = IdentifiedLanguage::new(
+            tree_sitter_squatter::Language::new(&tree_sitter_language).unwrap(),
+            LanguageIdentity::new(&tree_sitter_language, "json"),
         );
         let mut parser = tree_sitter::Parser::new();
         std::fs::write(&path, "1").unwrap();
         cache
-            .load(std::path::Path::new("file.json"), &grammar, &mut parser)
+            .load(std::path::Path::new("file.json"), &language, &mut parser)
             .unwrap();
         std::fs::write(&path, "2").unwrap();
         let newest = cache
-            .load(std::path::Path::new("file.json"), &grammar, &mut parser)
+            .load(std::path::Path::new("file.json"), &language, &mut parser)
             .unwrap();
         let mut work = newest.maintenance().unwrap();
         let checks = std::cell::Cell::new(0);
@@ -419,7 +419,7 @@ mod tests {
         std::fs::write(&path, "1").unwrap();
         assert!(
             cache
-                .load(std::path::Path::new("file.json"), &grammar, &mut parser)
+                .load(std::path::Path::new("file.json"), &language, &mut parser)
                 .unwrap()
                 .cache_hit()
         );

@@ -1,5 +1,5 @@
 use crate::{
-    Error, FieldId, Grammar, Tree,
+    Error, FieldId, Language, Tree,
     native::{Point, Reduction},
     side_data::{PointData, PresenceCache},
     storage::*,
@@ -51,37 +51,37 @@ impl PackContext {
         })
     }
 
-    pub fn pack(&mut self, grammar: &Grammar, tree: &tree_sitter::Tree) -> Result<Tree, Error> {
-        self.pack_with_options(grammar, tree, PackOptions::default())
+    pub fn pack(&mut self, language: &Language, tree: &tree_sitter::Tree) -> Result<Tree, Error> {
+        self.pack_with_options(language, tree, PackOptions::default())
     }
 
     pub fn pack_with_options(
         &mut self,
-        grammar: &Grammar,
+        language: &Language,
         tree: &tree_sitter::Tree,
         options: PackOptions,
     ) -> Result<Tree, Error> {
-        let root = traversal::Root::new(tree, grammar.tables())?;
-        let mut builder = Builder::for_input(grammar, root.expected_nodes, options)?;
-        traversal::pack(&mut builder, grammar.tables(), &mut self.traversal, root)?;
+        let root = traversal::Root::new(tree, language.tables())?;
+        let mut builder = Builder::for_input(language, root.expected_nodes, options)?;
+        traversal::pack(&mut builder, language.tables(), &mut self.traversal, root)?;
         builder.finish(options)
     }
 
     pub(crate) fn pack_reductions(
         &mut self,
-        grammar: &Grammar,
+        language: &Language,
         nodes: &[Reduction],
         root: u32,
         options: PackOptions,
     ) -> Result<Tree, Error> {
         let mut builder = Builder::for_input(
-            grammar,
+            language,
             nodes[root as usize].visible_descendant_count + 1,
             options,
         )?;
         traversal::pack_reductions(
             &mut builder,
-            grammar.tables(),
+            language.tables(),
             &mut self.traversal,
             nodes,
             root,
@@ -95,28 +95,28 @@ impl PackContext {
 }
 
 impl Tree {
-    pub fn pack(grammar: &Grammar, tree: &tree_sitter::Tree) -> Result<Self, Error> {
-        Self::pack_with_options(grammar, tree, PackOptions::default())
+    pub fn pack(language: &Language, tree: &tree_sitter::Tree) -> Result<Self, Error> {
+        Self::pack_with_options(language, tree, PackOptions::default())
     }
 
     pub fn pack_with_options(
-        grammar: &Grammar,
+        language: &Language,
         tree: &tree_sitter::Tree,
         options: PackOptions,
     ) -> Result<Self, Error> {
-        PackContext::new()?.pack_with_options(grammar, tree, options)
+        PackContext::new()?.pack_with_options(language, tree, options)
     }
 
     pub fn parse(
-        grammar: &Grammar,
+        language: &Language,
         parser: &mut tree_sitter::Parser,
         source: impl AsRef<[u8]>,
     ) -> Result<Self, Error> {
-        Self::parse_with_options(grammar, parser, source, PackOptions::default())
+        Self::parse_with_options(language, parser, source, PackOptions::default())
     }
 
     pub fn parse_with_options(
-        grammar: &Grammar,
+        language: &Language,
         parser: &mut tree_sitter::Parser,
         source: impl AsRef<[u8]>,
         options: PackOptions,
@@ -126,7 +126,7 @@ impl Tree {
             return Err(Error::Overflow);
         }
         let tree = parser.parse(source, None).ok_or(Error::InvalidArgument)?;
-        Self::pack_with_options(grammar, &tree, options)
+        Self::pack_with_options(language, &tree, options)
     }
 }
 
@@ -160,7 +160,7 @@ struct Builder {
 
 impl Builder {
     fn for_input(
-        grammar: &Grammar,
+        language: &Language,
         expected_nodes: u32,
         options: PackOptions,
     ) -> Result<Self, Error> {
@@ -169,11 +169,11 @@ impl Builder {
         } else {
             options.initial_group_capacity
         };
-        Self::new(grammar, capacity, options.points)
+        Self::new(language, capacity, options.points)
     }
 
-    fn new(grammar: &Grammar, capacity: u32, points: bool) -> Result<Self, Error> {
-        let tree = Tree::empty(grammar, capacity)?;
+    fn new(language: &Language, capacity: u32, points: bool) -> Result<Self, Error> {
+        let tree = Tree::empty(language, capacity)?;
         let points = points.then(|| PointData::empty(&tree)).transpose()?;
         Ok(Self {
             tree,

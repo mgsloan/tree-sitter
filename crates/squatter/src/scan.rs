@@ -3276,7 +3276,7 @@ mod tests {
         parser.set_language(&language).unwrap();
         let source = format!("[{}0]", "0,".repeat(4096));
         let native = parser.parse(&source, None).unwrap();
-        let grammar = crate::Grammar::new(&language).unwrap();
+        let grammar = crate::Language::new(&language).unwrap();
         let tree = crate::Tree::pack(&grammar, &native).unwrap();
         let root = tree.root_node();
         let columns = Columns::new(root);

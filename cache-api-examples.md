@@ -50,7 +50,7 @@ type ExampleResult<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
 let mut file = SourceFile::open(root, path).await?;
 let cache = Cache::open(root, CacheOptions::default())?;
-let grammar = cache.grammar(&language, fingerprint)?;
+let language = cache.language(&language, fingerprint)?;
 let mut loader = cache.loader();
 ```
 
@@ -58,7 +58,7 @@ let mut loader = cache.loader();
 
 ```rust
 let mut contents = file.read(ReadOptions::default()).await?;
-let loaded = loader.load(&mut contents, &grammar, LoadOptions::default()).await?;
+let loaded = loader.load(&mut contents, &language, LoadOptions::default()).await?;
 ```
 
 `SourceFile` defaults to `TextPreprocessing::zed()`. `read` returns an immutable
@@ -83,7 +83,7 @@ processed snapshot. Keeping the path consistent is the client's responsibility.
 
 ```rust
 let mut contents = FileContents::from_preprocessed(path.to_path_buf(), bytes, metadata, preprocessing_info);
-let loaded = loader.load(&mut contents, &grammar, LoadOptions::default()).await?;
+let loaded = loader.load(&mut contents, &language, LoadOptions::default()).await?;
 let mut input = contents.prepare(ReadOptions::default()).await?;
 let suffix = input.read(0, Point::new(0, 0));
 ```
@@ -95,7 +95,7 @@ it does not trust a caller-supplied digest or preprocess bytes again.
 ## 4. Cache-only lookup
 
 ```rust
-let tree = match loader.load(&mut source, &grammar, LoadOptions::default()).await? {
+let tree = match loader.load(&mut source, &language, LoadOptions::default()).await? {
     LoadResult::Loaded(tree) => Some(tree),
     LoadResult::Miss(_) => None,
 };
@@ -231,7 +231,7 @@ The receiving process uses its own shared cache:
 
 ```rust
 let consumer = Cache::open(root, CacheOptions::default())?;
-let write = consumer.read_transfer(&mut stream, &grammar, maximum_frame_bytes)?;
+let write = consumer.read_transfer(&mut stream, &language, maximum_frame_bytes)?;
 let outcome = write.publish(PublishOptions::default())?;
 ```
 
@@ -246,7 +246,7 @@ let cache = Cache::open(
     CacheOptions { create_cache_if_absent: false, ..Default::default() },
 )?;
 let mut loader = cache.loader();
-let loaded = loader.load(&mut source, &grammar, LoadOptions::default()).await?;
+let loaded = loader.load(&mut source, &language, LoadOptions::default()).await?;
 ```
 
 A handle that starts without a store remains without one. Parsing still works;
@@ -266,7 +266,7 @@ let mut source = ChunkSource::from_preprocessed(
     metadata,
     preprocessing_info,
 );
-let loaded = loader.load(&mut source, &grammar, LoadOptions::default()).await?;
+let loaded = loader.load(&mut source, &language, LoadOptions::default()).await?;
 let mut input = source.prepare(ReadOptions::default()).await?;
 let tree = match loaded {
     LoadResult::Loaded(tree) => tree,
@@ -328,7 +328,7 @@ The worker returns the candidate and owned results through a runtime-independent
 oneshot; verification then uses the immutable capture's computed fingerprint.
 
 ```rust
-let candidate = loader.preview(&mut file, &grammar, LoadOptions::default()).await?;
+let candidate = loader.preview(&mut file, &language, LoadOptions::default()).await?;
 if let Some(candidate) = candidate {
     let (sender, receiver) = futures_channel::oneshot::channel();
     std::thread::spawn(move || {
@@ -371,7 +371,7 @@ recreates it. `shared_cache` can create other independent loaders.
 let flag = AtomicBool::new(false);
 let cancellation = Canceler::new(&flag);
 let loaded = loader.load(&mut source,
-    &grammar,
+    &language,
     LoadOptions { cancellation, ..Default::default() },
 ).await?;
 if let LoadResult::Miss(miss) = loaded {
@@ -430,7 +430,7 @@ dropped. Backed reads can fall back to owned storage; fresh parses are owned.
 
 ```rust
 let loaded = loader.load(&mut source,
-    &grammar,
+    &language,
     LoadOptions {
         pack: PackOptions {
             points: false,
@@ -464,9 +464,9 @@ parser.set_language(&language)?;
 let mut read = |offset, point| input.read(offset, point);
 let native = parser.parse_with_options(&mut read, None, None)
     .ok_or_else(|| io::Error::other("parse did not complete"))?;
-let grammar = tree_squatter::Grammar::new(&language)?;
+let language = tree_squatter::Language::new(&language)?;
 let mut packer = tree_squatter::TreePacker::new()?;
-let tree = packer.pack(&grammar, &native)?;
+let tree = packer.pack(&language, &native)?;
 ```
 
 ## 19. Queries using source text
@@ -515,7 +515,7 @@ and replacing live-file generation cleanup remain unspecified.
 
 ```rust
 let mut source = SourceFile::open(root, path).await?;
-let candidate = loader.preview(&mut source, &grammar, LoadOptions::default()).await?;
+let candidate = loader.preview(&mut source, &language, LoadOptions::default()).await?;
 let confirmed = match candidate {
     Some(candidate) => match candidate.verify(&mut source, VerifyOptions::default()).await? {
         Verification::Confirmed(tree) => Some(tree),

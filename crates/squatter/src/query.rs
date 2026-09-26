@@ -1,10 +1,10 @@
 pub use crate::query_exec::{QueryCursor, QueryExecution};
 use crate::{
-    Node,
+    Language, Node,
     types::{CaptureId, QueryStringId},
 };
 use regex::bytes::Regex;
-use tree_sitter::{Language, QueryPredicate, QueryPredicateArg};
+use tree_sitter::{QueryPredicate, QueryPredicateArg};
 
 #[derive(Debug)]
 pub struct QueryError {

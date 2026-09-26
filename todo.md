@@ -6,7 +6,7 @@
 
 - [ ] Separate viz branch for visualizer
 
-- [ ] Better name than Grammar for processed Language?
+- [x] Rename the prepared language wrapper to Language.
 
 - [ ] Put persistence and cache on a separate branch
 

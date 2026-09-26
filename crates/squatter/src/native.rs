@@ -7,7 +7,7 @@ use std::{
     mem::MaybeUninit,
     ptr::NonNull,
 };
-use tree_sitter::Language;
+use tree_sitter::Language as TreeSitterLanguage;
 use xxhash_rust::xxh3::Xxh3;
 
 /// XXH3 of generated grammar tables, embedded name/version metadata, and the
@@ -16,14 +16,14 @@ use xxhash_rust::xxh3::Xxh3;
 /// This does not hash the generated lexer functions or external scanner code.
 /// Changes to either can change parse results without changing this hash.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct GrammarHash(pub u64);
+pub struct LanguageHash(pub u64);
 
 /// Hash the generated grammar tables and identity metadata.
-pub fn grammar_hash(
-    language: &Language,
+pub fn language_hash(
+    language: &TreeSitterLanguage,
     fallback_name: &str,
     fallback_version: Option<[u8; 3]>,
-) -> GrammarHash {
+) -> LanguageHash {
     unsafe extern "C" fn visit(bytes: *const c_void, length: usize, context: *mut c_void) {
         let hasher = unsafe { &mut *context.cast::<Xxh3>() };
         let bytes = unsafe { std::slice::from_raw_parts(bytes.cast::<u8>(), length) };
@@ -34,7 +34,7 @@ pub fn grammar_hash(
     let raw = language.clone().into_raw();
     unsafe {
         sq_native_language_table_bytes(raw.cast(), visit, (&mut hasher as *mut Xxh3).cast());
-        drop(Language::from_raw(raw));
+        drop(TreeSitterLanguage::from_raw(raw));
     }
     match language.name() {
         Some(name) => {
@@ -70,7 +70,7 @@ pub fn grammar_hash(
         }
         None => hasher.update(&[0]),
     }
-    GrammarHash(hasher.digest())
+    LanguageHash(hasher.digest())
 }
 
 #[repr(C)]
@@ -193,15 +193,19 @@ impl GrammarView {
     }
 }
 
-pub struct Grammar {
+/// A tree-sitter language with shared prepared tables for packing and parsing.
+///
+/// Construction prepares packing tables; cloning shares them without rebuilding.
+/// Direct-parser tables are prepared on first use.
+pub struct Language {
     pub(crate) raw: NonNull<GrammarHandle>,
     view: NonNull<GrammarView>,
 }
 
 // Native ownership and lazy parser-table publication are atomic; published views are immutable.
-unsafe impl Send for Grammar {}
-unsafe impl Sync for Grammar {}
-impl Clone for Grammar {
+unsafe impl Send for Language {}
+unsafe impl Sync for Language {}
+impl Clone for Language {
     fn clone(&self) -> Self {
         unsafe {
             sq_native_grammar_copy(self.raw.as_ptr());
@@ -213,7 +217,7 @@ impl Clone for Grammar {
     }
 }
 
-impl Drop for Grammar {
+impl Drop for Language {
     fn drop(&mut self) {
         unsafe {
             sq_native_grammar_delete(self.raw.as_ptr());
@@ -221,16 +225,16 @@ impl Drop for Grammar {
     }
 }
 
-impl Grammar {
-    pub fn new(language: &Language) -> Result<Self, Error> {
+impl Language {
+    pub fn new(language: &TreeSitterLanguage) -> Result<Self, Error> {
         Self::create(language, None)
     }
 
-    pub fn from_cache(language: &Language, bytes: &[u8]) -> Result<Self, Error> {
+    pub fn from_cache(language: &TreeSitterLanguage, bytes: &[u8]) -> Result<Self, Error> {
         Self::create(language, Some(bytes))
     }
 
-    fn create(language: &Language, bytes: Option<&[u8]>) -> Result<Self, Error> {
+    fn create(language: &TreeSitterLanguage, bytes: Option<&[u8]>) -> Result<Self, Error> {
         let language = language.clone().into_raw();
         let mut error = 0;
         let raw = unsafe {
@@ -244,7 +248,7 @@ impl Grammar {
                 None => sq_native_grammar_new(language.cast(), &mut error),
             }
         };
-        drop(unsafe { Language::from_raw(language) });
+        drop(unsafe { TreeSitterLanguage::from_raw(language) });
         let raw = NonNull::new(raw).ok_or_else(|| Error::from_code(error))?;
         let view = NonNull::new(unsafe { sq_native_grammar_view(raw.as_ptr()).cast_mut() })
             .expect("valid grammar has a view");
@@ -255,16 +259,16 @@ impl Grammar {
         unsafe { self.view.as_ref() }
     }
 
-    pub fn language(&self) -> Language {
+    pub fn tree_sitter_language(&self) -> TreeSitterLanguage {
         let borrowed = std::mem::ManuallyDrop::new(unsafe {
-            Language::from_raw(self.tables().language.cast())
+            TreeSitterLanguage::from_raw(self.tables().language.cast())
         });
-        Language::clone(&borrowed)
+        TreeSitterLanguage::clone(&borrowed)
     }
 
     /// Resolve a displayed kind name in this grammar.
     pub fn kind_id_for_name(&self, name: &str, named: bool) -> Option<KindId> {
-        let language = self.language();
+        let language = self.tree_sitter_language();
         let id = language.id_for_node_kind(name, named);
         (language.node_kind_for_id(id) == Some(name) && self.tables().named(id) == named)
             .then_some(KindId::new(id))
@@ -283,7 +287,9 @@ impl Grammar {
 
     /// Resolve a field name in this grammar.
     pub fn field_id_for_name(&self, name: &str) -> Option<FieldId> {
-        self.language().field_id_for_name(name).map(FieldId::from)
+        self.tree_sitter_language()
+            .field_id_for_name(name)
+            .map(FieldId::from)
     }
 
     pub fn cache(&self) -> Result<Vec<u8>, Error> {
@@ -446,7 +452,7 @@ impl CompiledQuery {
             offset: 0,
             message: "query exceeds u32 size".into(),
         })?;
-        let language = language.clone().into_raw();
+        let language = language.tables().language;
         let mut offset = 0;
         let mut kind = 0;
         let raw = unsafe {
@@ -458,7 +464,6 @@ impl CompiledQuery {
                 &mut kind,
             )
         };
-        drop(unsafe { Language::from_raw(language) });
         let raw = NonNull::new(raw).ok_or_else(|| QueryError {
             offset: offset as usize,
             message: match kind {
@@ -700,7 +705,7 @@ impl ParseStatus {
 
 pub(crate) struct NativeParser {
     raw: NonNull<ParserHandle>,
-    grammar: Grammar,
+    language: Language,
 }
 
 unsafe impl Send for NativeParser {}
@@ -714,14 +719,14 @@ impl Drop for NativeParser {
 }
 
 impl NativeParser {
-    pub fn new(grammar: &Grammar) -> Result<Self, crate::ParseError> {
+    pub fn new(language: &Language) -> Result<Self, crate::ParseError> {
         let mut status = ParseStatus::new();
-        let raw = unsafe { sq_native_parser_new(grammar.raw.as_ptr(), &mut status) };
+        let raw = unsafe { sq_native_parser_new(language.raw.as_ptr(), &mut status) };
         let raw = NonNull::new(raw).ok_or_else(|| status.into_error())?;
 
         Ok(Self {
             raw,
-            grammar: grammar.clone(),
+            language: language.clone(),
         })
     }
 
@@ -762,8 +767,8 @@ impl Drop for Reductions<'_> {
 }
 
 impl Reductions<'_> {
-    pub fn grammar(&self) -> &Grammar {
-        &self.0.grammar
+    pub fn language(&self) -> &Language {
+        &self.0.language
     }
 
     pub fn nodes(&self) -> (&[Reduction], u32) {
@@ -782,7 +787,7 @@ impl Reductions<'_> {
 
 unsafe extern "C" {
     fn sq_native_parser_new(
-        grammar: *mut GrammarHandle,
+        language: *mut GrammarHandle,
         error: *mut ParseStatus,
     ) -> *mut ParserHandle;
     fn sq_native_parser_delete(parser: *mut ParserHandle);

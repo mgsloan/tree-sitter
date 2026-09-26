@@ -46,7 +46,7 @@ pub struct PackOptions {
 
 pub struct Tree {
     core: CoreSlab,
-    grammar: Grammar,
+    language: Language,
     presence_cache: Option<PresenceCache>,
     point_data: Option<PointData>,
 }
@@ -68,7 +68,7 @@ let options = PackOptions {
     points: false,
     ..PackOptions::default()
 };
-let mut tree = packer.pack_with_options(&grammar, &native, options)?;
+let mut tree = packer.pack_with_options(&language, &native, options)?;
 assert!(!tree.has_points());
 // callers can build/set sidecars later, or drop those requested at creation
 ```
@@ -322,7 +322,7 @@ an external flag, not synchronization in cache lookup.
 ```rust
 let source = LineIndex::new(bytes)?;
 let mut tree = packer.pack_with_options(
-    &grammar,
+    &language,
     &native,
     PackOptions { points: false, ..PackOptions::default() },
 )?;

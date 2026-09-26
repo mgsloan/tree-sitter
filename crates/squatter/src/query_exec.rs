@@ -2662,14 +2662,14 @@ fn equal_column(
 #[cfg(test)]
 mod scan_tests {
     use super::*;
-    use crate::{Grammar, PackOptions, Tree};
+    use crate::{Language, PackOptions, Tree};
 
     #[test]
     fn root_search_respects_ranges_and_group_waste() {
         let language = unsafe {
             tree_sitter::Language::from_raw(tree_sitter_json::LANGUAGE.into_raw()().cast())
         };
-        let grammar = Grammar::new(&language).unwrap();
+        let grammar = Language::new(&language).unwrap();
         let mut parser = tree_sitter::Parser::new();
         parser.set_language(&language).unwrap();
         let separator = format!(",{}", " ".repeat(300));
@@ -2695,7 +2695,7 @@ mod scan_tests {
                 "[(number) (string) (true) (null)] @value",
                 "(null) @value",
             ] {
-                let query = Query::new(&language, pattern).unwrap();
+                let query = Query::new(&grammar, pattern).unwrap();
                 let mut cursor = QueryCursor::new();
                 let mut execution = cursor.execute(&query, tree.root_node(), source.as_bytes());
                 let total = execution.total_slots();

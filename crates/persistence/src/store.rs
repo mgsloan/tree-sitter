@@ -9,7 +9,7 @@ use std::{
     },
 };
 
-use crate::identity::{CurrentGuard, IdentifiedGrammar, Request};
+use crate::identity::{CurrentGuard, IdentifiedLanguage, Request};
 use heed::{Env, EnvOpenOptions, WithoutTls, types::Bytes};
 
 pub(crate) type Database = heed::Database<Bytes, Bytes>;
@@ -37,24 +37,24 @@ pub(crate) struct Store {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::GrammarIdentity;
+    use crate::LanguageIdentity;
 
     #[test]
     fn source_and_tree_publish_atomically_and_corruption_is_a_miss() {
         let root = tempfile::tempdir().unwrap();
         let store = Store::open(root.path(), 1024 * 1024).unwrap();
-        let language = unsafe {
+        let tree_sitter_language = unsafe {
             tree_sitter::Language::from_raw(tree_sitter_json::LANGUAGE.into_raw()().cast())
         };
-        let grammar = IdentifiedGrammar::new(
-            tree_sitter_squatter::Grammar::new(&language).unwrap(),
-            GrammarIdentity::new(&language, "json"),
+        let language = IdentifiedLanguage::new(
+            tree_sitter_squatter::Language::new(&tree_sitter_language).unwrap(),
+            LanguageIdentity::new(&tree_sitter_language, "json"),
         );
         let mut parser = tree_sitter::Parser::new();
-        parser.set_language(&language).unwrap();
+        parser.set_language(&tree_sitter_language).unwrap();
         let native = parser.parse(b"[1]", None).unwrap();
         let tree = tree_sitter_squatter::Tree::pack_with_options(
-            &grammar.prepared,
+            &language.prepared,
             &native,
             tree_sitter_squatter::PackOptions {
                 initial_group_capacity: 128,
@@ -64,12 +64,12 @@ mod tests {
         .unwrap();
         assert!(tree.group_capacity() > tree.group_count());
         let original = tree.as_bytes().to_vec();
-        let request = Request::new(b"test.json".to_vec(), b"[1]", &grammar, true, true);
+        let request = Request::new(b"test.json".to_vec(), b"[1]", &language, true, true);
         // Cancel after the reservation has been filled, immediately before
         // commit: no source, tree, path, or current-generation record may escape.
         let checks = std::cell::Cell::new(0);
         assert!(matches!(
-            store.publish(&request, b"[1]", &tree, &grammar, || {
+            store.publish(&request, b"[1]", &tree, &language, || {
                 checks.set(checks.get() + 1);
                 checks.get() == 2
             }),
@@ -82,7 +82,7 @@ mod tests {
             (
                 "grammars",
                 store.grammars,
-                crate::identity::grammar_key(grammar.identity.hash).as_slice(),
+                crate::identity::language_key(language.identity.hash).as_slice(),
             ),
             ("paths", store.paths, &request.source_key[..32]),
             ("current", store.current, &request.source_key[..32]),
@@ -91,7 +91,7 @@ mod tests {
         }
         assert_eq!(
             store
-                .publish(&request, b"[1]", &tree, &grammar, || false)
+                .publish(&request, b"[1]", &tree, &language, || false)
                 .unwrap(),
             WriteOutcome::Published
         );
@@ -121,7 +121,10 @@ mod tests {
         assert_eq!(
             store
                 .grammars
-                .get(&after, &crate::identity::grammar_key(grammar.identity.hash))
+                .get(
+                    &after,
+                    &crate::identity::language_key(language.identity.hash)
+                )
                 .unwrap(),
             Some([].as_slice())
         );
@@ -136,19 +139,19 @@ mod tests {
             .unwrap();
         tx.commit().unwrap();
         drop(guard);
-        assert!(store.get(&request, b"[1]", &grammar).is_none());
+        assert!(store.get(&request, b"[1]", &language).is_none());
         assert_eq!(
             store
-                .publish(&request, b"[1]", &tree, &grammar, || false)
+                .publish(&request, b"[1]", &tree, &language, || false)
                 .unwrap(),
             WriteOutcome::Published
         );
-        assert!(store.get(&request, b"[1]", &grammar).is_some());
+        assert!(store.get(&request, b"[1]", &language).is_some());
 
         let guard = gate(&store.writer).unwrap().unwrap();
         assert_eq!(
             store
-                .publish(&request, b"[1]", &tree, &grammar, || false)
+                .publish(&request, b"[1]", &tree, &language, || false)
                 .unwrap(),
             WriteOutcome::Busy
         );
@@ -185,47 +188,49 @@ mod tests {
     fn wide_supertype_dictionary_round_trips_through_lmdb() {
         let root = tempfile::tempdir().unwrap();
         let store = Store::open(root.path(), 1024 * 1024).unwrap();
-        let language = unsafe {
+        let tree_sitter_language = unsafe {
             tree_sitter::Language::from_raw(tree_sitter_c_sharp::LANGUAGE.into_raw()().cast())
         };
-        let grammar = IdentifiedGrammar::new(
-            tree_sitter_squatter::Grammar::new(&language).unwrap(),
-            GrammarIdentity::new(&language, "json"),
+        let language = IdentifiedLanguage::new(
+            tree_sitter_squatter::Language::new(&tree_sitter_language).unwrap(),
+            LanguageIdentity::new(&tree_sitter_language, "json"),
         );
         let mut parser = tree_sitter::Parser::new();
-        parser.set_language(&language).unwrap();
+        parser.set_language(&tree_sitter_language).unwrap();
         let native = parser.parse(b"class C {}", None).unwrap();
-        let tree = tree_sitter_squatter::Tree::pack(&grammar.prepared, &native).unwrap();
-        let request = Request::new(b"test.cs".to_vec(), b"class C {}", &grammar, true, true);
+        let tree = tree_sitter_squatter::Tree::pack(&language.prepared, &native).unwrap();
+        let request = Request::new(b"test.cs".to_vec(), b"class C {}", &language, true, true);
         store
-            .publish(&request, b"class C {}", &tree, &grammar, || false)
+            .publish(&request, b"class C {}", &tree, &language, || false)
             .unwrap();
-        let expected = tree.grammar_cache().unwrap();
+        let expected = tree.language_cache().unwrap();
         assert!(!expected.is_empty());
         drop(tree);
 
         let restored = store
-            .prepare_grammar(&language, grammar.identity.hash)
+            .prepare_language(&tree_sitter_language, language.identity.hash)
             .unwrap();
         assert_eq!(restored.cache().unwrap(), expected);
-        assert!(store.get(&request, b"class C {}", &grammar).is_some());
+        assert!(store.get(&request, b"class C {}", &language).is_some());
         let mut tx = store.env.write_txn().unwrap();
         store
             .grammars
             .put(
                 &mut tx,
-                &crate::identity::grammar_key(grammar.identity.hash),
+                &crate::identity::language_key(language.identity.hash),
                 b"invalid",
             )
             .unwrap();
         tx.commit().unwrap();
         assert!(
             store
-                .prepare_grammar(&language, grammar.identity.hash)
+                .prepare_language(&tree_sitter_language, language.identity.hash)
                 .is_none()
         );
         let persistence = crate::Persistence::open(root.path(), crate::Options::default()).unwrap();
-        let rebuilt = persistence.prepare_grammar(&language, "c_sharp").unwrap();
+        let rebuilt = persistence
+            .prepare_language(&tree_sitter_language, "c_sharp")
+            .unwrap();
         assert_eq!(rebuilt.prepared.cache().unwrap(), expected);
     }
 }
@@ -494,9 +499,9 @@ impl Store {
         &self,
         request: &Request,
         source: &[u8],
-        grammar: &IdentifiedGrammar,
+        language: &IdentifiedLanguage,
     ) -> Option<tree_sitter_squatter::Tree> {
-        self.get_with_cancel(request, source, grammar, None)
+        self.get_with_cancel(request, source, language, None)
             .map(|(tree, _)| tree)
     }
 
@@ -504,7 +509,7 @@ impl Store {
         &self,
         request: &Request,
         source: &[u8],
-        grammar: &IdentifiedGrammar,
+        language: &IdentifiedLanguage,
         cancel: Option<&AtomicBool>,
     ) -> Option<(tree_sitter_squatter::Tree, bool)> {
         let tx = self.env.read_txn().ok()?;
@@ -517,7 +522,7 @@ impl Store {
         let slab = request.decode(value)?;
         // Core validation is independent of optional sidecar contents.
         let mut tree =
-            tree_sitter_squatter::Tree::from_bytes_safety_checked(&grammar.prepared, slab).ok()?;
+            tree_sitter_squatter::Tree::from_bytes_safety_checked(&language.prepared, slab).ok()?;
         if tree
             .root_node()
             .preorder()
@@ -560,17 +565,17 @@ impl Store {
         Some((tree, complete))
     }
 
-    pub fn prepare_grammar(
+    pub fn prepare_language(
         &self,
-        language: &tree_sitter::Language,
-        hash: tree_sitter_squatter::GrammarHash,
-    ) -> Option<tree_sitter_squatter::Grammar> {
+        tree_sitter_language: &tree_sitter::Language,
+        hash: tree_sitter_squatter::LanguageHash,
+    ) -> Option<tree_sitter_squatter::Language> {
         let tx = self.env.read_txn().ok()?;
         let bytes = self
             .grammars
-            .get(&tx, &crate::identity::grammar_key(hash))
+            .get(&tx, &crate::identity::language_key(hash))
             .ok()??;
-        tree_sitter_squatter::Grammar::from_cache(language, bytes).ok()
+        tree_sitter_squatter::Language::from_cache(tree_sitter_language, bytes).ok()
     }
 
     fn publication_state(
@@ -578,7 +583,7 @@ impl Store {
         request: &Request,
         source: &[u8],
         tree: &tree_sitter_squatter::Tree,
-        grammar: &IdentifiedGrammar,
+        language: &IdentifiedLanguage,
     ) -> Option<(bool, bool)> {
         let tx = self.env.read_txn().ok()?;
         if self.paths.get(&tx, &request.source_key[..32]).ok()?? != request.path
@@ -587,13 +592,13 @@ impl Store {
             return None;
         }
         let slab = request.decode(self.trees.get(&tx, &request.tree_key).ok()??)?;
-        let borrowed = tree_sitter_squatter::Tree::from_bytes_borrowed(&grammar.prepared, slab);
+        let borrowed = tree_sitter_squatter::Tree::from_bytes_borrowed(&language.prepared, slab);
         let copied;
         let existing = match &borrowed {
             Ok(tree) => &**tree,
             Err(_) => {
                 copied =
-                    tree_sitter_squatter::Tree::from_bytes_safety_checked(&grammar.prepared, slab)
+                    tree_sitter_squatter::Tree::from_bytes_safety_checked(&language.prepared, slab)
                         .ok()?;
                 &copied
             }
@@ -630,7 +635,7 @@ impl Store {
         request: &Request,
         source: &[u8],
         tree: &tree_sitter_squatter::Tree,
-        grammar: &IdentifiedGrammar,
+        language: &IdentifiedLanguage,
         cancelled: impl Fn() -> bool,
     ) -> Result<WriteOutcome, CacheError> {
         if tree.has_points() != request.points
@@ -646,7 +651,7 @@ impl Store {
         let Some(_guard) = gate(&self.writer)? else {
             return Ok(WriteOutcome::Busy);
         };
-        let existing = self.publication_state(request, source, tree, grammar);
+        let existing = self.publication_state(request, source, tree, language);
         let already_present = existing.is_some();
         let (has_presence, has_points) = existing.unwrap_or((false, false));
         if already_present && has_presence && has_points {
@@ -655,13 +660,13 @@ impl Store {
         let core_publication = if already_present {
             None
         } else {
-            let grammar_cache = tree.grammar_cache().map_err(io::Error::other)?;
+            let language_cache = tree.language_cache().map_err(io::Error::other)?;
             let slab_size = tree.compact_size();
             let prefix_size = request.header.len() + 8;
             let value_size = prefix_size
                 .checked_add(slab_size)
                 .ok_or_else(|| io::Error::other("cache entry size overflow"))?;
-            Some((grammar_cache, slab_size, prefix_size, value_size))
+            Some((language_cache, slab_size, prefix_size, value_size))
         };
         let mut tx = self.env.write_txn()?;
         let current = self.current.get(&tx, &request.source_key[..32])?;
@@ -680,7 +685,7 @@ impl Store {
         if superseded {
             return Ok(WriteOutcome::AlreadyPresent);
         }
-        if let Some((grammar_cache, slab_size, prefix_size, value_size)) = core_publication {
+        if let Some((language_cache, slab_size, prefix_size, value_size)) = core_publication {
             if let Some(path) = self.paths.get(&tx, &request.source_key[..32])?
                 && path != request.path
             {
@@ -706,8 +711,8 @@ impl Store {
                 })?;
             self.grammars.put(
                 &mut tx,
-                &crate::identity::grammar_key(grammar.identity.hash),
-                &grammar_cache,
+                &crate::identity::language_key(language.identity.hash),
+                &language_cache,
             )?;
             self.current
                 .put(&mut tx, &request.source_key[..32], &request.source_key)?;

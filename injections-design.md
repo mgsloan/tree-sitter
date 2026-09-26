@@ -63,7 +63,7 @@ impl Engine {
         &mut self,
         source: &[u8],
         line_index: &LineIndex,
-        grammar: &Grammar,
+        language: &Language,
         request: &ParseRequest,
         cancel: Option<&AtomicBool>,
     ) -> Result<tree_sitter::Tree, InjectionError>;
@@ -111,7 +111,7 @@ pub trait Registry {
 }
 
 pub struct LanguageConfig<'registry> {
-    pub grammar: &'registry Grammar,
+    pub language: &'registry Language,
     pub injections: Option<&'registry InjectionQuery>,
 }
 
@@ -163,7 +163,7 @@ pub enum InjectionError {
     UnsupportedPredicate,
     ParseFailed,
     Pack(Error),
-    // ordinary allocation/query/grammar errors omitted
+    // ordinary allocation/query/language errors omitted
 }
 ```
 

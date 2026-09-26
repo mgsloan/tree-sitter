@@ -1,6 +1,6 @@
 //! Same-build process handoff. This framing is not a durable cache format.
 use crate::{
-    CacheError, IdentifiedGrammar, LoadedFile, LoadedTree, PendingWrite, Persistence,
+    CacheError, IdentifiedLanguage, LoadedFile, LoadedTree, PendingWrite, Persistence,
     identity::Request,
 };
 use std::io::{self, Read, Write};
@@ -45,7 +45,7 @@ impl PendingWrite {
 
 impl Persistence {
     /// Receive bounded publication work from a trusted same-build producer.
-    /// Checks path, captured-byte identity, grammar/runtime/representation, and
+    /// Checks path, captured-byte identity, language/runtime/representation, and
     /// structural tree safety before allowing publication. Does not reparse or
     /// read the current source contents; later edits remain separate generations.
     /// Reads exactly one frame without waiting for EOF, leaving subsequent bytes
@@ -53,7 +53,7 @@ impl Persistence {
     pub fn read_transfer(
         &self,
         mut input: impl Read,
-        grammar: &IdentifiedGrammar,
+        language: &IdentifiedLanguage,
         max_bytes: usize,
     ) -> Result<PendingWrite, CacheError> {
         if max_bytes < PREFIX_LEN {
@@ -99,7 +99,7 @@ impl Persistence {
         let mut request = Request::new(
             path.to_vec(),
             &source,
-            grammar,
+            language,
             self.options.symbol_presence,
             self.options.points,
         );
@@ -107,7 +107,7 @@ impl Persistence {
             return Err(invalid().into());
         }
         let mut tree = tree_sitter_squatter::Tree::from_bytes_safety_checked(
-            &grammar.prepared,
+            &language.prepared,
             &bytes[path_len + source_len..],
         )
         .map_err(io::Error::other)?;
@@ -138,7 +138,7 @@ impl Persistence {
         let request = Arc::new(request);
         Ok(PendingWrite {
             store: Some(store.clone()),
-            grammar: grammar.clone(),
+            language: language.clone(),
             file: LoadedFile {
                 source,
                 tree: LoadedTree::Owned(Arc::new(tree)),

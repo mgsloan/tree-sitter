@@ -1,4 +1,4 @@
-use crate::{Error, Grammar, PackContext, PackOptions, Tree, native::NativeParser};
+use crate::{Error, Language, PackContext, PackOptions, Tree, native::NativeParser};
 use tree_sitter::Point;
 
 /// Direct-parser failure, including its owned diagnostic and source position.
@@ -33,9 +33,9 @@ impl From<Error> for ParseError {
     }
 }
 
-/// Reusable direct parser retaining its grammar and worker-local scratch.
+/// Reusable direct parser retaining its language and worker-local scratch.
 ///
-/// Requires an ABI 15 grammar without external scanners or nonterminal extras.
+/// Requires an ABI 15 language without external scanners or nonterminal extras.
 /// Syntax errors are returned rather than recovered; no mainline tree is built.
 /// Raw reductions are buffered for the whole parse before column encoding.
 /// Output trees own their storage and remain valid across reuse or parser drop.
@@ -45,10 +45,10 @@ pub struct Parser {
 }
 
 impl Parser {
-    /// Reuses the grammar's shared direct-parser tables, preparing them on first use.
-    pub fn new(grammar: &Grammar) -> Result<Self, ParseError> {
+    /// Reuses the language's shared direct-parser tables, preparing them on first use.
+    pub fn new(language: &Language) -> Result<Self, ParseError> {
         Ok(Self {
-            native: NativeParser::new(grammar)?,
+            native: NativeParser::new(language)?,
             pack: PackContext::new()?,
         })
     }
@@ -67,10 +67,10 @@ impl Parser {
         let (nodes, root) = reductions.nodes();
         Ok(self
             .pack
-            .pack_reductions(reductions.grammar(), nodes, root, options)?)
+            .pack_reductions(reductions.language(), nodes, root, options)?)
     }
 
-    /// Release high-water scratch while retaining the prepared grammar.
+    /// Release high-water scratch while retaining the prepared language.
     pub fn trim(&mut self) {
         self.native.trim();
         self.pack.trim();
@@ -80,15 +80,15 @@ impl Parser {
 impl Tree {
     /// Parse directly into reverse preorder without constructing a mainline tree.
     /// Use [`Parser`] to reuse scratch across documents.
-    pub fn parse_direct(grammar: &Grammar, source: impl AsRef<[u8]>) -> Result<Self, ParseError> {
-        Self::parse_direct_with_options(grammar, source, PackOptions::default())
+    pub fn parse_direct(language: &Language, source: impl AsRef<[u8]>) -> Result<Self, ParseError> {
+        Self::parse_direct_with_options(language, source, PackOptions::default())
     }
 
     pub fn parse_direct_with_options(
-        grammar: &Grammar,
+        language: &Language,
         source: impl AsRef<[u8]>,
         options: PackOptions,
     ) -> Result<Self, ParseError> {
-        Parser::new(grammar)?.parse_with_options(source, options)
+        Parser::new(language)?.parse_with_options(source, options)
     }
 }

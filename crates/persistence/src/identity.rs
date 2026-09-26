@@ -1,50 +1,55 @@
 // Prototype formats stay at version 0; no persisted data needs backward compatibility.
 use std::path::{Component, Path, PathBuf};
-use tree_sitter_squatter::GrammarHash;
+use tree_sitter_squatter::LanguageHash;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct GrammarVersion {
+pub struct LanguageVersion {
     pub major: u8,
     pub minor: u8,
     pub patch: u8,
 }
 
-/// Grammar identity and the hash used to validate cached tables.
+/// Language identity and the hash used to validate cached tables.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct GrammarIdentity {
+pub struct LanguageIdentity {
     pub name: String,
-    pub version: Option<GrammarVersion>,
-    pub hash: GrammarHash,
+    pub version: Option<LanguageVersion>,
+    pub hash: LanguageHash,
 }
 
-impl GrammarIdentity {
-    pub fn new(language: &tree_sitter::Language, fallback_name: &str) -> Self {
-        Self::with_fallback_version(language, fallback_name, None)
+impl LanguageIdentity {
+    pub fn new(tree_sitter_language: &tree_sitter::Language, fallback_name: &str) -> Self {
+        Self::with_fallback_version(tree_sitter_language, fallback_name, None)
     }
 
     pub fn new_with_version(
-        language: &tree_sitter::Language,
+        tree_sitter_language: &tree_sitter::Language,
         fallback_name: &str,
-        fallback_version: GrammarVersion,
+        fallback_version: LanguageVersion,
     ) -> Self {
-        Self::with_fallback_version(language, fallback_name, Some(fallback_version))
+        Self::with_fallback_version(tree_sitter_language, fallback_name, Some(fallback_version))
     }
 
     fn with_fallback_version(
-        language: &tree_sitter::Language,
+        tree_sitter_language: &tree_sitter::Language,
         fallback_name: &str,
-        fallback_version: Option<GrammarVersion>,
+        fallback_version: Option<LanguageVersion>,
     ) -> Self {
-        let version = language.metadata().map(|metadata| GrammarVersion {
-            major: metadata.major_version,
-            minor: metadata.minor_version,
-            patch: metadata.patch_version,
-        });
+        let version = tree_sitter_language
+            .metadata()
+            .map(|metadata| LanguageVersion {
+                major: metadata.major_version,
+                minor: metadata.minor_version,
+                patch: metadata.patch_version,
+            });
         Self {
-            name: language.name().unwrap_or(fallback_name).to_owned(),
+            name: tree_sitter_language
+                .name()
+                .unwrap_or(fallback_name)
+                .to_owned(),
             version: version.or(fallback_version),
-            hash: tree_sitter_squatter::grammar_hash(
-                language,
+            hash: tree_sitter_squatter::language_hash(
+                tree_sitter_language,
                 fallback_name,
                 fallback_version.map(|version| [version.major, version.minor, version.patch]),
             ),
@@ -53,19 +58,19 @@ impl GrammarIdentity {
 }
 
 #[derive(Clone)]
-pub struct IdentifiedGrammar {
-    pub(crate) prepared: tree_sitter_squatter::Grammar,
-    pub(crate) identity: GrammarIdentity,
+pub struct IdentifiedLanguage {
+    pub(crate) prepared: tree_sitter_squatter::Language,
+    pub(crate) identity: LanguageIdentity,
 }
 
-impl IdentifiedGrammar {
-    /// Pair a prepared grammar with its identity.
-    /// Use `Persistence::prepare_grammar` to restore persisted tables.
-    pub fn new(prepared: tree_sitter_squatter::Grammar, identity: GrammarIdentity) -> Self {
+impl IdentifiedLanguage {
+    /// Pair a prepared language with its identity.
+    /// Use `Persistence::prepare_language` to restore persisted tables.
+    pub fn new(prepared: tree_sitter_squatter::Language, identity: LanguageIdentity) -> Self {
         Self { prepared, identity }
     }
 
-    pub fn identity(&self) -> &GrammarIdentity {
+    pub fn identity(&self) -> &LanguageIdentity {
         &self.identity
     }
 }
@@ -102,7 +107,7 @@ pub(crate) fn runtime() -> [u8; 32] {
     std::array::from_fn(|i| nibble(hex[2 * i]) * 16 + nibble(hex[2 * i + 1]))
 }
 
-pub(crate) fn grammar_key(hash: GrammarHash) -> [u8; 40] {
+pub(crate) fn language_key(hash: LanguageHash) -> [u8; 40] {
     let mut key = [0; 40];
     key[..8].copy_from_slice(&hash.0.to_le_bytes());
     key[8..].copy_from_slice(&runtime());
@@ -132,7 +137,7 @@ impl Request {
     pub fn new(
         path: Vec<u8>,
         source: &[u8],
-        grammar: &IdentifiedGrammar,
+        language: &IdentifiedLanguage,
         presence: bool,
         points: bool,
     ) -> Self {
@@ -142,7 +147,7 @@ impl Request {
         source_key[32..40].copy_from_slice(&(source.len() as u64).to_le_bytes());
         source_key[40..].copy_from_slice(blake3::hash(source).as_bytes());
         let mut identity = Vec::new();
-        identity.extend_from_slice(&grammar.identity.hash.0.to_le_bytes());
+        identity.extend_from_slice(&language.identity.hash.0.to_le_bytes());
         identity.extend_from_slice(&runtime());
         identity.extend_from_slice(&representation());
         let variant = digest("tree-squatter cache variant v0", &identity);
@@ -185,37 +190,37 @@ mod tests {
     use super::*;
 
     #[test]
-    fn grammar_identity_covers_old_and_new_abi_tables() {
+    fn language_identity_covers_old_and_new_abi_tables() {
         let json = unsafe {
             tree_sitter::Language::from_raw(tree_sitter_json::LANGUAGE.into_raw()().cast())
         };
         let c_sharp = unsafe {
             tree_sitter::Language::from_raw(tree_sitter_c_sharp::LANGUAGE.into_raw()().cast())
         };
-        let old = GrammarIdentity::new(&json, "json");
-        let new = GrammarIdentity::new(&c_sharp, "c_sharp");
+        let old = LanguageIdentity::new(&json, "json");
+        let new = LanguageIdentity::new(&c_sharp, "c_sharp");
         assert_eq!(old.name, "json");
         assert_eq!(old.version, None);
         assert_eq!(Some(new.name.as_str()), c_sharp.name());
         assert!(new.version.is_some());
-        assert_eq!(old, GrammarIdentity::new(&json, "json"));
-        assert_ne!(old.hash, GrammarIdentity::new(&json, "other_json").hash);
+        assert_eq!(old, LanguageIdentity::new(&json, "json"));
+        assert_ne!(old.hash, LanguageIdentity::new(&json, "other_json").hash);
         assert_ne!(old.hash, new.hash);
 
-        let fallback_version = GrammarVersion {
+        let fallback_version = LanguageVersion {
             major: 1,
             minor: 2,
             patch: 3,
         };
-        let versioned = GrammarIdentity::new_with_version(&json, "json", fallback_version);
+        let versioned = LanguageIdentity::new_with_version(&json, "json", fallback_version);
         assert_eq!(versioned.version, Some(fallback_version));
         assert_ne!(versioned.hash, old.hash);
         assert_ne!(
             versioned.hash,
-            GrammarIdentity::new_with_version(
+            LanguageIdentity::new_with_version(
                 &json,
                 "json",
-                GrammarVersion {
+                LanguageVersion {
                     patch: 4,
                     ..fallback_version
                 }
@@ -224,7 +229,7 @@ mod tests {
         );
         assert_eq!(
             new,
-            GrammarIdentity::new_with_version(&c_sharp, "ignored", fallback_version)
+            LanguageIdentity::new_with_version(&c_sharp, "ignored", fallback_version)
         );
     }
 

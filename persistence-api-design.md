@@ -136,45 +136,45 @@ pub enum ReadPolicy {
     PreferTransactionBacked,
 }
 
-// Provider-supplied identity must cover all behavior-affecting grammar inputs.
+// Provider-supplied identity must cover all behavior-affecting language inputs.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct GrammarFingerprint {
+pub struct LanguageFingerprint {
     bytes: Arc<[u8]>,
 }
 
-impl GrammarFingerprint {
+impl LanguageFingerprint {
     pub fn from_bytes(bytes: impl Into<Arc<[u8]>>) -> Self;
 }
 
 #[derive(Clone)]
-pub struct Grammar {
+pub struct Language {
     language: tree_sitter::Language,
-    packed: tree_sitter_squatter::Grammar,
-    fingerprint: GrammarFingerprint,
+    packed: tree_sitter_squatter::Language,
+    fingerprint: LanguageFingerprint,
 }
 
 impl Cache {
     pub fn open(root: impl AsRef<Path>, options: CacheOptions) -> io::Result<Arc<Self>>;
     pub fn loader(self: &Arc<Self>) -> Loader;
-    pub fn grammar(
+    pub fn language(
         &self,
         language: &tree_sitter::Language,
-        fingerprint: GrammarFingerprint,
-    ) -> Result<Grammar, tree_sitter_squatter::Error>;
+        fingerprint: LanguageFingerprint,
+    ) -> Result<Language, tree_sitter_squatter::Error>;
 }
 
 impl Loader {
     pub async fn load<S: Source>(
         &self,
         source: &mut S,
-        grammar: &Grammar,
+        language: &Language,
         options: LoadOptions<'_>,
     ) -> Result<LoadResult, LoadError>;
 
     pub async fn unchecked_load<S: Source>(
         &self,
         source: &mut S,
-        grammar: &Grammar,
+        language: &Language,
         options: LoadOptions<'_>,
     ) -> Result<Option<UncheckedTree>, LoadError>;
 
@@ -202,7 +202,7 @@ pub enum LoadResult {
 
 #[must_use]
 pub struct UncheckedTree {
-    grammar: Grammar,
+    language: Language,
     features: TreeFeatures,
     source_identity: SourceIdentity,
     tree: BackedTree,
@@ -214,7 +214,7 @@ impl UncheckedTree {
 
 #[must_use]
 pub struct CacheMiss {
-    grammar: Grammar,
+    language: Language,
     features: TreeFeatures,
     source_identity: SourceIdentity,
 }
@@ -253,7 +253,7 @@ pub struct CacheWrite {
     cache: Arc<Cache>,
     path: PathBuf,
     metadata: FileMetadata,
-    grammar_fingerprint: GrammarFingerprint,
+    language_fingerprint: LanguageFingerprint,
     features: TreeFeatures,
     source_identity: SourceIdentity,
     preprocessing: PreprocessingInfo,

@@ -11,7 +11,7 @@ mod snapshot;
 mod store;
 mod transfer;
 mod work;
-pub use identity::{GrammarIdentity, GrammarVersion, IdentifiedGrammar};
+pub use identity::{IdentifiedLanguage, LanguageIdentity, LanguageVersion};
 pub use maintenance::{
     EvictionOutcome, Maintenance, MaintenanceProgress, MaintenanceState, MissingSweep, SidecarKind,
 };
@@ -212,7 +212,7 @@ pub enum LoadStep {
 pub struct PendingLoad {
     request: Arc<Request>,
     source: Arc<[u8]>,
-    grammar: IdentifiedGrammar,
+    language: IdentifiedLanguage,
     store: Option<Arc<Store>>,
     pack: tree_sitter_squatter::PackOptions,
     write: WritePolicy,
@@ -225,8 +225,8 @@ pub struct LoadResult {
     pub pending_write: Option<PendingWrite>,
 }
 
-/// Per-worker parser and lazy packing scratch. Reuses grammar-derived tables
-/// and scratch across grammar changes; cache hits do not allocate a packing context.
+/// Per-worker parser and lazy packing scratch. Reuses language-derived tables
+/// and scratch across language changes; cache hits do not allocate a packing context.
 pub struct LoadContext {
     parser: tree_sitter::Parser,
     packing: Option<tree_sitter_squatter::PackContext>,
@@ -241,7 +241,7 @@ impl Default for LoadContext {
 }
 
 impl LoadContext {
-    /// Release packing scratch while keeping the parser and prepared grammar.
+    /// Release packing scratch while keeping the parser and prepared language.
     pub fn trim(&mut self) {
         if let Some(packing) = &mut self.packing {
             packing.trim();
@@ -253,7 +253,7 @@ impl LoadContext {
 pub struct PendingWrite {
     store: Option<Arc<Store>>,
     request: Arc<Request>,
-    grammar: IdentifiedGrammar,
+    language: IdentifiedLanguage,
     file: LoadedFile,
 }
 impl PendingWrite {
@@ -279,7 +279,7 @@ impl PendingWrite {
             &self.request,
             self.file.source(),
             self.file.tree(),
-            &self.grammar,
+            &self.language,
             || cancel.load(Ordering::Relaxed),
         )
     }
@@ -293,40 +293,44 @@ pub struct Persistence {
 impl Persistence {
     /// Prepare shared tables, restoring the expensive dictionary directly from
     /// an LMDB read transaction when available. No transaction is retained.
-    pub fn prepare_grammar(
+    pub fn prepare_language(
         &self,
-        language: &tree_sitter::Language,
+        tree_sitter_language: &tree_sitter::Language,
         fallback_name: &str,
-    ) -> Result<IdentifiedGrammar, tree_sitter_squatter::Error> {
-        let identity = GrammarIdentity::new(language, fallback_name);
-        self.prepare_identified_grammar(language, identity)
+    ) -> Result<IdentifiedLanguage, tree_sitter_squatter::Error> {
+        let identity = LanguageIdentity::new(tree_sitter_language, fallback_name);
+        self.prepare_identified_language(tree_sitter_language, identity)
     }
 
-    /// Prepare a grammar with a version fallback for parsers without metadata.
-    pub fn prepare_grammar_with_version(
+    /// Prepare a language with a version fallback for parsers without metadata.
+    pub fn prepare_language_with_version(
         &self,
-        language: &tree_sitter::Language,
+        tree_sitter_language: &tree_sitter::Language,
         fallback_name: &str,
-        fallback_version: GrammarVersion,
-    ) -> Result<IdentifiedGrammar, tree_sitter_squatter::Error> {
-        let identity = GrammarIdentity::new_with_version(language, fallback_name, fallback_version);
-        self.prepare_identified_grammar(language, identity)
+        fallback_version: LanguageVersion,
+    ) -> Result<IdentifiedLanguage, tree_sitter_squatter::Error> {
+        let identity = LanguageIdentity::new_with_version(
+            tree_sitter_language,
+            fallback_name,
+            fallback_version,
+        );
+        self.prepare_identified_language(tree_sitter_language, identity)
     }
 
-    fn prepare_identified_grammar(
+    fn prepare_identified_language(
         &self,
-        language: &tree_sitter::Language,
-        identity: GrammarIdentity,
-    ) -> Result<IdentifiedGrammar, tree_sitter_squatter::Error> {
+        tree_sitter_language: &tree_sitter::Language,
+        identity: LanguageIdentity,
+    ) -> Result<IdentifiedLanguage, tree_sitter_squatter::Error> {
         let prepared = match self
             .store
             .as_ref()
-            .and_then(|store| store.prepare_grammar(language, identity.hash))
+            .and_then(|store| store.prepare_language(tree_sitter_language, identity.hash))
         {
             Some(prepared) => prepared,
-            None => tree_sitter_squatter::Grammar::new(language)?,
+            None => tree_sitter_squatter::Language::new(tree_sitter_language)?,
         };
-        Ok(IdentifiedGrammar::new(prepared, identity))
+        Ok(IdentifiedLanguage::new(prepared, identity))
     }
 
     pub fn sweep_missing(&self) -> Option<MissingSweep> {
@@ -385,7 +389,7 @@ impl Persistence {
     pub fn load(
         &self,
         path: &Path,
-        grammar: &IdentifiedGrammar,
+        language: &IdentifiedLanguage,
         parser: &mut tree_sitter::Parser,
     ) -> Result<LoadedFile, LoadError> {
         let options = LoadOptions {
@@ -396,29 +400,31 @@ impl Persistence {
             },
             ..LoadOptions::default()
         };
-        Ok(self.load_with_options(path, grammar, parser, options)?.file)
+        Ok(self
+            .load_with_options(path, language, parser, options)?
+            .file)
     }
 
     pub fn load_with_options(
         &self,
         path: &Path,
-        grammar: &IdentifiedGrammar,
+        language: &IdentifiedLanguage,
         parser: &mut tree_sitter::Parser,
         options: LoadOptions<'_>,
     ) -> Result<LoadResult, LoadError> {
-        self.load_impl(path, grammar, parser, options, None)
+        self.load_impl(path, language, parser, options, None)
     }
 
     pub fn load_with_context(
         &self,
         path: &Path,
-        grammar: &IdentifiedGrammar,
+        language: &IdentifiedLanguage,
         context: &mut LoadContext,
         options: LoadOptions<'_>,
     ) -> Result<LoadResult, LoadError> {
         self.load_impl(
             path,
-            grammar,
+            language,
             &mut context.parser,
             options,
             Some(&mut context.packing),
@@ -428,12 +434,12 @@ impl Persistence {
     fn load_impl(
         &self,
         path: &Path,
-        grammar: &IdentifiedGrammar,
+        language: &IdentifiedLanguage,
         parser: &mut tree_sitter::Parser,
         options: LoadOptions<'_>,
         mut packing: Option<&mut Option<tree_sitter_squatter::PackContext>>,
     ) -> Result<LoadResult, LoadError> {
-        let mut pending = self.capture(path, grammar, &options)?;
+        let mut pending = self.capture(path, language, &options)?;
         let started = std::time::Instant::now();
         loop {
             let cooperate = started.elapsed() < self.options.cooperation_wait;
@@ -456,11 +462,11 @@ impl Persistence {
     pub fn load_step(
         &self,
         path: &Path,
-        grammar: &IdentifiedGrammar,
+        language: &IdentifiedLanguage,
         parser: &mut tree_sitter::Parser,
         options: LoadOptions<'_>,
     ) -> Result<LoadStep, LoadError> {
-        self.capture(path, grammar, &options)?
+        self.capture(path, language, &options)?
             .resume(parser, options.cancel)
     }
 
@@ -468,18 +474,18 @@ impl Persistence {
     pub fn load_step_with_context(
         &self,
         path: &Path,
-        grammar: &IdentifiedGrammar,
+        language: &IdentifiedLanguage,
         context: &mut LoadContext,
         options: LoadOptions<'_>,
     ) -> Result<LoadStep, LoadError> {
-        self.capture(path, grammar, &options)?
+        self.capture(path, language, &options)?
             .resume_with_context(context, options.cancel)
     }
 
     fn capture(
         &self,
         path: &Path,
-        grammar: &IdentifiedGrammar,
+        language: &IdentifiedLanguage,
         options: &LoadOptions<'_>,
     ) -> Result<PendingLoad, LoadError> {
         let (path, encoded) = identity::path(path)?;
@@ -524,8 +530,13 @@ impl Persistence {
         }
         let source: Arc<[u8]> = source.into();
         let pack = options.pack;
-        let mut request =
-            Request::new(encoded, &source, grammar, pack.symbol_presence, pack.points);
+        let mut request = Request::new(
+            encoded,
+            &source,
+            language,
+            pack.symbol_presence,
+            pack.points,
+        );
         // Symlinked files outside the project can be read but are not persisted.
         let persistable = source_path
             .canonicalize()
@@ -537,7 +548,7 @@ impl Persistence {
         Ok(PendingLoad {
             request: Arc::new(request),
             source,
-            grammar: grammar.clone(),
+            language: language.clone(),
             store: store.cloned(),
             pack,
             write: options.write,
@@ -615,12 +626,12 @@ impl PendingLoad {
             store.as_ref().and_then(|store| {
                 if self.read == ReadPolicy::PreferTransactionBacked
                     && let Some((tree, complete)) =
-                        snapshot::get(store, &self.request, &self.source, &self.grammar, cancel)
+                        snapshot::get(store, &self.request, &self.source, &self.language, cancel)
                 {
                     return Some((LoadedTree::Backed(Arc::new(tree)), complete));
                 }
                 store
-                    .get_with_cancel(&self.request, &self.source, &self.grammar, cancel)
+                    .get_with_cancel(&self.request, &self.source, &self.language, cancel)
                     .map(|(tree, complete)| (LoadedTree::Owned(Arc::new(tree)), complete))
             })
         };
@@ -639,7 +650,7 @@ impl PendingLoad {
                 .map(|store| PendingWrite {
                     store: Some(store.clone()),
                     request: self.request.clone(),
-                    grammar: self.grammar.clone(),
+                    language: self.language.clone(),
                     file: file.clone(),
                 });
             if self.write == WritePolicy::Inline {
@@ -681,7 +692,7 @@ impl PendingLoad {
         }
         parser.reset();
         parser
-            .set_language(&self.grammar.prepared.language())
+            .set_language(&self.language.prepared.tree_sitter_language())
             .map_err(LoadError::Language)?;
         parser
             .set_included_ranges(&[])
@@ -711,13 +722,14 @@ impl PendingLoad {
             if packing.is_none() {
                 *packing = Some(tree_sitter_squatter::PackContext::new().map_err(LoadError::Pack)?);
             }
-            packing
-                .as_mut()
-                .unwrap()
-                .pack_with_options(&self.grammar.prepared, &tree, pack_options)
+            packing.as_mut().unwrap().pack_with_options(
+                &self.language.prepared,
+                &tree,
+                pack_options,
+            )
         } else {
             tree_sitter_squatter::Tree::pack_with_options(
-                &self.grammar.prepared,
+                &self.language.prepared,
                 &tree,
                 pack_options,
             )
@@ -737,7 +749,7 @@ impl PendingLoad {
             (WritePolicy::Transfer, _) | (_, Some(_)) => Some(PendingWrite {
                 store: store.clone(),
                 request: self.request,
-                grammar: self.grammar.clone(),
+                language: self.language.clone(),
                 file: file.clone(),
             }),
             (_, None) => None,

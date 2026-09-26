@@ -47,13 +47,13 @@ fn tracked(bytes: &[u8], misaligned: bool, drops: Arc<AtomicUsize>) -> TrackedSl
 
 #[test]
 fn owned_slab_retains_storage_and_releases_it_on_all_outcomes() {
-    let language = language();
-    let grammar = tree_sitter_squatter::Grammar::new(&language).unwrap();
-    let tree = pack(&language, "[42]", false);
+    let tree_sitter_language = tree_sitter_language();
+    let language = tree_sitter_squatter::Language::new(&tree_sitter_language).unwrap();
+    let tree = pack(&tree_sitter_language, "[42]", false);
     let drops = Arc::new(AtomicUsize::new(0));
     let owner = tracked(tree.as_bytes(), false, drops.clone());
     let address = tree_sitter_squatter::StableSlab::bytes(&owner).as_ptr();
-    let backed = Tree::from_owned_slab(&grammar, owner).unwrap();
+    let backed = Tree::from_owned_slab(&language, owner).unwrap();
     assert_eq!(backed.as_bytes().as_ptr(), address);
     assert_eq!(drops.load(Ordering::Relaxed), 0);
     let detached = backed.detach().unwrap();
@@ -62,23 +62,23 @@ fn owned_slab_retains_storage_and_releases_it_on_all_outcomes() {
     assert_eq!(drops.load(Ordering::Relaxed), 1);
     assert_eq!(detached.root_node().kind(), "document");
     assert!(
-        Tree::from_owned_slab(&grammar, tracked(tree.as_bytes(), true, drops.clone())).is_err()
+        Tree::from_owned_slab(&language, tracked(tree.as_bytes(), true, drops.clone())).is_err()
     );
     assert_eq!(drops.load(Ordering::Relaxed), 2);
-    assert!(Tree::from_owned_slab(&grammar, tracked(b"invalid", false, drops.clone())).is_err());
+    assert!(Tree::from_owned_slab(&language, tracked(b"invalid", false, drops.clone())).is_err());
     assert_eq!(drops.load(Ordering::Relaxed), 3);
 }
 
-fn language() -> tree_sitter::Language {
+fn tree_sitter_language() -> tree_sitter::Language {
     unsafe { tree_sitter::Language::from_raw(tree_sitter_json::LANGUAGE.into_raw()().cast()) }
 }
 
-fn pack(language: &tree_sitter::Language, source: &str, presence: bool) -> Tree {
-    let grammar = tree_sitter_squatter::Grammar::new(language).unwrap();
+fn pack(tree_sitter_language: &tree_sitter::Language, source: &str, presence: bool) -> Tree {
+    let language = tree_sitter_squatter::Language::new(tree_sitter_language).unwrap();
     let mut parser = tree_sitter::Parser::new();
-    parser.set_language(language).unwrap();
+    parser.set_language(tree_sitter_language).unwrap();
     Tree::pack_with_options(
-        &grammar,
+        &language,
         &parser.parse(source, None).unwrap(),
         PackOptions {
             repack: true,
@@ -91,16 +91,16 @@ fn pack(language: &tree_sitter::Language, source: &str, presence: bool) -> Tree 
 
 #[test]
 fn presence_sidecar_is_separate_and_debug_loading_checks_membership() {
-    let language = language();
-    let grammar = tree_sitter_squatter::Grammar::new(&language).unwrap();
+    let tree_sitter_language = tree_sitter_language();
+    let language = tree_sitter_squatter::Language::new(&tree_sitter_language).unwrap();
     let source = format!("[{}0]", "1,".repeat(4096));
-    let original = pack(&language, &source, true);
-    let without = pack(&language, &source, false);
+    let original = pack(&tree_sitter_language, &source, true);
+    let without = pack(&tree_sitter_language, &source, false);
     assert_eq!(original.as_bytes(), without.as_bytes());
     let cache = original.presence_cache().unwrap();
     let mut corrupted = cache.as_bytes().to_vec();
     corrupted[16..].fill(0);
-    let loaded = Tree::from_bytes_safety_checked(&grammar, original.as_bytes()).unwrap();
+    let loaded = Tree::from_bytes_safety_checked(&language, original.as_bytes()).unwrap();
     assert!(!loaded.has_points());
     assert!(loaded.presence_cache().is_none());
     assert_eq!(
@@ -114,29 +114,31 @@ fn presence_sidecar_is_separate_and_debug_loading_checks_membership() {
 
 #[test]
 fn safety_loader_rejects_truncated_sections_and_invalid_headers() {
-    let language = language();
-    let grammar = tree_sitter_squatter::Grammar::new(&language).unwrap();
-    let original = pack(&language, "{\"key\": [true, 42]}", true);
+    let tree_sitter_language = tree_sitter_language();
+    let language = tree_sitter_squatter::Language::new(&tree_sitter_language).unwrap();
+    let original = pack(&tree_sitter_language, "{\"key\": [true, 42]}", true);
     for length in 0..original.as_bytes().len() {
-        assert!(Tree::from_bytes_safety_checked(&grammar, &original.as_bytes()[..length]).is_err());
+        assert!(
+            Tree::from_bytes_safety_checked(&language, &original.as_bytes()[..length]).is_err()
+        );
     }
     for (offset, value) in [(0, 0), (4, 0), (8, u32::MAX), (12, 257)] {
         let mut bytes = original.as_bytes().to_vec();
         bytes[offset..offset + 4].copy_from_slice(&value.to_ne_bytes());
-        assert!(Tree::from_bytes_safety_checked(&grammar, &bytes).is_err());
+        assert!(Tree::from_bytes_safety_checked(&language, &bytes).is_err());
     }
 }
 
 #[test]
 fn copied_loaders_handle_trees_deeper_than_inline_validation_storage() {
-    let language = language();
-    let grammar = tree_sitter_squatter::Grammar::new(&language).unwrap();
+    let tree_sitter_language = tree_sitter_language();
+    let language = tree_sitter_squatter::Language::new(&tree_sitter_language).unwrap();
     let source = format!("{}0{}", "[".repeat(128), "]".repeat(128));
-    let original = pack(&language, &source, false);
+    let original = pack(&tree_sitter_language, &source, false);
     let nodes = original.root_node().preorder().count();
     for loaded in [
-        Tree::from_bytes(&grammar, original.as_bytes()).unwrap(),
-        Tree::from_bytes_safety_checked(&grammar, original.as_bytes()).unwrap(),
+        Tree::from_bytes(&language, original.as_bytes()).unwrap(),
+        Tree::from_bytes_safety_checked(&language, original.as_bytes()).unwrap(),
     ] {
         assert_eq!(loaded.root_node().preorder().count(), nodes);
         assert_eq!(loaded.as_bytes(), original.as_bytes());
@@ -145,16 +147,16 @@ fn copied_loaders_handle_trees_deeper_than_inline_validation_storage() {
 
 #[test]
 fn mutated_slabs_are_rejected_or_support_bounded_traversal() {
-    let language = language();
-    let grammar = tree_sitter_squatter::Grammar::new(&language).unwrap();
-    let original = pack(&language, "{\"key\": [true, 42]}", false);
+    let tree_sitter_language = tree_sitter_language();
+    let language = tree_sitter_squatter::Language::new(&tree_sitter_language).unwrap();
+    let original = pack(&tree_sitter_language, "{\"key\": [true, 42]}", false);
     let mut state = 42u32;
     for trial in 0..512 {
         let mut bytes = original.as_bytes().to_vec();
         state = state.wrapping_mul(1664525).wrapping_add(1013904223);
         let index = state as usize % bytes.len();
         bytes[index] ^= 1 << (trial % 8);
-        let Ok(tree) = Tree::from_bytes_safety_checked(&grammar, &bytes) else {
+        let Ok(tree) = Tree::from_bytes_safety_checked(&language, &bytes) else {
             continue;
         };
         for (count, node) in tree.root_node().preorder().nodes().enumerate() {
@@ -173,11 +175,11 @@ fn mutated_slabs_are_rejected_or_support_bounded_traversal() {
 
 #[test]
 fn shared_grammars_support_concurrent_packing_and_outlive_handles() {
-    let json = tree_sitter_squatter::Grammar::new(&language()).unwrap();
+    let json = tree_sitter_squatter::Language::new(&tree_sitter_language()).unwrap();
     let c_sharp_language = unsafe {
         tree_sitter::Language::from_raw(tree_sitter_c_sharp::LANGUAGE.into_raw()().cast())
     };
-    let c_sharp = tree_sitter_squatter::Grammar::new(&c_sharp_language).unwrap();
+    let c_sharp = tree_sitter_squatter::Language::new(&c_sharp_language).unwrap();
     let workers: Vec<_> = (0..4)
         .map(|_| {
             let json = json.clone();
@@ -187,13 +189,15 @@ fn shared_grammars_support_concurrent_packing_and_outlive_handles() {
                 let mut context = tree_sitter_squatter::PackContext::new().unwrap();
                 let mut retained = Vec::new();
                 for _ in 0..4 {
-                    for (grammar, source) in
+                    for (language, source) in
                         [(&json, "{\"a\": [1, 2]}"), (&c_sharp, "class C { int x; }")]
                     {
-                        parser.set_language(&grammar.language()).unwrap();
+                        parser
+                            .set_language(&language.tree_sitter_language())
+                            .unwrap();
                         let native = parser.parse(source, None).unwrap();
-                        let tree = context.pack(grammar, &native).unwrap();
-                        let reference = Tree::pack(grammar, &native).unwrap();
+                        let tree = context.pack(language, &native).unwrap();
+                        let reference = Tree::pack(language, &native).unwrap();
                         assert_eq!(tree.as_bytes(), reference.as_bytes());
                         retained.push(tree);
                     }

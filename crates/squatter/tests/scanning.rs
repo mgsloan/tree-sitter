@@ -3,7 +3,7 @@ mod support;
 use std::collections::HashSet;
 use tree_sitter::Point;
 use tree_squatter::{
-    FieldId, FieldSet, Grammar, GrammarKindId, KindId, KindSet, Node, PackOptions, Tree,
+    FieldId, FieldSet, GrammarKindId, KindId, KindSet, Language, Node, PackOptions, Tree,
     scan::{GroupScan, Scan},
 };
 
@@ -23,7 +23,7 @@ fn parse(
 ) -> (tree_sitter::Tree, Tree) {
     let native = parse_native(language, source);
     let packed =
-        Tree::pack_with_options(&Grammar::new(language).unwrap(), &native, options).unwrap();
+        Tree::pack_with_options(&Language::new(language).unwrap(), &native, options).unwrap();
     (native, packed)
 }
 
@@ -277,7 +277,7 @@ fn ranges_filters_waste_and_storage_variants() {
             );
             check_ranges(&tree, source.len());
             let compact = tree.repack().unwrap();
-            let grammar = Grammar::new(&language).unwrap();
+            let grammar = Language::new(&language).unwrap();
             let borrowed = Tree::from_bytes_borrowed(&grammar, compact.as_bytes()).unwrap();
             check_ranges(&borrowed, source.len());
         }
@@ -733,7 +733,7 @@ fn range_and_position_relations() {
                 },
             );
             let compact = tree.repack().unwrap();
-            let grammar = Grammar::new(&language).unwrap();
+            let grammar = Language::new(&language).unwrap();
             let borrowed = Tree::from_bytes_borrowed(&grammar, compact.as_bytes()).unwrap();
             for tree in [&tree, &borrowed] {
                 let roots = reference_preorder(tree.root_node());
@@ -856,7 +856,7 @@ fn dense_id_filters() {
     let language = json_language();
     let (_, tree) = parse(&language, &source, PackOptions::default());
     let root = tree.root_node();
-    let grammar = Grammar::new(&language).unwrap();
+    let grammar = Language::new(&language).unwrap();
     let nodes = reference_preorder(root);
     let kinds = nodes
         .iter()
@@ -914,7 +914,7 @@ fn dense_id_filters() {
 #[test]
 fn sparse_kind_filters() {
     let language = json_language();
-    let grammar = Grammar::new(&language).unwrap();
+    let grammar = Language::new(&language).unwrap();
     let source = format!("[{}null]", "[\"text\",true,false,1,null],".repeat(64));
     let booleans = ["true", "false"].map(|name| grammar.kind_id_for_name(name, true).unwrap());
     let kinds = KindSet::new(
@@ -972,7 +972,7 @@ fn sparse_kind_filters() {
 #[test]
 fn sparse_cursor_pipelines() {
     let language = json_language();
-    let grammar = Grammar::new(&language).unwrap();
+    let grammar = Language::new(&language).unwrap();
     let source = format!(
         "[{}0]",
         format!("[{}true,false,null],", "1,".repeat(1400)).repeat(12)
@@ -1123,7 +1123,7 @@ fn prepared_kind_sets() {
 #[test]
 fn indexed_kind_filters() {
     let language = json_language();
-    let grammar = Grammar::new(&language).unwrap();
+    let grammar = Language::new(&language).unwrap();
     let source = format!(
         "[true,[{}false],[{}true],[{}false]]",
         "1,".repeat(1800),
@@ -1287,7 +1287,7 @@ fn fixed_kind_sets() {
     );
     let (_, tree) = parse(&language, &source, PackOptions::default());
     let root = tree.root_node();
-    let grammar = Grammar::new(&language).unwrap();
+    let grammar = Language::new(&language).unwrap();
     let number = grammar.kind_id_for_name("number", true).unwrap();
     let array = grammar.kind_id_for_name("array", true).unwrap();
     let roots = [
@@ -1392,7 +1392,7 @@ fn field_sets() {
     );
     let (_, tree) = parse(&language, &source, PackOptions::default());
     let root = tree.root_node();
-    let grammar = Grammar::new(&language).unwrap();
+    let grammar = Language::new(&language).unwrap();
     let key = Some(grammar.field_id_for_name("key").unwrap());
     let value = Some(grammar.field_id_for_name("value").unwrap());
     let subtree = root

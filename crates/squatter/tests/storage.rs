@@ -1,4 +1,4 @@
-use tree_squatter::{Grammar, PackContext, PackOptions, Tree};
+use tree_squatter::{Language, PackContext, PackOptions, Tree};
 
 #[test]
 fn slab_headers_reject_incompatible_formats() {
@@ -6,7 +6,7 @@ fn slab_headers_reject_incompatible_formats() {
 
     let language =
         unsafe { tree_sitter::Language::from_raw(tree_sitter_json::LANGUAGE.into_raw()().cast()) };
-    let grammar = Grammar::new(&language).unwrap();
+    let grammar = Language::new(&language).unwrap();
     let mut parser = tree_sitter::Parser::new();
     parser.set_language(&language).unwrap();
     let native = parser.parse("[1]", None).unwrap();
@@ -85,8 +85,8 @@ fn packing_context_matches_fresh_packing_and_loading() {
             ],
         ),
     ] {
-        let grammar = Grammar::new(&language).unwrap();
-        let fresh_grammar = tree_squatter::Grammar::new(&language).unwrap();
+        let grammar = Language::new(&language).unwrap();
+        let fresh_grammar = tree_squatter::Language::new(&language).unwrap();
         let mut parser = tree_sitter::Parser::new();
         parser.set_language(&language).unwrap();
         let mut context = PackContext::new().unwrap();
@@ -174,7 +174,7 @@ fn side_data_changes_only_attached_coordinates() {
     use tree_squatter::{LineIndex, PointData, PresenceCache};
     let language =
         unsafe { tree_sitter::Language::from_raw(tree_sitter_json::LANGUAGE.into_raw()().cast()) };
-    let grammar = Grammar::new(&language).unwrap();
+    let grammar = Language::new(&language).unwrap();
     let mut parser = tree_sitter::Parser::new();
     parser.set_language(&language).unwrap();
 
@@ -286,7 +286,7 @@ fn sidecar_mapping_copy_and_failed_replacement() {
 
     let language =
         unsafe { tree_sitter::Language::from_raw(tree_sitter_json::LANGUAGE.into_raw()().cast()) };
-    let grammar = Grammar::new(&language).unwrap();
+    let grammar = Language::new(&language).unwrap();
     let source = "[\n1, 2]";
     let mut parser = tree_sitter::Parser::new();
     parser.set_language(&language).unwrap();
@@ -440,7 +440,7 @@ fn line_index_is_byte_based_and_builds_can_cancel() {
 
     let language =
         unsafe { tree_sitter::Language::from_raw(tree_sitter_json::LANGUAGE.into_raw()().cast()) };
-    let grammar = Grammar::new(&language).unwrap();
+    let grammar = Language::new(&language).unwrap();
     let mut parser = tree_sitter::Parser::new();
     parser.set_language(&language).unwrap();
     let native = parser.parse("[1]", None).unwrap();
@@ -475,7 +475,7 @@ fn point_bounded_queries_follow_attachment() {
     use tree_squatter::{LineIndex, PointData, Query, QueryCursor};
     let language =
         unsafe { tree_sitter::Language::from_raw(tree_sitter_json::LANGUAGE.into_raw()().cast()) };
-    let grammar = Grammar::new(&language).unwrap();
+    let grammar = Language::new(&language).unwrap();
     let source = b"[\n1,\n2]";
     let mut parser = tree_sitter::Parser::new();
     parser.set_language(&language).unwrap();
@@ -489,7 +489,7 @@ fn point_bounded_queries_follow_attachment() {
         },
     )
     .unwrap();
-    let query = Query::new(&language, "(number) @number").unwrap();
+    let query = Query::new(&grammar, "(number) @number").unwrap();
     let mut cursor = QueryCursor::new();
     let mut count = |tree: &Tree| {
         assert!(
@@ -514,7 +514,7 @@ fn point_bounded_queries_follow_attachment() {
 fn side_data_creation_flags_do_not_change_core_layout() {
     let language =
         unsafe { tree_sitter::Language::from_raw(tree_sitter_json::LANGUAGE.into_raw()().cast()) };
-    let grammar = Grammar::new(&language).unwrap();
+    let grammar = Language::new(&language).unwrap();
     let source = format!("[{}0]", "1,\n".repeat(500));
     let mut parser = tree_sitter::Parser::new();
     parser.set_language(&language).unwrap();
@@ -548,7 +548,7 @@ fn side_data_creation_flags_do_not_change_core_layout() {
 fn repacking_in_place_preserves_nodes_and_side_data() {
     let language =
         unsafe { tree_sitter::Language::from_raw(tree_sitter_json::LANGUAGE.into_raw()().cast()) };
-    let grammar = Grammar::new(&language).unwrap();
+    let grammar = Language::new(&language).unwrap();
     let mut parser = tree_sitter::Parser::new();
     parser.set_language(&language).unwrap();
     let native = parser.parse("[1,\n2, 3]", None).unwrap();

@@ -1,7 +1,7 @@
 #![cfg(target_os = "linux")]
 
 mod common;
-use common::{ChildProcess, grammar, load};
+use common::{ChildProcess, language, load};
 
 use std::{fs, os::fd::AsRawFd, path::Path, sync::atomic::AtomicBool};
 use tree_squatter_persistence::*;
@@ -48,7 +48,7 @@ fn deferred_capture_survives_owner_death_and_source_change() {
     let LoadStep::Deferred(pending) = cache
         .load_step_with_context(
             Path::new("file.json"),
-            &grammar(),
+            &language(),
             &mut context,
             LoadOptions::default(),
         )
@@ -87,7 +87,7 @@ fn wait_budget_bypasses_live_owner_and_cancellation_stops_deferred_work() {
     let LoadStep::Deferred(pending) = cache
         .load_step(
             Path::new("file.json"),
-            &grammar(),
+            &language(),
             &mut tree_sitter::Parser::new(),
             LoadOptions::default(),
         )
@@ -120,7 +120,7 @@ fn deferred_contender_reuses_winner_publication() {
     let LoadStep::Deferred(contender) = cache
         .load_step(
             Path::new("file.json"),
-            &grammar(),
+            &language(),
             &mut tree_sitter::Parser::new(),
             LoadOptions::default(),
         )
@@ -131,7 +131,7 @@ fn deferred_contender_reuses_winner_publication() {
     let LoadStep::Deferred(winner) = cache
         .load_step(
             Path::new("file.json"),
-            &grammar(),
+            &language(),
             &mut tree_sitter::Parser::new(),
             LoadOptions::default(),
         )

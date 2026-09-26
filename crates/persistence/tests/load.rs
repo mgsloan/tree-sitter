@@ -1,5 +1,5 @@
 mod common;
-use common::{ChildProcess, grammar, load};
+use common::{ChildProcess, language, load};
 
 use std::{
     fs,
@@ -22,7 +22,7 @@ fn miss_hit_and_old_reader_survives_update() {
     let first = cache
         .load_with_options(
             Path::new("file.json"),
-            &grammar(),
+            &language(),
             &mut tree_sitter::Parser::new(),
             LoadOptions {
                 pack: tree_sitter_squatter::PackOptions {
@@ -76,7 +76,7 @@ fn deferred_disabled_and_cancelled_publication() {
     let result = cache
         .load_with_options(
             Path::new("file.json"),
-            &grammar(),
+            &language(),
             &mut parser,
             LoadOptions {
                 pack: tree_sitter_squatter::PackOptions::default(),
@@ -90,7 +90,7 @@ fn deferred_disabled_and_cancelled_publication() {
         cache
             .load_with_options(
                 Path::new("file.json"),
-                &grammar(),
+                &language(),
                 &mut tree_sitter::Parser::new(),
                 LoadOptions {
                     pack: tree_sitter_squatter::PackOptions::default(),
@@ -120,7 +120,7 @@ fn stale_deferred_writer_cannot_create_wrong_hit() {
     let old = cache
         .load_with_options(
             Path::new("file.json"),
-            &grammar(),
+            &language(),
             &mut tree_sitter::Parser::new(),
             LoadOptions {
                 pack: tree_sitter_squatter::PackOptions::default(),
@@ -143,9 +143,9 @@ fn reset_cancelled_parser_and_clear_included_ranges() {
     fs::write(root.path().join("file.json"), "[1,2,3]").unwrap();
     let cache = Persistence::open(root.path(), Options::default()).unwrap();
     let mut parser = tree_sitter::Parser::new();
-    let language =
+    let tree_sitter_language =
         unsafe { tree_sitter::Language::from_raw(tree_sitter_json::LANGUAGE.into_raw()().cast()) };
-    parser.set_language(&language).unwrap();
+    parser.set_language(&tree_sitter_language).unwrap();
     let source = format!("[{}0]", "0,".repeat(100_000));
     let mut cancel = |_: &tree_sitter::ParseState| ControlFlow::Break(());
     assert!(
@@ -166,7 +166,7 @@ fn reset_cancelled_parser_and_clear_included_ranges() {
         }])
         .unwrap();
     let result = cache
-        .load(Path::new("file.json"), &grammar(), &mut parser)
+        .load(Path::new("file.json"), &language(), &mut parser)
         .unwrap();
     assert_eq!(
         result.tree().root_node().named_child(0).unwrap().kind(),
@@ -184,7 +184,7 @@ fn cancellation_never_creates_entry() {
     let cancel = AtomicBool::new(true);
     let result = cache.load_with_options(
         Path::new("file.json"),
-        &grammar(),
+        &language(),
         &mut tree_sitter::Parser::new(),
         LoadOptions {
             pack: tree_sitter_squatter::PackOptions::default(),
@@ -259,7 +259,7 @@ fn unavailable_cache_and_full_map_fall_back() {
     let result = cache
         .load_with_options(
             Path::new("file.json"),
-            &grammar(),
+            &language(),
             &mut tree_sitter::Parser::new(),
             LoadOptions {
                 pack: tree_sitter_squatter::PackOptions::default(),
@@ -405,7 +405,7 @@ fn writer_death_releases_admission_without_stale_files() {
     let result = cache
         .load_with_options(
             Path::new("file.json"),
-            &grammar(),
+            &language(),
             &mut tree_sitter::Parser::new(),
             LoadOptions {
                 pack: tree_sitter_squatter::PackOptions::default(),
@@ -440,18 +440,20 @@ fn worker_context_switches_grammars_and_loads_restored_dictionary() {
     let c_sharp_language = unsafe {
         tree_sitter::Language::from_raw(tree_sitter_c_sharp::LANGUAGE.into_raw()().cast())
     };
-    let json = cache.prepare_grammar(&json_language, "json").unwrap();
-    let c_sharp = cache.prepare_grammar(&c_sharp_language, "c_sharp").unwrap();
+    let json = cache.prepare_language(&json_language, "json").unwrap();
+    let c_sharp = cache
+        .prepare_language(&c_sharp_language, "c_sharp")
+        .unwrap();
     let mut context = LoadContext::default();
     for _ in 0..3 {
-        for (grammar, path, kind) in [
+        for (language, path, kind) in [
             (&json, "file.json", "document"),
             (&c_sharp, "input.cs", "compilation_unit"),
         ] {
             let result = cache
                 .load_with_context(
                     Path::new(path),
-                    grammar,
+                    language,
                     &mut context,
                     LoadOptions {
                         pack: tree_sitter_squatter::PackOptions::default(),
@@ -475,7 +477,9 @@ fn worker_context_switches_grammars_and_loads_restored_dictionary() {
         )
         .unwrap();
     assert!(matches!(result, LoadStep::Ready(_)));
-    let restored = cache.prepare_grammar(&c_sharp_language, "c_sharp").unwrap();
+    let restored = cache
+        .prepare_language(&c_sharp_language, "c_sharp")
+        .unwrap();
     let hit = cache
         .load_with_context(
             Path::new("input.cs"),
@@ -497,7 +501,7 @@ fn side_data_policy_applies_to_hits_and_late_publication() {
         cache
             .load_with_options(
                 Path::new("file.json"),
-                &grammar(),
+                &language(),
                 parser,
                 LoadOptions {
                     pack: tree_sitter_squatter::PackOptions {

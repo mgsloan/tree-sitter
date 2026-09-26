@@ -3,7 +3,7 @@ use anyhow::{Context, Result, ensure};
 use clap::Parser;
 use corpus_analysis::{LoadedGrammar, Registry, digest, digest_file};
 use std::{fs, hint::black_box, mem::MaybeUninit, path::PathBuf, sync::Arc, time::Instant};
-use tree_squatter::{Grammar, PackContext, PackOptions, Query, StableSlab, Tree};
+use tree_squatter::{Language, PackContext, PackOptions, Query, StableSlab, Tree};
 use tree_squatter::{LineIndex, PointData};
 
 #[derive(Parser, serde::Serialize)]
@@ -43,11 +43,11 @@ unsafe impl StableSlab for Slab {
 }
 
 struct Case<'input> {
-    language: &'input tree_sitter::Language,
+    tree_sitter_language: &'input tree_sitter::Language,
     native: &'input tree_sitter::Tree,
     query: &'input str,
     capture: Option<String>,
-    grammar: Grammar,
+    language: Language,
     cache: Vec<u8>,
     tree: Arc<Tree>,
     packer: PackContext,
@@ -70,8 +70,8 @@ const WORKLOADS: &[&str] = &[
     "load-backed",
     "compact-copy",
     "repack",
-    "grammar-new",
-    "grammar-cache",
+    "language-new",
+    "language-cache",
     "query-new",
     "query-drop",
     "query-disable-pattern",
@@ -93,17 +93,19 @@ impl Case<'_> {
         }
         match workload {
             "pack-cold" => {
-                measure!(Tree::pack_with_options(&self.grammar, self.native, self.options).unwrap())
+                measure!(
+                    Tree::pack_with_options(&self.language, self.native, self.options).unwrap()
+                )
             }
             "pack-reuse" => measure!(
                 self.packer
-                    .pack_with_options(&self.grammar, self.native, self.options)
+                    .pack_with_options(&self.language, self.native, self.options)
                     .unwrap()
             ),
             "pack-trim" => measure!({
                 self.packer.trim();
                 self.packer
-                    .pack_with_options(&self.grammar, self.native, self.options)
+                    .pack_with_options(&self.language, self.native, self.options)
                     .unwrap()
             }),
             "source-points" => measure!(LineIndex::new(self.source).unwrap()),
@@ -115,21 +117,25 @@ impl Case<'_> {
                     black_box((node.start_position(), node.end_position()));
                 }
             }),
-            "load-full" => measure!(Tree::from_bytes(&self.grammar, self.tree.as_bytes()).unwrap()),
+            "load-full" => {
+                measure!(Tree::from_bytes(&self.language, self.tree.as_bytes()).unwrap())
+            }
             "load-safety" => measure!(
-                Tree::from_bytes_safety_checked(&self.grammar, self.tree.as_bytes()).unwrap()
+                Tree::from_bytes_safety_checked(&self.language, self.tree.as_bytes()).unwrap()
             ),
             "load-borrowed" => {
-                measure!(Tree::from_bytes_borrowed(&self.grammar, self.tree.as_bytes()).unwrap())
+                measure!(Tree::from_bytes_borrowed(&self.language, self.tree.as_bytes()).unwrap())
             }
             "load-backed" => {
-                measure!(Tree::from_owned_slab(&self.grammar, Slab(self.tree.clone())).unwrap())
+                measure!(Tree::from_owned_slab(&self.language, Slab(self.tree.clone())).unwrap())
             }
             "compact-copy" => measure!(self.tree.copy_compact_into(&mut self.compact).unwrap()),
             "repack" => measure!(self.tree.repack().unwrap()),
-            "grammar-new" => measure!(Grammar::new(self.language).unwrap()),
-            "grammar-cache" => measure!(Grammar::from_cache(self.language, &self.cache).unwrap()),
-            "query-new" => measure!(Query::new(self.language, self.query).unwrap()),
+            "language-new" => measure!(Language::new(self.tree_sitter_language).unwrap()),
+            "language-cache" => {
+                measure!(Language::from_cache(self.tree_sitter_language, &self.cache).unwrap())
+            }
+            "query-new" => measure!(Query::new(&self.language, self.query).unwrap()),
             "query-drop" | "query-disable-pattern" | "query-disable-capture" => {
                 let mut elapsed = 0.0;
                 let mut remaining = iterations;
@@ -138,8 +144,9 @@ impl Case<'_> {
                 let mut queries = Vec::with_capacity(16);
                 while remaining != 0 {
                     let count = remaining.min(16);
-                    queries
-                        .extend((0..count).map(|_| Query::new(self.language, self.query).unwrap()));
+                    queries.extend(
+                        (0..count).map(|_| Query::new(&self.language, self.query).unwrap()),
+                    );
                     let start = Instant::now();
                     match workload {
                         "query-drop" => queries.clear(),
@@ -196,7 +203,7 @@ fn main() -> Result<()> {
         let mut parser = tree_sitter::Parser::new();
         parser.set_language(language)?;
         let native = parser.parse(&source, None).context("parse failed")?;
-        let owner = Grammar::new(language)?;
+        let owner = Language::new(language)?;
         let options = PackOptions {
             points: !arguments.no_points,
             symbol_presence: !arguments.no_presence,
@@ -213,7 +220,7 @@ fn main() -> Result<()> {
                 return None;
             }
             let text = fs::read_to_string(&query.path).ok()?;
-            Query::new(language, &text)
+            Query::new(&owner, &text)
                 .ok()
                 .map(|compiled| (query, text, compiled))
         });
@@ -231,12 +238,12 @@ fn main() -> Result<()> {
         drop(compiled);
 
         let mut case = Case {
-            language,
+            tree_sitter_language: language,
             native: &native,
             query: &query_text,
             capture,
             cache: owner.cache()?,
-            grammar: owner,
+            language: owner,
             compact: vec![MaybeUninit::uninit(); tree.compact_size()],
             tree,
             packer: PackContext::new()?,
@@ -282,7 +289,7 @@ fn main() -> Result<()> {
                 "iterations": iterations, "seconds": seconds,
                 "source_bytes": source.len(), "slab_bytes": case.tree.as_bytes().len(),
                 "nodes": case.tree.root_node().descendant_count(),
-                "compact_bytes": case.tree.compact_size(), "grammar_cache_bytes": case.cache.len(),
+                "compact_bytes": case.tree.compact_size(), "language_cache_bytes": case.cache.len(),
             }));
             eprintln!("{} / {workload}", path.display());
         }

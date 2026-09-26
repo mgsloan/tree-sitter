@@ -1,4 +1,4 @@
-use tree_squatter::{Grammar, PackOptions, Tree};
+use tree_squatter::{Language, PackOptions, Tree};
 
 macro_rules! compare_attributes {
     ($actual:expr, $expected:expr; $($method:ident),* $(,)?) => {
@@ -10,7 +10,7 @@ macro_rules! compare_attributes {
 fn navigation_and_indexed_ranges_survive_loading() {
     let language =
         unsafe { tree_sitter::Language::from_raw(tree_sitter_c::LANGUAGE.into_raw()().cast()) };
-    let grammar = Grammar::new(&language).unwrap();
+    let grammar = Language::new(&language).unwrap();
     let mut parser = tree_sitter::Parser::new();
     parser.set_language(&language).unwrap();
     let wide = "int value;\n".repeat(1000);
@@ -200,7 +200,7 @@ fn indexed_points_follow_attachment_across_wide_trees() {
 
     let language =
         unsafe { tree_sitter::Language::from_raw(tree_sitter_json::LANGUAGE.into_raw()().cast()) };
-    let grammar = Grammar::new(&language).unwrap();
+    let grammar = Language::new(&language).unwrap();
     let mut parser = tree_sitter::Parser::new();
     parser.set_language(&language).unwrap();
     let source = format!("[{}0]\n", "\"é\",\r\n".repeat(20_000));

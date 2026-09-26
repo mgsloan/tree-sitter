@@ -6,22 +6,22 @@ use std::{
     path::Path,
     process::{Child, Command, Stdio},
 };
-use tree_sitter_squatter::GrammarHash;
-use tree_squatter_persistence::{GrammarIdentity, IdentifiedGrammar, LoadedFile, Persistence};
+use tree_sitter_squatter::LanguageHash;
+use tree_squatter_persistence::{IdentifiedLanguage, LanguageIdentity, LoadedFile, Persistence};
 
-pub fn grammar() -> IdentifiedGrammar {
+pub fn language() -> IdentifiedLanguage {
     grammar_with_identity(42)
 }
 
-pub fn grammar_with_identity(identity: u8) -> IdentifiedGrammar {
+pub fn grammar_with_identity(identity: u8) -> IdentifiedLanguage {
     // Synthetic provider identity, paired with the packaged JSON parser.
-    let language =
+    let tree_sitter_language =
         unsafe { tree_sitter::Language::from_raw(tree_sitter_json::LANGUAGE.into_raw()().cast()) };
-    let mut grammar_identity = GrammarIdentity::new(&language, "json");
-    grammar_identity.hash = GrammarHash(identity as u64);
-    IdentifiedGrammar::new(
-        tree_sitter_squatter::Grammar::new(&language).unwrap(),
-        grammar_identity,
+    let mut language_identity = LanguageIdentity::new(&tree_sitter_language, "json");
+    language_identity.hash = LanguageHash(identity as u64);
+    IdentifiedLanguage::new(
+        tree_sitter_squatter::Language::new(&tree_sitter_language).unwrap(),
+        language_identity,
     )
 }
 
@@ -29,7 +29,7 @@ pub fn load(cache: &Persistence) -> LoadedFile {
     cache
         .load(
             Path::new("file.json"),
-            &grammar(),
+            &language(),
             &mut tree_sitter::Parser::new(),
         )
         .unwrap()

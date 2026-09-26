@@ -1,5 +1,5 @@
 use std::{env, fs, mem::MaybeUninit};
-use tree_squatter::{Grammar, PackOptions, PointData, PresenceCache, SlotIx, Tree};
+use tree_squatter::{Language, PackOptions, PointData, PresenceCache, SlotIx, Tree};
 
 fn compare(expected: &Tree, actual: &Tree) {
     assert_eq!(expected.slot_count(), actual.slot_count());
@@ -29,9 +29,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "usage: slab-compatibility little|big OUTPUT_PREFIX [REFERENCE_PREFIX]"
     );
     assert_eq!(cfg!(target_endian = "big"), arguments[1] == "big");
-    let language =
+    let tree_sitter_language =
         unsafe { tree_sitter::Language::from_raw(tree_sitter_json::LANGUAGE.into_raw()().cast()) };
-    let grammar = Grammar::new(&language)?;
+    let language = Language::new(&tree_sitter_language)?;
     let source = format!(
         "[{}[{}0{}],\"{}\",{{\"bad\":}}]",
         "{\"key\": [1,true,null]},\n".repeat(100),
@@ -40,11 +40,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "x".repeat(70000)
     );
     let mut parser = tree_sitter::Parser::new();
-    parser.set_language(&language)?;
+    parser.set_language(&tree_sitter_language)?;
     let parsed = parser.parse(&source, None).unwrap();
     for variant in 0..16 {
         let tree = Tree::pack_with_options(
-            &grammar,
+            &language,
             &parsed,
             PackOptions {
                 initial_group_capacity: variant & 1,
@@ -72,9 +72,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 bytes == tree.as_bytes(),
                 "different bytes for variant {variant}"
             );
-            let mut copied = Tree::from_bytes(&grammar, &bytes)?;
-            let borrowed = Tree::from_bytes_borrowed(&grammar, copied.as_bytes())?;
-            let mut checked = Tree::from_bytes_safety_checked(&grammar, &bytes)?;
+            let mut copied = Tree::from_bytes(&language, &bytes)?;
+            let borrowed = Tree::from_bytes_borrowed(&language, copied.as_bytes())?;
+            let mut checked = Tree::from_bytes_safety_checked(&language, &bytes)?;
             assert!(!copied.has_points());
             assert!(copied.presence_cache().is_none());
             compare(&copied, &borrowed);

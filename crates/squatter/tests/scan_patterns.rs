@@ -3,15 +3,15 @@ mod support;
 
 use std::{hint::black_box, ops::Range};
 use tree_sitter::Point;
-use tree_squatter::{FieldId, Grammar, GrammarKindId, KindId, KindSet, Node, SlotIx, Tree};
+use tree_squatter::{FieldId, GrammarKindId, KindId, KindSet, Language, Node, SlotIx, Tree};
 
 use support::{json_language, parse_native};
 
 const SOURCE: &str = r#"{"a": [1, 2], "b": {"c": 3}, "d": 4}"#;
 
-fn fixture() -> (Grammar, Tree) {
+fn fixture() -> (Language, Tree) {
     let language = json_language();
-    let grammar = Grammar::new(&language).unwrap();
+    let grammar = Language::new(&language).unwrap();
     let native = parse_native(&language, SOURCE);
     let tree = Tree::pack(&grammar, &native).unwrap();
     (grammar, tree)
@@ -443,7 +443,7 @@ fn assembly_patterns_match_examples() {
         0
     );
 
-    for &supertype in grammar.language().supertypes() {
+    for &supertype in grammar.tree_sitter_language().supertypes() {
         let supertype = black_box(GrammarKindId::new(supertype));
         let expected = nodes
             .iter()

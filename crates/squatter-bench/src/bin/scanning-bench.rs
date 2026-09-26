@@ -12,7 +12,7 @@ use std::{
     time::{Duration, Instant},
 };
 use tree_sitter::Point;
-use tree_squatter::{Grammar, KindSet, Node, PackOptions, Tree, traits::NodeLike};
+use tree_squatter::{KindSet, Language, Node, PackOptions, Tree, traits::NodeLike};
 
 #[derive(Clone, Copy, Serialize, ValueEnum)]
 enum KindSelection {
@@ -1133,7 +1133,7 @@ fn main() -> Result<()> {
             input.path
         );
         let language = &grammars[&input.grammar].language;
-        let grammar = Grammar::new(language)?;
+        let grammar = Language::new(language)?;
         let mut parser = tree_sitter::Parser::new();
         parser.set_language(language)?;
         let native = parse(&mut parser, &source, Duration::from_secs(10))?;

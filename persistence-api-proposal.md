@@ -54,11 +54,11 @@ impl Cache {
     pub fn open(root: impl AsRef<Path>, options: CacheOptions) -> io::Result<Arc<Self>>;
     pub fn loader(self: &Arc<Self>) -> Loader;
 
-    pub fn grammar(
+    pub fn language(
         &self,
         language: &tree_sitter::Language,
-        fingerprint: GrammarFingerprint,
-    ) -> Result<Grammar, tree_squatter::Error>;
+        fingerprint: LanguageFingerprint,
+    ) -> Result<Language, tree_squatter::Error>;
 }
 
 impl Loader {
@@ -66,7 +66,7 @@ impl Loader {
     pub async fn load<S: Source>(
         &self,
         source: &mut S,
-        grammar: &Grammar,
+        language: &Language,
         options: LoadOptions<'_>,
     ) -> Result<LoadResult, LoadError>;
 
@@ -74,7 +74,7 @@ impl Loader {
     pub async fn preview<S: Source>(
         &self,
         source: &mut S,
-        grammar: &Grammar,
+        language: &Language,
         options: LoadOptions<'_>,
     ) -> Result<Option<CachedCandidate>, LoadError>;
 
@@ -107,7 +107,7 @@ struct LoadRequest {
     cache: Arc<Cache>,
     path: PathBuf, // client-supplied project-relative identity
     metadata: FileMetadata, // raw disk capture, before preprocessing
-    grammar: Grammar,
+    language: Language,
     pack: PackOptions,
 }
 
@@ -143,7 +143,7 @@ pub enum Verification {
     Changed(LoadResult),
 }
 
-// Owns source identity, grammar, originating cache, and packing settings.
+// Owns source identity, language, originating cache, and packing settings.
 // Retains no parser borrow, database transaction, or work lock.
 #[must_use]
 pub struct CacheMiss {
@@ -642,7 +642,7 @@ also need chunk-aware access to avoid flattening ropes outside parsing.
 
 ```rust
 let mut source = SourceFile::open(root, path).await?;
-let loaded = loader.load(&mut source, &grammar, LoadOptions::default()).await?;
+let loaded = loader.load(&mut source, &language, LoadOptions::default()).await?;
 let tree = match loaded {
     LoadResult::Loaded(tree) => tree,
     LoadResult::Miss(miss) => {
@@ -656,7 +656,7 @@ let tree = match loaded {
 ```
 
 ```rust
-let candidate = loader.preview(&mut source, &grammar, LoadOptions::default(),
+let candidate = loader.preview(&mut source, &language, LoadOptions::default(),
 ).await?;
 if let Some(candidate) = candidate {
     // Begin provisional structural work using candidate.tree().

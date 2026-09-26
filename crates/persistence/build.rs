@@ -1,7 +1,7 @@
 use std::{env, fs, path::Path};
 
 // Conservative development-build identity. Release compatibility epochs can
-// replace this later; grammar identity is independently supplied by the caller.
+// replace this later; language identity is independently supplied by the caller.
 fn hash_tree(path: &Path, root: &Path, hash: &mut blake3::Hasher) {
     println!("cargo:rerun-if-changed={}", path.display());
     if path.is_dir() {

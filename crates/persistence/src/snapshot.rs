@@ -1,7 +1,7 @@
 //! Read transactions are used only during construction, then sealed as storage.
 //! There is no fabricated Rust lifetime, reset/renew API, or shared LMDB handle.
 use crate::{
-    identity::{IdentifiedGrammar, Request},
+    identity::{IdentifiedLanguage, Request},
     store::Store,
 };
 use std::{
@@ -73,7 +73,7 @@ pub(crate) fn get(
     store: &Arc<Store>,
     request: &Request,
     source: &[u8],
-    grammar: &IdentifiedGrammar,
+    language: &IdentifiedLanguage,
     cancel: Option<&AtomicBool>,
 ) -> Option<(BackedTree, bool)> {
     let snapshot = Arc::new(Snapshot::open(store)?);
@@ -100,7 +100,7 @@ pub(crate) fn get(
     };
     // The native loader checks the actual address, not merely the envelope's
     // offset. Misaligned values release their snapshot and use the owned path.
-    let mut tree = Tree::from_owned_slab(&grammar.prepared, owner).ok()?;
+    let mut tree = Tree::from_owned_slab(&language.prepared, owner).ok()?;
     if tree
         .root_node()
         .preorder()

@@ -23,7 +23,7 @@ impl Drop for LanguageOwner {
 }
 
 struct Fixture {
-    grammar: Grammar,
+    grammar: Language,
     // The synthetic language must outlive every prepared grammar and tree.
     _owner: LanguageOwner,
 }
@@ -40,7 +40,7 @@ impl Fixture {
     unsafe fn new(pointer: *const c_void, delete: unsafe extern "C" fn(*const c_void)) -> Self {
         let language = unsafe { tree_sitter::Language::from_raw(pointer.cast()) };
         Self {
-            grammar: Grammar::new(&language).unwrap(),
+            grammar: Language::new(&language).unwrap(),
             _owner: LanguageOwner(pointer, delete),
         }
     }
@@ -73,7 +73,7 @@ fn synthetic_grammar_dictionaries_aliases_and_limits() {
 fn lexer_fallback_and_concurrent_parser_preparation() {
     unsafe { sq_test_lexer_fallback() };
     let language = unsafe { tree_sitter::Language::from_raw(sq_test_parser_language().cast()) };
-    let grammar = Grammar::new(&language).unwrap();
+    let grammar = Language::new(&language).unwrap();
     let mut parser = tree_sitter::Parser::new();
     parser.set_language(&language).unwrap();
     let native = parser.parse("\nx", None).unwrap();
@@ -168,8 +168,11 @@ fn synthetic_supertype_emission_and_persistence() {
                 let borrowed = Tree::from_bytes_borrowed(grammar, tree.as_bytes()).unwrap();
                 check_masks(&loaded, &slots, bits);
                 check_masks(&borrowed, &slots, bits);
-                let restored =
-                    Grammar::from_cache(&grammar.language(), &grammar.cache().unwrap()).unwrap();
+                let restored = Language::from_cache(
+                    &grammar.tree_sitter_language(),
+                    &grammar.cache().unwrap(),
+                )
+                .unwrap();
                 check_masks(
                     &Tree::from_bytes(&restored, tree.as_bytes()).unwrap(),
                     &slots,
@@ -404,7 +407,7 @@ fn synthetic_symbol_ids_and_optional_columns() {
 fn maximum_spans_roundtrip_and_reject_delta_underflow() {
     let language =
         unsafe { tree_sitter::Language::from_raw(tree_sitter_json::LANGUAGE.into_raw()().cast()) };
-    let grammar = Grammar::new(&language).unwrap();
+    let grammar = Language::new(&language).unwrap();
     let mut parser = tree_sitter::Parser::new();
     parser.set_language(&language).unwrap();
 
@@ -701,7 +704,7 @@ fn packing_rejects_wrong_grammar_and_recovers_after_overflow() {
     }
     let pointer = unsafe { sq_test_parser_language() };
     let language = unsafe { tree_sitter::Language::from_raw(pointer.cast()) };
-    let grammar = Grammar::new(&language).unwrap();
+    let grammar = Language::new(&language).unwrap();
     let other = unsafe { Fixture::new(sq_test_clone_language(pointer), sq_test_supertypes_delete) };
     let mut parser = tree_sitter::Parser::new();
     parser.set_language(&language).unwrap();

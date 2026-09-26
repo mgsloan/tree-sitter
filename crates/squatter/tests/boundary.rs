@@ -1,10 +1,10 @@
-use tree_squatter::{FieldId, FieldSet, Grammar, KindId, PackOptions, Query, Tree};
+use tree_squatter::{FieldId, FieldSet, KindId, Language, PackOptions, Query, Tree};
 
 #[test]
 fn invalid_kinds_are_rejected() {
     let language =
         unsafe { tree_sitter::Language::from_raw(tree_sitter_json::LANGUAGE.into_raw()().cast()) };
-    let grammar = Grammar::new(&language).unwrap();
+    let grammar = Language::new(&language).unwrap();
     let mut parser = tree_sitter::Parser::new();
     parser.set_language(&language).unwrap();
     let native = parser.parse("?", None).unwrap();
@@ -38,7 +38,7 @@ fn invalid_kinds_are_rejected() {
 fn typed_fields_and_slot_lookup() {
     let language =
         unsafe { tree_sitter::Language::from_raw(tree_sitter_json::LANGUAGE.into_raw()().cast()) };
-    let grammar = Grammar::new(&language).unwrap();
+    let grammar = Language::new(&language).unwrap();
     let mut parser = tree_sitter::Parser::new();
     parser.set_language(&language).unwrap();
     let native = parser.parse(r#"{"key": 1}"#, None).unwrap();
@@ -82,7 +82,7 @@ fn typed_fields_and_slot_lookup() {
 fn grammar_kind_lookup_ignores_aliases() {
     let language =
         unsafe { tree_sitter::Language::from_raw(tree_sitter_c::LANGUAGE.into_raw()().cast()) };
-    let grammar = Grammar::new(&language).unwrap();
+    let grammar = Language::new(&language).unwrap();
     let mut parser = tree_sitter::Parser::new();
     parser.set_language(&language).unwrap();
     let native = parser.parse("typedef int T; T value;", None).unwrap();
@@ -119,6 +119,7 @@ fn grammar_kind_lookup_ignores_aliases() {
 fn compiler_metadata_and_mutation_match_tree_sitter() {
     let language =
         unsafe { tree_sitter::Language::from_raw(tree_sitter_json::LANGUAGE.into_raw()().cast()) };
+    let grammar = Language::new(&language).unwrap();
     for source in [
         "(_) @node",
         "(pair key: (string) @key value: (_) @value)",
@@ -130,7 +131,7 @@ fn compiler_metadata_and_mutation_match_tree_sitter() {
         "(",
     ] {
         let reference = tree_sitter::Query::new(&language, source);
-        let candidate = Query::new(&language, source);
+        let candidate = Query::new(&grammar, source);
         match (reference, candidate) {
             (Ok(mut reference), Ok(mut candidate)) => {
                 assert_eq!(
@@ -166,13 +167,13 @@ fn compiler_metadata_and_mutation_match_tree_sitter() {
 }
 
 #[test]
-fn grammar_cache_round_trips_and_outlives_language() {
+fn language_cache_round_trips_and_outlives_tree_sitter_language() {
     let language = unsafe {
         tree_sitter::Language::from_raw(tree_sitter_c_sharp::LANGUAGE.into_raw()().cast())
     };
-    let candidate = Grammar::new(&language).unwrap();
+    let candidate = Language::new(&language).unwrap();
     let bytes = candidate.cache().unwrap();
-    let restored = Grammar::from_cache(&language, &bytes).unwrap();
+    let restored = Language::from_cache(&language, &bytes).unwrap();
     let clone = restored.clone();
     drop(restored);
     drop(candidate);

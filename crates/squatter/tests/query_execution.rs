@@ -1,5 +1,5 @@
 use std::time::Duration;
-use tree_squatter::{Grammar, Query, QueryCursor, Tree};
+use tree_squatter::{Language, Query, QueryCursor, Tree};
 
 macro_rules! matches {
     ($cursor:expr, $query:expr, $tree:expr, $source:expr) => {{
@@ -46,8 +46,8 @@ macro_rules! captures {
 fn queries_match_with_and_without_plans() {
     let language =
         unsafe { tree_sitter::Language::from_raw(tree_sitter_c::LANGUAGE.into_raw()().cast()) };
-    let grammar = Grammar::new(&language).unwrap();
-    let reference_grammar = tree_squatter::Grammar::new(&language).unwrap();
+    let grammar = Language::new(&language).unwrap();
+    let reference_grammar = tree_squatter::Language::new(&language).unwrap();
     let mut parser = tree_sitter::Parser::new();
     parser.set_language(&language).unwrap();
     // Three ambiguous capture runs create enough states to exercise indexed deduplication.
@@ -74,8 +74,8 @@ fn queries_match_with_and_without_plans() {
         "(identifier) @first (number_literal) @second (comment) @third",
         "(argument_list . (identifier)? @first . (number_literal)? @number . (identifier)* @rest .)",
     ] {
-        let mut query = Query::new(&language, pattern).unwrap();
-        let mut reference_query = tree_squatter::Query::new(&language, pattern).unwrap();
+        let mut query = Query::new(&grammar, pattern).unwrap();
+        let mut reference_query = tree_squatter::Query::new(&grammar, pattern).unwrap();
         let mut cursor = QueryCursor::new();
         let mut reference_cursor = tree_squatter::QueryCursor::new();
         cursor.set_optimized(true);
@@ -114,7 +114,7 @@ fn queries_match_with_and_without_plans() {
 fn presence_scans_across_groups() {
     let language =
         unsafe { tree_sitter::Language::from_raw(tree_sitter_json::LANGUAGE.into_raw()().cast()) };
-    let grammar = Grammar::new(&language).unwrap();
+    let grammar = Language::new(&language).unwrap();
     let mut parser = tree_sitter::Parser::new();
     parser.set_language(&language).unwrap();
 
@@ -136,7 +136,7 @@ fn presence_scans_across_groups() {
             "(object (pair value: (array (null) @value)))",
             "(array (object (pair value: (array (true) @value))))",
         ] {
-            let query = Query::new(&language, pattern).unwrap();
+            let query = Query::new(&grammar, pattern).unwrap();
             let mut optimized = QueryCursor::new();
             let mut reference = QueryCursor::new();
             reference.set_optimized(false);
@@ -153,7 +153,7 @@ fn presence_scans_across_groups() {
 fn disabling_non_rooted_pattern_enables_ranges() {
     let language =
         unsafe { tree_sitter::Language::from_raw(tree_sitter_c::LANGUAGE.into_raw()().cast()) };
-    let grammar = Grammar::new(&language).unwrap();
+    let grammar = Language::new(&language).unwrap();
     let mut parser = tree_sitter::Parser::new();
     parser.set_language(&language).unwrap();
     let source = "int value = 1;";
@@ -168,7 +168,7 @@ fn disabling_non_rooted_pattern_enables_ranges() {
         .find(|node| node.kind() == "identifier")
         .unwrap();
     for optimized in [false, true] {
-        let mut query = Query::new(&language, pattern).unwrap();
+        let mut query = Query::new(&grammar, pattern).unwrap();
         let mut cursor = QueryCursor::new();
         cursor.set_optimized(optimized);
         assert!(cursor.set_byte_range(4..9));
@@ -197,13 +197,13 @@ fn disabling_non_rooted_pattern_enables_ranges() {
 fn cancellation_limits_ranges_and_reuse() {
     let language =
         unsafe { tree_sitter::Language::from_raw(tree_sitter_c::LANGUAGE.into_raw()().cast()) };
-    let grammar = Grammar::new(&language).unwrap();
+    let grammar = Language::new(&language).unwrap();
     let mut parser = tree_sitter::Parser::new();
     parser.set_language(&language).unwrap();
     let source = "int f() { return call(a, b, c, d, e, f, g, h); }\n".repeat(1000);
     let tree = Tree::parse(&grammar, &mut parser, &source).unwrap();
     let query = Query::new(
-        &language,
+        &grammar,
         "(argument_list (identifier)* @before (identifier)* @after)",
     )
     .unwrap();
@@ -230,7 +230,7 @@ fn cancellation_limits_ranges_and_reuse() {
     );
     drop(execution);
 
-    let query = Query::new(&language, "(identifier) @name").unwrap();
+    let query = Query::new(&grammar, "(identifier) @name").unwrap();
     let mut execution = cursor.execute(&query, tree.root_node(), source.as_bytes());
     let first = execution.next_capture().unwrap().0.id;
     execution.remove_match(first);
@@ -248,13 +248,14 @@ fn switching_between_matches_and_captures_preserves_finished_order() {
     let mut parser = tree_sitter::Parser::new();
     parser.set_language(&language).unwrap();
     let native = parser.parse(&source, None).unwrap();
-    let tree = Tree::pack(&Grammar::new(&language).unwrap(), &native).unwrap();
+    let grammar = Language::new(&language).unwrap();
+    let tree = Tree::pack(&grammar, &native).unwrap();
     let reference =
-        tree_squatter::Tree::pack(&tree_squatter::Grammar::new(&language).unwrap(), &native)
+        tree_squatter::Tree::pack(&tree_squatter::Language::new(&language).unwrap(), &native)
             .unwrap();
     let pattern = "(identifier) @first (identifier) @second (identifier) @third";
-    let query = Query::new(&language, pattern).unwrap();
-    let reference_query = tree_squatter::Query::new(&language, pattern).unwrap();
+    let query = Query::new(&grammar, pattern).unwrap();
+    let reference_query = tree_squatter::Query::new(&grammar, pattern).unwrap();
 
     macro_rules! record {
         ($result:expr) => {
@@ -310,7 +311,7 @@ fn query_edge_cases_match_tree_sitter() {
     use tree_sitter::{Point, StreamingIterator};
     for language in [tree_sitter_json::LANGUAGE, tree_sitter_c::LANGUAGE] {
         let language = unsafe { tree_sitter::Language::from_raw(language.into_raw()().cast()) };
-        let grammar = Grammar::new(&language).unwrap();
+        let grammar = Language::new(&language).unwrap();
         let mut parser = tree_sitter::Parser::new();
         parser.set_language(&language).unwrap();
         let mut patterns = vec![
@@ -365,7 +366,7 @@ fn query_edge_cases_match_tree_sitter() {
             let tree = Tree::pack(&grammar, &native).unwrap();
             for pattern in &patterns {
                 let expected = tree_sitter::Query::new(&language, pattern);
-                let actual = Query::new(&language, pattern);
+                let actual = Query::new(&grammar, pattern);
                 let (expected, actual) = match (expected, actual) {
                     (Ok(expected), Ok(actual)) => (expected, actual),
                     (Err(expected), Err(actual)) => {
@@ -491,7 +492,7 @@ fn query_edge_cases_match_tree_sitter() {
 fn disabled_rootless_and_branching_range_eligibility() {
     let language =
         unsafe { tree_sitter::Language::from_raw(tree_sitter_json::LANGUAGE.into_raw()().cast()) };
-    let grammar = Grammar::new(&language).unwrap();
+    let grammar = Language::new(&language).unwrap();
     let mut parser = tree_sitter::Parser::new();
     parser.set_language(&language).unwrap();
     let tree = Tree::parse(&grammar, &mut parser, "[1,2,3]").unwrap();
@@ -503,7 +504,7 @@ fn disabled_rootless_and_branching_range_eligibility() {
     .into_iter()
     .enumerate()
     {
-        let mut query = Query::new(&language, pattern).unwrap();
+        let mut query = Query::new(&grammar, pattern).unwrap();
         for disabled in [false, true] {
             if disabled {
                 query.disable_pattern(0);

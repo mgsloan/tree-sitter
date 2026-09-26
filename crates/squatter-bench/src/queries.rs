@@ -98,6 +98,7 @@ impl Queries {
             pairs: Vec::new(),
             reports: Vec::new(),
         };
+        let prepared = tree_squatter::Language::new(language)?;
         for source in sources {
             let text = fs::read_to_string(&source.path)
                 .with_context(|| format!("query {}", source.name))?;
@@ -108,7 +109,7 @@ impl Queries {
             );
             let start = Instant::now();
             let mainline = tree_sitter::Query::new(language, &text);
-            let squat = tree_squatter::Query::new(language, &text);
+            let squat = tree_squatter::Query::new(&prepared, &text);
             let report = Report {
                 name: source.name.clone(),
                 sha256: source.sha256.clone(),

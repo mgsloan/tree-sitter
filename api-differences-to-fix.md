@@ -57,7 +57,7 @@ decide whether to add it with explicit cost documentation, provide an index/cach
 or defer it and point callers to iteration. Compatibility alone does not settle
 that decision.
 
-## Grammar and typed identifiers
+## Language and typed identifiers
 
 **Current tree-sitter**
 
@@ -73,9 +73,9 @@ impl Language {
 **Current tree-squatter**
 
 ```rust
-impl Grammar {
+impl Language {
     pub fn new(language: &tree_sitter::Language) -> Result<Self, Error>;
-    pub fn language(&self) -> tree_sitter::Language;
+    pub fn tree_sitter_language(&self) -> tree_sitter::Language;
     pub fn kind_id_for_name(&self, name: &str, named: bool) -> Option<KindId>;
     pub fn grammar_kind_id_for_name(&self, name: &str, named: bool)
         -> Option<GrammarKindId>;
@@ -86,9 +86,9 @@ impl Grammar {
 **Proposed tree-squatter**
 
 ```rust
-impl Grammar {
+impl Language {
     pub fn new(language: &tree_sitter::Language) -> Result<Self, Error>;
-    pub fn language(&self) -> tree_sitter::Language;
+    pub fn tree_sitter_language(&self) -> tree_sitter::Language;
     pub fn id_for_node_kind(&self, kind: &str, named: bool) -> KindId;
     pub fn node_kind_for_id(&self, id: KindId) -> Option<&str>;
     pub fn field_id_for_name(&self, name: impl AsRef<[u8]>) -> Option<FieldId>;
@@ -100,7 +100,9 @@ impl Grammar {
 }
 ```
 
-- Keep the necessary grammar wrapper and domain-specific newtypes.
+- Keep the prepared `Language` wrapper and domain-specific newtypes.
+- `Query::new` accepts this wrapper; `tree_sitter_language()` returns the
+  underlying tree-sitter language.
 - Add the shared lookup names, preserving tree-sitter's zero sentinel as
   `KindId::new(0)` on unsuccessful `id_for_node_kind` lookup.
 - Keep checked lookup and underlying grammar-kind lookup as additions.
@@ -382,11 +384,11 @@ impl<'tree> Node<'tree> {
 ```rust
 impl Tree {
     pub fn walk(&self) -> TreeCursor<'_>;
-    pub fn language(&self) -> &Grammar;
+    pub fn language(&self) -> &Language;
     pub fn has_points(&self) -> bool;
 }
 impl<'tree> Node<'tree> {
-    pub fn language(&self) -> &'tree Grammar;
+    pub fn language(&self) -> &'tree Language;
     pub fn range(&self) -> tree_sitter::Range;
     pub fn to_sexp(&self) -> String;
     pub fn utf16_text<'source>(&self, source: &'source [u16]) -> &'source [u16];
@@ -795,7 +797,7 @@ impl Tree {
 
 ```rust
 impl Parser {
-    pub fn new(grammar: &Grammar) -> Result<Self, ParseError>;
+    pub fn new(language: &Language) -> Result<Self, ParseError>;
     pub fn parse(&mut self, source: impl AsRef<[u8]>) -> Result<Tree, ParseError>;
     pub fn parse_with_options(&mut self, source: impl AsRef<[u8]>, options: PackOptions)
         -> Result<Tree, ParseError>;
@@ -813,8 +815,8 @@ impl Node<'_> {
 ```rust
 impl Parser {
     pub fn new() -> Self;
-    pub fn set_language(&mut self, language: &Grammar) -> Result<(), LanguageError>;
-    pub fn language(&self) -> Option<&Grammar>;
+    pub fn set_language(&mut self, language: &Language) -> Result<(), LanguageError>;
+    pub fn language(&self) -> Option<&Language>;
     pub fn reset(&mut self);
     pub fn parse(&mut self, source: impl AsRef<[u8]>)
         -> Option<Tree>;
@@ -824,7 +826,7 @@ impl Parser {
 }
 // No has_changes, node/tree edit, changed_ranges, or old-tree input.
 impl DirectParser {
-    pub fn new(grammar: &Grammar) -> Result<Self, ParseError>;
+    pub fn new(language: &Language) -> Result<Self, ParseError>;
     pub fn parse(&mut self, source: impl AsRef<[u8]>) -> Result<Tree, ParseError>;
     pub fn parse_with_pack_options(&mut self, source: impl AsRef<[u8]>, options: PackOptions)
         -> Result<Tree, ParseError>;
@@ -919,10 +921,10 @@ let start = tree.root_node().start_position();
 **Current tree-squatter**
 
 ```rust
-let mut tree = Tree::pack(&grammar, &native_tree)?;
+let mut tree = Tree::pack(&language, &native_tree)?;
 let slab = tree.as_bytes();
-let borrowed = Tree::from_bytes_borrowed(&grammar, slab)?;
-let owned = Tree::from_owned_slab(&grammar, backing)?;
+let borrowed = Tree::from_bytes_borrowed(&language, slab)?;
+let owned = Tree::from_owned_slab(&language, backing)?;
 let count = tree.root_node().preorder().filter_kind_ids([kind]).count();
 
 let lines = LineIndex::new(source)?;
@@ -935,10 +937,10 @@ tree.drop_point_data();
 **Proposed tree-squatter**
 
 ```rust
-let mut tree = Tree::pack(&grammar, &native_tree)?;
+let mut tree = Tree::pack(&language, &native_tree)?;
 let slab = tree.as_bytes();
-let borrowed = Tree::from_bytes_borrowed(&grammar, slab)?;
-let owned = Tree::from_owned_slab(&grammar, backing)?;
+let borrowed = Tree::from_bytes_borrowed(&language, slab)?;
+let owned = Tree::from_owned_slab(&language, backing)?;
 let count = tree.root_node().preorder().filter_kind_ids([kind]).count();
 
 let lines = LineIndex::new(source)?;

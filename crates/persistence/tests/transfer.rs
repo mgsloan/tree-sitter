@@ -1,5 +1,5 @@
 mod common;
-use common::grammar_with_identity as grammar;
+use common::grammar_with_identity as language;
 
 use std::{fs, path::Path};
 use tree_squatter_persistence::*;
@@ -8,7 +8,7 @@ fn load(cache: &Persistence, write: WritePolicy) -> LoadResult {
     cache
         .load_with_options(
             Path::new("file.json"),
-            &grammar(42),
+            &language(42),
             &mut tree_sitter::Parser::new(),
             LoadOptions {
                 pack: tree_sitter_squatter::PackOptions::default(),
@@ -36,7 +36,7 @@ fn transfer_survives_producer_and_keeps_original_capture() {
     fs::write(root.path().join("file.json"), "[4]").unwrap();
     let consumer = Persistence::open(root.path(), Options::default()).unwrap();
     let work = consumer
-        .read_transfer(bytes.as_slice(), &grammar(42), bytes.len())
+        .read_transfer(bytes.as_slice(), &language(42), bytes.len())
         .unwrap();
     assert_eq!(work.publish().unwrap(), WriteOutcome::Published);
     assert!(!load(&consumer, WritePolicy::Disabled).file.cache_hit());
@@ -59,18 +59,18 @@ fn transfer_rejects_bad_identity_lengths_and_truncation() {
         .unwrap();
     assert!(
         cache
-            .read_transfer(bytes.as_slice(), &grammar(43), bytes.len())
+            .read_transfer(bytes.as_slice(), &language(43), bytes.len())
             .is_err()
     );
     assert!(
         cache
-            .read_transfer(bytes.as_slice(), &grammar(42), bytes.len() - 1)
+            .read_transfer(bytes.as_slice(), &language(42), bytes.len() - 1)
             .is_err()
     );
     for end in [0, 8, 32, 216, bytes.len() - 1] {
         assert!(
             cache
-                .read_transfer(&bytes[..end], &grammar(42), bytes.len())
+                .read_transfer(&bytes[..end], &language(42), bytes.len())
                 .is_err()
         );
     }
@@ -78,13 +78,13 @@ fn transfer_rejects_bad_identity_lengths_and_truncation() {
     overflow[8..16].copy_from_slice(&u64::MAX.to_le_bytes());
     assert!(
         cache
-            .read_transfer(overflow.as_slice(), &grammar(42), bytes.len())
+            .read_transfer(overflow.as_slice(), &language(42), bytes.len())
             .is_err()
     );
     bytes[184 + 1 + "file.json".len()] ^= 1; // captured source bytes
     assert!(
         cache
-            .read_transfer(bytes.as_slice(), &grammar(42), bytes.len())
+            .read_transfer(bytes.as_slice(), &language(42), bytes.len())
             .is_err()
     );
     assert!(!load(&cache, WritePolicy::Disabled).file.cache_hit());
@@ -118,7 +118,7 @@ fn transfer_reads_consecutive_frames_without_waiting_for_eof() {
     let mut stream = OpenStream(&bytes);
     for (index, source) in ["[1]", "[2,3]"].into_iter().enumerate() {
         let pending = cache
-            .read_transfer(&mut stream, &grammar(42), lengths[index])
+            .read_transfer(&mut stream, &language(42), lengths[index])
             .unwrap();
         assert_eq!(stream.0.len(), lengths[index + 1..].iter().sum());
         assert_eq!(pending.publish().unwrap(), WriteOutcome::Published);

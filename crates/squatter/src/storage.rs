@@ -1,5 +1,5 @@
 use crate::{
-    Error, Grammar, KindId,
+    Error, KindId, Language,
     native::GrammarView,
     side_data::{PointData, PresenceCache, SideDataError},
     types::{RemappedGrammarKindId, RemappedKindId, SlabOffset},
@@ -31,12 +31,12 @@ pub(crate) const BYTE_IDS: u32 = 1 << 4;
 pub(crate) const OPTIONAL: u32 = EXTRAS | ERRORS | MISSING | SEPARATE_GRAMMAR;
 
 // Reserve room for both remapped error IDs in every grammar sharing the slab.
-pub(crate) fn id_width_flags<'grammar>(
-    grammars: impl IntoIterator<Item = &'grammar Grammar>,
+pub(crate) fn id_width_flags<'language>(
+    languages: impl IntoIterator<Item = &'language Language>,
 ) -> u32 {
-    if grammars
+    if languages
         .into_iter()
-        .all(|grammar| grammar.tables().symbol_count <= 254)
+        .all(|language| language.tables().symbol_count <= 254)
     {
         BYTE_IDS
     } else {
@@ -257,7 +257,7 @@ impl SlabAddress for ColumnPointer {
 }
 
 pub(crate) struct TreeData {
-    pub grammar: Grammar,
+    pub language: Language,
     pub layout: Layout<ColumnPointer>,
     pub bytes: NonNull<u8>,
     pub length: u32,
@@ -296,7 +296,7 @@ impl SlabWriter<'_> {
 impl TreeData {
     #[inline]
     pub fn tables(&self) -> &GrammarView {
-        self.grammar.tables()
+        self.language.tables()
     }
 
     // Column pointers are resolved on allocation and refreshed after slab relocation.
@@ -514,7 +514,7 @@ impl Tree {
     }
 
     fn allocate(
-        grammar: &Grammar,
+        language: &Language,
         layout: Layout<SlabOffset>,
         length: u32,
         borrowed: Option<&[u8]>,
@@ -537,7 +537,7 @@ impl Tree {
         };
         unsafe {
             pointer.cast::<TreeData>().as_ptr().write(TreeData {
-                grammar: grammar.clone(),
+                language: language.clone(),
                 layout: layout.resolve(bytes),
                 bytes,
                 length,
@@ -550,17 +550,17 @@ impl Tree {
         Ok(Self(pointer.cast()))
     }
 
-    pub(crate) fn empty(grammar: &Grammar, capacity: u32) -> Result<Self, Error> {
+    pub(crate) fn empty(language: &Language, capacity: u32) -> Result<Self, Error> {
         // Reserve optional columns while packing. Omit the grammar column when all
         // emitted IDs match, and flag columns when all their bits are zero.
-        let flags = TREE_FORMAT | OPTIONAL | id_width_flags([grammar]);
+        let flags = TREE_FORMAT | OPTIONAL | id_width_flags([language]);
         let layout = Layout::new(capacity, flags)?;
-        let mut tree = Self::allocate(grammar, layout, layout.end.get(), None, true)?;
+        let mut tree = Self::allocate(language, layout, layout.end.get(), None, true)?;
         let data = tree.data_mut();
         data.put_word(SlabOffset(0), 0, flags);
         data.put_word(SlabOffset(0), 1, 0);
         data.put_word(SlabOffset(0), 2, capacity);
-        data.put_word(SlabOffset(0), 3, grammar.tables().dictionary_count);
+        data.put_word(SlabOffset(0), 3, language.tables().dictionary_count);
         Ok(tree)
     }
 
@@ -584,32 +584,35 @@ impl Tree {
         self.data().has_points()
     }
 
-    pub fn grammar_cache(&self) -> Result<Vec<u8>, Error> {
-        self.data().grammar.cache()
+    pub fn language_cache(&self) -> Result<Vec<u8>, Error> {
+        self.data().language.cache()
     }
 
-    pub fn from_bytes(grammar: &Grammar, bytes: &[u8]) -> Result<Self, Error> {
-        Self::load(grammar, bytes, false, true)
+    pub fn from_bytes(language: &Language, bytes: &[u8]) -> Result<Self, Error> {
+        Self::load(language, bytes, false, true)
     }
 
-    pub fn from_bytes_safety_checked(grammar: &Grammar, bytes: &[u8]) -> Result<Self, Error> {
-        Self::load(grammar, bytes, false, false)
+    pub fn from_bytes_safety_checked(language: &Language, bytes: &[u8]) -> Result<Self, Error> {
+        Self::load(language, bytes, false, false)
     }
 
     pub fn from_bytes_borrowed<'bytes>(
-        grammar: &Grammar,
+        language: &Language,
         bytes: &'bytes [u8],
     ) -> Result<BorrowedTree<'bytes>, Error> {
         Ok(BorrowedTree {
-            tree: Self::load(grammar, bytes, true, true)?,
+            tree: Self::load(language, bytes, true, true)?,
             bytes: PhantomData,
         })
     }
 
-    pub fn from_owned_slab(grammar: &Grammar, owner: impl StableSlab) -> Result<BackedTree, Error> {
+    pub fn from_owned_slab(
+        language: &Language,
+        owner: impl StableSlab,
+    ) -> Result<BackedTree, Error> {
         let owner: Box<dyn StableSlab> = Box::new(owner);
         Ok(BackedTree {
-            tree: Self::load(grammar, owner.bytes(), true, false)?,
+            tree: Self::load(language, owner.bytes(), true, false)?,
             _owner: owner,
         })
     }
@@ -706,7 +709,7 @@ impl Tree {
             .get()
             .checked_add(trailing)
             .ok_or(Error::Overflow)?;
-        let mut replacement = Self::allocate(&data.grammar, layout, length, None, true)?;
+        let mut replacement = Self::allocate(&data.language, layout, length, None, true)?;
         unsafe {
             self.copy_columns(replacement.data().bytes.as_ptr(), layout, flags, false);
             if preserve {
@@ -817,7 +820,7 @@ impl Tree {
     pub fn repack(&self) -> Result<Self, Error> {
         let layout = Layout::new(self.group_count(), self.data().flags())?;
         let mut result = Self::allocate(
-            &self.data().grammar,
+            &self.data().language,
             layout,
             self.compact_size() as u32,
             None,
@@ -912,7 +915,7 @@ impl BackedTree {
     }
 
     pub fn detach(&self) -> Result<Tree, Error> {
-        let mut tree = Tree::from_bytes_safety_checked(&self.data().grammar, self.as_bytes())?;
+        let mut tree = Tree::from_bytes_safety_checked(&self.data().language, self.as_bytes())?;
         if let Some(cache) = self.presence_cache() {
             tree.set_presence_cache(PresenceCache::copy_from_bytes(&tree, cache.as_bytes())?)?;
         }
@@ -945,7 +948,7 @@ impl TreeData {
 }
 
 impl Tree {
-    fn load(grammar: &Grammar, bytes: &[u8], borrowed: bool, _full: bool) -> Result<Self, Error> {
+    fn load(language: &Language, bytes: &[u8], borrowed: bool, _full: bool) -> Result<Self, Error> {
         if bytes.len() < 16 || bytes.len() > u32::MAX as usize {
             return Err(Error::InvalidSlab);
         }
@@ -958,11 +961,11 @@ impl Tree {
         let groups = header(1);
         let capacity = header(2);
         if flags & !(OPTIONAL | BYTE_IDS) != TREE_FORMAT
-            || (flags & BYTE_IDS != 0 && grammar.tables().symbol_count > 254)
+            || (flags & BYTE_IDS != 0 && language.tables().symbol_count > 254)
             || groups == 0
             || groups > capacity
             || (flags & MISSING != 0 && flags & ERRORS == 0)
-            || header(3) != grammar.tables().dictionary_count
+            || header(3) != language.tables().dictionary_count
         {
             return Err(Error::InvalidSlab);
         }
@@ -971,7 +974,7 @@ impl Tree {
             return Err(Error::InvalidSlab);
         }
         let tree = Self::allocate(
-            grammar,
+            language,
             layout,
             bytes.len() as u32,
             borrowed.then_some(bytes),
@@ -1072,7 +1075,7 @@ mod tests {
         let language = unsafe {
             tree_sitter::Language::from_raw(tree_sitter_json::LANGUAGE.into_raw()().cast())
         };
-        let grammar = Grammar::new(&language).unwrap();
+        let language = Language::new(&language).unwrap();
         let layout = Layout::new(1, TREE_FORMAT | BYTE_IDS).unwrap();
         let length = layout.end.get();
         for (excess, threshold, shrink) in [
@@ -1083,7 +1086,7 @@ mod tests {
             (length - 2, u32::MAX, false),
             (length, u32::MAX, true),
         ] {
-            let mut tree = Tree::allocate(&grammar, layout, length + excess, None, true).unwrap();
+            let mut tree = Tree::allocate(&language, layout, length + excess, None, true).unwrap();
             tree.data_mut().length = length;
             tree.shrink_allocation(layout, threshold).unwrap();
             assert_eq!(

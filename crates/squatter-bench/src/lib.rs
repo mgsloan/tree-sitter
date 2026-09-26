@@ -397,7 +397,7 @@ struct FellerResult {
 }
 
 struct ParseContext {
-    grammar: tree_squatter::Grammar,
+    language: tree_squatter::Language,
     mainline: tree_sitter::Parser,
     packing_parser: tree_sitter::Parser,
     pack: PackContext,
@@ -405,10 +405,10 @@ struct ParseContext {
 }
 
 impl ParseContext {
-    fn new(language: &tree_sitter::Language, direct: bool) -> Result<Self> {
-        let grammar = tree_squatter::Grammar::new(language)?;
+    fn new(tree_sitter_language: &tree_sitter::Language, direct: bool) -> Result<Self> {
+        let language = tree_squatter::Language::new(tree_sitter_language)?;
         let feller = if direct {
-            let parser = tree_squatter::Parser::new(&grammar);
+            let parser = tree_squatter::Parser::new(&language);
             if let Err(error) = &parser {
                 ensure!(error.code == tree_squatter::Error::Language, "{error}");
             }
@@ -417,11 +417,11 @@ impl ParseContext {
             None
         };
         let mut mainline = tree_sitter::Parser::new();
-        mainline.set_language(language)?;
+        mainline.set_language(tree_sitter_language)?;
         let mut packing_parser = tree_sitter::Parser::new();
-        packing_parser.set_language(language)?;
+        packing_parser.set_language(tree_sitter_language)?;
         Ok(Self {
-            grammar,
+            language,
             mainline,
             packing_parser,
             pack: PackContext::new()?,
@@ -439,7 +439,7 @@ impl ParseContext {
             parse(parser, source, Duration::from_secs(30))
         } else {
             let mut parser = tree_sitter::Parser::new();
-            parser.set_language(&self.grammar.language())?;
+            parser.set_language(&self.language.tree_sitter_language())?;
             parse(&mut parser, source, Duration::from_secs(30))
         }
     }
@@ -447,19 +447,19 @@ impl ParseContext {
     fn packed(&mut self, source: &[u8], mode: &str, options: PackOptions) -> Result<Tree> {
         let native = self.native(source, mode == "warm-parse", true)?;
         if mode == "cold-parse" {
-            let grammar = tree_squatter::Grammar::new(&self.grammar.language())?;
-            Ok(Tree::pack_with_options(&grammar, &native, options)?)
+            let language = tree_squatter::Language::new(&self.language.tree_sitter_language())?;
+            Ok(Tree::pack_with_options(&language, &native, options)?)
         } else {
             Ok(self
                 .pack
-                .pack_with_options(&self.grammar, &native, options)?)
+                .pack_with_options(&self.language, &native, options)?)
         }
     }
 
     fn direct(&mut self, source: &[u8], mode: &str, options: PackOptions) -> Result<Tree> {
         if mode == "cold-parse" {
-            let grammar = tree_squatter::Grammar::new(&self.grammar.language())?;
-            Ok(Tree::parse_direct_with_options(&grammar, source, options)?)
+            let language = tree_squatter::Language::new(&self.language.tree_sitter_language())?;
+            Ok(Tree::parse_direct_with_options(&language, source, options)?)
         } else {
             Ok(self
                 .feller

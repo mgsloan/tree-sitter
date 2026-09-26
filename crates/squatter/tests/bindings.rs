@@ -23,7 +23,7 @@ fn error_flags_match_each_native_node() -> Result<(), Box<dyn Error>> {
             .collect();
         assert!(expected.iter().any(|node| node.2));
         assert!(expected.iter().any(|node| !node.2));
-        let grammar = tree_squatter::Grammar::new(&language)?;
+        let grammar = tree_squatter::Language::new(&language)?;
         for points in [false, true] {
             let mut tree = Tree::pack_with_options(
                 &grammar,
@@ -186,6 +186,7 @@ fn check_queries(
     mainline: &tree_sitter::Tree,
     packed: &Tree,
 ) -> Result<(), Box<dyn Error>> {
+    let grammar = tree_squatter::Language::new(language)?;
     for source_query in [
         "(_) @node",
         "(_) @a (_) @b",
@@ -201,7 +202,7 @@ fn check_queries(
     ] {
         for modification in [0, 2] {
             let mut expected_query = tree_sitter::Query::new(language, source_query)?;
-            let mut actual_query = tree_squatter::Query::new(language, source_query)?;
+            let mut actual_query = tree_squatter::Query::new(&grammar, source_query)?;
             if modification == 2 {
                 let name = actual_query.capture_names()[0].clone();
                 expected_query.disable_capture(&name);
@@ -259,19 +260,19 @@ fn check_cursor_reuse(
     tree: &tree_sitter::Tree,
 ) -> Result<(), Box<dyn Error>> {
     use tree_squatter::{Query, QueryCursor, QueryExecutionError};
-    let grammar = tree_squatter::Grammar::new(language)?;
+    let grammar = tree_squatter::Language::new(language)?;
     let mut cursor = QueryCursor::new();
     cursor.set_timeout(Some(std::time::Duration::from_secs(1)));
     for _ in 0..3 {
         let packed = Tree::pack(&grammar, tree)?;
-        let query = Query::new(language, "(_) @node")?;
+        let query = Query::new(&grammar, "(_) @node")?;
         let mut execution = cursor.execute(&query, packed.root_node(), b"");
         assert!(execution.next_capture().is_some());
     }
     // This checkout's mainline disable_pattern leaves the wildcard-root count
     // stale and asserts. Verify the intended behavior directly for this case.
     let packed = Tree::pack(&grammar, tree)?;
-    let mut query = Query::new(language, "(_) @a (_) @b")?;
+    let mut query = Query::new(&grammar, "(_) @a (_) @b")?;
     query.disable_pattern(0);
     {
         let mut execution = cursor.execute(&query, packed.root_node(), b"");
@@ -299,7 +300,7 @@ fn check_cursor_reuse(
             .next_match()
             .is_none()
     );
-    let query = Query::new(language, "(_ (_)+ @child) @parent")?;
+    let query = Query::new(&grammar, "(_ (_)+ @child) @parent")?;
     assert!(cursor.set_byte_range(1..12));
     {
         let mut execution = cursor.execute(&query, packed.root_node(), b"");
@@ -320,7 +321,7 @@ const SOURCE: &str = "{\"a\": [1, true, null], \"b\": 2}";
 
 fn fixture() -> Result<(tree_sitter::Language, tree_sitter::Tree, Tree), Box<dyn Error>> {
     let language = json_language();
-    let grammar = tree_squatter::Grammar::new(&language)?;
+    let grammar = tree_squatter::Language::new(&language)?;
     let native = parse_native(&language, SOURCE);
     let packed = Tree::pack_with_options(
         &grammar,
@@ -344,7 +345,7 @@ fn shared_navigation() -> Result<(), Box<dyn Error>> {
 #[test]
 fn group_boundaries_and_optional_columns() -> Result<(), Box<dyn Error>> {
     let (language, _, _) = fixture()?;
-    let grammar = tree_squatter::Grammar::new(&language)?;
+    let grammar = tree_squatter::Language::new(&language)?;
     // Cross the presence-index threshold and several physical groups, retaining
     // a rare boolean beside common number and punctuation symbols.
     let source = format!("[true,{}null]", "123,\n".repeat(600));
@@ -377,7 +378,7 @@ fn streaming_queries_and_cursor_reuse() -> Result<(), Box<dyn Error>> {
 #[test]
 fn owned_and_borrowed_storage() -> Result<(), Box<dyn Error>> {
     let (language, native, packed) = fixture()?;
-    let grammar = tree_squatter::Grammar::new(&language)?;
+    let grammar = tree_squatter::Language::new(&language)?;
     let compact = packed.repack()?;
     let decoded = Tree::from_bytes(&grammar, compact.as_bytes())?;
     let borrowed = Tree::from_bytes_borrowed(&grammar, compact.as_bytes())?;
@@ -407,17 +408,17 @@ fn owned_and_borrowed_storage() -> Result<(), Box<dyn Error>> {
     );
     let mut corrupted = decoded.as_bytes().to_vec();
     corrupted[0] ^= 0x80;
-    let grammar = tree_squatter::Grammar::new(&language)?;
+    let grammar = tree_squatter::Language::new(&language)?;
     assert!(Tree::from_bytes(&grammar, &corrupted).is_err());
     Ok(())
 }
 
 #[test]
 fn direct_parser_matches_mainline_packing() -> Result<(), Box<dyn Error>> {
-    use tree_squatter::{Grammar, Parser};
+    use tree_squatter::{Language, Parser};
 
     let language = c_language();
-    let grammar = Grammar::new(&language)?;
+    let grammar = Language::new(&language)?;
     let mut mainline = tree_sitter::Parser::new();
     mainline.set_language(&language)?;
     let mut direct_parser = Parser::new(&grammar)?;
@@ -475,10 +476,10 @@ fn direct_parser_matches_mainline_packing() -> Result<(), Box<dyn Error>> {
 
 #[test]
 fn direct_parser_reuses_after_failure_and_owns_grammar() -> Result<(), Box<dyn Error>> {
-    use tree_squatter::{Error as SquatError, Grammar, Parser};
+    use tree_squatter::{Error as SquatError, Language, Parser};
 
     let mut parser = {
-        let grammar = Grammar::new(&c_language())?;
+        let grammar = Language::new(&c_language())?;
         Parser::new(&grammar)?
     };
     let first = parser.parse("int before;")?;
@@ -507,12 +508,12 @@ fn direct_parser_reuses_after_failure_and_owns_grammar() -> Result<(), Box<dyn E
 
 #[test]
 fn direct_parser_rejects_unsupported_grammar() -> Result<(), Box<dyn Error>> {
-    use tree_squatter::{Error as SquatError, Grammar};
+    use tree_squatter::{Error as SquatError, Language};
 
     // This dependency generates ABI 14, which remains usable by the conversion
     // API but must never silently fall back to a mainline parser.
     let language = json_language();
-    let grammar = Grammar::new(&language)?;
+    let grammar = Language::new(&language)?;
     let failure = tree_squatter::Parser::new(&grammar)
         .err()
         .ok_or("accepted ABI 14")?;
@@ -526,10 +527,10 @@ fn direct_parser_rejects_unsupported_grammar() -> Result<(), Box<dyn Error>> {
 
 #[test]
 fn mainline_parse_keeps_error_recovery() -> Result<(), Box<dyn Error>> {
-    use tree_squatter::{Error as SquatError, Grammar};
+    use tree_squatter::{Error as SquatError, Language};
 
     let language = c_language();
-    let grammar = Grammar::new(&language)?;
+    let grammar = Language::new(&language)?;
     let mut mainline = tree_sitter::Parser::new();
     mainline.set_language(&language)?;
     let source = "int broken = ;";

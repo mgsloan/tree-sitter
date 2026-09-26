@@ -21,26 +21,26 @@ use `.tree-sitter/big-endian/` because LMDB is endian-dependent.
 use std::path::Path;
 use tree_squatter_persistence::{LoadContext, LoadOptions, Options, Persistence};
 
-fn example(language: &tree_sitter::Language)
+fn example(tree_sitter_language: &tree_sitter::Language)
     -> Result<(), Box<dyn std::error::Error>>
 {
     let cache = Persistence::open(".", Options::default())?;
-    let grammar = cache.prepare_grammar(language, "json")?;
+    let language = cache.prepare_language(tree_sitter_language, "json")?;
     let mut worker = LoadContext::default();
     let result = cache.load_with_context(
-        Path::new("src/main.rs"), &grammar, &mut worker, LoadOptions::default(),
+        Path::new("src/main.rs"), &language, &mut worker, LoadOptions::default(),
     )?;
     println!("{}", result.file.tree().root_node().kind());
     Ok(())
 }
 ```
 
-`GrammarIdentity` holds the language's name, optional version, and an XXH3
+`LanguageIdentity` holds the language's name, optional version, and an XXH3
 hash of its generated tables and identity values. The name argument supplies a
 fallback for ABI < 15 grammars. The hash does not cover
 native lexer or external scanner code, so clients must invalidate the cache when
 those implementations change.
-`GrammarIdentity::new_with_version` and `Persistence::prepare_grammar_with_version`
+`LanguageIdentity::new_with_version` and `Persistence::prepare_language_with_version`
 also accept a fallback version for grammars without embedded metadata.
 Runtime identity is currently a conservative build-time digest of native sources
 and build inputs. Squatter exports its actual compiled layout configuration.
@@ -79,7 +79,7 @@ Implemented:
   Prepared grammars share immutable tables across workers and trees; callers retain
   grammar handles between batches. `LoadContext::trim` releases packing scratch.
 - Parse-table-derived supertype dictionaries are stored once per grammar/runtime
-  in LMDB. `prepare_grammar` restores them directly from borrowed transaction bytes
+  in LMDB. `prepare_language` restores them directly from borrowed transaction bytes
   into owned tables, without an intermediate byte buffer or retained transaction.
   Missing/invalid dictionaries fall back to computation. Tree and dictionary
   publication is atomic. Linear symbol and direct-field tables remain process-local.
