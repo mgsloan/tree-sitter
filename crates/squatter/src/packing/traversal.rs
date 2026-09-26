@@ -272,11 +272,9 @@ impl Walk<'_> {
         if production == 0 {
             ptr::null()
         } else {
-            unsafe {
-                self.tables
-                    .alias_sequences
-                    .add(production as usize * self.tables.max_alias_sequence_length as usize)
-            }
+            self.tables
+                .alias_sequences
+                .wrapping_add(production as usize * self.tables.max_alias_sequence_length as usize)
         }
     }
 
@@ -434,7 +432,7 @@ impl Walk<'_> {
             frame.child_mask = child_mask;
             let mut position = node.position;
             for index in 0..facts.children as usize {
-                let child = Subtree(unsafe { children.add(index) });
+                let child = Subtree(children.wrapping_add(index));
                 let extra = if self.points {
                     let (padding, size, extra) = child.lengths();
                     if index != 0 {
@@ -763,7 +761,7 @@ pub(super) fn pack(
         }
         frame.remaining -= 1;
         let index = frame.remaining as usize;
-        let mut subtree = Subtree(unsafe { frame.children.add(index) });
+        let mut subtree = Subtree(frame.children.wrapping_add(index));
         let mut facts = subtree.facts();
         let position_byte = if walk.points {
             0
