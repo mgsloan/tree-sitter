@@ -6,6 +6,8 @@ same operation. Differences should be limited to:
 - Additional capabilities, such as packing, persistence, scans, and side data.
 - Behavior needed for those capabilities, such as operating without a point cache.
 - Necessary representation changes, such as a wrapper around `Language`.
+- Retained query capture-event behavior and finite-limit result selection,
+  as described below.
 - Newtype wrappers around primitive values, including the planned `ChildIx(u32)`,
   `NamedChildIx(u32)`, `DescendantIx(u32)`, `CaptureIx(u32)`, `MatchId(u32)`,
   and `MatchCaptureIx(u32)`.
@@ -45,9 +47,9 @@ regardless of cost.
   an already available packed child is O(1); reading its name additionally scans
   and validates the grammar's field-name string.
 - Repeated indexed lookup across every packed child can take quadratic time.
-  Prefer one children traversal and direct field access. Treat
-  `field_name_for_child` and `field_name_for_named_child` as pending cost-review
-  decisions rather than unconditional additions.
+  Prefer one children traversal and direct field access. Offer
+  `field_name_for_child` and `field_name_for_named_child` only through `NodeLike`,
+  documenting their scanning cost; do not add inherent packed-node methods.
 - Return plain `Iterator`s from child enumeration. Do not count children up
   front to implement `ExactSizeIterator`. Use `size_hint() == (0, None)`;
   callers that need a count can explicitly consume the iterator with `count()`.
@@ -267,8 +269,8 @@ let children = root.children(&mut cursor);
 let named = root.named_children(&mut cursor);
 let by_id = root.children_by_field_id(field, &mut cursor);
 let by_name = root.children_by_field_name("body", &mut cursor);
-let field_name = root.field_name_for_child(ChildIx::new(0));
-let named_field_name = root.field_name_for_named_child(NamedChildIx::new(0));
+let field_name = NodeLike::field_name_for_child(&root, ChildIx::new(0));
+let named_field_name = NodeLike::field_name_for_named_child(&root, NamedChildIx::new(0));
 
 let field_name = child.field_name();
 ```
@@ -280,9 +282,9 @@ let field_name = child.field_name();
   Return plain iterators with `size_hint() == (0, None)`, including named and
   field-filtered enumeration; do not promise `ExactSizeIterator`. Each iterator above is an independent example; consume
   or drop it before borrowing the cursor again.
-- Add name-based enumeration. Review child-index field-name accessors before
-  adding them; if included, they take `ChildIx` or `NamedChildIx` respectively
-  and document their scanning cost.
+- Add name-based enumeration. Add child-index field-name accessors only to
+  `NodeLike`, taking `ChildIx` or `NamedChildIx` respectively. Keep them off the
+  inherent packed-node API to encourage traversal and direct child field access.
 - Keep direct node field inspection as an addition.
 - Do not add `children_iter()` or cursor-free named/field variants. Use the shared
   cursor-taking child methods or manually walk the cursor. Both avoid an initial
@@ -407,7 +409,7 @@ impl Clone for Tree { /* preserve tree contents and optional side data */ }
 - Exclude `root_node_with_offset` and offset views. Nodes report coordinates
   stored in the tree; no per-view coordinate translation is planned.
 - Preserve optional point data. Without it, document the existing row-zero,
-  byte-as-column behavior across all point-dependent APIs; with it, require parity.
+  byte-as-column behavior across all point-dependent APIs.
 - Add cloning with compatible observable semantics. Copying cost may differ;
   preserve side data and keep fallible copying/detachment as additions.
 
@@ -695,8 +697,11 @@ while let Some((found, index)) = captures.next() {
   must remain possible; byte slices remain a convenient implementation.
 - Add `QueryMatch::captures()` and `remove()` with compatible borrowing and
   removal behavior. Preserve capture/node lifetimes while adapting the executor.
-- Match capture ordering, snapshot contents, and duplicate behavior. A separately
-  named provisional-event extension may retain the current weaker contract.
+- Preserve current capture ordering, provisional snapshot contents, and duplicate
+  behavior in `captures`, adapting `next_capture` without changing its execution
+  semantics. Document the differences from tree-sitter; no separately named
+  provisional-event API or strict source-order guarantee is required. Preserve
+  coverage of completed-match captures.
 - Keep explicit execution diagnostics without making valid queries fail because
   an optimization is unavailable.
 - The snippets show independent iteration modes. Drop an iterator before borrowing
@@ -745,8 +750,6 @@ impl QueryCursor {
     pub fn set_containing_point_range(&mut self, range: Range<Point>) -> &mut Self;
     pub fn set_max_start_depth(&mut self, depth: Option<u32>) -> &mut Self;
 
-    pub fn try_set_byte_range(&mut self, range: Range<usize>) -> bool;
-    pub fn try_set_point_range(&mut self, range: Range<Point>) -> bool;
     pub fn set_optimized(&mut self, enabled: bool);
 }
 let options = QueryCursorOptions::new().progress_callback(&mut progress);
@@ -754,8 +757,10 @@ let matches = cursor.matches_with_options(&query, root, text_provider, options);
 // captures_with_options uses the same options interface
 ```
 
-- Restore chaining and use `None` to remove the depth limit. Keep stricter range
-  validation under additional checked setters; audit boundary conversion behavior.
+- Follow tree-sitter's Rust wrapper: range setters return `&mut Self` for chaining
+  and discard the internal acceptance result. Rejected ranges leave the stored
+  range unchanged. Do not add separate `try_set_*` methods. Use `None` to remove
+  the depth limit. Coordinate narrowing remains a separate decision.
 - Add containing ranges, the limit getter, and range setters on result iterators.
 - Support bounded branching/rootless queries through a compatible fallback when
   a specialized plan is ineligible.
@@ -763,9 +768,8 @@ let matches = cursor.matches_with_options(&query, root, text_provider, options);
   `set_timeout`; callers can check a deadline in the progress callback. Poll
   during execution so a long search with no results can still be cancelled.
   Explicit status and optimization control remain additions.
-- Audit finite-limit eviction behavior against tree-sitter's public contract.
-  Match guaranteed behavior; distinguish unspecified scheduling differences from
-  promises made by the API.
+- Preserve current finite-limit execution behavior; no dedicated eviction or
+  result-subset compatibility audit is planned.
 
 ## Shared navigation traits
 
@@ -813,6 +817,8 @@ pub trait NodeLike<'tree>: Copy + Eq {
     fn named_child(&self, index: NamedChildIx) -> Option<Self>;
     fn child_count(&self) -> ChildIx;
     fn named_child_count(&self) -> NamedChildIx;
+    fn field_name_for_child(&self, index: ChildIx) -> Option<&'tree str>;
+    fn field_name_for_named_child(&self, index: NamedChildIx) -> Option<&'tree str>;
 }
 ```
 
@@ -824,6 +830,8 @@ pub trait NodeLike<'tree>: Copy + Eq {
   results.
 - Update both implementations together. Retain subtree scans as additions, but
   do not add a separate cursor-free children interface to the trait.
+- Expose indexed field-name lookup through the trait only for packed nodes;
+  the tree-sitter implementation can forward to its inherent accessors.
 
 ## Packed storage, scans, and side data
 
@@ -883,7 +891,7 @@ new differential testing.
 
 - **Missing points:** tree-squatter returns row zero with byte offset as column.
   Keep optional points and document their effect on accessors, ranges, lookups,
-  and queries. Require ordinary coordinate parity when points are attached.
+  and queries.
 - **Cache loading:** slab loading does not restore separate side data. Retain
   this behavior and expose cache availability.
 - **Missing presence cache:** scanning still works. Preserve identical results
@@ -898,18 +906,21 @@ new differential testing.
   Tree-squatter intentionally omits edit registration, changed-range reporting,
   and incremental reuse; parsed trees are fresh snapshots.
 - **Capture events:** order, provisional snapshot contents, and duplicate counts
-  can differ. Restore the compatible capture contract; name provisional events
-  separately if retained.
+  can differ. Preserve these differences in the new `captures` API and document
+  them; retain the current completed-capture coverage contract.
 - **Bounded queries:** branching/rootless patterns can report `UnsupportedRange`.
   Implement a compatible fallback rather than exposing optimizer limitations.
 - **Property metadata:** `set!` and `is?`/`is-not?` currently appear among general
   predicates. Move them to the corresponding dedicated metadata interfaces.
-- **Range validation:** tree-squatter rejects invalid or out-of-width inputs;
-  tree-sitter's Rust wrapper casts coordinates to native widths and returns the
-  cursor. Audit shared boundary behavior and retain strict checks separately.
+- **Range validation:** both implementations reject reversed ranges without
+  changing the stored range, after interpreting a zero end as unbounded.
+  Tree-squatter also rejects values outside `u32`; tree-sitter's Rust wrapper
+  truncates byte offsets and point components to `u32` and returns the cursor
+  without exposing the native setter's success flag. Decide whether shared
+  setters should retain checked conversion or reproduce truncation.
 - **Finite match limits:** discovery/eviction order can retain a different valid
-  subset. Match guaranteed behavior and document any remaining scheduling details
-  that tree-sitter leaves unspecified.
+  subset. Retain and document this behavior; no dedicated compatibility audit
+  is planned.
 - **Cancellation:** the current API uses timeout/status instead of Rust callbacks.
   Replace `set_timeout` with callback support and compatible stopping/resumption
   behavior; exact callback cadence and work completed before cancellation may
@@ -980,9 +991,11 @@ and the `tree-squatter only` label, not an artificial upstream counterpart.
 
 Use existing navigation, binding, boundary, and query differential tests. Normalize
 newtypes and representation-specific identities, but preserve contractual ordering
-and duplicates. Cover optional side data, malformed packed input trees, empty and
-missing nodes, aliases, range boundaries, limits, cancellation, and both optimized
-and unoptimized execution.
+and duplicates for completed results. For capture events, retain the existing
+coverage checks without requiring tree-sitter's event order, snapshots, or
+multiplicity. Cover optional side data, malformed packed input trees, empty and
+missing nodes, aliases, range boundaries, cancellation, and both optimized and
+unoptimized execution.
 
 For the documentation commits, check rendered rustdoc, intra-doc links, and
 affected doctests. Review the copy commit against its recorded source revision,
