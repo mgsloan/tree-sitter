@@ -5,7 +5,6 @@ use std::ffi::c_void;
 unsafe extern "C" {
     fn sq_test_dictionaries();
     fn sq_test_grammar_limits();
-    fn sq_test_terminal_aliases();
     fn sq_test_lexer_fallback();
     fn sq_test_unsupported_parsers();
     fn sq_test_parser_language() -> *const c_void;
@@ -65,7 +64,6 @@ fn synthetic_grammar_dictionaries_aliases_and_limits() {
     assert_eq!(slab_format(0xfc, 0xab), 0xfcab_0000);
     unsafe {
         sq_test_dictionaries();
-        sq_test_terminal_aliases();
         sq_test_grammar_limits();
         sq_test_unsupported_parsers();
     }
@@ -189,7 +187,38 @@ fn synthetic_supertype_emission_and_persistence() {
 }
 
 #[test]
-fn byte_ids_use_separate_columns() {
+fn id_width_covers_all_grammars_and_reserved_errors() {
+    let small = Fixture::symbols(16);
+    let boundary = Fixture::symbols(254);
+    let wide = Fixture::symbols(255);
+    assert_eq!(
+        id_width_flags([&small.grammar, &boundary.grammar]),
+        BYTE_IDS
+    );
+    assert_eq!(id_width_flags([&small.grammar, &wide.grammar]), 0);
+    assert_eq!(id_width_flags([&wide.grammar, &small.grammar]), 0);
+    for fixture in [&boundary, &wide] {
+        let count = fixture.grammar.tables().symbol_count as u16;
+        let mut builder = Builder::new(&fixture.grammar, 1, false).unwrap();
+        builder
+            .emit(&leaf(count + 1, count + 1, 0, 1 | 8), 0)
+            .unwrap();
+        builder.emit(&leaf(count, count, 0, 1 | 8), 0).unwrap();
+        let tree = builder.finish(PackOptions::default()).unwrap();
+        assert_eq!(
+            tree.data().layout.symbol_width,
+            if count == 254 { 1 } else { 2 }
+        );
+        let tree = Tree::from_bytes(&fixture.grammar, tree.as_bytes()).unwrap();
+        assert_eq!(tree.data().symbol_index(0).get(), count + 1);
+        assert_eq!(tree.data().grammar_index(0).get(), count + 1);
+        assert_eq!(tree.data().symbol_index(1).get(), count);
+        assert_eq!(tree.data().grammar_index(1).get(), count);
+    }
+}
+
+#[test]
+fn symbol_ids_use_byte_columns() {
     let fixture = Fixture::symbols(16);
     let grammar = &fixture.grammar;
     let mut builder = Builder::new(grammar, 1, false).unwrap();
@@ -210,34 +239,32 @@ fn byte_ids_use_separate_columns() {
     builder.emit(&leaf(0, 0, 0, 1), 0).unwrap();
     let tree = builder.finish(PackOptions::default()).unwrap();
     let data = tree.data();
-    assert_eq!(
-        data.flags() & (BYTE_IDS | SEPARATE_GRAMMAR),
-        BYTE_IDS | SEPARATE_GRAMMAR
-    );
-    assert_eq!(data.layout.symbol_width, 1);
+    assert_ne!(data.flags() & SEPARATE_GRAMMAR, 0);
     let symbols = data.layout.symbol.offset(data.bytes);
     let originals = data.layout.grammar.offset(data.bytes);
-    assert!(originals >= symbols + tree.slot_count() as usize);
+    assert_eq!(
+        originals,
+        data.layout.last.offset(data.bytes) + bit_bytes(4 * GROUP_SIZE) as usize
+    );
     for slot in 0..3 * GROUP_SIZE {
-        let original = (slot % 4) as u8;
+        let original = (slot % 4) as u16;
         assert_eq!(
-            tree.as_bytes()[symbols + slot as usize],
+            data.symbol_index(slot).get(),
             if original < 2 { 0 } else { original }
         );
-        assert_eq!(tree.as_bytes()[originals + slot as usize], original);
+        assert_eq!(data.grammar_index(slot).get(), original);
     }
     assert_eq!(
         Layout::new(4, TREE_FORMAT | BYTE_IDS | SEPARATE_GRAMMAR)
             .unwrap()
-            .end,
-        Layout::new(4, TREE_FORMAT).unwrap().end,
+            .end
+            .get(),
+        Layout::new(4, TREE_FORMAT | BYTE_IDS).unwrap().end.get() + 4 * GROUP_SIZE,
     );
-    for flag in [BYTE_IDS, SEPARATE_GRAMMAR] {
-        let mut bytes = tree.as_bytes().to_vec();
-        bytes[..4].copy_from_slice(&(data.flags() & !flag).to_le_bytes());
-        assert!(Tree::from_bytes(grammar, &bytes).is_err());
-        assert!(Tree::from_bytes_safety_checked(grammar, &bytes).is_err());
-    }
+    let mut bytes = tree.as_bytes().to_vec();
+    bytes[..4].copy_from_slice(&(data.flags() & !SEPARATE_GRAMMAR).to_le_bytes());
+    assert!(Tree::from_bytes(grammar, &bytes).is_err());
+    assert!(Tree::from_bytes_safety_checked(grammar, &bytes).is_err());
     for column in [symbols, originals] {
         let mut bytes = tree.as_bytes().to_vec();
         bytes[column] = u8::MAX;
@@ -246,11 +273,47 @@ fn byte_ids_use_separate_columns() {
 }
 
 #[test]
-fn synthetic_symbol_encodings_and_optional_columns() {
+fn matching_ids_omit_grammar_before_flag_columns() {
+    for count in [16, 300] {
+        let fixture = Fixture::symbols(count);
+        for flags in [0, 2, 8, 2 | 8, 4 | 8, 2 | 4 | 8] {
+            for repack in [false, true] {
+                let mut builder = Builder::new(&fixture.grammar, 4, false).unwrap();
+                for index in 0..2 * GROUP_SIZE {
+                    builder
+                        .emit(
+                            &leaf(2, 2, 0, u8::from(index == 0) | flags),
+                            builder.distance(),
+                        )
+                        .unwrap();
+                }
+                builder.emit(&leaf(2, 2, 0, 1), 0).unwrap();
+                let tree = builder
+                    .finish(PackOptions {
+                        repack,
+                        ..Default::default()
+                    })
+                    .unwrap();
+                assert_eq!(tree.data().flags() & SEPARATE_GRAMMAR, 0);
+                assert_eq!(tree.data().layout.grammar.0, tree.data().layout.extra.0);
+                let tree = Tree::from_bytes(&fixture.grammar, tree.as_bytes()).unwrap();
+                for node in tree.root_node().preorder().nodes().skip(1) {
+                    assert_eq!(node.kind_id().get(), 2);
+                    assert_eq!(node.grammar_id().get(), 2);
+                    assert_eq!(node.is_extra(), flags & 2 != 0);
+                    assert_eq!(node.is_missing(), flags & 4 != 0);
+                    assert_eq!(node.has_error(), flags & 8 != 0);
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn synthetic_symbol_ids_and_optional_columns() {
     for count in [16, 254, 255, 300, 32766, 32767] {
         let fixture = Fixture::symbols(count);
         let grammar = &fixture.grammar;
-        assert_eq!(grammar.tables().separate != 0, count == 32767);
         for flags in [0, 2, 8, 2 | 8, 4 | 8, 2 | 4 | 8] {
             for points in [false, true] {
                 let mut builder = Builder::new(grammar, 1, points).unwrap();
@@ -280,10 +343,6 @@ fn synthetic_symbol_encodings_and_optional_columns() {
                         ..Default::default()
                     })
                     .unwrap();
-                assert_eq!(
-                    tree.data().layout.symbol_width,
-                    if count <= 254 { 1 } else { 2 }
-                );
                 for pass in 0..3 {
                     for node in tree.root_node().preorder().nodes().skip(1) {
                         let slot = node.slot().get();
@@ -329,7 +388,7 @@ fn synthetic_symbol_encodings_and_optional_columns() {
                 };
                 let offset = offset.offset(tree.data().bytes);
                 if tree.data().layout.symbol_width == 1 {
-                    // ID 1 aliases ID 0, so it cannot appear in the symbol column.
+                    // Symbol 1 maps to public symbol 0, so it is invalid as a display ID.
                     invalid[offset] = 1;
                 } else {
                     invalid[offset..offset + 2].copy_from_slice(&u16::MAX.to_le_bytes());
@@ -481,7 +540,7 @@ fn column_growth_compaction_and_little_endian_encoding() {
         let mut tree = Tree::empty(&fixture.grammar, 3).unwrap();
         assert_eq!(
             tree.data().flags(),
-            TREE_FORMAT | OPTIONAL | if count == 16 { BYTE_IDS } else { 0 }
+            TREE_FORMAT | OPTIONAL | id_width_flags([&fixture.grammar])
         );
         tree.data_mut().put_word(SlabOffset(0), 1, 2);
         exercise_columns(&mut tree, true);
@@ -554,16 +613,14 @@ fn presence_ignores_waste_and_invalid_symbols() {
                 } else {
                     1
                 };
-                let code = unsafe { *grammar.tables().default_codes.add(original as usize) };
+                let symbol = unsafe { *grammar.tables().public_symbols.add(original as usize) };
+                let slot = group * GROUP_SIZE + lane;
                 if data.layout.symbol_width == 1 {
-                    data.put_byte(
-                        data.layout.symbol,
-                        group * GROUP_SIZE + lane,
-                        (code >> 8) as u8,
-                    );
-                    data.put_byte(data.layout.grammar, group * GROUP_SIZE + lane, code as u8);
+                    data.put_byte(data.layout.symbol, slot, symbol as u8);
+                    data.put_byte(data.layout.grammar, slot, original as u8);
                 } else {
-                    data.put_short(data.layout.symbol, group * GROUP_SIZE + lane, code);
+                    data.put_short(data.layout.symbol, slot, symbol);
+                    data.put_short(data.layout.grammar, slot, original as u16);
                 }
             }
         }

@@ -199,11 +199,6 @@ static SQGrammar *grammar_new(const TSLanguage *language, const void *grammar_ca
   atomic_init(&grammar->references, 1);
   atomic_init(&grammar->direct_language, NULL);
   grammar->language = ts_language_copy(language);
-  if (!sq_native_symbol_table_init(language, &grammar->symbols, error)) {
-    sq_native_grammar_delete(grammar);
-    return NULL;
-  }
-
   uint32_t symbols = language->symbol_count + language->alias_count;
   size_t space = (size_t)symbols + 2;
   // All four tables have the same lifetime. Share their allocation and collect
@@ -306,21 +301,12 @@ static SQGrammar *grammar_new(const TSLanguage *language, const void *grammar_ca
       .supertypes = grammar->supertypes,
       .supertype_indexes = grammar->supertype_indexes,
       .supertype_masks = grammar->supertype_grammar ? grammar->supertype_grammar->masks : NULL,
-      .grammar_ids = grammar->symbols.grammar_ids,
-      .default_codes = grammar->symbols.default_codes,
-      .counts = grammar->symbols.counts,
-      .defaults = grammar->symbols.defaults,
-      .grammar_codes = grammar->symbols.grammar_codes,
       .symbol_count = symbols,
       .grammar_symbol_count = language->symbol_count,
       .field_count = language->field_count,
       .supertype_count = grammar->supertype_count,
       .dictionary_count = grammar->supertype_grammar ? grammar->supertype_grammar->count : 0,
       .dictionary_words = grammar->supertype_grammar ? grammar->supertype_grammar->words : 0,
-      .encoding = grammar->symbols.encoding,
-      .dictionary_length = grammar->symbols.length,
-      .symbol_shift = grammar->symbols.shift,
-      .separate = grammar->symbols.separate,
       .production_fields = grammar->production_fields,
       .direct_fields = grammar->direct_fields,
       .alias_sequences = language->alias_sequences,
@@ -372,7 +358,6 @@ void sq_native_grammar_delete(SQGrammar *grammar) {
   tf_language_free(atomic_load_explicit(&grammar->direct_language, memory_order_relaxed));
   sq_native_supertype_grammar_delete(grammar->supertype_grammar);
   ts_language_delete(grammar->language);
-  sq_native_symbol_table_delete(&grammar->symbols);
   free(grammar->supertypes);
   free(grammar->production_fields);
   free(grammar->direct_fields);

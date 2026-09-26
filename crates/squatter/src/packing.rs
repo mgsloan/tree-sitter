@@ -186,11 +186,7 @@ impl Builder {
             extra: 0,
             missing: 0,
             has_error: false,
-            optional: if grammar.tables().encoding == 2 {
-                SEPARATE_GRAMMAR
-            } else {
-                0
-            },
+            optional: 0,
             points,
         })
     }
@@ -271,12 +267,6 @@ impl Builder {
                     .resize(capacity, self.tree.data().flags(), 0, false)?;
             }
 
-            let code = self
-                .tree
-                .data()
-                .tables()
-                .symbol_code(event.symbol, event.grammar)
-                .ok_or(Error::Language)?;
             let slot = self.distance();
             if let Some(points) = &mut self.points {
                 if slot % GROUP_SIZE == 0 {
@@ -296,20 +286,17 @@ impl Builder {
             }
             let data = self.tree.data_mut();
             let layout = data.layout;
-            let separate = data.tables().separate != 0;
             let mut writer = data.writer();
             if layout.symbol_width == 1 {
                 writer.put_byte(layout.symbol, slot, event.symbol.get() as u8);
                 writer.put_byte(layout.grammar, slot, event.grammar.get() as u8);
             } else {
-                writer.put_short(layout.symbol, slot, code.get());
+                writer.put_short(layout.symbol, slot, event.symbol.get());
+                writer.put_short(layout.grammar, slot, event.grammar.get());
             }
             writer.put_short(layout.field, slot, event.field.map_or(0, FieldId::get));
-            if separate {
-                writer.put_short(layout.grammar, slot, event.grammar.get());
-                if event.grammar.get() != code.get() {
-                    self.optional |= SEPARATE_GRAMMAR;
-                }
+            if event.grammar.get() != event.symbol.get() {
+                self.optional |= SEPARATE_GRAMMAR;
             }
 
             self.pending[self.count as usize] = Pending {

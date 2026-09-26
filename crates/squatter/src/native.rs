@@ -1,6 +1,6 @@
 use crate::{
     Error, FieldId, GrammarKindId, KindId, QueryError,
-    types::{PatternIndex, RemappedGrammarKindId, RemappedKindId, SymbolCode},
+    types::{PatternIndex, RemappedGrammarKindId, RemappedKindId},
 };
 use std::{
     ffi::{CStr, c_char, c_void},
@@ -98,21 +98,12 @@ pub(crate) struct GrammarView {
     pub supertypes: *const u16,
     pub supertype_indexes: *const u16,
     pub supertype_masks: *const u64,
-    pub grammar_ids: *const u16,
-    pub default_codes: *const u16,
-    pub counts: *const u16,
-    pub defaults: *const u16,
-    pub grammar_codes: *const u16,
     pub symbol_count: u32,
     pub grammar_symbol_count: u32,
     pub field_count: u32,
     pub supertype_count: u32,
     pub dictionary_count: u32,
     pub dictionary_words: u32,
-    pub encoding: u32,
-    pub dictionary_length: u32,
-    pub symbol_shift: u8,
-    pub separate: u8,
     pub production_fields: *const Range,
     pub direct_fields: *const u16,
     pub alias_sequences: *const u16,
@@ -136,42 +127,6 @@ impl GrammarView {
             return &[];
         }
         unsafe { std::slice::from_raw_parts(self.supertype_masks, length) }
-    }
-
-    pub fn symbol_code(
-        &self,
-        display: RemappedKindId,
-        original: RemappedGrammarKindId,
-    ) -> Option<SymbolCode> {
-        let (display, original) = (display.get(), original.get());
-        unsafe {
-            if *self.public_symbols.add(original as usize) == display {
-                return Some(SymbolCode(*self.default_codes.add(original as usize)));
-            }
-            if self.separate != 0 {
-                return Some(SymbolCode(display));
-            }
-            if self.encoding == 2 {
-                return Some(SymbolCode((display << 8) | original));
-            }
-            let count = *self.counts.add(display as usize);
-            if self.encoding == 1 {
-                let variant = if count == 1 {
-                    0
-                } else {
-                    *self.grammar_codes.add(original as usize)
-                };
-                if variant == 0 && (count != 1 || *self.defaults.add(display as usize) != original)
-                {
-                    return None;
-                }
-                return Some(SymbolCode((display << self.symbol_shift) | variant));
-            }
-            let start = display << self.symbol_shift;
-            (0..count)
-                .find(|variant| *self.grammar_ids.add((start + variant) as usize) == original)
-                .map(|variant| SymbolCode(start + variant))
-        }
     }
 
     #[inline]

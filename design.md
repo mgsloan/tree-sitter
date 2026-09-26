@@ -21,7 +21,6 @@ are wasted and it gets put in the next group.
 * Struct-of-arrays `Group` with `group_capacity`
 * Struct-of-arrays `Node` with `slot_capacity`
 * Symbol presence bitmaps
-* Optional sparse grammar-symbol overrides
 
 # Conversion + compaction
 
@@ -48,12 +47,13 @@ version in bits 23–16, and flags in bits 15–0. Types are `FF` for trees,
 All storage versions are currently 0.
 
 Tree version 0 uses 32-slot groups, 16-bit span deltas and supertype entries,
-and 8-byte column alignment. Its optional columns, in storage order, are extra,
-error, missing, and grammar, with flags in bits 3, 2, 1, and 0 respectively.
-Flag bit 4 selects separate byte-wide symbol and grammar columns when both IDs,
-including the reserved error IDs, fit in eight bits. The grammar column is always
-present in this layout. Other grammars retain 16-bit symbol codes and an optional
-16-bit grammar column when the combined encoding would overflow.
+and 8-byte column alignment. Symbol IDs and original grammar-symbol IDs use
+separate columns with a shared width. Flag bit 4 selects one-byte IDs when every
+grammar in the slab has at most 254 symbols and aliases, leaving room for both
+remapped error IDs. Otherwise both columns use two-byte IDs. The optional columns,
+in storage order, are grammar, extra, error, and missing, with flags in bits
+0, 3, 2, and 1 respectively. The grammar
+column is omitted when all emitted nodes have equal display and original IDs.
 Presence, point, and grammar dictionary slabs have no flags. Unrecognized
 types, versions, or flags are rejected.
 
@@ -92,20 +92,18 @@ struct Node {
   /// Subtract both components from end_point_base.
   end_point: u16,
 
-  /// Raw symbol after aliasing; public-symbol mapping happens on read. The number of bits needed is
-  /// known based on the grammar.
-  ///
-  /// Error symbols occupy the two values immediately after the grammar's real symbol range.
-  display_symbol: VarBits,
+  /// Public symbol after aliasing, with error IDs remapped after the real symbols.
+  display_symbol: u8 | u16,
+  /// Original grammar symbol; omitted slab-wide when equal to display_symbol.
+  grammar_symbol: u8 | u16,
 
-  /// ID of the field for this node within the parent. The number of bits needed is known based on
-  /// the grammar.
-  field_id: VarBits,
+  /// ID of the field for this node within the parent.
+  field_id: u16,
 
   /// When there are 8 or fewer hidden supertypes, stores a bit mask for which of them occur in the
   /// ancestors. When there are more than 8, all possible combinations are analyzed from the grammar
   /// and given IDs that are used for this field.
-  supertypes: VarBits,
+  supertypes: u16,
 }
 
 /// A struct of this layout is not used - instead each field is packed into columns.
@@ -123,14 +121,13 @@ struct Group {
 }
 ```
 
-The optional columns end the core slab in the order `extra`,
-`error`, `missing`, `grammar_id`. `extra` and
+The optional columns end the core slab in the order `grammar_id`,
+`extra`, `error`, `missing`. `extra` and
 `missing` have one bit per physical slot; `error` has one bit per group. Each flag column is
 omitted when all its values are zero, as recorded by `SQ_EXTRAS`, `SQ_MISSING`, and
 `SQ_ERRORS` in the header. Missing nodes imply the error column is present.
-The builder reserves the three flag columns and, for fallback grammars, the
-grammar-ID column. Finalization removes unused columns. With unchanged group
-capacity, only retained optional columns move;
+The builder reserves all four optional columns. Finalization removes unused
+columns. With unchanged group capacity, only retained optional columns move;
 the allocation is shrunk when the unused tail is at least 256 bytes.
 Smaller tails are excluded from serialization but retained in the allocation.
 Points and symbol-presence data use separate sidecar allocations.
@@ -144,17 +141,13 @@ Tree-sitter's hidden nodes are omitted entirely since they are not helpful for
 the flat representation without incremental reparse. Their effects are recorded
 in `supertypes`, `is_last_child`, and `field`.
 
-When both IDs fit in eight bits, separate byte columns store public display
-IDs and original grammar IDs. Otherwise, symbol codes combine display IDs with
-grammar selectors when they fit in sixteen bits, using shared or local selector
-dictionaries.
-
-When combined codes cannot fit, the symbol column stores display IDs and a
-separate u16 column stores original grammar IDs. The `SQ_SEPARATE_GRAMMAR`
-header flag records its presence. A fallback tree with identical display and
-grammar IDs omits this column and reads grammar IDs from the symbol column.
-The grammar-ID column is last so omitting it moves no other columns before
-finalization reserves and builds the symbol-presence index.
+The grammar-ID column is first in the optional tail. Packing tracks whether any
+emitted node has different display and original IDs; finalization omits the column
+when none do, moving retained flag columns earlier. Reads then use the symbol
+column for both IDs. This requires no grammar analysis or second traversal.
+For forests, width is chosen from all participating grammars before packing.
+Every present ID column has that constant stride across grammar regions. Omission
+of the grammar-ID column is also a slab-wide decision.
 
 Little-endian representation is used on big-endian systems. This is
 for simplicity and support for inter-machine communication. Since

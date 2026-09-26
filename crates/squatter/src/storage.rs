@@ -2,7 +2,7 @@ use crate::{
     Error, Grammar, KindId,
     native::GrammarView,
     side_data::{PointData, PresenceCache, SideDataError},
-    types::{RemappedGrammarKindId, RemappedKindId, SlabOffset, SymbolCode},
+    types::{RemappedGrammarKindId, RemappedKindId, SlabOffset},
 };
 use std::{
     alloc::{Layout as Allocation, alloc, alloc_zeroed, dealloc, handle_alloc_error, realloc},
@@ -30,6 +30,20 @@ pub(crate) const SEPARATE_GRAMMAR: u32 = 1;
 pub(crate) const BYTE_IDS: u32 = 1 << 4;
 pub(crate) const OPTIONAL: u32 = EXTRAS | ERRORS | MISSING | SEPARATE_GRAMMAR;
 
+// Reserve room for both remapped error IDs in every grammar sharing the slab.
+pub(crate) fn id_width_flags<'grammar>(
+    grammars: impl IntoIterator<Item = &'grammar Grammar>,
+) -> u32 {
+    if grammars
+        .into_iter()
+        .all(|grammar| grammar.tables().symbol_count <= 254)
+    {
+        BYTE_IDS
+    } else {
+        0
+    }
+}
+
 pub fn representation_id() -> u64 {
     TREE_FORMAT as u64
 }
@@ -48,10 +62,10 @@ pub(crate) struct Layout<Column> {
     pub field: Column,
     pub supertype: Column,
     pub last: Column,
+    pub grammar: Column,
     pub extra: Column,
     pub error: Column,
     pub missing: Column,
-    pub grammar: Column,
     pub end: SlabOffset,
 }
 
@@ -94,6 +108,11 @@ impl Layout<SlabOffset> {
             field: column(aligned_bytes(slots, 2)),
             supertype: column(aligned_bytes(slots, 2)),
             last: column(bit_bytes(slots)),
+            grammar: column(if flags & SEPARATE_GRAMMAR != 0 {
+                aligned_bytes(slots, symbol_width)
+            } else {
+                0
+            }),
             extra: column(if flags & EXTRAS != 0 {
                 bit_bytes(slots)
             } else {
@@ -106,11 +125,6 @@ impl Layout<SlabOffset> {
             }),
             missing: column(if flags & MISSING != 0 {
                 bit_bytes(slots)
-            } else {
-                0
-            }),
-            grammar: column(if flags & SEPARATE_GRAMMAR != 0 {
-                aligned_bytes(slots, symbol_width)
             } else {
                 0
             }),
@@ -134,10 +148,10 @@ impl Layout<SlabOffset> {
             field: ColumnPointer(self.field.pointer(bytes)),
             supertype: ColumnPointer(self.supertype.pointer(bytes)),
             last: ColumnPointer(self.last.pointer(bytes)),
+            grammar: ColumnPointer(self.grammar.pointer(bytes)),
             extra: ColumnPointer(self.extra.pointer(bytes)),
             error: ColumnPointer(self.error.pointer(bytes)),
             missing: ColumnPointer(self.missing.pointer(bytes)),
-            grammar: ColumnPointer(self.grammar.pointer(bytes)),
             end: self.end,
         }
     }
@@ -165,6 +179,14 @@ impl<Column: Copy> Layout<Column> {
             (self.supertype, aligned_bytes(slots, 2) as usize),
             (self.last, bit_bytes(slots) as usize),
             (
+                self.grammar,
+                if flags & SEPARATE_GRAMMAR != 0 {
+                    aligned_bytes(slots, self.symbol_width) as usize
+                } else {
+                    0
+                },
+            ),
+            (
                 self.extra,
                 if flags & EXTRAS != 0 {
                     bit_bytes(slots) as usize
@@ -184,14 +206,6 @@ impl<Column: Copy> Layout<Column> {
                 self.missing,
                 if flags & MISSING != 0 {
                     bit_bytes(slots) as usize
-                } else {
-                    0
-                },
-            ),
-            (
-                self.grammar,
-                if flags & SEPARATE_GRAMMAR != 0 {
-                    aligned_bytes(slots, self.symbol_width) as usize
                 } else {
                     0
                 },
@@ -379,53 +393,27 @@ impl TreeData {
     }
 
     #[inline]
-    pub fn symbol_code(&self, slot: u32) -> SymbolCode {
-        SymbolCode(if self.layout.symbol_width == 1 {
-            u16::from(self.byte(self.layout.symbol, slot))
-        } else {
-            self.short(self.layout.symbol, slot)
-        })
-    }
-
-    #[inline]
-    pub fn symbol_shift(&self) -> u8 {
-        if self.layout.symbol_width == 1 {
-            0
-        } else {
-            self.tables().symbol_shift
-        }
-    }
-
-    #[inline]
     pub fn symbol_index(&self, slot: u32) -> RemappedKindId {
-        RemappedKindId(self.symbol_code(slot).get() >> self.symbol_shift())
+        RemappedKindId(self.symbol_id(self.layout.symbol, slot))
     }
 
     #[inline]
     pub fn grammar_index(&self, slot: u32) -> RemappedGrammarKindId {
-        let tables = self.tables();
-        let code = self.symbol_code(slot).get() as u32;
-        let kind = if self.layout.symbol_width == 1 {
-            u16::from(self.byte(self.layout.grammar, slot))
-        } else if self.flags() & SEPARATE_GRAMMAR != 0 {
-            self.short(self.layout.grammar, slot)
-        } else if tables.separate != 0 {
-            code as u16
+        let column = if self.flags() & SEPARATE_GRAMMAR != 0 {
+            self.layout.grammar
         } else {
-            let selector = code & ((1 << tables.symbol_shift) - 1);
-            unsafe {
-                if tables.encoding == 1 {
-                    if selector == 0 {
-                        *tables.defaults.add((code >> tables.symbol_shift) as usize)
-                    } else {
-                        *tables.grammar_ids.add(selector as usize)
-                    }
-                } else {
-                    *tables.grammar_ids.add(code as usize)
-                }
-            }
+            self.layout.symbol
         };
-        RemappedGrammarKindId(kind)
+        RemappedGrammarKindId(self.symbol_id(column, slot))
+    }
+
+    #[inline]
+    fn symbol_id(&self, column: ColumnPointer, slot: u32) -> u16 {
+        if self.layout.symbol_width == 1 {
+            u16::from(self.byte(column, slot))
+        } else {
+            self.short(column, slot)
+        }
     }
 
     pub fn has_points(&self) -> bool {
@@ -561,19 +549,9 @@ impl Tree {
     }
 
     pub(crate) fn empty(grammar: &Grammar, capacity: u32) -> Result<Self, Error> {
-        // Reserve optional columns while packing. Their presence is only known
-        // after traversal, when unused columns can be removed together.
-        let flags = TREE_FORMAT
-            | EXTRAS
-            | ERRORS
-            | MISSING
-            | if grammar.tables().encoding == 2 {
-                BYTE_IDS | SEPARATE_GRAMMAR
-            } else if grammar.tables().separate != 0 {
-                SEPARATE_GRAMMAR
-            } else {
-                0
-            };
+        // Reserve optional columns while packing. Omit the grammar column when all
+        // emitted IDs match, and flag columns when all their bits are zero.
+        let flags = TREE_FORMAT | OPTIONAL | id_width_flags([grammar]);
         let layout = Layout::new(capacity, flags)?;
         let mut tree = Self::allocate(grammar, layout, layout.end.get(), None, true)?;
         let data = tree.data_mut();
@@ -768,9 +746,9 @@ impl Tree {
         // Only the optional tail moves when capacity is unchanged. Copy from
         // left to right so removing columns cannot overwrite a later source.
         for (flag, source, destination, end) in [
+            (EXTRAS, previous.extra, next.extra, next.error),
             (ERRORS, previous.error, next.error, next.missing),
-            (MISSING, previous.missing, next.missing, next.grammar),
-            (SEPARATE_GRAMMAR, previous.grammar, next.grammar, next.end),
+            (MISSING, previous.missing, next.missing, next.end),
         ] {
             if flags & flag != 0 {
                 unsafe {
@@ -947,14 +925,10 @@ impl Tree {
         let groups = header(1);
         let capacity = header(2);
         if flags & !(OPTIONAL | BYTE_IDS) != TREE_FORMAT
+            || (flags & BYTE_IDS != 0 && grammar.tables().symbol_count > 254)
             || groups == 0
             || groups > capacity
             || (flags & MISSING != 0 && flags & ERRORS == 0)
-            || ((flags & BYTE_IDS != 0) != (grammar.tables().encoding == 2))
-            || (flags & BYTE_IDS != 0 && flags & SEPARATE_GRAMMAR == 0)
-            || (flags & SEPARATE_GRAMMAR != 0
-                && grammar.tables().separate == 0
-                && flags & BYTE_IDS == 0)
             || header(3) != grammar.tables().dictionary_count
         {
             return Err(Error::InvalidSlab);
@@ -1018,8 +992,7 @@ impl Tree {
                 {
                     return Err(Error::InvalidSlab);
                 }
-                let code = data.symbol_code(slot).get() as u32;
-                let symbol = code >> data.symbol_shift();
+                let symbol = u32::from(data.symbol_index(slot).get());
                 if symbol >= symbols
                     || field > tables.field_count
                     || (symbol < tables.symbol_count
@@ -1027,22 +1000,8 @@ impl Tree {
                 {
                     return Err(Error::InvalidSlab);
                 }
-                if tables.separate != 0 || tables.encoding == 2 {
-                    if u32::from(data.grammar_index(slot).get()) >= symbols {
-                        return Err(Error::InvalidSlab);
-                    }
-                } else {
-                    let variant = code & ((1 << tables.symbol_shift) - 1);
-                    let count = unsafe { *tables.counts.add(symbol as usize) } as u32;
-                    if if tables.encoding == 1 {
-                        count == 0
-                            || variant >= tables.dictionary_length
-                            || (variant == 0 && count != 1)
-                    } else {
-                        variant >= count
-                    } {
-                        return Err(Error::InvalidSlab);
-                    }
+                if u32::from(data.grammar_index(slot).get()) >= symbols {
+                    return Err(Error::InvalidSlab);
                 }
                 let supertype = data.short(data.layout.supertype, slot) as u32;
                 if supertype

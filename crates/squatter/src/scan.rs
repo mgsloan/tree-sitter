@@ -59,8 +59,8 @@ fn byte_id_mask<S: Simd>(simd: S, bytes: &[u8], targets: &[RemappedKindId]) -> u
 }
 
 #[inline(always)]
-fn id_mask<S: Simd, I: crate::Id>(simd: S, bytes: &[u8], shift: u32, targets: &[I]) -> u64 {
-    let values = load_words::<_, u16x32<S>>(simd, bytes) >> shift;
+fn id_mask<S: Simd, I: crate::Id>(simd: S, bytes: &[u8], targets: &[I]) -> u64 {
+    let values = load_words::<_, u16x32<S>>(simd, bytes);
     let mut matches = values.simd_eq(targets[0].raw());
     for target in &targets[1..] {
         matches |= values.simd_eq(target.raw());
@@ -461,20 +461,15 @@ impl<'tree> GroupRef<'tree> {
             );
             candidates.intersection(Mask(equal_byte_ids(bytes, targets)))
         } else {
-            self.equal_id_set(
-                self.columns.layout().symbol,
-                self.columns.tables().symbol_shift as u32,
-                targets,
-                candidates,
-            )
+            self.equal_id_set(self.columns.layout().symbol, targets, candidates)
         }
     }
 
     #[inline]
-    fn equal_ids(&self, column: ColumnPointer, shift: u32, target: u16, candidates: Mask) -> Mask {
+    fn equal_ids(&self, column: ColumnPointer, target: u16, candidates: Mask) -> Mask {
         if candidates.0.is_power_of_two() {
             return candidates.retain(|slot| {
-                self.columns.short(column, self.first_slot().get() + slot) >> shift == target
+                self.columns.short(column, self.first_slot().get() + slot) == target
             });
         }
         let start = self.first_slot().get() as usize * 2;
@@ -482,14 +477,13 @@ impl<'tree> GroupRef<'tree> {
             .columns
             .slice(column, start, self.columns.group_size() as usize * 2);
         let targets = [RemappedKindId(target)];
-        let matches = dispatch!(simd::level(), simd => id_mask(simd, bytes, shift, &targets));
+        let matches = dispatch!(simd::level(), simd => id_mask(simd, bytes, &targets));
         candidates.intersection(Mask(matches))
     }
     #[inline(always)]
     fn equal_id_set<I: crate::Id>(
         &self,
         column: ColumnPointer,
-        shift: u32,
         targets: &[I],
         candidates: Mask,
     ) -> Mask {
@@ -497,21 +491,18 @@ impl<'tree> GroupRef<'tree> {
             return Mask::default();
         }
         if targets.len() == 1 {
-            return self.equal_ids(column, shift, targets[0].raw(), candidates);
+            return self.equal_ids(column, targets[0].raw(), candidates);
         }
         // Specialize pairs to limit register pressure in composed predicates.
         if targets.len() == 2 {
             return Mask(
-                self.equal_ids(column, shift, targets[0].raw(), candidates)
-                    .0
-                    | self
-                        .equal_ids(column, shift, targets[1].raw(), candidates)
-                        .0,
+                self.equal_ids(column, targets[0].raw(), candidates).0
+                    | self.equal_ids(column, targets[1].raw(), candidates).0,
             );
         }
         if candidates.0.is_power_of_two() {
             let slot = self.first_slot().get() + candidates.0.trailing_zeros();
-            let value = self.columns.short(column, slot) >> shift;
+            let value = self.columns.short(column, slot);
             return if targets.iter().any(|target| target.raw() == value) {
                 candidates
             } else {
@@ -522,7 +513,7 @@ impl<'tree> GroupRef<'tree> {
         let bytes = self
             .columns
             .slice(column, start, self.columns.group_size() as usize * 2);
-        let matches = dispatch!(simd::level(), simd => id_mask(simd, bytes, shift, targets));
+        let matches = dispatch!(simd::level(), simd => id_mask(simd, bytes, targets));
         candidates.intersection(Mask(matches))
     }
     #[inline]
@@ -2766,10 +2757,9 @@ struct ArrayKindValues<const N: usize> {
 
 // Cache column parameters so singleton scans do not reread the grammar between groups.
 struct KindPredicate {
+    width: u32,
     target: RemappedKindId,
     column: ColumnPointer,
-    shift: u32,
-    width: u32,
 }
 
 impl KindPredicate {
@@ -2778,7 +2768,6 @@ impl KindPredicate {
         Self {
             target,
             column: columns.layout().symbol,
-            shift: columns.tables().symbol_shift as u32,
             width: columns.layout().symbol_width,
         }
     }
@@ -2791,7 +2780,7 @@ impl Predicate for KindPredicate {
         if self.width == 1 {
             group.equal_kind_ids(&[self.target], candidates)
         } else {
-            group.equal_ids(self.column, self.shift, self.target.get(), candidates)
+            group.equal_ids(self.column, self.target.get(), candidates)
         }
     }
 }
@@ -3071,12 +3060,8 @@ fn retain_kind_set(group: &GroupRef<'_>, candidates: Mask, kinds: &KindSet) -> M
         .slice(layout.symbol, start, group.used() as usize * 2);
     let mut matches = 0;
     for (slot, bytes) in bytes.chunks_exact(2).enumerate() {
-        let symbol = u32::from(u16::from_le_bytes([bytes[0], bytes[1]]))
-            >> group.columns.tables().symbol_shift as u32;
-        let kind = group
-            .columns
-            .tables()
-            .decode_kind(RemappedKindId(symbol as u16));
+        let symbol = u16::from_le_bytes([bytes[0], bytes[1]]);
+        let kind = group.columns.tables().decode_kind(RemappedKindId(symbol));
         matches |= u64::from(kinds.contains(kind)) << slot;
     }
     candidates.intersection(Mask(matches))
@@ -3086,7 +3071,7 @@ impl<const N: usize> sealed::Predicate for ArrayFieldIds<N> {}
 impl<const N: usize> Predicate for ArrayFieldIds<N> {
     #[inline(always)]
     fn retain_matches(&self, group: &GroupRef<'_>, candidates: Mask) -> Mask {
-        group.equal_id_set(group.columns.layout().field, 0, &self.0, candidates)
+        group.equal_id_set(group.columns.layout().field, &self.0, candidates)
     }
 }
 pub struct FieldIds<'ids>(&'ids FieldSet);
@@ -3097,13 +3082,13 @@ impl Predicate for FieldIds<'_> {
         let column = group.columns.layout().field;
         match self.0.ids.as_slice() {
             [] => Mask::default(),
-            &[field] => group.equal_ids(column, 0, field.map_or(0, FieldId::get), candidates),
+            &[field] => group.equal_ids(column, field.map_or(0, FieldId::get), candidates),
             fields if fields.len() <= 4 => {
                 fields.iter().fold(Mask::default(), |matches, &field| {
                     Mask(
                         matches.0
                             | group
-                                .equal_ids(column, 0, field.map_or(0, FieldId::get), candidates)
+                                .equal_ids(column, field.map_or(0, FieldId::get), candidates)
                                 .0,
                     )
                 })
@@ -3123,7 +3108,6 @@ impl Predicate for FieldPredicate {
     fn retain_matches(&self, group: &GroupRef<'_>, candidates: Mask) -> Mask {
         group.equal_ids(
             group.columns.layout().field,
-            0,
             self.0.map_or(0, FieldId::get),
             candidates,
         )
@@ -3236,16 +3220,13 @@ mod tests {
             for (bytes, value) in bytes.chunks_exact_mut(2).zip(values) {
                 bytes.copy_from_slice(&value.to_le_bytes());
             }
-            for shift in [0, 1, 7, 8, 15] {
-                let targets = [0, 1, 127, 128, 255, 256, 32767, 32768, 65535].map(RemappedKindId);
-                for length in 1..=targets.len() {
-                    let targets = &targets[..length];
-                    let expected = values.iter().enumerate().fold(0, |mask, (slot, value)| {
-                        mask | (u64::from(targets.contains(&RemappedKindId(value >> shift)))
-                            << slot)
-                    });
-                    assert_eq!(id_mask(simd, bytes, shift, targets), expected);
-                }
+            let targets = [0, 1, 127, 128, 255, 256, 32767, 32768, 65535].map(RemappedKindId);
+            for length in 1..=targets.len() {
+                let targets = &targets[..length];
+                let expected = values.iter().enumerate().fold(0, |mask, (slot, value)| {
+                    mask | (u64::from(targets.contains(&RemappedKindId(*value))) << slot)
+                });
+                assert_eq!(id_mask(simd, bytes, targets), expected);
             }
             for bit in [1, 2, 128, 256, 32768] {
                 let expected = values.iter().enumerate().fold(0, |mask, (slot, value)| {
@@ -3281,14 +3262,6 @@ mod tests {
                     range_mask::<_, false>(simd, bytes, bounds.start, bounds.end - bounds.start),
                     expected
                 );
-            }
-            let targets = [0, 127, 128, 255].map(RemappedKindId);
-            for length in 0..=targets.len() {
-                let targets = &targets[..length];
-                let expected = bytes.iter().enumerate().fold(0, |mask, (slot, value)| {
-                    mask | (u64::from(targets.contains(&RemappedKindId(u16::from(*value)))) << slot)
-                });
-                assert_eq!(byte_id_mask(simd, bytes, targets), expected);
             }
         }
     }

@@ -72,9 +72,6 @@ integer_type!(
 integer_type!(
     /// Original grammar kind with error sentinels moved after the grammar's symbols.
     pub(crate) RemappedGrammarKindId(u16));
-integer_type!(
-    /// Stored symbol word, including grammar-kind disambiguation when packed together.
-    pub(crate) SymbolCode(u16));
 integer_type!(pub(crate) CaptureId(u32));
 integer_type!(pub(crate) PatternIndex(u16));
 integer_type!(pub(crate) MatchId(u32));

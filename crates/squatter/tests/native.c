@@ -273,36 +273,6 @@ void sq_test_grammar_limits(void) {
   assert(!sq_native_grammar_new(&invalid, &error) && error == SQ_ERROR_OVERFLOW);
 }
 
-void sq_test_terminal_aliases(void) {
-  TSSymbol public_symbols[300], aliases[] = {0, 0, 3, 0}, alias_map[] = {0};
-  TSSymbolMetadata metadata[300] = {0};
-  uint16_t parse_table[4 * 300] = {0};
-  for (uint32_t symbol = 0; symbol < 300; symbol++) public_symbols[symbol] = symbol;
-  TSParseActionEntry actions[5] = {0};
-  actions[1].entry.count = 1;
-  actions[2].action = (TSParseAction){.shift = {.type = TSParseActionTypeShift, .state = 2}};
-  actions[3].entry.count = 1;
-  actions[4].action = (TSParseAction){.reduce = {
-      .type = TSParseActionTypeReduce, .symbol = 2, .child_count = 2, .production_id = 1}};
-  parse_table[300 + 1] = 1;
-  parse_table[600 + 2] = 3;
-  parse_table[900] = 3;
-  // A terminal shift followed by a nonterminal goto, with the first child aliased.
-  TSLanguage language = {.abi_version = TREE_SITTER_LANGUAGE_VERSION,
-      .symbol_count = 300, .token_count = 2, .state_count = 4, .large_state_count = 4,
-      .production_id_count = 2, .max_alias_sequence_length = 2,
-      .public_symbol_map = public_symbols, .symbol_metadata = metadata,
-      .parse_table = parse_table, .parse_actions = actions,
-      .alias_map = alias_map, .alias_sequences = aliases};
-  SQError error;
-  SQGrammar *grammar = sq_native_grammar_new(&language, &error);
-  assert(grammar && grammar->symbols.encoding == SQ_SYMBOL_GLOBAL);
-  assert(grammar->symbols.counts[3] == 2);
-  uint32_t code = sq_native_symbol_code(grammar, 3, 1);
-  assert(code != SQ_NONE && code >> grammar->symbols.shift == 3);
-  sq_native_grammar_delete(grammar);
-}
-
 #include "reductions.h"
 
 void sq_test_unsupported_parsers(void) {

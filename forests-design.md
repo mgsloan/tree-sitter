@@ -235,8 +235,13 @@ frame; presence attachment/removal preserves query results.
 
 ## Representation and serialization
 
-All grammars use the fixed-width ID layout. Compressed absolute bytes remain in
-shared columns; points and presence remain outside the slab.
+Symbol and grammar-symbol columns share one width across the slab, chosen from
+all participating grammars before packing: one byte if every grammar has at most
+254 symbols and aliases, otherwise two bytes. This includes both remapped error
+IDs. The grammar-symbol column is first in the optional tail and is omitted only
+when every emitted node has equal symbol and grammar-symbol IDs. Compressed
+absolute bytes remain in shared columns; points and presence remain outside the
+slab.
 
 ```text
 forest

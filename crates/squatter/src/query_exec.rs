@@ -784,9 +784,7 @@ impl QueryCursor {
             root.data().groups() * crate::storage::GROUP_SIZE - 1 - root.slot().get();
         self.direct_free = NONE;
 
-        // Store word-wide comparisons once, as their encoding depends on the
-        // execution tree. Root searches reuse them across all scanned groups.
-        let shift = root.data().symbol_shift();
+        // Root searches reuse word-wide comparisons across scanned groups.
         let byte_ids = root.data().layout.symbol_width == 1;
         let scan_filter = std::array::from_fn(|index| {
             query
@@ -802,8 +800,8 @@ impl QueryCursor {
                         )
                     } else {
                         (
-                            ((value << shift) as u64) * 0x0001_0001_0001_0001,
-                            ((mask << shift) as u64) * 0x0001_0001_0001_0001,
+                            u64::from(value) * 0x0001_0001_0001_0001,
+                            u64::from(mask) * 0x0001_0001_0001_0001,
                         )
                     }
                 })
@@ -1592,7 +1590,6 @@ impl<'query, 'tree> QueryExecution<'_, 'query, 'tree, '_> {
             let mut hits = {
                 let mut hits = u64::MAX;
                 if requirement.symbol != 0 {
-                    let shift = data.symbol_shift();
                     hits = data
                         .tables()
                         .remap_kind(KindId::new(requirement.symbol))
@@ -1601,8 +1598,8 @@ impl<'query, 'tree> QueryExecution<'_, 'query, 'tree, '_> {
                                 data,
                                 data.layout.symbol,
                                 physical_group,
-                                symbol.get() << shift,
-                                u16::MAX << shift,
+                                symbol.get(),
+                                u16::MAX,
                                 data.layout.symbol_width,
                             )
                         });
@@ -2651,7 +2648,6 @@ mod scan_tests {
             tree_sitter::Language::from_raw(tree_sitter_json::LANGUAGE.into_raw()().cast())
         };
         let grammar = Grammar::new(&language).unwrap();
-        assert_eq!(grammar.tables().encoding, 2);
         let mut parser = tree_sitter::Parser::new();
         parser.set_language(&language).unwrap();
         let separator = format!(",{}", " ".repeat(300));

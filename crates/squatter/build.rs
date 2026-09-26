@@ -64,13 +64,7 @@ fn main() {
     for name in names {
         build.define(&name, format!("sq_native_{name}").as_str());
     }
-    for file in [
-        "grammar.c",
-        "symbols.c",
-        "supertypes.c",
-        "query.c",
-        "parser.c",
-    ] {
+    for file in ["grammar.c", "supertypes.c", "query.c", "parser.c"] {
         build.file(PathBuf::from("native").join(file));
     }
     build.file("tests/native.c");
