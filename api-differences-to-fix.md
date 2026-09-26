@@ -45,10 +45,9 @@ regardless of cost.
   Prefer one children traversal and direct field access. Treat
   `field_name_for_child` and `field_name_for_named_child` as pending cost-review
   decisions rather than unconditional additions.
-- Matching `ExactSizeIterator` can introduce a counting pass before yielding the
-  first child. Review that tradeoff before adopting the shared iterator contract;
-  manual cursor walking with `goto_first_child` and `goto_next_sibling` already
-  avoids an initial count and supports early termination.
+- Return plain `Iterator`s from child enumeration. Do not count children up
+  front to implement `ExactSizeIterator`. Use `size_hint() == (0, None)`;
+  callers that need a count can explicitly consume the iterator with `count()`.
 
 These observations come from [tree-sitter's node implementation](lib/src/node.c),
 [its Rust binding](lib/binding_rust/lib.rs), and
@@ -159,6 +158,10 @@ impl<'tree> Node<'tree> {
     pub fn grammar_id(&self) -> GrammarKindId;
     pub fn child(&self, index: ChildIx) -> Option<Self>;
     pub fn named_child(&self, index: NamedChildIx) -> Option<Self>;
+    pub fn children<'cursor>(&self, cursor: &'cursor mut TreeCursor<'tree>)
+        -> impl Iterator<Item = Self> + 'cursor where 'tree: 'cursor;
+    pub fn named_children<'cursor>(&self, cursor: &'cursor mut TreeCursor<'tree>)
+        -> impl Iterator<Item = Self> + 'cursor where 'tree: 'cursor;
     pub fn child_count(&self) -> ChildIx;
     pub fn named_child_count(&self) -> NamedChildIx;
     pub fn child_by_field_name(&self, name: impl AsRef<[u8]>) -> Option<Self>;
@@ -268,16 +271,17 @@ let field_name = child.field_name();
 - Rename the corresponding cursor type to `TreeCursor`.
 - Make `walk()` infallible: it currently creates an empty ancestor vector and
   always returns `Ok`.
-- Restore cursor arguments, cursor side effects, and iterator contracts for
-  shared child methods. Each iterator above is an independent example; consume
+- Restore cursor arguments and cursor side effects for shared child methods.
+  Return plain iterators with `size_hint() == (0, None)`, including named and
+  field-filtered enumeration; do not promise `ExactSizeIterator`. Each iterator above is an independent example; consume
   or drop it before borrowing the cursor again.
 - Add name-based enumeration. Review child-index field-name accessors before
   adding them; if included, they take `ChildIx` or `NamedChildIx` respectively
   and document their scanning cost.
 - Keep direct node field inspection as an addition.
 - Do not add `children_iter()` or cursor-free named/field variants. Use the shared
-  cursor-taking child methods, or manually walk the cursor to avoid a counting
-  pass. Reusing a cursor also avoids repeated ancestor-vector allocation.
+  cursor-taking child methods or manually walk the cursor. Both avoid an initial
+  counting pass. Reusing a cursor also avoids repeated ancestor-vector allocation.
 
 ## Cursor inspection and movement
 
@@ -885,7 +889,7 @@ pub trait NodeLike<'tree>: Copy + Eq {
     fn id(&self) -> Self::Id;
     fn walk(&self) -> Self::Cursor;
     fn children<'cursor>(&self, cursor: &'cursor mut Self::Cursor)
-        -> impl ExactSizeIterator<Item = Self> + 'cursor where Self: 'cursor;
+        -> impl Iterator<Item = Self> + 'cursor where Self: 'cursor;
     fn child(&self, index: ChildIx) -> Option<Self>;
     fn named_child(&self, index: NamedChildIx) -> Option<Self>;
     fn child_count(&self) -> ChildIx;
