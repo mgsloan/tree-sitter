@@ -217,17 +217,17 @@ Source is an input to point-data construction, not to node access. Keep line-ind
 construction and lookup explicit so their cost cannot hide in a cheap accessor.
 
 ```rust
-pub struct SourcePoints<'bytes> { /* borrowed bytes, owned line starts */ }
+pub struct LineIndex { /* owned line starts */ }
 
-impl<'bytes> SourcePoints<'bytes> {
-    pub fn new(bytes: &'bytes [u8]) -> Result<Self, Error>;
-    pub fn bytes(&self) -> &'bytes [u8];
-    pub fn point(&self, byte: usize) -> Result<Point, Error>;
+impl LineIndex {
+    pub fn new(bytes: &[u8]) -> Result<Self, Error>;
+    pub fn point(&self, byte: usize) -> Point;
 }
 ```
 
-Building the source index reads the input; individual `point` calls search line
-starts and validate bounds. An application can use this explicitly for occasional
+The index owns only line starts and does not retain the source. Building it reads
+the input; individual `point` calls search line starts. Offsets past EOF extend
+the final row's byte column. An application can use this explicitly for occasional
 conversion, or build complete `PointData` before publishing a tree to consumers.
 Neither operation happens automatically during tree access.
 
@@ -259,7 +259,7 @@ impl PresenceCache {
 impl PointData {
     pub fn build(
         tree: &Tree,
-        source: &SourcePoints<'_>,
+        source: &LineIndex,
         cancel: Option<&AtomicBool>,
     ) -> Result<Self, SideDataError>;
 }
@@ -320,7 +320,7 @@ counts. Attach after releasing views, then borrow new views. Cancellation uses
 an external flag, not synchronization in cache lookup.
 
 ```rust
-let source = SourcePoints::new(bytes)?;
+let source = LineIndex::new(bytes)?;
 let mut tree = packer.pack_with_options(
     &grammar,
     &native,
@@ -330,7 +330,7 @@ assert!(!tree.has_points());
 let root_byte = tree.root_node().start_byte();
 assert_eq!(tree.root_node().start_position(), Point::new(0, root_byte));
 
-let expected = source.point(root_byte)?;
+let expected = source.point(root_byte);
 let points = PointData::build(&tree, &source, None)?;
 tree.set_point_data(points)?;
 drop(source); // point access no longer needs input bytes or a line index

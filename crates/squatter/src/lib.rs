@@ -14,7 +14,7 @@ mod storage;
 pub mod traits;
 pub use packing::{PackContext, PackOptions};
 pub use parser::{ParseError, Parser};
-pub use side_data::{PointData, PresenceCache, SideDataError, SourcePoints};
+pub use side_data::{LineIndex, PointData, PresenceCache, SideDataError};
 pub use storage::{BackedTree, BorrowedTree, StableSlab, Tree, representation_id};
 pub mod query;
 mod query_exec;

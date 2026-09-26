@@ -151,8 +151,8 @@ pub(crate) fn get(
             });
         complete &= loaded.is_some();
         let points = loaded.or_else(|| {
-            let source_points = tree_sitter_squatter::SourcePoints::new(source).ok()?;
-            tree_sitter_squatter::PointData::build(&tree, &source_points, cancel).ok()
+            let line_index = tree_sitter_squatter::LineIndex::new(source).ok()?;
+            tree_sitter_squatter::PointData::build(&tree, &line_index, cancel).ok()
         })?;
         tree.set_point_data(points).ok()?;
     }

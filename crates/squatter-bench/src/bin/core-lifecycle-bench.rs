@@ -4,7 +4,7 @@ use clap::Parser;
 use corpus_analysis::{LoadedGrammar, Registry, digest, digest_file};
 use std::{fs, hint::black_box, mem::MaybeUninit, path::PathBuf, sync::Arc, time::Instant};
 use tree_squatter::{Grammar, PackContext, PackOptions, Query, StableSlab, Tree};
-use tree_squatter::{PointData, SourcePoints};
+use tree_squatter::{LineIndex, PointData};
 
 #[derive(Parser, serde::Serialize)]
 struct Arguments {
@@ -53,7 +53,8 @@ struct Case<'input> {
     packer: PackContext,
     compact: Vec<MaybeUninit<u8>>,
     options: PackOptions,
-    source_points: SourcePoints<'input>,
+    source: &'input [u8],
+    line_index: LineIndex,
 }
 
 const WORKLOADS: &[&str] = &[
@@ -105,9 +106,9 @@ impl Case<'_> {
                     .pack_with_options(&self.grammar, self.native, self.options)
                     .unwrap()
             }),
-            "source-points" => measure!(SourcePoints::new(self.source_points.bytes()).unwrap()),
+            "source-points" => measure!(LineIndex::new(self.source).unwrap()),
             "point-build" => {
-                measure!(PointData::build(&self.tree, &self.source_points, None).unwrap())
+                measure!(PointData::build(&self.tree, &self.line_index, None).unwrap())
             }
             "point-access" => measure!({
                 for node in self.tree.root_node().preorder() {
@@ -240,7 +241,8 @@ fn main() -> Result<()> {
             tree,
             packer: PackContext::new()?,
             options,
-            source_points: SourcePoints::new(&source)?,
+            source: &source,
+            line_index: LineIndex::new(&source)?,
         };
         for &workload in WORKLOADS {
             if !arguments.workload.is_empty()

@@ -125,8 +125,7 @@ impl Persistence {
             tree.set_presence_cache(cache).map_err(io::Error::other)?;
         }
         if request.points {
-            let index =
-                tree_sitter_squatter::SourcePoints::new(&source).map_err(io::Error::other)?;
+            let index = tree_sitter_squatter::LineIndex::new(&source).map_err(io::Error::other)?;
             let points = tree_sitter_squatter::PointData::build(&tree, &index, None)
                 .map_err(io::Error::other)?;
             tree.set_point_data(points).map_err(io::Error::other)?;

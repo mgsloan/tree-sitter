@@ -196,7 +196,7 @@ fn navigation_and_indexed_ranges_survive_loading() {
 #[test]
 fn indexed_points_follow_attachment_across_wide_trees() {
     use tree_sitter::Point;
-    use tree_squatter::{PointData, SourcePoints};
+    use tree_squatter::{LineIndex, PointData};
 
     let language =
         unsafe { tree_sitter::Language::from_raw(tree_sitter_json::LANGUAGE.into_raw()().cast()) };
@@ -205,7 +205,7 @@ fn indexed_points_follow_attachment_across_wide_trees() {
     parser.set_language(&language).unwrap();
     let source = format!("[{}0]\n", "\"é\",\r\n".repeat(20_000));
     let native = parser.parse(&source, None).unwrap();
-    let index = SourcePoints::new(source.as_bytes()).unwrap();
+    let index = LineIndex::new(source.as_bytes()).unwrap();
     let mut tree = Tree::pack_with_options(
         &grammar,
         &native,
@@ -235,7 +235,7 @@ fn indexed_points_follow_attachment_across_wide_trees() {
                 for end in [start, (start + 1).min(source.len()), source.len()] {
                     let point = |byte| {
                         if stored {
-                            index.point(byte).unwrap()
+                            index.point(byte)
                         } else {
                             Point::new(0, byte)
                         }

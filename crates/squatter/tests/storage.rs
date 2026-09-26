@@ -171,7 +171,7 @@ fn packing_context_matches_fresh_packing_and_loading() {
 
 #[test]
 fn side_data_changes_only_attached_coordinates() {
-    use tree_squatter::{PointData, PresenceCache, SourcePoints};
+    use tree_squatter::{LineIndex, PointData, PresenceCache};
     let language =
         unsafe { tree_sitter::Language::from_raw(tree_sitter_json::LANGUAGE.into_raw()().cast()) };
     let grammar = Grammar::new(&language).unwrap();
@@ -193,12 +193,9 @@ fn side_data_changes_only_attached_coordinates() {
         let core_address = tree.as_bytes().as_ptr();
         let core_bytes = tree.as_bytes().to_vec();
         let root_slot = tree.root_node().slot();
-        let source_points = SourcePoints::new(source.as_bytes()).unwrap();
-        assert_eq!(
-            source_points.point(0).unwrap(),
-            tree_sitter::Point::new(0, 0)
-        );
-        assert!(source_points.point(source.len() + 1).is_err());
+        let line_index = LineIndex::new(source.as_bytes()).unwrap();
+        assert_eq!(line_index.point(0), tree_sitter::Point::new(0, 0));
+
         let expected = tree
             .root_node()
             .preorder()
@@ -206,8 +203,8 @@ fn side_data_changes_only_attached_coordinates() {
             .map(|node| {
                 (
                     node.slot(),
-                    source_points.point(node.start_byte()).unwrap(),
-                    source_points.point(node.end_byte()).unwrap(),
+                    line_index.point(node.start_byte()),
+                    line_index.point(node.end_byte()),
                 )
             })
             .collect::<Vec<_>>();
@@ -223,10 +220,10 @@ fn side_data_changes_only_attached_coordinates() {
                 .unwrap()
         })
         .unwrap();
-        let points = PointData::build(&tree, &source_points, None).unwrap();
+        let points = PointData::build(&tree, &line_index, None).unwrap();
         tree.set_presence_cache(presence).unwrap();
         tree.set_point_data(points).unwrap();
-        drop(source_points);
+        drop(line_index);
         assert!(tree.has_points());
         assert!(tree.root_node().attributes().has_points);
         for (slot, start, end) in expected {
@@ -257,7 +254,7 @@ fn sidecar_mapping_copy_and_failed_replacement() {
         Arc,
         atomic::{AtomicUsize, Ordering},
     };
-    use tree_squatter::{PointData, PresenceCache, SourcePoints, StableSlab};
+    use tree_squatter::{LineIndex, PointData, PresenceCache, StableSlab};
 
     struct Backing {
         words: Box<[u64]>,
@@ -305,7 +302,7 @@ fn sidecar_mapping_copy_and_failed_replacement() {
     )
     .unwrap();
     let points =
-        PointData::build(&tree, &SourcePoints::new(source.as_bytes()).unwrap(), None).unwrap();
+        PointData::build(&tree, &LineIndex::new(source.as_bytes()).unwrap(), None).unwrap();
     let presence = PresenceCache::build(&tree, None).unwrap();
     let drops = Arc::new(AtomicUsize::new(0));
     let mapped_backing = backing(points.as_bytes(), drops.clone());
@@ -348,7 +345,7 @@ fn sidecar_mapping_copy_and_failed_replacement() {
         tree.set_point_data(
             PointData::build(
                 &other,
-                &SourcePoints::new(other_source.as_bytes()).unwrap(),
+                &LineIndex::new(other_source.as_bytes()).unwrap(),
                 None,
             )
             .unwrap()
@@ -409,12 +406,12 @@ fn sidecar_mapping_copy_and_failed_replacement() {
 }
 
 #[test]
-fn source_points_are_byte_based_and_builds_can_cancel() {
+fn line_index_is_byte_based_and_builds_can_cancel() {
     use std::sync::atomic::AtomicBool;
-    use tree_squatter::{PointData, PresenceCache, SideDataError, SourcePoints};
+    use tree_squatter::{LineIndex, PointData, PresenceCache, SideDataError};
 
     let source = b"\xef\xbb\xbfa\r\n\xc3\xa9\n";
-    let index = SourcePoints::new(source).unwrap();
+    let index = LineIndex::new(source).unwrap();
     for (byte, point) in [
         (0, tree_sitter::Point::new(0, 0)),
         (3, tree_sitter::Point::new(0, 3)),
@@ -422,12 +419,22 @@ fn source_points_are_byte_based_and_builds_can_cancel() {
         (6, tree_sitter::Point::new(1, 0)),
         (8, tree_sitter::Point::new(1, 2)),
         (9, tree_sitter::Point::new(2, 0)),
+        (10, tree_sitter::Point::new(2, 1)),
+        (usize::MAX, tree_sitter::Point::new(2, usize::MAX - 9)),
     ] {
-        assert_eq!(index.point(byte).unwrap(), point);
+        assert_eq!(index.point(byte), point);
     }
-    assert!(index.point(10).is_err());
     assert_eq!(
-        SourcePoints::new(b"").unwrap().point(0).unwrap(),
+        LineIndex::new(b"").unwrap().point(usize::MAX),
+        tree_sitter::Point::new(0, usize::MAX)
+    );
+    let index = {
+        let source = String::from("a\nbc");
+        LineIndex::new(source.as_bytes()).unwrap()
+    };
+    assert_eq!(index.point(7), tree_sitter::Point::new(1, 5));
+    assert_eq!(
+        LineIndex::new(b"").unwrap().point(0),
         tree_sitter::Point::new(0, 0)
     );
 
@@ -453,10 +460,10 @@ fn source_points_are_byte_based_and_builds_can_cancel() {
         Err(SideDataError::Cancelled)
     ));
     assert!(matches!(
-        PointData::build(&tree, &SourcePoints::new(b"[1]").unwrap(), Some(&cancelled)),
+        PointData::build(&tree, &LineIndex::new(b"[1]").unwrap(), Some(&cancelled)),
         Err(SideDataError::Cancelled)
     ));
-    assert!(PointData::build(&tree, &SourcePoints::new(b"[").unwrap(), None).is_err());
+    assert!(PointData::build(&tree, &LineIndex::new(b"[").unwrap(), None).is_ok());
     assert!(!tree.has_points());
     assert!(tree.presence_cache().is_none());
     tree.drop_presence_cache();
@@ -465,7 +472,7 @@ fn source_points_are_byte_based_and_builds_can_cancel() {
 
 #[test]
 fn point_bounded_queries_follow_attachment() {
-    use tree_squatter::{PointData, Query, QueryCursor, SourcePoints};
+    use tree_squatter::{LineIndex, PointData, Query, QueryCursor};
     let language =
         unsafe { tree_sitter::Language::from_raw(tree_sitter_json::LANGUAGE.into_raw()().cast()) };
     let grammar = Grammar::new(&language).unwrap();
@@ -496,7 +503,7 @@ fn point_bounded_queries_follow_attachment() {
         found
     };
     assert_eq!(count(&tree), 0);
-    let points = PointData::build(&tree, &SourcePoints::new(source).unwrap(), None).unwrap();
+    let points = PointData::build(&tree, &LineIndex::new(source).unwrap(), None).unwrap();
     tree.set_point_data(points).unwrap();
     assert_eq!(count(&tree), 1);
     tree.drop_point_data();

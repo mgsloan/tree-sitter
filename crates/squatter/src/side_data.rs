@@ -282,7 +282,7 @@ pub struct PointData(Sidecar);
 impl PointData {
     pub fn build(
         tree: &Tree,
-        source: &SourcePoints<'_>,
+        line_index: &LineIndex,
         cancel: Option<&AtomicBool>,
     ) -> Result<Self, SideDataError> {
         let mut result = Self::empty(tree)?;
@@ -293,8 +293,8 @@ impl PointData {
                 let node = root.at(crate::SlotIx(slot));
                 result.put(
                     slot,
-                    source.point(node.start_byte())?,
-                    source.point(node.end_byte())?,
+                    line_index.point(node.start_byte()),
+                    line_index.point(node.end_byte()),
                 )?;
             }
         }
@@ -405,12 +405,11 @@ impl Tree {
     }
 }
 
-pub struct SourcePoints<'bytes> {
-    bytes: &'bytes [u8],
+pub struct LineIndex {
     line_starts: Vec<usize>,
 }
-impl<'bytes> SourcePoints<'bytes> {
-    pub fn new(bytes: &'bytes [u8]) -> Result<Self, Error> {
+impl LineIndex {
+    pub fn new(bytes: &[u8]) -> Result<Self, Error> {
         let mut line_starts = Vec::new();
         line_starts.try_reserve(1).map_err(|_| Error::Allocation)?;
         line_starts.push(0);
@@ -420,16 +419,11 @@ impl<'bytes> SourcePoints<'bytes> {
                 line_starts.push(index + 1);
             }
         }
-        Ok(Self { bytes, line_starts })
+        Ok(Self { line_starts })
     }
-    pub fn bytes(&self) -> &'bytes [u8] {
-        self.bytes
-    }
-    pub fn point(&self, byte: usize) -> Result<Point, Error> {
-        if byte > self.bytes.len() {
-            return Err(Error::InvalidArgument);
-        }
+    /// Offsets past EOF extend the final row's byte column.
+    pub fn point(&self, byte: usize) -> Point {
         let row = self.line_starts.partition_point(|&start| start <= byte) - 1;
-        Ok(Point::new(row, byte - self.line_starts[row]))
+        Point::new(row, byte - self.line_starts[row])
     }
 }

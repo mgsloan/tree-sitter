@@ -178,7 +178,7 @@ impl PresenceCache {
 impl PointData {
     pub fn build_forest(
         forest: &Forest,
-        source: &SourcePoints<'_>,
+        source: &LineIndex,
         cancel: Option<&AtomicBool>,
     ) -> Result<Self, SideDataError>;
 

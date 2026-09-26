@@ -17,7 +17,7 @@ the source of the compatibility requirements below.
 
 ```text
 squatter
-  Forest / Tree / SourcePoints / PresenceCache / PointData from steps 1 and 2
+  Forest / Tree / LineIndex / PresenceCache / PointData from steps 1 and 2
 
 injections → squatter / tree-sitter
   Engine owns reusable parsing/discovery scratch
@@ -61,7 +61,8 @@ pub struct ParseRequest {
 impl Engine {
     pub fn parse(
         &mut self,
-        source: &SourcePoints<'_>,
+        source: &[u8],
+        line_index: &LineIndex,
         grammar: &Grammar,
         request: &ParseRequest,
         cancel: Option<&AtomicBool>,
@@ -132,7 +133,8 @@ pub struct DiscoveryLimits { pub max_depth: u32, pub max_layers: usize }
 impl Engine {
     pub fn discover(
         &mut self,
-        source: &SourcePoints<'_>,
+        source: &[u8],
+        line_index: &LineIndex,
         host: HostTree<'_>,
         registry: &impl Registry,
         limits: DiscoveryLimits,
@@ -214,7 +216,7 @@ parse requests or core contents. Map cancelled packing to
 
 Discovery must not rely on packed point accessors: a host loaded without point
 data returns row-zero coordinates. Query captures supply byte ranges; the engine
-explicitly derives parser-request points through `SourcePoints::point`. Use
+explicitly derives parser-request points through `LineIndex::point`. Use
 byte-based selection for discovery and test native/packed equivalence with and
 without point data. This explicit source work belongs to discovery, not to a
 node accessor or an implicit query fallback.
