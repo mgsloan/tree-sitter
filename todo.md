@@ -6,27 +6,13 @@
 
 - [ ] Separate viz branch for visualizer
 
-- [x] Look into the unexpected cargo features
+- [ ] Better name than Grammar for processed Language?
 
-- [ ] simplify grammar id / symbol id encoding??
-
-    * Consider interaction with forests - column widths can't vary
-
-- [ ] Define flat format that includes sidecars
-
-- [ ] Try OR-ing together presence bitmaps when appropriate
+- [ ] Put persistence and cache on a separate branch
 
 ## Injections
 
 - [ ] Forests
-
-- [ ] Figure out persistent cache sharing.
-
-    * Root tree only invalidated by grammar differences.
-
-    * Injection trees and cache are invalidated by set of grammars / injection queries
-
-    * Gets kinda complex to do things optimally.  An application that doesn't need the injections can use the root tree straightforwardly, but it will write to the cache without injections.  An application that does need injections can read a solo tree and then add the injections.
 
 ## Use in Zed
 
@@ -46,6 +32,8 @@
 - [ ] fearless_simd is mostly used for feature tokens and the kernel! macro, which could be provied
   by far less code than that crate.
 
+- [ ] API for construction of PointData
+
 ## Correctness
 
 - [ ] Test for back compat. Store a bunch of persisted trees and check that they
@@ -55,19 +43,17 @@
 
 ## Persistence
 
-- [ ] Put on a separate branch
+- [ ] Define flat format that includes sidecars
+
+- [ ] Store injections in a forest separate from the main tree
 
 - [ ] Dedicated heed thread(s)?
 
-- [ ] Dig into how grammars are identified in persistence.  And what can be done to increase forward/back compat - key-design.md
-
-     * Do sources specify their grammar?
-
 - [ ] Pull PackOptions out of CacheMiss and LoadOptions
 
-- [ ] Persistence API for re-checking a CacheMiss
+- [ ] API for re-checking a CacheMiss
 
-- [ ] Persistence API for waiting on other writer for some amount of time?
+- [ ] API for waiting on other writer for some amount of time?
 
 - [ ] Skip persisting when it's better to just reparse
 
@@ -79,6 +65,8 @@
 - [ ] Skip caching when frequently edited? (reduce churn)
 
 - [ ] Make sure that the DB isn't trusted - no exploits via DB contents.
+
+- [ ] Store last access info for GC
 
 ## Use in ast-grep / similar tools
 
@@ -108,6 +96,8 @@ Parse only the needed info.
 
 # Backburner
 
+- [ ] Return to query-simd-experiment?
+
 - [ ] Dedupe query compiler with upstream TS?
 
 - [ ] Parent / previous sibling links (slot counts)
@@ -116,7 +106,7 @@ Parse only the needed info.
 
 - [ ] Shared comparison / property testing repo for tree-sitter, squatter, and feller.
 
-## Persistene
+## Persistence
 
 - [ ] Update persistence cache properly for renames
 
@@ -147,3 +137,7 @@ Parse only the needed info.
 - [ ] Use blocking file reads during TS chunk reads to avoid full materialize? Skipping this for now, gnarly to block threads.
 
 - [ ] With feller parse, estimate capacity based on per-grammar stats
+
+- [ ] Reaally not worth it, but could use weak symbols to access "grow_in_place" functions for specific allocators. Interesting that there doesn't seem to be a crate for this.
+
+- [ ] Try OR-ing together presence bitmaps when appropriate
