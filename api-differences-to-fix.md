@@ -22,6 +22,9 @@ tracking, missing features remain gaps even when they require substantial work. 
 implementation details or naming preferences do not justify changing a shared
 contract. Additions should extend the API without displacing shared operations.
 
+Parser lifecycle, options, backend selection, the shared parser trait, and excluded
+change tracking are covered in [parser API design](parser-api-design.md).
+
 Review the cost of missing APIs before committing to add them. The proposed
 conveniences below are candidates, not a requirement to reproduce every method
 regardless of cost.
@@ -764,92 +767,6 @@ let matches = cursor.matches_with_options(&query, root, text_provider, options);
   Match guaranteed behavior; distinguish unspecified scheduling differences from
   promises made by the API.
 
-## Parser lifecycle and excluded change tracking
-
-Parser compatibility is a larger target. Edit registration, incremental reuse,
-and change tracking are explicitly excluded.
-
-**Current tree-sitter**
-
-```rust
-impl Parser {
-    pub fn new() -> Self;
-    pub fn set_language(&mut self, language: &Language) -> Result<(), LanguageError>;
-    pub fn language(&self) -> Option<LanguageRef<'_>>;
-    pub fn reset(&mut self);
-    pub fn parse(&mut self, source: impl AsRef<[u8]>, old_tree: Option<&Tree>)
-        -> Option<Tree>;
-    pub fn parse_with_options<T: AsRef<[u8]>, F: FnMut(usize, Point) -> T>(
-        &mut self, callback: &mut F, old_tree: Option<&Tree>, options: Option<ParseOptions>,
-    ) -> Option<Tree>;
-}
-impl Node<'_> {
-    pub fn has_changes(&self) -> bool;
-    pub fn edit(&mut self, edit: &InputEdit);
-}
-impl Tree {
-    pub fn edit(&mut self, edit: &InputEdit);
-    pub fn changed_ranges(&self, other: &Self) -> impl ExactSizeIterator<Item = Range>;
-}
-```
-
-**Current tree-squatter**
-
-```rust
-impl Parser {
-    pub fn new(language: &Language) -> Result<Self, ParseError>;
-    pub fn parse(&mut self, source: impl AsRef<[u8]>) -> Result<Tree, ParseError>;
-    pub fn parse_with_options(&mut self, source: impl AsRef<[u8]>, options: PackOptions)
-        -> Result<Tree, ParseError>;
-    pub fn trim(&mut self);
-}
-// direct parser rejects syntax errors and some grammars
-impl Node<'_> {
-    pub fn has_changes(self) -> bool; // always false
-}
-// no edits, old-tree input, or changed ranges
-```
-
-**Proposed tree-squatter**
-
-```rust
-impl Parser {
-    pub fn new() -> Self;
-    pub fn set_language(&mut self, language: &Language) -> Result<(), LanguageError>;
-    pub fn language(&self) -> Option<&Language>;
-    pub fn reset(&mut self);
-    pub fn parse(&mut self, source: impl AsRef<[u8]>)
-        -> Option<Tree>;
-    pub fn parse_with_options<T: AsRef<[u8]>, F: FnMut(usize, Point) -> T>(
-        &mut self, callback: &mut F, options: Option<ParseOptions>,
-    ) -> Option<Tree>;
-}
-// No has_changes, node/tree edit, changed_ranges, or old-tree input.
-impl DirectParser {
-    pub fn new(language: &Language) -> Result<Self, ParseError>;
-    pub fn parse(&mut self, source: impl AsRef<[u8]>) -> Result<Tree, ParseError>;
-    pub fn parse_with_pack_options(&mut self, source: impl AsRef<[u8]>, options: PackOptions)
-        -> Result<Tree, ParseError>;
-    pub fn trim(&mut self);
-}
-```
-
-- Match the compatible parser lifecycle using the necessary grammar wrapper.
-- Reserve `parse_with_options` for callback input and progress options. Give
-  packing controls a distinct name.
-- Keep the restricted direct parser as an explicit additional capability with
-  diagnostic errors. The compatible path must recover errors and support the
-  corresponding grammars; it may delegate to tree-sitter and pack the result.
-- Remove `Node::has_changes()` and exclude `Node::edit`, `Tree::edit`,
-  `Tree::changed_ranges`, and edit-registration types such as `InputEdit`.
-  Omit old-tree parameters and incremental reuse from the parser proposal;
-  parsing produces fresh snapshots. Do not retain no-op change APIs.
-- Track included ranges, UTF-16/custom encoding input, parse-state inspection,
-  and lookahead support with this work.
-- Logging and DOT output are also missing conveniences. Raw pointers, allocator
-  hooks, and Wasm integration require backend-specific contracts; a packed tree
-  must never be presented as a `TSTree`.
-
 ## Shared navigation traits
 
 **Current tree-sitter**
@@ -1010,8 +927,8 @@ results.
    receivers, index newtypes, cursor construction, and setters; navigation conveniences
    approved by the cost review; query metadata and iteration; behavior fixes.
    Update callers and relevant tests with each change. Remove `has_changes()`;
-   exclude edit registration and incremental reuse. Design parsing and ownership
-   separately from the direct-parser extension before implementing those larger
+   exclude edit registration and incremental reuse. Resolve the open decisions in
+   [parser API design](parser-api-design.md) before implementing those larger
    targets. Record deferred APIs explicitly.
 2. **Documentation-copy commit.** After the selected API changes, copy the
    corresponding tree-sitter documentation onto shared tree-squatter types and
