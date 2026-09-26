@@ -551,7 +551,9 @@ static bool build_dictionary(SQSupertypeGrammar *g, SQError *error) {
 
   // Canonical order gives caches and independently prepared grammars the same IDs.
   ALLOC(sorted, g->count, SortMask);
-  ALLOC(ordered, (size_t)g->count * g->words, uint64_t);
+  if (g->count > SIZE_MAX / sizeof(uint64_t) / g->words) goto allocation;
+  ordered = malloc((size_t)g->count * g->words * sizeof(uint64_t));
+  if (!ordered) goto allocation;
   for (uint32_t i = 0; i < g->count; i++)
     sorted[i] = (SortMask){g->masks + (size_t)i * g->words, g->words};
   qsort(sorted, g->count, sizeof(SortMask), compare_masks);

@@ -620,7 +620,6 @@ impl Tree {
     pub fn compact_size(&self) -> usize {
         let data = self.data();
         Layout::new(data.groups(), data.flags()).unwrap().end.get() as usize
-            + (data.length - data.layout.end.get()) as usize
     }
 
     pub fn copy_compact_into<'bytes>(
@@ -634,12 +633,7 @@ impl Tree {
         let layout = Layout::new(data.groups(), data.flags())?;
         unsafe {
             let destination = destination.as_mut_ptr().cast::<u8>();
-            self.copy_columns(destination, layout, data.flags(), true);
-            ptr::copy_nonoverlapping(
-                data.bytes.as_ptr().add(data.layout.end.get() as usize),
-                destination.add(layout.end.get() as usize),
-                (data.length - data.layout.end.get()) as usize,
-            );
+            self.copy_columns(destination, layout, data.flags());
             destination
                 .add(8)
                 .cast::<u32>()
@@ -650,13 +644,7 @@ impl Tree {
         })
     }
 
-    unsafe fn copy_columns(
-        &self,
-        destination: *mut u8,
-        next: Layout<SlabOffset>,
-        flags: u32,
-        padding: bool,
-    ) {
+    unsafe fn copy_columns(&self, destination: *mut u8, next: Layout<SlabOffset>, flags: u32) {
         let data = self.data();
         unsafe {
             ptr::copy_nonoverlapping(data.bytes.as_ptr(), destination, 16);
@@ -669,13 +657,11 @@ impl Tree {
             .zip(next.columns(data.groups(), flags))
         {
             unsafe {
-                if padding {
-                    ptr::write_bytes(
-                        destination.add(previous),
-                        0,
-                        target.get() as usize - previous,
-                    );
-                }
+                ptr::write_bytes(
+                    destination.add(previous),
+                    0,
+                    target.get() as usize - previous,
+                );
                 ptr::copy_nonoverlapping(
                     offset.as_ptr(),
                     destination.add(target.get() as usize),
@@ -684,45 +670,22 @@ impl Tree {
             }
             previous = target.get() as usize + length;
         }
-        if padding {
-            unsafe {
-                ptr::write_bytes(
-                    destination.add(previous),
-                    0,
-                    next.end.get() as usize - previous,
-                );
-            }
+        unsafe {
+            ptr::write_bytes(
+                destination.add(previous),
+                0,
+                next.end.get() as usize - previous,
+            );
         }
     }
 
-    pub(crate) fn resize(
-        &mut self,
-        capacity: u32,
-        flags: u32,
-        trailing: u32,
-        preserve: bool,
-    ) -> Result<(), Error> {
+    pub(crate) fn resize(&mut self, capacity: u32, flags: u32) -> Result<(), Error> {
         let data = self.data();
         let layout = Layout::new(capacity, flags)?;
-        let length = layout
-            .end
-            .get()
-            .checked_add(trailing)
-            .ok_or(Error::Overflow)?;
-        let mut replacement = Self::allocate(&data.language, layout, length, None, true)?;
+        let mut replacement =
+            Self::allocate(&data.language, layout, layout.end.get(), None, false)?;
         unsafe {
-            self.copy_columns(replacement.data().bytes.as_ptr(), layout, flags, false);
-            if preserve {
-                ptr::copy_nonoverlapping(
-                    data.bytes.as_ptr().add(data.layout.end.get() as usize),
-                    replacement
-                        .data()
-                        .bytes
-                        .as_ptr()
-                        .add(layout.end.get() as usize),
-                    trailing as usize,
-                );
-            }
+            self.copy_columns(replacement.data().bytes.as_ptr(), layout, flags);
         }
         replacement.data_mut().put_word(SlabOffset(0), 0, flags);
         replacement.data_mut().put_word(SlabOffset(0), 2, capacity);
@@ -734,7 +697,6 @@ impl Tree {
         &mut self,
         capacity: u32,
         optional_columns: u32,
-        trailing: u32,
     ) -> Result<(), Error> {
         let data = self.data();
         assert!(data.owned);
@@ -742,15 +704,9 @@ impl Tree {
         assert!(capacity <= data.capacity());
         assert_eq!(optional_columns & !OPTIONAL, 0);
         assert_eq!(optional_columns & !data.flags(), 0);
-        assert!(trailing <= data.length - data.layout.end.get());
 
         let flags = (data.flags() & !OPTIONAL) | optional_columns;
         let next = Layout::new(capacity, flags)?;
-        let length = next
-            .end
-            .get()
-            .checked_add(trailing)
-            .ok_or(Error::Overflow)?;
         let data = self.data_mut();
         let previous = data.layout;
 
@@ -768,15 +724,8 @@ impl Tree {
                 }
             }
         }
-        unsafe {
-            ptr::copy(
-                previous.end.pointer(data.bytes),
-                next.end.pointer(data.bytes),
-                trailing as usize,
-            );
-        }
         data.layout = next.resolve(data.bytes);
-        data.length = length;
+        data.length = next.end.get();
         data.put_word(SlabOffset(0), 0, flags);
         data.put_word(SlabOffset(0), 2, capacity);
         self.shrink_allocation(next, 256)
@@ -812,8 +761,7 @@ impl Tree {
     /// Small unused allocation tails may be retained.
     pub fn repack_in_place(&mut self) -> Result<(), Error> {
         let data = self.data();
-        let trailing = data.length - data.layout.end.get();
-        self.finish_layout(data.groups(), data.flags() & OPTIONAL, trailing)
+        self.finish_layout(data.groups(), data.flags() & OPTIONAL)
     }
 
     /// Return a compact copy, preserving this tree and copying its attached side data.
@@ -1069,6 +1017,47 @@ impl Tree {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn column_copies_initialize_gaps_and_unused_capacity() {
+        let language = unsafe {
+            tree_sitter::Language::from_raw(tree_sitter_json::LANGUAGE.into_raw()().cast())
+        };
+        let language = Language::new(&language).unwrap();
+        for optional in 0..=OPTIONAL {
+            for width in [0, BYTE_IDS] {
+                let flags = TREE_FORMAT | optional | width;
+                let layout = Layout::new(5, flags).unwrap();
+                let mut tree =
+                    Tree::allocate(&language, layout, layout.end.get(), None, false).unwrap();
+                unsafe {
+                    ptr::write_bytes(tree.data().bytes.as_ptr(), 0x5a, layout.end.get() as usize);
+                }
+                tree.data_mut().put_word(SlabOffset(0), 0, flags);
+                tree.data_mut().put_word(SlabOffset(0), 1, 3);
+                tree.data_mut().put_word(SlabOffset(0), 2, 5);
+                for capacity in [3, 9] {
+                    let next = Layout::new(capacity, flags).unwrap();
+                    let mut destination = vec![0xff; next.end.get() as usize];
+                    unsafe {
+                        tree.copy_columns(destination.as_mut_ptr(), next, flags);
+                    }
+                    assert_eq!(&destination[..16], &tree.as_bytes()[..16]);
+                    let mut copied = vec![false; destination.len()];
+                    for (offset, length) in next.columns(3, flags) {
+                        let start = offset.get() as usize;
+                        copied[start..start + length].fill(true);
+                    }
+                    for index in 16..destination.len() {
+                        assert_eq!(destination[index], if copied[index] { 0x5a } else { 0 });
+                    }
+                    tree.resize(capacity, flags).unwrap();
+                    destination[8..12].copy_from_slice(&capacity.to_le_bytes());
+                    assert_eq!(tree.as_bytes(), destination);
+                }
+            }
+        }
+    }
 
     #[test]
     fn shrinking_respects_absolute_and_relative_thresholds() {

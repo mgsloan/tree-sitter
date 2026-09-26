@@ -263,8 +263,7 @@ impl Builder {
                     .group_capacity()
                     .checked_mul(2)
                     .ok_or(Error::Overflow)?;
-                self.tree
-                    .resize(capacity, self.tree.data().flags(), 0, false)?;
+                self.tree.resize(capacity, self.tree.data().flags())?;
             }
 
             let slot = self.distance();
@@ -396,7 +395,7 @@ impl Builder {
         } else {
             self.tree.group_capacity()
         };
-        self.tree.finish_layout(capacity, self.optional, 0)?;
+        self.tree.finish_layout(capacity, self.optional)?;
         if options.symbol_presence {
             let cache = PresenceCache::build(&self.tree, None)?;
             self.tree.set_presence_cache(cache)?;

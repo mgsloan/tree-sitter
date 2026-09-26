@@ -160,9 +160,7 @@ fn synthetic_supertype_emission_and_persistence() {
             let mut tree = builder.finish(PackOptions::default()).unwrap();
             let groups = tree.group_count();
             for capacity in [groups + 17, groups, groups + 1] {
-                let trailing = tree.as_bytes().len() as u32 - tree.data().layout.end.get();
-                tree.resize(capacity, tree.data().flags(), trailing, true)
-                    .unwrap();
+                tree.resize(capacity, tree.data().flags()).unwrap();
                 check_masks(&tree, &slots, bits);
                 let loaded = Tree::from_bytes(grammar, tree.as_bytes()).unwrap();
                 let borrowed = Tree::from_bytes_borrowed(grammar, tree.as_bytes()).unwrap();
@@ -374,12 +372,9 @@ fn synthetic_symbol_ids_and_optional_columns() {
                     assert_eq!(copy.as_bytes(), borrowed.as_bytes());
                     assert_eq!(compact.group_capacity(), compact.group_count());
                     tree = copy;
-                    let trailing = tree.as_bytes().len() as u32 - tree.data().layout.end.get();
                     tree.resize(
                         tree.group_count() + if pass == 0 { 17 } else { 0 },
                         tree.data().flags(),
-                        trailing,
-                        true,
                     )
                     .unwrap();
                 }
@@ -579,16 +574,15 @@ fn column_growth_compaction_and_little_endian_encoding() {
         exercise_columns(&mut tree, true);
         for capacity in [7, 19, 2, 31, 2] {
             if capacity < tree.group_capacity() {
-                tree.finish_layout(capacity, tree.data().flags() & OPTIONAL, 0)
+                tree.finish_layout(capacity, tree.data().flags() & OPTIONAL)
                     .unwrap();
             } else {
-                tree.resize(capacity, tree.data().flags(), 0, false)
-                    .unwrap();
+                tree.resize(capacity, tree.data().flags()).unwrap();
             }
             exercise_columns(&mut tree, false);
         }
         assert_eq!(
-            tree.resize(u32::MAX, tree.data().flags(), 0, false),
+            tree.resize(u32::MAX, tree.data().flags()),
             Err(Error::Overflow)
         );
         exercise_columns(&mut tree, false);
