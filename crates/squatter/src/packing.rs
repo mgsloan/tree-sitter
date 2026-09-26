@@ -153,7 +153,7 @@ struct Builder {
     last: u64,
     extra: u64,
     missing: u64,
-    has_error: bool,
+    error: u64,
     optional: u32,
     points: Option<PointData>,
 }
@@ -185,7 +185,7 @@ impl Builder {
             last: 0,
             extra: 0,
             missing: 0,
-            has_error: false,
+            error: 0,
             optional: 0,
             points,
         })
@@ -306,7 +306,7 @@ impl Builder {
             self.last |= ((event.flags & 1 != 0) as u64) << self.count;
             self.extra |= ((event.flags & 2 != 0) as u64) << self.count;
             self.missing |= ((event.flags & 4 != 0) as u64) << self.count;
-            self.has_error |= event.flags & 8 != 0;
+            self.error |= ((event.flags & 8 != 0) as u64) << self.count;
             self.count += 1;
             return Ok(());
         }
@@ -329,6 +329,7 @@ impl Builder {
         for (offset, flags) in [
             (layout.last, self.last),
             (layout.extra, self.extra),
+            (layout.error, self.error),
             (layout.missing, self.missing),
         ] {
             match GROUP_SIZE {
@@ -338,14 +339,13 @@ impl Builder {
                 _ => unreachable!(),
             }
         }
-        data.put_bit(layout.error, group, self.has_error);
         if self.extra != 0 {
             self.optional |= EXTRAS;
         }
         if self.missing != 0 {
             self.optional |= MISSING;
         }
-        if self.has_error {
+        if self.error != 0 {
             self.optional |= ERRORS;
         }
 
@@ -385,7 +385,7 @@ impl Builder {
         self.last = 0;
         self.extra = 0;
         self.missing = 0;
-        self.has_error = false;
+        self.error = 0;
     }
 
     fn finish(mut self, options: PackOptions) -> Result<Tree, Error> {

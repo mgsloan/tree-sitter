@@ -9,6 +9,49 @@ use tree_squatter::{
 
 use support::{c_language, describe_capture, json_language, native_query_results, parse_native};
 
+#[test]
+fn error_flags_match_each_native_node() -> Result<(), Box<dyn Error>> {
+    let wide_array = format!("[{}", vec!["1"; 100].join(","));
+    for (language, source) in [
+        (json_language(), wide_array.as_str()),
+        (json_language(), r#"{"good": 1, "bad": [2, ?]}"#),
+        (c_language(), "int f(void) { return (1 + ); }"),
+    ] {
+        let native = parse_native(&language, source);
+        let expected: Vec<_> = NodeLike::preorder(native.root_node())
+            .map(|node| (node.kind_id(), node.byte_range(), node.has_error()))
+            .collect();
+        assert!(expected.iter().any(|node| node.2));
+        assert!(expected.iter().any(|node| !node.2));
+        let grammar = tree_squatter::Grammar::new(&language)?;
+        for points in [false, true] {
+            let mut tree = Tree::pack_with_options(
+                &grammar,
+                &native,
+                PackOptions {
+                    initial_group_capacity: 1,
+                    points,
+                    ..Default::default()
+                },
+            )?;
+            tree.repack_in_place()?;
+            let compact = tree.repack()?;
+            let copy = Tree::from_bytes(&grammar, compact.as_bytes())?;
+            let borrowed = Tree::from_bytes_borrowed(&grammar, compact.as_bytes())?;
+            for tree in [&tree, &compact, &copy, &*borrowed] {
+                let actual: Vec<_> = tree
+                    .root_node()
+                    .preorder()
+                    .nodes()
+                    .map(|node| (node.kind_id(), node.byte_range(), node.has_error()))
+                    .collect();
+                assert_eq!(actual, expected, "{source}");
+            }
+        }
+    }
+    Ok(())
+}
+
 fn check_shared_navigation<'tree, N: NodeLike<'tree>>(
     root: N,
     fields: u16,

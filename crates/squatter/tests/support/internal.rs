@@ -362,7 +362,7 @@ fn synthetic_symbol_ids_and_optional_columns() {
                         );
                         assert_eq!(
                             node.has_error(),
-                            flags & 8 != 0 && [0, 63].contains(&(slot / GROUP_SIZE))
+                            flags & 8 != 0 && [2, 63 * GROUP_SIZE].contains(&slot)
                         );
                     }
                     let compact = tree.repack().unwrap();
@@ -514,7 +514,7 @@ fn exercise_columns(tree: &mut Tree, fill: bool) {
         (layout.end_byte_base, 32, 1),
         (layout.last, 1, GROUP_SIZE),
         (layout.extra, 1, GROUP_SIZE),
-        (layout.error, 1, 1),
+        (layout.error, 1, GROUP_SIZE),
         (layout.missing, 1, GROUP_SIZE),
         (layout.span_delta, SPAN_BITS as usize, GROUP_SIZE),
         (layout.start_byte_delta, 8, GROUP_SIZE),

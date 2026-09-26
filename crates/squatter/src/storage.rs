@@ -119,7 +119,7 @@ impl Layout<SlabOffset> {
                 0
             }),
             error: column(if flags & ERRORS != 0 {
-                bit_bytes(capacity)
+                bit_bytes(slots)
             } else {
                 0
             }),
@@ -197,7 +197,7 @@ impl<Column: Copy> Layout<Column> {
             (
                 self.error,
                 if flags & ERRORS != 0 {
-                    bit_bytes(groups) as usize
+                    bit_bytes(slots) as usize
                 } else {
                     0
                 },
@@ -437,6 +437,7 @@ impl TreeData {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn put_byte(&mut self, address: impl SlabAddress, index: u32, value: u8) {
         self.writer().put_byte(address, index, value);
     }
@@ -465,6 +466,7 @@ impl TreeData {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn put_bit(&mut self, address: impl SlabAddress, index: u32, value: bool) {
         let mask = 1 << (index % 8);
         self.put_byte(

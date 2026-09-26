@@ -217,9 +217,7 @@ impl<'tree> Node<'tree> {
     /// May be true for an error-free node sharing a block with an erroneous node.
     pub fn has_error(self) -> bool {
         self.data().flags() & ERRORS != 0
-            && self
-                .data()
-                .bit(self.data().layout.error, self.slot().group().get())
+            && self.data().bit(self.data().layout.error, self.slot().get())
     }
 
     pub fn has_changes(self) -> bool {

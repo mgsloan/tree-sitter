@@ -36,12 +36,7 @@ pub struct Record<'tree> {
 }
 
 pub fn attributes_match(expected: &Attributes<'_>, actual: &Attributes<'_>) -> bool {
-    if expected.has_error && !actual.has_error {
-        return false;
-    }
-    let mut expected = expected.clone();
-    expected.has_error = actual.has_error;
-    expected == *actual
+    expected == actual
 }
 
 fn scan_once<'tree, N: NodeLike<'tree>, const ATTRIBUTES: bool>(root: N) -> Result<usize> {
