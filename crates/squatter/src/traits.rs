@@ -31,7 +31,6 @@ pub struct Attributes<'tree> {
     pub is_extra: bool,
     pub is_missing: bool,
     pub is_error: bool,
-    /// Squatter reports a conservative predicate shared by all nodes in a physical block.
     pub has_error: bool,
     pub has_changes: bool,
 }

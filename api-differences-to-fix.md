@@ -45,7 +45,8 @@ regardless of cost.
   decisions rather than unconditional additions.
 - Matching `ExactSizeIterator` can introduce a counting pass before yielding the
   first child. Review that tradeoff before adopting the shared iterator contract;
-  preserve an iteration path that does not require an initial count.
+  manual cursor walking with `goto_first_child` and `goto_next_sibling` already
+  avoids an initial count and supports early termination.
 
 These observations come from [tree-sitter's node implementation](lib/src/node.c),
 [its Rust binding](lib/binding_rust/lib.rs), and
@@ -259,7 +260,6 @@ let by_name = root.children_by_field_name("body", &mut cursor);
 let field_name = root.field_name_for_child(ChildIx::new(0));
 let named_field_name = root.field_name_for_named_child(NamedChildIx::new(0));
 
-let children = root.children_iter(); // additional cursor-free iteration
 let field_name = child.field_name();
 ```
 
@@ -272,9 +272,10 @@ let field_name = child.field_name();
 - Add name-based enumeration. Review child-index field-name accessors before
   adding them; if included, they take `ChildIx` or `NamedChildIx` respectively
   and document their scanning cost.
-- Keep direct node field inspection and cursor-free iteration as additions.
-  `children_iter` illustrates a distinct name; corresponding named/field variants
-  can follow that convention. Rust cannot overload methods by argument count.
+- Keep direct node field inspection as an addition.
+- Do not add `children_iter()` or cursor-free named/field variants. Use the shared
+  cursor-taking child methods, or manually walk the cursor to avoid a counting
+  pass. Reusing a cursor also avoids repeated ancestor-vector allocation.
 
 ## Cursor inspection and movement
 
@@ -364,7 +365,7 @@ impl<'tree> Node<'tree> {
     pub fn start_position(self) -> Point;
     pub fn end_position(self) -> Point;
     pub fn has_points(self) -> bool;
-    pub fn has_error(self) -> bool; // conservative physical-block flag
+    pub fn has_error(self) -> bool;
 }
 // no Tree::walk, tree/node language access, offset view, range, to_sexp,
 // utf16_text, or Tree::clone
@@ -384,7 +385,7 @@ impl<'tree> Node<'tree> {
     pub fn range(&self) -> tree_sitter::Range;
     pub fn to_sexp(&self) -> String;
     pub fn utf16_text<'source>(&self, source: &'source [u16]) -> &'source [u16];
-    pub fn has_error(&self) -> bool; // exact node/subtree result
+    pub fn has_error(&self) -> bool;
     pub fn has_points(self) -> bool;
 }
 impl Clone for Tree { /* preserve tree contents and optional side data */ }
@@ -395,8 +396,6 @@ impl Clone for Tree { /* preserve tree contents and optional side data */ }
   borrow exposes metadata without requiring an owned language clone.
 - Implement offset views explicitly; do not ignore offsets or mutate the source
   tree to emulate a view.
-- Make `has_error()` exact. A conservative block test may remain as an explicitly
-  additional operation, but is not a substitute for subtree error detection.
 - Preserve optional point data. Without it, document the existing row-zero,
   byte-as-column behavior across all point-dependent APIs; with it, require parity.
 - Add cloning with compatible observable semantics. Copying cost may differ;
@@ -731,7 +730,6 @@ pub trait NodeLike<'tree>: Copy + Eq {
     fn named_child(&self, index: NamedChildIx) -> Option<Self>;
     fn child_count(&self) -> ChildIx;
     fn named_child_count(&self) -> NamedChildIx;
-    fn children_iter(self) -> impl Iterator<Item = Self>;
 }
 ```
 
@@ -741,8 +739,8 @@ pub trait NodeLike<'tree>: Copy + Eq {
 - Align names, receivers, and contracts with the corresponding inherent methods,
   including distinct child/named-child indices and typed `CursorLike` positioning
   results.
-- Update both implementations together; keep cursor-free traversal and scans
-  available without establishing a second set of names for shared operations.
+- Update both implementations together. Retain subtree scans as additions, but
+  do not add a separate cursor-free children interface to the trait.
 
 ## Packed storage, scans, and side data
 
@@ -800,8 +798,6 @@ tree.drop_point_data();
 These are current differences and proposed dispositions, not results of exhaustive
 new differential testing.
 
-- **Error flags:** tree-squatter's block flag can report errors for an error-free
-  subtree. Make the shared `has_error()` exact.
 - **Missing points:** tree-squatter returns row zero with byte offset as column.
   Keep optional points and document their effect on accessors, ranges, lookups,
   and queries. Require ordinary coordinate parity when points are attached.
@@ -838,8 +834,7 @@ new differential testing.
   Retain those necessary differences with explicit scopes and lifetimes.
 
 Allocation sizes, traversal cost, and copying cost can differ without changing
-results. A conservative answer from a shared method is a behavior difference,
-not merely a performance tradeoff.
+results.
 
 ## Commit plan
 
