@@ -17,7 +17,8 @@ selected outlines, not compilable definitions; bodies, unrelated methods, and
 some generic/lifetime detail are omitted. Proposed names describe a target, not
 implemented functionality.
 
-Missing features remain gaps even when they require substantial work. Different
+Except for explicitly excluded capabilities such as edit registration and change
+tracking, missing features remain gaps even when they require substantial work. Different
 implementation details or naming preferences do not justify changing a shared
 contract. Additions should extend the API without displacing shared operations.
 
@@ -378,7 +379,6 @@ impl<'tree> Node<'tree> {
 impl Tree {
     pub fn walk(&self) -> TreeCursor<'_>;
     pub fn language(&self) -> &Grammar;
-    pub fn root_node_with_offset(&self, bytes: usize, extent: Point) -> Node<'_>;
     pub fn has_points(&self) -> bool;
 }
 impl<'tree> Node<'tree> {
@@ -395,8 +395,8 @@ impl Clone for Tree { /* preserve tree contents and optional side data */ }
 - Add navigation and formatting conveniences with tree-sitter semantics.
 - Return the necessary grammar wrapper from language accessors. The proposed
   borrow exposes metadata without requiring an owned language clone.
-- Implement offset views explicitly; do not ignore offsets or mutate the source
-  tree to emulate a view.
+- Exclude `root_node_with_offset` and offset views. Nodes report coordinates
+  stored in the tree; no per-view coordinate translation is planned.
 - Preserve optional point data. Without it, document the existing row-zero,
   byte-as-column behavior across all point-dependent APIs; with it, require parity.
 - Add cloning with compatible observable semantics. Copying cost may differ;
@@ -758,9 +758,10 @@ let matches = cursor.matches_with_options(&query, root, text_provider, options);
   Match guaranteed behavior; distinguish unspecified scheduling differences from
   promises made by the API.
 
-## Parser lifecycle and incremental edits
+## Parser lifecycle and excluded change tracking
 
-These are larger compatibility targets, not just signature changes.
+Parser compatibility is a larger target. Edit registration, incremental reuse,
+and change tracking are explicitly excluded.
 
 **Current tree-sitter**
 
@@ -775,6 +776,10 @@ impl Parser {
     pub fn parse_with_options<T: AsRef<[u8]>, F: FnMut(usize, Point) -> T>(
         &mut self, callback: &mut F, old_tree: Option<&Tree>, options: Option<ParseOptions>,
     ) -> Option<Tree>;
+}
+impl Node<'_> {
+    pub fn has_changes(&self) -> bool;
+    pub fn edit(&mut self, edit: &InputEdit);
 }
 impl Tree {
     pub fn edit(&mut self, edit: &InputEdit);
@@ -793,7 +798,10 @@ impl Parser {
     pub fn trim(&mut self);
 }
 // direct parser rejects syntax errors and some grammars
-// no edits, old-tree input, changed ranges, or change tracking
+impl Node<'_> {
+    pub fn has_changes(self) -> bool; // always false
+}
+// no edits, old-tree input, or changed ranges
 ```
 
 **Proposed tree-squatter**
@@ -804,16 +812,13 @@ impl Parser {
     pub fn set_language(&mut self, language: &Grammar) -> Result<(), LanguageError>;
     pub fn language(&self) -> Option<&Grammar>;
     pub fn reset(&mut self);
-    pub fn parse(&mut self, source: impl AsRef<[u8]>, old_tree: Option<&Tree>)
+    pub fn parse(&mut self, source: impl AsRef<[u8]>)
         -> Option<Tree>;
     pub fn parse_with_options<T: AsRef<[u8]>, F: FnMut(usize, Point) -> T>(
-        &mut self, callback: &mut F, old_tree: Option<&Tree>, options: Option<ParseOptions>,
+        &mut self, callback: &mut F, options: Option<ParseOptions>,
     ) -> Option<Tree>;
 }
-impl Tree {
-    pub fn edit(&mut self, edit: &InputEdit);
-    pub fn changed_ranges(&self, other: &Self) -> impl ExactSizeIterator<Item = Range>;
-}
+// No has_changes, node/tree edit, changed_ranges, or old-tree input.
 impl DirectParser {
     pub fn new(grammar: &Grammar) -> Result<Self, ParseError>;
     pub fn parse(&mut self, source: impl AsRef<[u8]>) -> Result<Tree, ParseError>;
@@ -829,11 +834,12 @@ impl DirectParser {
 - Keep the restricted direct parser as an explicit additional capability with
   diagnostic errors. The compatible path must recover errors and support the
   corresponding grammars; it may delegate to tree-sitter and pack the result.
-- Design retained parsing state and mutation before adding edit/reuse signatures.
-  Do not implement edits as no-ops or silently ignore an old tree. Borrowed
-  immutable slabs may require detachment or a separate parser representation.
-- Track node edits, change flags, included ranges, UTF-16/custom encoding input,
-  parse-state inspection, and lookahead support with this work.
+- Remove `Node::has_changes()` and exclude `Node::edit`, `Tree::edit`,
+  `Tree::changed_ranges`, and edit-registration types such as `InputEdit`.
+  Omit old-tree parameters and incremental reuse from the parser proposal;
+  parsing produces fresh snapshots. Do not retain no-op change APIs.
+- Track included ranges, UTF-16/custom encoding input, parse-state inspection,
+  and lookahead support with this work.
 - Logging and DOT output are also missing conveniences. Raw pointers, allocator
   hooks, and Wasm integration require backend-specific contracts; a packed tree
   must never be presented as a `TSTree`.
@@ -965,8 +971,9 @@ new differential testing.
 - **Syntax errors and grammars:** direct parsing rejects syntax errors and requires
   ABI 15 without external scanners or nonterminal extras. Preserve restrictions
   only on the explicit direct-parser extension; they remain gaps for `Parser`.
-- **Change flags:** `has_changes()` always returns false. That describes fresh
-  snapshots, but cannot replace edited-tree behavior. Fix with incremental state.
+- **Change tracking:** remove the current always-false `has_changes()`.
+  Tree-squatter intentionally omits edit registration, changed-range reporting,
+  and incremental reuse; parsed trees are fresh snapshots.
 - **Capture events:** order, provisional snapshot contents, and duplicate counts
   can differ. Restore the compatible capture contract; name provisional events
   separately if retained.
@@ -996,9 +1003,10 @@ results.
 1. **API implementation commits.** Split changes into coherent commits: names,
    receivers, index newtypes, cursor construction, and setters; navigation conveniences
    approved by the cost review; query metadata and iteration; behavior fixes.
-   Update callers and relevant tests with each change. Design parsing, editing,
-   and ownership separately from the direct-parser extension before implementing
-   those larger targets. Record deferred APIs explicitly.
+   Update callers and relevant tests with each change. Remove `has_changes()`;
+   exclude edit registration and incremental reuse. Design parsing and ownership
+   separately from the direct-parser extension before implementing those larger
+   targets. Record deferred APIs explicitly.
 2. **Documentation-copy commit.** After the selected API changes, copy the
    corresponding tree-sitter documentation onto shared tree-squatter types and
    methods. Use this checkout's Rust binding as the source and record its revision
