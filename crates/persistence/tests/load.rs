@@ -1,15 +1,8 @@
 mod common;
 use common::{ChildProcess, language, load};
 
-use std::{
-    fs,
-    ops::ControlFlow,
-    path::Path,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
-};
+use std::{fs, ops::ControlFlow, path::Path, sync::Arc};
+use tree_sitter_squatter::{ParseOptions, traits::ParseStateLike};
 use tree_squatter_persistence::{
     CACHE_DIRECTORY, LoadError, LoadOptions, Options, Persistence, WriteOutcome, WritePolicy,
 };
@@ -23,7 +16,7 @@ fn miss_hit_and_old_reader_survives_update() {
         .load_with_options(
             Path::new("file.json"),
             &language(),
-            &mut tree_sitter::Parser::new(),
+            &mut tree_sitter_squatter::Parser::new(),
             LoadOptions {
                 pack: tree_sitter_squatter::PackOptions {
                     initial_group_capacity: 128,
@@ -81,7 +74,7 @@ fn deferred_disabled_and_cancelled_publication() {
     let root = tempfile::tempdir().unwrap();
     fs::write(root.path().join("file.json"), "123").unwrap();
     let cache = Persistence::open(root.path(), Options::default()).unwrap();
-    let mut parser = tree_sitter::Parser::new();
+    let mut parser = tree_sitter_squatter::Parser::new();
     let result = cache
         .load_with_options(
             Path::new("file.json"),
@@ -90,7 +83,7 @@ fn deferred_disabled_and_cancelled_publication() {
             LoadOptions {
                 pack: tree_sitter_squatter::PackOptions::default(),
                 write: WritePolicy::Deferred,
-                cancel: None,
+                parse: Default::default(),
             },
         )
         .unwrap();
@@ -100,22 +93,37 @@ fn deferred_disabled_and_cancelled_publication() {
             .load_with_options(
                 Path::new("file.json"),
                 &language(),
-                &mut tree_sitter::Parser::new(),
+                &mut tree_sitter_squatter::Parser::new(),
                 LoadOptions {
                     pack: tree_sitter_squatter::PackOptions::default(),
                     write: WritePolicy::Disabled,
-                    cancel: None,
+                    parse: Default::default(),
                 },
             )
             .unwrap()
     };
     assert!(!disabled().file.cache_hit());
-    assert!(
-        pending
-            .publish_with_cancellation(&AtomicBool::new(true))
-            .is_err()
-    );
-    assert!(!disabled().file.cache_hit());
+    for stop_at in [1, 2] {
+        let mut checks = 0;
+        let mut cancel = |state: &dyn ParseStateLike| {
+            assert_eq!(state.current_byte_offset(), 3);
+            assert!(!state.is_converting());
+            assert!(!state.current_byte_offset_descends());
+            assert!(!state.has_error());
+            checks += 1;
+            if checks == stop_at {
+                ControlFlow::Break(())
+            } else {
+                ControlFlow::Continue(())
+            }
+        };
+        assert!(matches!(
+            pending.publish_with_options(ParseOptions::new().progress_callback(&mut cancel)),
+            Err(tree_squatter_persistence::CacheError::Cancelled),
+        ));
+        assert_eq!(checks, stop_at);
+        assert!(!disabled().file.cache_hit());
+    }
     assert_eq!(pending.publish().unwrap(), WriteOutcome::Published);
     assert!(disabled().file.cache_hit());
     assert_eq!(pending.publish().unwrap(), WriteOutcome::AlreadyPresent);
@@ -130,11 +138,11 @@ fn stale_deferred_writer_cannot_create_wrong_hit() {
         .load_with_options(
             Path::new("file.json"),
             &language(),
-            &mut tree_sitter::Parser::new(),
+            &mut tree_sitter_squatter::Parser::new(),
             LoadOptions {
                 pack: tree_sitter_squatter::PackOptions::default(),
                 write: WritePolicy::Deferred,
-                cancel: None,
+                parse: Default::default(),
             },
         )
         .unwrap();
@@ -147,33 +155,26 @@ fn stale_deferred_writer_cannot_create_wrong_hit() {
 }
 
 #[test]
-fn reset_cancelled_parser_and_clear_included_ranges() {
+fn reuse_cancelled_parser_for_whole_file_load() {
     let root = tempfile::tempdir().unwrap();
     fs::write(root.path().join("file.json"), "[1,2,3]").unwrap();
     let cache = Persistence::open(root.path(), Options::default()).unwrap();
-    let mut parser = tree_sitter::Parser::new();
+    let mut parser = tree_sitter_squatter::Parser::new();
     let tree_sitter_language =
         unsafe { tree_sitter::Language::from_raw(tree_sitter_json::LANGUAGE.into_raw()().cast()) };
-    parser.set_language(&tree_sitter_language).unwrap();
+    parser
+        .set_language(&tree_sitter_squatter::Language::new(&tree_sitter_language).unwrap())
+        .unwrap();
     let source = format!("[{}0]", "0,".repeat(100_000));
-    let mut cancel = |_: &tree_sitter::ParseState| ControlFlow::Break(());
+    let mut cancel = |_: &dyn ParseStateLike| ControlFlow::Break(());
     assert!(
         parser
             .parse_with_options(
-                &mut |i, _| source.as_bytes().get(i..).unwrap_or_default(),
-                None,
-                Some(tree_sitter::ParseOptions::new().progress_callback(&mut cancel))
+                &source,
+                ParseOptions::new().progress_callback(&mut cancel).into()
             )
-            .is_none()
+            .is_err()
     );
-    parser
-        .set_included_ranges(&[tree_sitter::Range {
-            start_byte: 1,
-            end_byte: 2,
-            start_point: tree_sitter::Point::new(0, 1),
-            end_point: tree_sitter::Point::new(0, 2),
-        }])
-        .unwrap();
     let result = cache
         .load(Path::new("file.json"), &language(), &mut parser)
         .unwrap();
@@ -195,19 +196,18 @@ fn cancellation_never_creates_entry() {
     let root = tempfile::tempdir().unwrap();
     fs::write(root.path().join("file.json"), "[1]").unwrap();
     let cache = Persistence::open(root.path(), Options::default()).unwrap();
-    let cancel = AtomicBool::new(true);
+    let mut cancel = |_: &dyn ParseStateLike| ControlFlow::Break(());
     let result = cache.load_with_options(
         Path::new("file.json"),
         &language(),
-        &mut tree_sitter::Parser::new(),
+        &mut tree_sitter_squatter::Parser::new(),
         LoadOptions {
             pack: tree_sitter_squatter::PackOptions::default(),
             write: WritePolicy::Inline,
-            cancel: Some(&cancel),
+            parse: ParseOptions::new().progress_callback(&mut cancel),
         },
     );
     assert!(matches!(result, Err(LoadError::Cancelled)));
-    cancel.store(false, Ordering::Relaxed);
     assert!(!load(&cache).cache_hit());
 }
 
@@ -274,11 +274,11 @@ fn unavailable_cache_and_full_map_fall_back() {
         .load_with_options(
             Path::new("file.json"),
             &language(),
-            &mut tree_sitter::Parser::new(),
+            &mut tree_sitter_squatter::Parser::new(),
             LoadOptions {
                 pack: tree_sitter_squatter::PackOptions::default(),
                 write: WritePolicy::Deferred,
-                cancel: None,
+                parse: Default::default(),
             },
         )
         .unwrap();
@@ -421,11 +421,11 @@ fn writer_death_releases_admission_without_stale_files() {
         .load_with_options(
             Path::new("file.json"),
             &language(),
-            &mut tree_sitter::Parser::new(),
+            &mut tree_sitter_squatter::Parser::new(),
             LoadOptions {
                 pack: tree_sitter_squatter::PackOptions::default(),
                 write: WritePolicy::Deferred,
-                cancel: None,
+                parse: Default::default(),
             },
         )
         .unwrap();
@@ -511,8 +511,8 @@ fn side_data_policy_applies_to_hits_and_late_publication() {
     let root = tempfile::tempdir().unwrap();
     fs::write(root.path().join("file.json"), "[\n1,2]").unwrap();
     let cache = Persistence::open(root.path(), Options::default()).unwrap();
-    let mut parser = tree_sitter::Parser::new();
-    let load_with = |presence, points, write, parser: &mut tree_sitter::Parser| {
+    let mut parser = tree_sitter_squatter::Parser::new();
+    let load_with = |presence, points, write, parser: &mut tree_sitter_squatter::Parser| {
         cache
             .load_with_options(
                 Path::new("file.json"),
@@ -525,7 +525,7 @@ fn side_data_policy_applies_to_hits_and_late_publication() {
                         ..tree_sitter_squatter::PackOptions::default()
                     },
                     write,
-                    cancel: None,
+                    parse: Default::default(),
                 },
             )
             .unwrap()
@@ -563,4 +563,183 @@ fn side_data_policy_applies_to_hits_and_late_publication() {
         assert_eq!(result.file.tree().presence_cache().is_some(), presence);
         assert_eq!(result.file.tree().has_points(), points);
     }
+}
+
+#[test]
+fn worker_cancellation_during_parsing_and_packing_leaves_no_publication() {
+    use tree_squatter_persistence::LoadContext;
+
+    let source = format!("[{}0]", "0,".repeat(1000));
+    for converting in [false, true] {
+        for write in [
+            WritePolicy::Inline,
+            WritePolicy::Deferred,
+            WritePolicy::Transfer,
+            WritePolicy::Disabled,
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            fs::write(root.path().join("file.json"), &source).unwrap();
+            let cache = Persistence::open(root.path(), Options::default()).unwrap();
+            let mut context = LoadContext::default();
+            let mut reports = 0;
+            let mut saw_parsing = false;
+            let mut saw_conversion = false;
+            let mut progress = |state: &dyn ParseStateLike| {
+                assert!(!state.has_error());
+                assert_eq!(state.is_converting(), state.current_byte_offset_descends());
+                let parsing = !state.is_converting()
+                    && (1..source.len()).contains(&state.current_byte_offset());
+                saw_parsing |= parsing;
+                saw_conversion |= state.is_converting();
+                if if converting {
+                    state.is_converting()
+                } else {
+                    parsing
+                } {
+                    reports += 1;
+                    if reports == 3 {
+                        return ControlFlow::Break(());
+                    }
+                }
+                ControlFlow::Continue(())
+            };
+            let mut options = LoadOptions {
+                write,
+                parse: ParseOptions::new().progress_callback(&mut progress),
+                ..Default::default()
+            };
+            assert!(matches!(
+                cache.load_with_context(
+                    Path::new("file.json"),
+                    &language(),
+                    &mut context,
+                    options.reborrow()
+                ),
+                Err(LoadError::Cancelled),
+            ));
+            let result = cache
+                .load_with_context(
+                    Path::new("file.json"),
+                    &language(),
+                    &mut context,
+                    options.reborrow(),
+                )
+                .unwrap();
+            assert!(!result.file.cache_hit());
+            assert_eq!(result.file.source(), source.as_bytes());
+            assert!(reports > 3);
+            assert!(saw_parsing && saw_conversion);
+            assert_eq!(
+                result.pending_write.is_some(),
+                matches!(write, WritePolicy::Deferred | WritePolicy::Transfer)
+            );
+            assert_eq!(load(&cache).cache_hit(), write == WritePolicy::Inline);
+        }
+    }
+}
+
+#[test]
+fn cancellation_during_capture_and_on_a_cache_hit() {
+    let root = tempfile::tempdir().unwrap();
+    let source = format!("\"{}\"", "x".repeat(150_000));
+    fs::write(root.path().join("file.json"), &source).unwrap();
+    let cache = Persistence::open(root.path(), Options::default()).unwrap();
+    let mut parser = tree_sitter_squatter::Parser::new();
+    let mut cancel = |state: &dyn ParseStateLike| {
+        assert!(!state.is_converting());
+        assert!(!state.current_byte_offset_descends());
+        assert!(!state.has_error());
+        if state.current_byte_offset() == 64 * 1024 {
+            ControlFlow::Break(())
+        } else {
+            ControlFlow::Continue(())
+        }
+    };
+    assert!(matches!(
+        cache.load_with_options(
+            Path::new("file.json"),
+            &language(),
+            &mut parser,
+            LoadOptions {
+                parse: ParseOptions::new().progress_callback(&mut cancel),
+                ..Default::default()
+            }
+        ),
+        Err(LoadError::Cancelled)
+    ));
+    assert!(parser.language().is_none());
+    assert!(!load(&cache).cache_hit());
+
+    fs::write(root.path().join("file.json"), "[1,").unwrap();
+    assert!(load(&cache).tree().root_node().has_error());
+    let mut cancel = |state: &dyn ParseStateLike| {
+        assert!(!state.is_converting());
+        if state.has_error() {
+            assert_eq!(state.current_byte_offset(), 3);
+            ControlFlow::Break(())
+        } else {
+            ControlFlow::Continue(())
+        }
+    };
+    assert!(matches!(
+        cache.load_with_options(
+            Path::new("file.json"),
+            &language(),
+            &mut parser,
+            LoadOptions {
+                parse: ParseOptions::new().progress_callback(&mut cancel),
+                ..Default::default()
+            }
+        ),
+        Err(LoadError::Cancelled)
+    ));
+    assert!(parser.language().is_none());
+    assert!(load(&cache).cache_hit());
+}
+
+#[test]
+fn inline_publication_cancellation_rolls_back_and_reuses_worker() {
+    use tree_squatter_persistence::LoadContext;
+
+    let root = tempfile::tempdir().unwrap();
+    fs::write(root.path().join("file.json"), "[1]").unwrap();
+    let cache = Persistence::open(root.path(), Options::default()).unwrap();
+    let mut context = LoadContext::default();
+    let mut converted = false;
+    let mut after_conversion = 0;
+    let mut cancel = |state: &dyn ParseStateLike| {
+        if state.is_converting() {
+            converted = true;
+        } else if converted {
+            // Completion, pre-publication, then immediately before commit.
+            after_conversion += 1;
+            if after_conversion == 3 {
+                return ControlFlow::Break(());
+            }
+        }
+        ControlFlow::Continue(())
+    };
+    assert!(matches!(
+        cache.load_with_context(
+            Path::new("file.json"),
+            &language(),
+            &mut context,
+            LoadOptions {
+                parse: ParseOptions::new().progress_callback(&mut cancel),
+                ..Default::default()
+            }
+        ),
+        Err(LoadError::Cancelled)
+    ));
+    assert_eq!(after_conversion, 3);
+    let result = cache
+        .load_with_context(
+            Path::new("file.json"),
+            &language(),
+            &mut context,
+            LoadOptions::default(),
+        )
+        .unwrap();
+    assert!(!result.file.cache_hit());
+    assert!(load(&cache).cache_hit());
 }

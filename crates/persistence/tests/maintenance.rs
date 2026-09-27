@@ -67,11 +67,11 @@ fn stale_cleanup_stops_and_late_writer_cannot_restore_retired_records() {
         .load_with_options(
             Path::new("file.json"),
             &language(),
-            &mut tree_sitter::Parser::new(),
+            &mut tree_sitter_squatter::Parser::new(),
             LoadOptions {
                 pack: tree_sitter_squatter::PackOptions::default(),
                 write: WritePolicy::Deferred,
-                cancel: None,
+                parse: Default::default(),
             },
         )
         .unwrap();
@@ -102,7 +102,7 @@ fn missing_cleanup_rejects_deferred_first_writers_across_recreations() {
             .load_with_options(
                 Path::new("file.json"),
                 &language(),
-                &mut tree_sitter::Parser::new(),
+                &mut tree_sitter_squatter::Parser::new(),
                 LoadOptions {
                     write: WritePolicy::Deferred,
                     ..Default::default()
@@ -221,7 +221,7 @@ fn sidecars_can_be_evicted_independently_of_core_and_readers() {
                 .load_with_options(
                     Path::new("file.json"),
                     &language(),
-                    &mut tree_sitter::Parser::new(),
+                    &mut tree_sitter_squatter::Parser::new(),
                     LoadOptions {
                         pack: tree_sitter_squatter::PackOptions {
                             symbol_presence: kind != SidecarKind::Presence,
@@ -246,7 +246,7 @@ fn sidecars_can_be_evicted_independently_of_core_and_readers() {
                 .load_with_options(
                     Path::new("file.json"),
                     &language(),
-                    &mut tree_sitter::Parser::new(),
+                    &mut tree_sitter_squatter::Parser::new(),
                     LoadOptions {
                         write: WritePolicy::Deferred,
                         ..Default::default()

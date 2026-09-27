@@ -3,7 +3,8 @@
 mod common;
 use common::{ChildProcess, language, load};
 
-use std::{fs, os::fd::AsRawFd, path::Path, sync::atomic::AtomicBool};
+use std::{fs, ops::ControlFlow, os::fd::AsRawFd, path::Path};
+use tree_sitter_squatter::{ParseOptions, traits::ParseStateLike};
 use tree_squatter_persistence::*;
 
 #[test]
@@ -56,15 +57,29 @@ fn deferred_capture_survives_owner_death_and_source_change() {
     else {
         panic!("expected deferral")
     };
-    let LoadStep::Deferred(pending) = pending.resume_with_context(&mut context, None).unwrap()
+    let LoadStep::Deferred(pending) = pending
+        .resume_with_context(&mut context, ParseOptions::default())
+        .unwrap()
     else {
         panic!("owner is still live")
     };
     fs::write(&path, "[2]").unwrap();
     drop(owner);
-    let LoadStep::Ready(result) = pending.resume_with_context(&mut context, None).unwrap() else {
+    let mut converted = false;
+    let mut progress = |state: &dyn ParseStateLike| {
+        converted |= state.is_converting();
+        ControlFlow::Continue(())
+    };
+    let LoadStep::Ready(result) = pending
+        .resume_with_context(
+            &mut context,
+            ParseOptions::new().progress_callback(&mut progress),
+        )
+        .unwrap()
+    else {
         panic!("dead owner retained ownership")
     };
+    assert!(converted);
     assert_eq!(result.file.source(), b"[1]");
     let current = load(&cache);
     assert_eq!(current.source(), b"[2]");
@@ -88,7 +103,7 @@ fn wait_budget_bypasses_live_owner_and_cancellation_stops_deferred_work() {
         .load_step(
             Path::new("file.json"),
             &language(),
-            &mut tree_sitter::Parser::new(),
+            &mut tree_sitter_squatter::Parser::new(),
             LoadOptions::default(),
         )
         .unwrap()
@@ -97,11 +112,46 @@ fn wait_budget_bypasses_live_owner_and_cancellation_stops_deferred_work() {
     };
     assert!(matches!(
         pending.resume(
-            &mut tree_sitter::Parser::new(),
-            Some(&AtomicBool::new(true))
+            &mut tree_sitter_squatter::Parser::new(),
+            ParseOptions::new()
+                .progress_callback(&mut |_: &dyn ParseStateLike| ControlFlow::Break(()))
         ),
         Err(LoadError::Cancelled)
     ));
+    let mut captured = false;
+    let mut waiting_checks = 0;
+    let mut cancel_wait = |state: &dyn ParseStateLike| {
+        assert!(!state.is_converting());
+        captured |= state.current_byte_offset() == 4;
+        if captured && state.current_byte_offset() == 0 {
+            waiting_checks += 1;
+            if waiting_checks == 2 {
+                return ControlFlow::Break(());
+            }
+        }
+        ControlFlow::Continue(())
+    };
+    let waiting_cache = Persistence::open(
+        root.path(),
+        Options {
+            cooperation_wait: std::time::Duration::from_secs(10),
+            ..Options::default()
+        },
+    )
+    .unwrap();
+    assert!(matches!(
+        waiting_cache.load_with_context(
+            Path::new("file.json"),
+            &language(),
+            &mut LoadContext::default(),
+            LoadOptions {
+                parse: ParseOptions::new().progress_callback(&mut cancel_wait),
+                ..Default::default()
+            },
+        ),
+        Err(LoadError::Cancelled)
+    ));
+    assert_eq!(waiting_checks, 2);
     let start = std::time::Instant::now();
     let result = load(&cache);
     assert!(start.elapsed() < std::time::Duration::from_secs(5));
@@ -121,7 +171,7 @@ fn deferred_contender_reuses_winner_publication() {
         .load_step(
             Path::new("file.json"),
             &language(),
-            &mut tree_sitter::Parser::new(),
+            &mut tree_sitter_squatter::Parser::new(),
             LoadOptions::default(),
         )
         .unwrap()
@@ -132,7 +182,7 @@ fn deferred_contender_reuses_winner_publication() {
         .load_step(
             Path::new("file.json"),
             &language(),
-            &mut tree_sitter::Parser::new(),
+            &mut tree_sitter_squatter::Parser::new(),
             LoadOptions::default(),
         )
         .unwrap()
@@ -141,14 +191,20 @@ fn deferred_contender_reuses_winner_publication() {
     };
     assert!(
         !winner
-            .parse_now_with_context(&mut tree_squatter_persistence::LoadContext::default(), None)
+            .parse_now_with_context(
+                &mut tree_squatter_persistence::LoadContext::default(),
+                ParseOptions::default()
+            )
             .unwrap()
             .file
             .cache_hit()
     );
     // No language is installed: a hit must not need to initialize this parser.
-    let mut parser = tree_sitter::Parser::new();
-    let LoadStep::Ready(result) = contender.resume(&mut parser, None).unwrap() else {
+    let mut parser = tree_sitter_squatter::Parser::new();
+    let LoadStep::Ready(result) = contender
+        .resume(&mut parser, ParseOptions::default())
+        .unwrap()
+    else {
         panic!("publication must take precedence over the busy work lock")
     };
     assert!(result.file.cache_hit());

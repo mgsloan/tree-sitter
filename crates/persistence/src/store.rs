@@ -616,7 +616,7 @@ impl Store {
         source: &[u8],
         tree: &tree_sitter_squatter::Tree,
         language: &IdentifiedLanguage,
-        cancelled: impl Fn() -> bool,
+        mut cancelled: impl FnMut() -> bool,
     ) -> Result<WriteOutcome, CacheError> {
         if tree.has_points() != request.points
             || tree.presence_cache().is_some() != request.presence

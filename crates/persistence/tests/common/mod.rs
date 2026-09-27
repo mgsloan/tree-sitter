@@ -30,7 +30,7 @@ pub fn load(cache: &Persistence) -> LoadedFile {
         .load(
             Path::new("file.json"),
             &language(),
-            &mut tree_sitter::Parser::new(),
+            &mut tree_sitter_squatter::Parser::new(),
         )
         .unwrap()
 }

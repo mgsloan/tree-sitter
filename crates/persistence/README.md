@@ -69,7 +69,19 @@ Implemented:
 - Structural safety loading of the core, with cheap sidecar dimension checks
   and point-delta overflow checks, plus debug content checks; no slab checksum. Node source bounds are checked
   before returning the pair. See [the validator audit](validation.md).
-- Parser reset, whole-file ranges, cancellation checks and no partial publication.
+- Fresh whole-file parsing through `tree_sitter_squatter::Parser`. The parser-taking
+  load methods accept this packed parser; `LoadContext` owns one for worker reuse.
+- `LoadOptions::parse` accepts shared `ParseOptions` and its
+  `FnMut(&dyn ParseStateLike) -> ControlFlow<()>` progress callback. Parsing and
+  packing forward parser states. Other checks report bytes captured while reading,
+  zero while waiting or probing, and source length for a completed tree, with
+  both phase flags false. Completed trees report their error flag.
+  `Break(())` returns `LoadError::Cancelled` without returning a tree or publishing
+  partial work. `LoadOptions::reborrow` reuses a callback across calls.
+- Deferred load resume/parse methods and `PendingWrite::publish_with_options`
+  take shared `ParseOptions`; queued work retains no callback. Publication polls
+  before writing and immediately before commit. Cancellation before commit
+  rolls back the transaction; completed commits are not revoked.
 - Inline, deferred, and disabled writes. Deferred work retains no transaction.
 - `open_existing` avoids foreground cache creation; `WritePolicy::Transfer`
   returns captured publication work even before a cache exists. Bounded,
@@ -78,7 +90,7 @@ Implemented:
   can be rebuilt from the transferred core. Transfer frames are an IPC format,
   not a durable schema.
 - Per-worker `LoadContext` reuses parser and packing scratch across grammar
-  changes, including resumable loads. Packing contexts are allocated only on misses.
+  changes, including resumable loads. Empty packing scratch allocates nothing.
   Prepared grammars share immutable tables across workers and trees; callers retain
   grammar handles between batches. `LoadContext::drop_scratch` releases packing scratch.
 - Parse-table-derived supertype dictionaries are stored once per grammar/runtime

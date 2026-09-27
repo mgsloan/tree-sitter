@@ -9,11 +9,11 @@ fn load(cache: &Persistence, write: WritePolicy) -> LoadResult {
         .load_with_options(
             Path::new("file.json"),
             &language(42),
-            &mut tree_sitter::Parser::new(),
+            &mut tree_sitter_squatter::Parser::new(),
             LoadOptions {
                 pack: tree_sitter_squatter::PackOptions::default(),
                 write,
-                cancel: None,
+                parse: Default::default(),
             },
         )
         .unwrap()
@@ -164,14 +164,14 @@ fn transfer_preserves_points_policy() {
             .load_with_options(
                 Path::new("file.json"),
                 &language(42),
-                &mut tree_sitter::Parser::new(),
+                &mut tree_sitter_squatter::Parser::new(),
                 LoadOptions {
                     pack: tree_sitter_squatter::PackOptions {
                         points,
                         ..Default::default()
                     },
                     write: WritePolicy::Transfer,
-                    cancel: None,
+                    parse: Default::default(),
                 },
             )
             .unwrap()
