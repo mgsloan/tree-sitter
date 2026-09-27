@@ -346,8 +346,8 @@ struct Pair<'source> {
     source: &'source Source,
     mainline: tree_sitter::Tree,
     squat: Tree,
-    mainline_ids: compare::Identities,
-    squat_ids: compare::Identities,
+    mainline_ids: compare::Identities<usize>,
+    squat_ids: compare::Identities<tree_squatter::SlotIx>,
     seek_bytes: Vec<usize>,
     seek_points: Vec<Point>,
 }
@@ -766,7 +766,7 @@ enum Observation<'tree> {
 }
 fn observe<'tree, N: tree_squatter::traits::NodeLike<'tree>>(
     root: N,
-    ids: &compare::Identities,
+    ids: &compare::Identities<N::Id>,
     benchmark: &str,
     bytes: &[usize],
     points: &[Point],

@@ -154,7 +154,7 @@ impl Queries {
     pub fn mainline(
         &self,
         root: tree_sitter::Node<'_>,
-        ids: Option<&Identities>,
+        ids: Option<&Identities<usize>>,
         source: &[u8],
         captures: bool,
     ) -> Result<Vec<Record>> {
@@ -223,7 +223,7 @@ impl Queries {
     pub fn squat(
         &self,
         root: tree_squatter::Node<'_>,
-        ids: Option<&Identities>,
+        ids: Option<&Identities<tree_squatter::SlotIx>>,
         source: &[u8],
         captures: bool,
         optimized: bool,
@@ -270,13 +270,7 @@ impl Queries {
                 let nodes: Vec<_> = result
                     .captures
                     .iter()
-                    .map(|entry| {
-                        (
-                            entry.index,
-                            ids[&(u32::from(entry.node.slot()) as usize)],
-                            entry.node.end_byte(),
-                        )
-                    })
+                    .map(|entry| (entry.index, ids[&entry.node.slot()], entry.node.end_byte()))
                     .collect();
                 total_captures += nodes.len();
                 ensure!(

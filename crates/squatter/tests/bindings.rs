@@ -103,8 +103,11 @@ fn check_shared_navigation<'tree, N: NodeLike<'tree>>(
         assert_eq!(node.is_error(), attributes.is_error);
         assert_eq!(node.has_error(), attributes.has_error);
         assert_eq!(node.has_changes(), attributes.has_changes);
-        assert_eq!(node.has_children(), node.child_count() != 0);
-        assert_eq!(node.has_named_children(), node.named_child_count() != 0);
+        assert_eq!(node.has_children(), node.child_count().get() != 0);
+        assert_eq!(
+            node.has_named_children(),
+            node.named_child_count().get() != 0
+        );
     }
     for &node in expected.iter().take(16) {
         cursor.reset(node);
@@ -496,11 +499,19 @@ fn direct_parser_reuses_after_failure_and_owns_grammar() -> Result<(), Box<dyn E
     drop(parser);
     assert_eq!(first.root_node().byte_range(), 0..11);
     assert_eq!(
-        first.root_node().named_child(0).unwrap().kind(),
+        first
+            .root_node()
+            .named_child(tree_squatter::NamedChildIx::new(0))
+            .unwrap()
+            .kind(),
         "declaration"
     );
     assert_eq!(
-        trimmed.root_node().named_child(0).unwrap().kind(),
+        trimmed
+            .root_node()
+            .named_child(tree_squatter::NamedChildIx::new(0))
+            .unwrap()
+            .kind(),
         "function_definition"
     );
     Ok(())

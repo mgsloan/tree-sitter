@@ -1,5 +1,5 @@
 use crate::{
-    Error, FieldId, GrammarKindId, KindId, SlotIx, Tree,
+    ChildIx, Error, FieldId, GrammarKindId, KindId, NamedChildIx, SlotIx, Tree,
     scan::{self, Postorder, Preorder, Scan},
     storage::*,
     traits,
@@ -345,20 +345,20 @@ impl<'tree> Node<'tree> {
         self.named_children().next().is_some()
     }
 
-    pub fn child_count(self) -> usize {
-        self.children().count()
+    pub fn child_count(self) -> ChildIx {
+        ChildIx::new(self.children().count() as u32)
     }
 
-    pub fn named_child_count(self) -> usize {
-        self.named_children().count()
+    pub fn named_child_count(self) -> NamedChildIx {
+        NamedChildIx::new(self.named_children().count() as u32)
     }
 
-    pub fn child(self, index: usize) -> Option<Self> {
-        self.children().nth(index)
+    pub fn child(self, index: ChildIx) -> Option<Self> {
+        self.children().nth(index.get() as usize)
     }
 
-    pub fn named_child(self, index: usize) -> Option<Self> {
-        self.named_children().nth(index)
+    pub fn named_child(self, index: NamedChildIx) -> Option<Self> {
+        self.named_children().nth(index.get() as usize)
     }
 
     pub fn child_by_field_id(self, field: FieldId) -> Option<Self> {

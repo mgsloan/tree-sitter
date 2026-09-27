@@ -1,5 +1,5 @@
 mod types;
-pub use types::{FieldId, GrammarKindId, KindId, SlotIx};
+pub use types::{ChildIx, FieldId, GrammarKindId, KindId, NamedChildIx, SlotIx};
 mod node;
 use node::RawNode;
 pub use node::{Children, Cursor, Node};

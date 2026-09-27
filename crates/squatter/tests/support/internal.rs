@@ -410,12 +410,15 @@ fn maximum_spans_roundtrip_and_reject_delta_underflow() {
     let tree = Tree::parse(&grammar, &mut parser, &source).unwrap();
     assert!(tree.root_node().slot().get() > u16::MAX as u32);
     let loaded = Tree::from_bytes(&grammar, tree.as_bytes()).unwrap();
-    let array = loaded.root_node().named_child(0).unwrap();
-    assert_eq!(array.named_child_count(), 33001);
+    let array = loaded
+        .root_node()
+        .named_child(crate::NamedChildIx::new(0))
+        .unwrap();
+    assert_eq!(array.named_child_count().get(), 33001);
     for index in [0, 33000] {
-        let child = array.named_child(index).unwrap();
+        let child = array.named_child(crate::NamedChildIx::new(index)).unwrap();
         assert_eq!(child.parent(), Some(array));
-        assert_eq!(child.start_byte(), 1 + index * 2);
+        assert_eq!(child.start_byte(), 1 + index as usize * 2);
     }
 
     let mut small = Tree::parse(&grammar, &mut parser, "0").unwrap();

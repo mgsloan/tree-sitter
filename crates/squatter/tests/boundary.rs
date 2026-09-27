@@ -45,7 +45,11 @@ fn typed_fields_and_slot_lookup() {
     let tree = Tree::pack(&grammar, &native).unwrap();
     let root = tree.root_node();
     let key = grammar.field_id_for_name("key").unwrap();
-    let pair = root.named_child(0).unwrap().named_child(0).unwrap();
+    let pair = root
+        .named_child(tree_squatter::NamedChildIx::new(0))
+        .unwrap()
+        .named_child(tree_squatter::NamedChildIx::new(0))
+        .unwrap();
     let child = pair.child_by_field_id(key).unwrap();
     assert_eq!(child.field_id(), Some(key));
     assert_eq!(

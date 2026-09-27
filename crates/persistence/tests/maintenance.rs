@@ -49,7 +49,12 @@ fn bounded_cleanup_preserves_current_variants_and_old_readers() {
     assert!(load(&other).cache_hit());
     assert_eq!(reader.source(), b"[1]");
     assert_eq!(
-        reader.tree().root_node().named_child(0).unwrap().kind(),
+        reader
+            .tree()
+            .root_node()
+            .named_child(tree_sitter_squatter::NamedChildIx::new(0))
+            .unwrap()
+            .kind(),
         "array"
     );
     fs::write(&path, "[1]").unwrap();

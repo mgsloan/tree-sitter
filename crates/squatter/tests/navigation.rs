@@ -227,7 +227,9 @@ fn indexed_points_follow_attachment_across_wide_trees() {
         for (root, reference) in [
             (tree.root_node(), native.root_node()),
             (
-                tree.root_node().named_child(0).unwrap(),
+                tree.root_node()
+                    .named_child(tree_squatter::NamedChildIx::new(0))
+                    .unwrap(),
                 native.root_node().named_child(0).unwrap(),
             ),
         ] {

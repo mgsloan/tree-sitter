@@ -4,15 +4,15 @@ use tree_sitter::Language;
 use tree_sitter::Point;
 use tree_squatter::traits::{Attributes, CursorLike, NodeLike};
 
-pub type Identities = HashMap<usize, usize>;
+pub type Identities<Id> = HashMap<Id, usize>;
 
-pub fn identities<'tree, N: NodeLike<'tree>>(root: N) -> Result<Identities> {
+pub fn identities<'tree, N: NodeLike<'tree>>(root: N) -> Result<Identities<N::Id>> {
     let mut cursor = root.cursor()?;
     let mut result = HashMap::new();
     loop {
         let ordinal = result.len();
         ensure!(
-            result.insert(cursor.node().identity(), ordinal).is_none(),
+            result.insert(cursor.node().id(), ordinal).is_none(),
             "duplicate mainline node identity"
         );
         if cursor.goto_first_child() {
@@ -74,13 +74,16 @@ pub fn scan<'tree, N: NodeLike<'tree>, const ATTRIBUTES: bool>(
     Ok(nodes)
 }
 
-pub fn walk<'tree, N: NodeLike<'tree>>(root: N, ids: &Identities) -> Result<Vec<Record<'tree>>> {
+pub fn walk<'tree, N: NodeLike<'tree>>(
+    root: N,
+    ids: &Identities<N::Id>,
+) -> Result<Vec<Record<'tree>>> {
     let mut cursor = root.cursor()?;
     let mut records = Vec::with_capacity(ids.len());
     loop {
         let node = cursor.node();
         records.push(Record {
-            ordinal: ids[&node.identity()],
+            ordinal: ids[&node.id()],
             attributes: cursor.attributes(),
         });
         if cursor.goto_first_child() {
@@ -99,27 +102,27 @@ pub fn walk<'tree, N: NodeLike<'tree>>(root: N, ids: &Identities) -> Result<Vec<
 
 pub fn seek_bytes<'tree, N: NodeLike<'tree>>(
     root: N,
-    ids: &Identities,
+    ids: &Identities<N::Id>,
     positions: &[usize],
 ) -> Vec<Option<usize>> {
     positions
         .iter()
         .map(|&position| {
             root.descendant_for_byte_range(position, position)
-                .map(|node| ids[&node.identity()])
+                .map(|node| ids[&node.id()])
         })
         .collect()
 }
 pub fn seek_points<'tree, N: NodeLike<'tree>>(
     root: N,
-    ids: &Identities,
+    ids: &Identities<N::Id>,
     positions: &[Point],
 ) -> Vec<Option<usize>> {
     positions
         .iter()
         .map(|&position| {
             root.descendant_for_point_range(position, position)
-                .map(|node| ids[&node.identity()])
+                .map(|node| ids[&node.id()])
         })
         .collect()
 }
@@ -159,20 +162,20 @@ fn expected_field_mismatch(
 pub fn relationships<'tree, A: NodeLike<'tree>, B: NodeLike<'tree>>(
     mainline: A,
     squat: B,
-    mainline_ids: &Identities,
-    squat_ids: &Identities,
+    mainline_ids: &Identities<A::Id>,
+    squat_ids: &Identities<B::Id>,
     language: &Language,
     expected_fields: &mut usize,
 ) -> Result<()> {
     let mut first = mainline.cursor()?;
     let mut second = squat.cursor()?;
     let stride = (mainline_ids.len() / 1000).max(1);
-    let identity_a = |node: Option<A>| node.map(|node| mainline_ids[&node.identity()]);
-    let identity_b = |node: Option<B>| node.map(|node| squat_ids[&node.identity()]);
+    let identity_a = |node: Option<A>| node.map(|node| mainline_ids[&node.id()]);
+    let identity_b = |node: Option<B>| node.map(|node| squat_ids[&node.id()]);
     loop {
         let a = first.node();
         let b = second.node();
-        let ordinal = mainline_ids[&a.identity()];
+        let ordinal = mainline_ids[&a.id()];
         ensure!(
             first.field_id() == second.field_id(),
             "cursor field differs at ordinal {ordinal}"
@@ -224,23 +227,27 @@ pub fn relationships<'tree, A: NodeLike<'tree>, B: NodeLike<'tree>>(
             // Indexed child access scans siblings. A wide array must not turn
             // the validation harness into quadratic work; cursor transitions
             // below still check every child, and small parents are exhaustive.
-            let child_stride = (child_count / 100).max(1);
+            let child_count = child_count.get();
+            let child_stride = (child_count as usize / 100).max(1);
             for index in (0..child_count)
                 .step_by(child_stride)
                 .chain(std::iter::once(child_count))
             {
                 ensure!(
-                    identity_a(a.child(index)) == identity_b(b.child(index)),
+                    identity_a(a.child(tree_squatter::ChildIx::new(index)))
+                        == identity_b(b.child(tree_squatter::ChildIx::new(index))),
                     "child {index} differs at ordinal {ordinal}"
                 );
             }
-            let named_stride = (named_child_count / 100).max(1);
+            let named_child_count = named_child_count.get();
+            let named_stride = (named_child_count as usize / 100).max(1);
             for index in (0..named_child_count)
                 .step_by(named_stride)
                 .chain(std::iter::once(named_child_count))
             {
                 ensure!(
-                    identity_a(a.named_child(index)) == identity_b(b.named_child(index)),
+                    identity_a(a.named_child(tree_squatter::NamedChildIx::new(index)))
+                        == identity_b(b.named_child(tree_squatter::NamedChildIx::new(index))),
                     "named child {index} differs at ordinal {ordinal}"
                 );
             }

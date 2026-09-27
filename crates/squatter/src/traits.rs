@@ -10,7 +10,10 @@
 //!         .sum()
 //! }
 //! ```
-use crate::{Cursor, Error, FieldId, GrammarKindId, KindId, Node, Tree, scan::IdSelection};
+use crate::{
+    ChildIx, Cursor, Error, FieldId, GrammarKindId, KindId, NamedChildIx, Node, SlotIx, Tree,
+    scan::IdSelection,
+};
 use std::ops::Range;
 use tree_sitter::Point;
 
@@ -45,7 +48,8 @@ pub trait TreeLike {
 pub trait NodeLike<'tree>: Copy + Eq {
     type Cursor: CursorLike<'tree, Node = Self>;
     /// Stable within this tree; not comparable across representations.
-    fn identity(self) -> usize;
+    type Id: Copy + Eq + std::hash::Hash;
+    fn id(&self) -> Self::Id;
     /// Read constant-time attributes; counts are separate operations below.
     fn attributes(self) -> Attributes<'tree>;
     fn kind_id(self) -> KindId;
@@ -79,17 +83,17 @@ pub trait NodeLike<'tree>: Copy + Eq {
     /// May scan unnamed children; stops at the first named child.
     fn has_named_children(self) -> bool;
     /// Count visible children; this can scan children in packed trees.
-    fn child_count(self) -> usize;
+    fn child_count(self) -> ChildIx;
     /// Count named children; this can scan children in packed trees.
-    fn named_child_count(self) -> usize;
+    fn named_child_count(self) -> NamedChildIx;
     /// Count visible descendants including this node; this can scan packed groups.
     fn descendant_count(self) -> usize;
     fn cursor(self) -> Result<Self::Cursor, Error>;
     /// Can scan packed nodes; a cursor retains ancestry during traversal.
     fn parent(self) -> Option<Self>;
     /// Can scan preceding children. Prefer iteration when visiting all children.
-    fn child(self, index: usize) -> Option<Self>;
-    fn named_child(self, index: usize) -> Option<Self>;
+    fn child(self, index: ChildIx) -> Option<Self>;
+    fn named_child(self, index: NamedChildIx) -> Option<Self>;
     fn next_sibling(self) -> Option<Self>;
     fn prev_sibling(self) -> Option<Self>;
     fn next_named_sibling(self) -> Option<Self>;
@@ -143,12 +147,8 @@ macro_rules! node_navigation {
         fn parent(self) -> Option<Self> {
             <$node>::parent($($borrow)? self)
         }
-        fn child(self, index: usize) -> Option<Self> {
-            <$node>::child($($borrow)? self, index.try_into().ok()?)
-        }
-        fn named_child(self, index: usize) -> Option<Self> {
-            <$node>::named_child($($borrow)? self, index.try_into().ok()?)
-        }
+
+
         fn next_sibling(self) -> Option<Self> {
             <$node>::next_sibling($($borrow)? self)
         }
@@ -269,23 +269,30 @@ impl<'tree> NodeLike<'tree> for tree_sitter::Node<'tree> {
     fn has_named_children(self) -> bool {
         tree_sitter::Node::named_child_count(&self) != 0
     }
-    fn child_count(self) -> usize {
-        tree_sitter::Node::child_count(&self) as usize
+    fn child_count(self) -> ChildIx {
+        ChildIx::new(tree_sitter::Node::child_count(&self) as u32)
     }
-    fn named_child_count(self) -> usize {
-        tree_sitter::Node::named_child_count(&self)
+    fn named_child_count(self) -> NamedChildIx {
+        NamedChildIx::new(tree_sitter::Node::named_child_count(&self) as u32)
     }
     fn descendant_count(self) -> usize {
         tree_sitter::Node::descendant_count(&self)
     }
-    fn identity(self) -> usize {
-        self.id()
+    type Id = usize;
+    fn id(&self) -> Self::Id {
+        tree_sitter::Node::id(self)
     }
     fn attributes(self) -> Attributes<'tree> {
         attributes!(self)
     }
     fn cursor(self) -> Result<Self::Cursor, Error> {
         Ok(self.walk())
+    }
+    fn child(self, index: ChildIx) -> Option<Self> {
+        tree_sitter::Node::child(&self, index.get())
+    }
+    fn named_child(self, index: NamedChildIx) -> Option<Self> {
+        tree_sitter::Node::named_child(&self, index.get())
     }
     node_navigation!(tree_sitter::Node<'tree>, &);
 }
@@ -313,23 +320,30 @@ impl<'tree> NodeLike<'tree> for Node<'tree> {
     fn has_named_children(self) -> bool {
         Node::has_named_children(self)
     }
-    fn child_count(self) -> usize {
+    fn child_count(self) -> ChildIx {
         Node::child_count(self)
     }
-    fn named_child_count(self) -> usize {
+    fn named_child_count(self) -> NamedChildIx {
         Node::named_child_count(self)
     }
     fn descendant_count(self) -> usize {
         Node::descendant_count(self)
     }
-    fn identity(self) -> usize {
-        self.slot().get() as usize
+    type Id = SlotIx;
+    fn id(&self) -> Self::Id {
+        self.slot()
     }
     fn attributes(self) -> Attributes<'tree> {
         Node::attributes(self)
     }
     fn cursor(self) -> Result<Self::Cursor, Error> {
         self.walk()
+    }
+    fn child(self, index: ChildIx) -> Option<Self> {
+        Node::child(self, index)
+    }
+    fn named_child(self, index: NamedChildIx) -> Option<Self> {
+        Node::named_child(self, index)
     }
     node_navigation!(Node<'tree>);
 }

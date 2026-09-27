@@ -207,3 +207,23 @@ impl SlotIx {
         Self(value)
     }
 }
+
+integer_type!(/// A position or exclusive count among all children.
+    pub ChildIx(u32));
+impl ChildIx {
+    /// Wrap a position or count without checking whether a child exists.
+    #[inline]
+    pub const fn new(value: u32) -> Self {
+        Self(value)
+    }
+}
+
+integer_type!(/// A position or exclusive count among named children.
+    pub NamedChildIx(u32));
+impl NamedChildIx {
+    /// Wrap a position or count without checking whether a child exists.
+    #[inline]
+    pub const fn new(value: u32) -> Self {
+        Self(value)
+    }
+}

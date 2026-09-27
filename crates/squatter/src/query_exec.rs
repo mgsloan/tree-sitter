@@ -1298,7 +1298,7 @@ impl<'query, 'tree> QueryExecution<'_, 'query, 'tree, '_> {
     }
 
     fn goto_first_child(&mut self) -> bool {
-        let Some(child) = self.current().child(0) else {
+        let Some(child) = self.current().child(crate::ChildIx::new(0)) else {
             return false;
         };
         self.cursor.parents.push(self.cursor.position);

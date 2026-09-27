@@ -49,11 +49,20 @@ fn miss_hit_and_old_reader_survives_update() {
     assert!(!new.cache_hit());
     assert!(load(&cache).cache_hit());
     assert_eq!(
-        new.tree().root_node().named_child(0).unwrap().kind(),
+        new.tree()
+            .root_node()
+            .named_child(tree_sitter_squatter::NamedChildIx::new(0))
+            .unwrap()
+            .kind(),
         "array"
     );
     assert_eq!(
-        reader.tree().root_node().named_child(0).unwrap().kind(),
+        reader
+            .tree()
+            .root_node()
+            .named_child(tree_sitter_squatter::NamedChildIx::new(0))
+            .unwrap()
+            .kind(),
         "object"
     );
     assert_eq!(reader.source(), first.source());
@@ -169,7 +178,12 @@ fn reset_cancelled_parser_and_clear_included_ranges() {
         .load(Path::new("file.json"), &language(), &mut parser)
         .unwrap();
     assert_eq!(
-        result.tree().root_node().named_child(0).unwrap().kind(),
+        result
+            .tree()
+            .root_node()
+            .named_child(tree_sitter_squatter::NamedChildIx::new(0))
+            .unwrap()
+            .kind(),
         "array"
     );
     assert_eq!(result.tree().root_node().end_byte(), 7);
@@ -295,9 +309,10 @@ fn multiple_owned_readers() {
                     assert_eq!(
                         file.tree()
                             .root_node()
-                            .named_child(0)
+                            .named_child(tree_sitter_squatter::NamedChildIx::new(0))
                             .unwrap()
-                            .named_child_count(),
+                            .named_child_count()
+                            .get(),
                         3
                     );
                 }
