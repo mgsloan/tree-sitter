@@ -1,3 +1,19 @@
+# Query revamp
+
+This working document collects the query API comparison, retained behavior,
+selection design, and open scope questions. Query work is separate from the
+navigation/storage API pass in [API differences to fix](api-differences-to-fix.md).
+Outlines describe proposed APIs, not implemented functionality.
+
+**TODO: consolidate, integrate, and clean up this document before implementation.**
+The compatibility sketches and selection design are not yet one coherent API.
+Resolve their node-versus-selection arguments, persistent cursor setters versus
+per-execution options, range semantics, and bounded-query scope. Merge duplicate
+behavior requirements, update all signatures/examples together, and distinguish
+accepted changes from deferred work and open questions. Preserve the existing
+selection design while making these decisions; the discussion notes below do
+not silently select a different design.
+
 ## Query compilation, metadata, and errors
 
 **Current tree-sitter**
@@ -75,6 +91,8 @@ pub struct QueryError {
 }
 ```
 
+- `Query::new` accepts the prepared `Language` wrapper;
+  `tree_sitter_language()` exposes the underlying tree-sitter language.
 - Return borrowed string slices rather than exposing internal string ownership.
 - Add capture, pattern, and property inspection; reuse tree-sitter metadata types
   where their shape is unchanged. Property/predicate types need `CaptureIx`.
@@ -348,8 +366,9 @@ let matches = cursor.matches_with_options(&query, root, text_provider, options);
 - Add the limit getter and range setters on result iterators.
 - Defer query containing-range setters. They require new query filtering behavior
   beyond this API-matching pass. Retain existing scan containment APIs unchanged.
-- Support bounded branching/rootless queries through a compatible fallback when
-  a specialized plan is ineligible.
+- Bounded branching/rootless query support remains an open scope decision; see
+  the discussion below. The current restriction also applies to general execution,
+  so disabling specialized plans is not an existing fallback.
 - Add progress options and compatible cancellation/resumption behavior. Remove
   `set_timeout`; callers can check a deadline in the progress callback. Poll
   during execution so a long search with no results can still be cancelled.
@@ -484,3 +503,144 @@ empty selections and repeated filters. Compare direct-scan candidate sets with
 those used by query execution, and verify structural context remains available
 outside the candidate set. Cover subtree/tree boundaries, borrowed filter
 lifetimes, and source-index-selected injection ranges.
+
+## Behavior and verification carried from the API plan
+
+- **Capture events:** order, provisional snapshot contents, and duplicate counts
+  can differ. Preserve these differences in the new `captures` API and document
+  them; retain the current completed-capture coverage contract.
+- **Bounded queries:** branching/rootless patterns can report `UnsupportedRange`
+  even with optimization disabled. Whether to expand support in this revamp is
+  unresolved; the earlier proposal understated this as an optimizer fallback.
+- **Property metadata:** `set!` and `is?`/`is-not?` currently appear among general
+  predicates. Move them to the corresponding dedicated metadata interfaces.
+- **Range validation:** both implementations reject reversed ranges without
+  changing the stored range, after interpreting a zero end as unbounded.
+  Currently tree-squatter also rejects values outside `u32`. Change shared
+  query coordinate-taking APIs to
+  cast byte offsets and point components with `as u32` wherever tree-sitter's
+  Rust wrapper does. Do not check narrowing conversions. Range validity checks
+  apply after conversion; setters discard the internal success flag. Retain
+  existing wider-coordinate behavior in squatter-only scan APIs.
+- **Finite match limits:** discovery/eviction order can retain a different valid
+  subset. Retain and document this behavior; no dedicated compatibility audit
+  is planned.
+- **Cancellation:** the current API uses timeout/status instead of Rust callbacks.
+  Replace `set_timeout` with callback support and compatible stopping/resumption
+  behavior; exact callback cadence and work completed before cancellation may
+  differ. Deadline cancellation belongs in the callback.
+
+Optional point data keeps its existing row-zero, byte-as-column behavior when
+absent, including in point-dependent queries. No separate attached-point parity
+audit is planned. Missing presence caches must not change results.
+
+Use existing query differential tests, normalizing newtypes and representation-
+specific identities. Preserve contractual ordering and duplicates for completed
+results. For capture events, retain coverage checks without requiring
+Tree-sitter's event order, snapshots, or multiplicity. Cover range boundaries,
+optional side data, cancellation, and optimized/unoptimized execution as relevant
+to changes. No dedicated finite-limit eviction/subset audit is planned.
+
+Apply the documentation-copy and annotation approach from the API plan to APIs
+actually implemented here. Do not copy Tree-sitter ordering guarantees that the
+retained capture contract does not provide.
+
+## Questions from the API scope discussion
+
+### Capture iteration: settled behavior, separate ordering feature
+
+Add `captures(...)` while preserving current ordering, provisional snapshots,
+and duplicate behavior. Do not require exact Tree-sitter capture-event parity or
+add a separately named provisional-event API. Retain completed-capture coverage.
+
+Strict source order would be a separate feature. A focused probe found decreasing
+capture start positions in both squatter and this checkout's Tree-sitter for
+captured wildcard parents discovered through later children. Tree-sitter's docs
+promise ordered captures, but its implementation did not meet that promise in
+this case. See item 6 in
+[potential upstream bugs](/home/mgsloan/oss/tree-sitter/potential-upstream-bugs.md).
+Tree-sitter also emits snapshots from unfinished matches; full snapshots are not
+a prerequisite for compatibility. Global capture ordering does not apply to
+flattening the results of completed-match iteration.
+
+### Ordinary bounded queries versus containing ranges
+
+Current query range eligibility requires rooted patterns and compiled steps
+without alternative branches. Optional parts, repetitions, and alternations can
+introduce branches; sibling-sequence patterns can be non-rooted. The gate rejects
+both match and capture execution, including the unoptimized path. The provenance
+notes say the restriction remains pending range validation; actual fixes required
+are not yet established.
+
+Do we retain that restriction initially or validate and extend general execution
+as part of this revamp? Deferral was suggested but not decided. The selection
+design's start-node restrictions are a distinct contract and do not answer the
+ordinary Tree-sitter-range compatibility question.
+
+Query containing-range setters are explicitly deferred. They require matched
+nodes to be wholly inside a supplied range and can be combined with ordinary
+intersection ranges. Existing scan `within_*` selects nodes inside a range;
+scan `containing_*` selects nodes enclosing it. Neither by itself supplies
+Tree-sitter's whole-match containment semantics. Keep the existing scan APIs.
+
+### Metadata, diagnostics, and cloning scope
+
+Which proposed additions belong in this revamp: capture quantifiers, pattern byte
+bounds and classification, guarantee inspection, richer compilation diagnostics,
+property metadata, and `Query::deep_clone`? The comparison lists targets, but the
+selection design does not settle their priority or implementation cost. Separating
+`set!` and `is?`/`is-not?` from general predicates changes observable metadata.
+Deep cloning must preserve disabled patterns and captures; it is more than an
+accessor rename. Pattern-index types remain an explicit open question above.
+
+### Text-provider scope
+
+Is noncontiguous text support included initially, or should the first iteration
+retain byte-slice input? The sketches assume Tree-sitter-shaped `TextProvider`
+support, while the current executor evaluates predicates against source bytes.
+The selection design retains a text-provider parameter but does not specify its
+implementation. Work out predicate chunk handling and node/source lifetimes;
+do not describe a byte-slice-only implementation as full provider compatibility.
+
+### Execution options, limits, and progress
+
+The current cursor already has `set_match_limit(u32)` and
+`did_exceed_match_limit() -> bool`; the comparison adds the missing getter.
+The flag reports exhausted in-progress-match capacity, not a result-count limit.
+Retain current eviction/result-subset behavior. Decide how the setter, getter,
+and status map to the selection design's per-execution limits without adding a
+new behavioral audit.
+
+Use query-specific progress state, not generic cross-API progress types.
+Tree-sitter's Rust shape is:
+
+```rust
+pub struct QueryCursorState { /* private representation */ }
+impl QueryCursorState {
+    pub const fn current_byte_offset(&self) -> usize;
+}
+
+#[derive(Default)]
+pub struct QueryCursorOptions<'a> {
+    pub progress_callback:
+        Option<&'a mut dyn FnMut(&QueryCursorState) -> std::ops::ControlFlow<()>>,
+}
+```
+
+`Continue(())` continues; `Break(())` cancels. `None` disables callbacks.
+Remove the dedicated timeout setting; callers can capture a deadline or atomic
+flag. Byte position is cheap to obtain from packed storage. Decode it only when
+invoking the callback, and pass optimized scans' local positions to polling rather
+than reading a stale general cursor. Position is not a monotonic work counter.
+
+Internal throttling is useful; making `progress_stride` public and choosing its
+units/default remain open. Tree-sitter uses internal thresholds of 100 operations,
+not a public stride. An optional callback already represents disabled callbacks;
+no special `u32::MAX` meaning is needed. Bookkeeping need not disappear when the
+callback is absent. Measure costs before choosing defaults or claiming a benefit.
+
+Specify cancellation and resumption separately: can advancement resume after a
+callback stops execution, or must the caller begin another execution? Existing
+cancellation tests cover stopping and fresh reuse, not a complete resumption
+contract. Poll during searches without results and account for long state-work
+loops. Exact callback cadence and partial results need not match Tree-sitter.

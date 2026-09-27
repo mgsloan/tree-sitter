@@ -6,11 +6,8 @@ same operation. Differences should be limited to:
 - Additional capabilities, such as packing, persistence, scans, and side data.
 - Behavior needed for those capabilities, such as operating without a point cache.
 - Necessary representation changes, such as a wrapper around `Language`.
-- Retained query capture-event behavior and finite-limit result selection,
-  as described below.
 - Newtype wrappers around primitive values, including the planned `ChildIx(u32)`,
-  `NamedChildIx(u32)`, `DescendantIx(u32)`, `CaptureIx(u32)`, `MatchId(u32)`,
-  and `MatchCaptureIx(u32)`.
+  `NamedChildIx(u32)` and `DescendantIx(u32)`.
 
 This proposal follows [the API comparison](api-comparison.md) and the current
 Rust implementations. Each group shows current tree-sitter, current tree-squatter,
@@ -25,7 +22,9 @@ implementation details or naming preferences do not justify changing a shared
 contract. Additions should extend the API without displacing shared operations.
 
 Parser lifecycle, options, backend selection, the shared parser trait, and excluded
-change tracking are covered in [parser API design](parser-api-design.md).
+change tracking are covered in [parser API design](parser-api-design.md). Query
+APIs, result types, behavior, and scan selection are covered in
+[query revamp](query-revamp.md).
 
 Review the cost of missing APIs before committing to add them. The proposed
 conveniences below are candidates, not a requirement to reproduce every method
@@ -106,8 +105,7 @@ impl Language {
 ```
 
 - Keep the prepared `Language` wrapper and domain-specific newtypes.
-- `Query::new` accepts this wrapper; `tree_sitter_language()` returns the
-  underlying tree-sitter language.
+- `tree_sitter_language()` returns the underlying tree-sitter language.
 - Add the shared lookup names, preserving tree-sitter's zero sentinel as
   `KindId::new(0)` on unsuccessful `id_for_node_kind` lookup.
 - Keep checked lookup and underlying grammar-kind lookup as additions.
@@ -535,7 +533,7 @@ new differential testing.
 
 - **Missing points:** tree-squatter returns row zero with byte offset as column.
   Keep optional points and document their effect on accessors, ranges, lookups,
-  and queries.
+  and scans.
 - **Cache loading:** slab loading does not restore separate side data. Retain
   this behavior and expose cache availability.
 - **Missing presence cache:** scanning still works. Preserve identical results
@@ -549,28 +547,10 @@ new differential testing.
 - **Change tracking:** remove the current always-false `has_changes()`.
   Tree-squatter intentionally omits edit registration, changed-range reporting,
   and incremental reuse; parsed trees are fresh snapshots.
-- **Capture events:** order, provisional snapshot contents, and duplicate counts
-  can differ. Preserve these differences in the new `captures` API and document
-  them; retain the current completed-capture coverage contract.
-- **Bounded queries:** branching/rootless patterns can report `UnsupportedRange`.
-  Implement a compatible fallback rather than exposing optimizer limitations.
-- **Property metadata:** `set!` and `is?`/`is-not?` currently appear among general
-  predicates. Move them to the corresponding dedicated metadata interfaces.
-- **Range validation:** both implementations reject reversed ranges without
-  changing the stored range, after interpreting a zero end as unbounded.
-  Currently tree-squatter also rejects values outside `u32`. Change shared
-  coordinate-taking APIs, including query setters and node/cursor lookups, to
-  cast byte offsets and point components with `as u32` wherever tree-sitter's
-  Rust wrapper does. Do not check narrowing conversions. Range validity checks
-  apply after conversion; setters discard the internal success flag. Retain
-  existing wider-coordinate behavior in squatter-only scan APIs.
-- **Finite match limits:** discovery/eviction order can retain a different valid
-  subset. Retain and document this behavior; no dedicated compatibility audit
-  is planned.
-- **Cancellation:** the current API uses timeout/status instead of Rust callbacks.
-  Replace `set_timeout` with callback support and compatible stopping/resumption
-  behavior; exact callback cadence and work completed before cancellation may
-  differ. Deadline cancellation belongs in the callback.
+- **Coordinate narrowing:** cast byte offsets and point components in shared
+  node/cursor lookups with `as u32` wherever tree-sitter's Rust wrapper does.
+  Do not check narrowing conversions. Retain existing wider-coordinate behavior
+  in squatter-only scan APIs.
 - **Identity and ownership:** numerical identities differ across representations,
   repacking can change slots, and borrowed trees depend on their backing storage.
   Retain those necessary differences with explicit scopes and lifetimes.
@@ -582,7 +562,8 @@ results.
 
 1. **API implementation commits.** Split changes into coherent commits: names,
    receivers, index newtypes, cursor construction, and setters; navigation conveniences
-   approved by the cost review; query metadata and iteration; behavior fixes.
+   approved by the cost review; behavior fixes. Query work is tracked separately
+   in [query revamp](query-revamp.md).
    Update callers and relevant tests with each change. Remove `has_changes()`;
    exclude edit registration and incremental reuse. Resolve the open decisions in
    [parser API design](parser-api-design.md) before implementing those larger
@@ -635,13 +616,10 @@ and the `tree-squatter only` label, not an artificial upstream counterpart.
 
 ## Verification
 
-Use existing navigation, binding, boundary, and query differential tests. Normalize
-newtypes and representation-specific identities, but preserve contractual ordering
-and duplicates for completed results. For capture events, retain the existing
-coverage checks without requiring tree-sitter's event order, snapshots, or
-multiplicity. Cover optional side data, malformed packed input trees, empty and
-missing nodes, aliases, range boundaries, cancellation, and both optimized and
-unoptimized execution.
+Use existing navigation, binding, and boundary tests. Normalize newtypes and
+representation-specific identities. Cover optional side data, malformed packed
+input trees, empty and missing nodes, aliases, and range boundaries. Query
+verification is tracked in [query revamp](query-revamp.md).
 
 For the documentation commits, check rendered rustdoc, intra-doc links, and
 affected doctests. Review the copy commit against its recorded source revision,
