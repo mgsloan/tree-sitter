@@ -1,7 +1,36 @@
-pub use crate::query_exec::{QueryCursor, QueryExecution};
+//! Queries over packed nodes, using Tree-sitter query syntax.
+//!
+//! ```
+//! use tree_squatter::{Node, Query, QueryCursor, StreamingIterator};
+//! # fn example(cursor: &mut QueryCursor, query: &Query, root: Node<'_>, source: &[u8]) {
+//! let mut matches = cursor.matches(query, root, source);
+//! while let Some(found) = matches.next() {
+//!     for capture in found.captures() {
+//!         let name = query.capture_names()[capture.index.0 as usize];
+//!         let node = capture.node;
+//!     }
+//! }
+//! drop(matches);
+//!
+//! let mut captures = cursor.captures(query, root, source);
+//! while let Some((found, index)) = captures.next() {
+//!     let capture = found.captures()[index.0 as usize];
+//!     found.remove(); // suppress subsequent events for this match
+//! }
+//! # }
+//! ```
+//!
+//! Capture events retain squatter's provisional snapshots, ordering, and
+//! duplicates; they do not promise Tree-sitter's event ordering or multiplicity.
+//! Use completed matches when provisional events are unsuitable. Ordinary ranges
+//! intersect matched nodes and allow structural context outside the range.
+//! Containing-range setters are not supported.
+
+pub use crate::query_exec::{QueryCaptures, QueryCursor, QueryExecution, QueryMatches};
 use crate::{CaptureIx, Language, MatchId, Node, PatternIx, types::QueryStringId};
 use regex::bytes::Regex;
-pub use tree_sitter::{CaptureQuantifier, QueryErrorKind};
+use std::cell::Cell;
+pub use tree_sitter::{CaptureQuantifier, QueryErrorKind, StreamingIterator};
 
 #[derive(Debug)]
 /// A query compilation or predicate-validation error, with byte-based coordinates.
@@ -399,6 +428,7 @@ pub struct QueryMatch<'cursor, 'tree> {
     pub pattern_index: PatternIx,
     pub(crate) id: MatchId,
     pub(crate) captures: &'cursor [QueryCapture<'tree>],
+    pub(crate) removal: &'cursor Cell<Option<MatchId>>,
 }
 impl<'tree> QueryMatch<'_, 'tree> {
     /// Get the match identity, which belongs to this execution only.
@@ -409,6 +439,12 @@ impl<'tree> QueryMatch<'_, 'tree> {
     /// Borrow this result's captures until its next advancement.
     pub const fn captures(&self) -> &[QueryCapture<'tree>] {
         self.captures
+    }
+
+    /// Suppress subsequent results for this match. The current captures stay readable.
+    /// Repeated removal is a no-op; dropping a match does not remove it.
+    pub fn remove(&self) {
+        self.removal.set(Some(self.id));
     }
 
     /// Iterate over every occurrence of a query-global capture name in this match.

@@ -472,9 +472,7 @@ fn point_bounded_queries_follow_attachment() {
     let query = Query::new(&grammar, "(number) @number").unwrap();
     let mut cursor = QueryCursor::new();
     let mut count = |tree: &Tree| {
-        assert!(
-            cursor.set_point_range(tree_sitter::Point::new(1, 0)..tree_sitter::Point::new(2, 0))
-        );
+        cursor.set_point_range(tree_sitter::Point::new(1, 0)..tree_sitter::Point::new(2, 0));
         let mut execution = cursor.execute(&query, tree.root_node(), source.as_slice());
         let mut found = 0;
         while execution.next_match().is_some() {

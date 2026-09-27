@@ -1,13 +1,15 @@
 use crate::{
     FieldId, GrammarId, MatchCaptureIx, Node, PatternIx, Query, QueryCapture,
-    QueryExecutionError, QueryMatch, RawNode, SlotIx, TextProvider,
+    QueryExecutionError, QueryMatch, RawNode, SlotIx, StreamingIterator, TextProvider,
     native::{Pattern, PatternEntry, Step, flags::*},
     storage::ColumnPointer,
     types::{CaptureIx, GroupIx, MatchId, PackedPoint, PatternIndex, SquatterKindId},
 };
 use std::{
+    cell::Cell,
     cmp::Ordering,
     marker::PhantomData,
+    rc::Rc,
     time::{Duration, Instant},
 };
 use tree_sitter::Point;
@@ -598,6 +600,8 @@ impl ComparisonBlock {
 /// Finite match limits bound in-progress storage. Discovery and eviction order
 /// can retain a different valid subset of results than Tree-sitter.
 pub struct QueryCursor {
+    // Shared indirection keeps iterator-held references valid across range setters.
+    removal: Rc<Cell<Option<MatchId>>>,
     timeout: Option<Duration>,
     optimized: bool,
     range: QueryRange,
@@ -636,6 +640,7 @@ pub struct QueryCursor {
 
 // Capture pointers are inert outside execution, which retains the tree borrow.
 // Starting another execution resets the logical lists before reading captures.
+// The removal Rc is never cloned; only a live execution can borrow its cell.
 unsafe impl Send for QueryCursor {}
 
 impl Default for QueryCursor {
@@ -647,6 +652,7 @@ impl Default for QueryCursor {
 impl QueryCursor {
     pub fn new() -> Self {
         Self {
+            removal: Rc::new(Cell::new(None)),
             timeout: None,
             optimized: true,
             range: QueryRange::default(),
@@ -703,42 +709,46 @@ impl QueryCursor {
         self.exceeded_limit
     }
 
-    pub fn set_max_start_depth(&mut self, depth: u32) {
-        self.max_start_depth = depth;
+    /// Limit the depth at which patterns can start. `None` removes the limit.
+    pub fn set_max_start_depth(&mut self, depth: Option<u32>) -> &mut Self {
+        self.max_start_depth = depth.unwrap_or(NONE);
+        self
     }
 
-    pub fn set_byte_range(&mut self, range: std::ops::Range<usize>) -> bool {
-        let (Ok(start), Ok(mut end)) = (u32::try_from(range.start), u32::try_from(range.end))
-        else {
-            return false;
-        };
-        if end == 0 {
-            end = NONE;
-        }
-        if start > end {
-            return false;
-        }
-        self.range.start_byte = start;
-        self.range.end_byte = end;
-        true
+    /// Maximum in-progress capture-list capacity, not a result count.
+    pub fn match_limit(&self) -> u32 {
+        self.pool.limit
     }
 
-    pub fn set_point_range(&mut self, range: std::ops::Range<Point>) -> bool {
-        let (Some(start), Some(mut end)) = (
-            PackedPoint::from_point(range.start),
-            PackedPoint::from_point(range.end),
-        ) else {
-            return false;
+    /// Restrict matches to nodes intersecting this byte range. Zero end is
+    /// unbounded. Coordinates narrow to u32; reversed ranges leave it unchanged.
+    pub fn set_byte_range(&mut self, range: std::ops::Range<usize>) -> &mut Self {
+        let start = range.start as u32;
+        let end = match range.end as u32 {
+            0 => NONE,
+            end => end,
         };
+        if start <= end {
+            self.range.start_byte = start;
+            self.range.end_byte = end;
+        }
+        self
+    }
+
+    /// Restrict matches to nodes intersecting this point range, using the same
+    /// narrowing and validation rules as `set_byte_range`.
+    /// Without point data, nodes use row zero and byte offsets as columns.
+    pub fn set_point_range(&mut self, range: std::ops::Range<Point>) -> &mut Self {
+        let start = PackedPoint::from_point_cast(range.start);
+        let mut end = PackedPoint::from_point_cast(range.end);
         if end == PackedPoint(0) {
             end = PackedPoint(u64::MAX);
         }
-        if start > end {
-            return false;
+        if start <= end {
+            self.range.start_point = start;
+            self.range.end_point = end;
         }
-        self.range.start_point = start;
-        self.range.end_point = end;
-        true
+        self
     }
 
     /// Start a fresh execution, retaining the provider and borrowing this cursor
@@ -753,6 +763,7 @@ impl QueryCursor {
         Provider: TextProvider<Chunk>,
         Chunk: AsRef<[u8]>,
     {
+        self.removal.set(None);
         self.pool.reset();
         self.states.clear();
         self.pending.clear();
@@ -898,6 +909,9 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
             return None;
         }
 
+        if let Some(id) = self.cursor.removal.take() {
+            self.remove_match(id);
+        }
         loop {
             let output = if capture {
                 self.next_capture_output()
@@ -923,6 +937,7 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
                 id: output.id,
                 pattern_index: PatternIx(output.pattern.get() as usize),
                 captures,
+                removal: &self.cursor.removal,
             };
             if result.satisfies(self.query, &mut self.text_provider, &mut self.text_buffers) {
                 return Some((
@@ -930,6 +945,7 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
                         id: result.id(),
                         pattern_index: result.pattern_index,
                         captures,
+                        removal: &self.cursor.removal,
                     },
                     MatchCaptureIx(output.index as u32),
                 ));
@@ -967,6 +983,142 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
         debug_assert!((index as usize) < self.steps.len());
         // Only the trusted compiler and its control-flow edges produce indexes.
         unsafe { self.steps.get_unchecked(index as usize) }
+    }
+}
+
+/// Streaming matches from a query execution. Advancing ends the current result
+/// borrow.
+pub struct QueryMatches<'cursor, 'query, 'tree, Provider, Chunk>
+where
+    Provider: TextProvider<Chunk>,
+    Chunk: AsRef<[u8]>,
+{
+    execution: QueryExecution<'cursor, 'query, 'tree, Provider, Chunk>,
+    current: Option<QueryMatch<'cursor, 'tree>>,
+}
+impl<Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>> QueryMatches<'_, '_, '_, Provider, Chunk> {
+    /// Update the cursor's persistent byte range for subsequent advancement.
+    pub fn set_byte_range(&mut self, range: std::ops::Range<usize>) {
+        self.execution.cursor.set_byte_range(range);
+        self.execution.unrestricted = self.execution.cursor.range.unrestricted();
+        self.execution.cursor.first_capture_valid = false;
+    }
+    /// Update the cursor's persistent point range for subsequent advancement.
+    pub fn set_point_range(&mut self, range: std::ops::Range<Point>) {
+        self.execution.cursor.set_point_range(range);
+        self.execution.unrestricted = self.execution.cursor.range.unrestricted();
+        self.execution.cursor.first_capture_valid = false;
+    }
+}
+impl<'cursor, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>> StreamingIterator
+    for QueryMatches<'cursor, '_, 'tree, Provider, Chunk>
+{
+    type Item = QueryMatch<'cursor, 'tree>;
+    fn advance(&mut self) {
+        self.current = None;
+        // The captures and removal cell live in the exclusively borrowed cursor.
+        // Only get() exposes them, with its shorter &self borrow, and the old
+        // item is cleared before advancing can reuse capture storage.
+        self.current = self
+            .execution
+            .next_match()
+            .map(|item| unsafe { std::mem::transmute::<_, Self::Item>(item) });
+    }
+    fn get(&self) -> Option<&Self::Item> {
+        self.current.as_ref()
+    }
+}
+impl QueryCursor {
+    /// Start a fresh stream of matches, retaining the provider until dropped.
+    pub fn matches<'cursor, 'query, 'tree, Provider, Chunk>(
+        &'cursor mut self,
+        query: &'query Query,
+        root: Node<'tree>,
+        text_provider: Provider,
+    ) -> QueryMatches<'cursor, 'query, 'tree, Provider, Chunk>
+    where
+        Provider: TextProvider<Chunk>,
+        Chunk: AsRef<[u8]>,
+    {
+        QueryMatches {
+            execution: self.execute(query, root, text_provider),
+            current: None,
+        }
+    }
+}
+
+/// Streaming captures from a query execution. Advancing ends the current result
+/// borrow.
+/// Capture events are provisional snapshots: order and multiplicity can differ
+/// from Tree-sitter, and snapshots can grow or lose longest-match filtering.
+/// Completed-match captures remain covered. Use `matches` for completed results.
+///
+/// ```compile_fail
+/// # use tree_squatter::{Query, QueryCursor, Node, StreamingIterator};
+/// # fn example(cursor: &mut QueryCursor, query: &Query, root: Node<'_>, text: &[u8]) {
+/// let mut captures = cursor.captures(query, root, text);
+/// let (found, _) = captures.next().unwrap();
+/// let borrowed = found.captures();
+/// captures.next();
+/// println!("{borrowed:?}");
+/// # }
+/// ```
+pub struct QueryCaptures<'cursor, 'query, 'tree, Provider, Chunk>
+where
+    Provider: TextProvider<Chunk>,
+    Chunk: AsRef<[u8]>,
+{
+    execution: QueryExecution<'cursor, 'query, 'tree, Provider, Chunk>,
+    current: Option<(QueryMatch<'cursor, 'tree>, MatchCaptureIx)>,
+}
+impl<Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>> QueryCaptures<'_, '_, '_, Provider, Chunk> {
+    /// Update the cursor's persistent byte range for subsequent advancement.
+    pub fn set_byte_range(&mut self, range: std::ops::Range<usize>) {
+        self.execution.cursor.set_byte_range(range);
+        self.execution.unrestricted = self.execution.cursor.range.unrestricted();
+        self.execution.cursor.first_capture_valid = false;
+    }
+    /// Update the cursor's persistent point range for subsequent advancement.
+    pub fn set_point_range(&mut self, range: std::ops::Range<Point>) {
+        self.execution.cursor.set_point_range(range);
+        self.execution.unrestricted = self.execution.cursor.range.unrestricted();
+        self.execution.cursor.first_capture_valid = false;
+    }
+}
+impl<'cursor, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>> StreamingIterator
+    for QueryCaptures<'cursor, '_, 'tree, Provider, Chunk>
+{
+    type Item = (QueryMatch<'cursor, 'tree>, MatchCaptureIx);
+    fn advance(&mut self) {
+        self.current = None;
+        // The captures and removal cell live in the exclusively borrowed cursor.
+        // Only get() exposes them, with its shorter &self borrow, and the old
+        // item is cleared before advancing can reuse capture storage.
+        self.current = self
+            .execution
+            .next_capture()
+            .map(|item| unsafe { std::mem::transmute::<_, Self::Item>(item) });
+    }
+    fn get(&self) -> Option<&Self::Item> {
+        self.current.as_ref()
+    }
+}
+impl QueryCursor {
+    /// Start a fresh stream of captures, retaining the provider until dropped.
+    pub fn captures<'cursor, 'query, 'tree, Provider, Chunk>(
+        &'cursor mut self,
+        query: &'query Query,
+        root: Node<'tree>,
+        text_provider: Provider,
+    ) -> QueryCaptures<'cursor, 'query, 'tree, Provider, Chunk>
+    where
+        Provider: TextProvider<Chunk>,
+        Chunk: AsRef<[u8]>,
+    {
+        QueryCaptures {
+            execution: self.execute(query, root, text_provider),
+            current: None,
+        }
     }
 }
 
@@ -1206,16 +1358,18 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
         }
     }
 
+    /// Suppress every remaining result with this execution-local match ID.
     pub fn remove_match(&mut self, id: MatchId) {
         if self.cursor.finished_heap_size != 0 {
             self.heapify();
         }
-        if let Some(index) = self.cursor.finished.iter().position(|state| state.id == id) {
+        while let Some(index) = self.cursor.finished.iter().position(|state| state.id == id) {
             self.cursor
                 .pool
                 .release(self.cursor.finished[index].captures);
             self.cursor.erase_finished(index);
-        } else if let Some(index) = self.cursor.states.iter().position(|state| state.id == id) {
+        }
+        while let Some(index) = self.cursor.states.iter().position(|state| state.id == id) {
             let state = self.cursor.states.remove(index);
             self.cursor.pool.release(state.captures);
             if self.cursor.direct {
@@ -2750,7 +2904,7 @@ mod scan_tests {
                             let collect = |optimized| {
                                 let mut cursor = QueryCursor::new();
                                 cursor.set_optimized(optimized);
-                                assert!(cursor.set_byte_range(range.clone()));
+                                cursor.set_byte_range(range.clone());
                                 let mut execution = cursor.execute(&query, root, source.as_bytes());
                                 assert_eq!(execution.cursor.direct, optimized, "{pattern}");
                                 let mut results = Vec::new();
@@ -2875,7 +3029,7 @@ mod scan_tests {
                                         cursor
                                             .set_point_range(point(range.start)..point(range.end));
                                     } else {
-                                        assert!(cursor.set_byte_range(range.clone()));
+                                        cursor.set_byte_range(range.clone());
                                     }
                                     let mut execution =
                                         cursor.execute(&query, root, source.as_bytes());

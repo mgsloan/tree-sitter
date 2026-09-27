@@ -320,8 +320,8 @@ fn malformed_queries_match_with_and_without_plans() {
                     reference.set_optimized(false);
                     if bounded {
                         let start = source.len() / 2;
-                        assert!(optimized.set_byte_range(start..start + 1));
-                        assert!(reference.set_byte_range(start..start + 1));
+                        optimized.set_byte_range(start..start + 1);
+                        reference.set_byte_range(start..start + 1);
                     }
                     let expected = matches!(&mut reference, query, tree, source);
                     assert_eq!(
@@ -428,7 +428,7 @@ fn disabling_non_rooted_pattern_preserves_ranges() {
         let mut query = Query::new(&grammar, pattern).unwrap();
         let mut cursor = QueryCursor::new();
         cursor.set_optimized(optimized);
-        assert!(cursor.set_byte_range(4..9));
+        cursor.set_byte_range(4..9);
 
         assert_eq!(
             matches!(&mut cursor, &query, tree, source),
@@ -483,7 +483,7 @@ fn cancellation_limits_ranges_and_reuse() {
 
     cursor.set_timeout(None);
     cursor.set_match_limit(u32::MAX);
-    assert!(cursor.set_byte_range(1..10));
+    cursor.set_byte_range(1..10);
     let mut execution = cursor.execute(&query, tree.root_node(), source.as_bytes());
     assert!(execution.next_match().is_none());
     assert_eq!(execution.error(), None);
@@ -651,33 +651,33 @@ fn query_edge_cases_match_tree_sitter() {
                         match mode {
                             1 => {
                                 reference.set_max_start_depth(Some(1));
-                                cursor.set_max_start_depth(1);
+                                cursor.set_max_start_depth(Some(1));
                             }
                             2 => {
                                 reference.set_byte_range(1..12);
-                                assert!(cursor.set_byte_range(1..12));
+                                cursor.set_byte_range(1..12);
                             }
                             3 => {
                                 reference.set_point_range(Point::new(0, 1)..Point::new(1, 0));
-                                assert!(cursor.set_point_range(Point::new(0, 1)..Point::new(1, 0)));
+                                cursor.set_point_range(Point::new(0, 1)..Point::new(1, 0));
                             }
                             4 => {
                                 reference.set_byte_range(4..4);
-                                assert!(cursor.set_byte_range(4..4));
+                                cursor.set_byte_range(4..4);
                             }
                             5 => {
                                 reference.set_point_range(Point::new(1, 2)..Point::new(1, 3));
-                                assert!(cursor.set_point_range(Point::new(1, 2)..Point::new(1, 3)));
+                                cursor.set_point_range(Point::new(1, 2)..Point::new(1, 3));
                             }
                             6 => {
                                 reference.set_byte_range(1..12);
-                                assert!(cursor.set_byte_range(1..12));
+                                cursor.set_byte_range(1..12);
                                 reference.set_point_range(Point::new(1, 0)..Point::new(2, 0));
-                                assert!(cursor.set_point_range(Point::new(1, 0)..Point::new(2, 0)));
+                                cursor.set_point_range(Point::new(1, 0)..Point::new(2, 0));
                             }
                             7 => {
                                 reference.set_byte_range(100..101);
-                                assert!(cursor.set_byte_range(100..101));
+                                cursor.set_byte_range(100..101);
                             }
                             _ => {}
                         }
@@ -830,10 +830,10 @@ fn quantified_roots_with_ranges_match_tree_sitter() {
                     if points {
                         let range = Point::new(0, range.start)..Point::new(0, range.end);
                         reference.set_point_range(range.clone());
-                        assert!(cursor.set_point_range(range));
+                        cursor.set_point_range(range);
                     } else {
                         reference.set_byte_range(range.clone());
-                        assert!(cursor.set_byte_range(range.clone()));
+                        cursor.set_byte_range(range.clone());
                     }
 
                     let mut execution =
@@ -950,7 +950,7 @@ fn disabled_rootless_and_branching_patterns_with_ranges() {
                             tree_sitter::Point::new(0, 1)..tree_sitter::Point::new(1, 0),
                         );
                     } else {
-                        assert!(cursor.set_byte_range(1..12));
+                        cursor.set_byte_range(1..12);
                     }
                     for captures in [false, true] {
                         let mut execution =
@@ -1014,20 +1014,38 @@ where
     Provider: tree_squatter::TextProvider<Chunk>,
     Chunk: AsRef<[u8]>,
 {
+    use tree_squatter::StreamingIterator;
     let mut cursor = QueryCursor::new();
     cursor.set_optimized(optimized);
-    let mut execution = cursor.execute(query, tree.root_node(), provider);
     let mut results = Vec::new();
-    if mode == 0 {
-        while let Some(found) = execution.next_match() {
-            results.push(snapshot(&found, None));
+    match mode {
+        0 => {
+            let mut execution = cursor.execute(query, tree.root_node(), provider);
+            while let Some(found) = execution.next_match() {
+                results.push(snapshot(&found, None));
+            }
+            assert_eq!(execution.error(), None);
         }
-    } else {
-        while let Some((found, index)) = execution.next_capture() {
-            results.push(snapshot(&found, Some(index)));
+        2 => {
+            let mut matches = cursor.matches(query, tree.root_node(), provider);
+            while let Some(found) = matches.next() {
+                results.push(snapshot(found, None));
+            }
         }
+        4 => {
+            let mut captures = cursor.captures(query, tree.root_node(), provider);
+            while let Some((found, index)) = captures.next() {
+                results.push(snapshot(found, Some(*index)));
+            }
+        }
+        6 => {
+            let mut execution = cursor.execute(query, tree.root_node(), provider);
+            while let Some((found, index)) = execution.next_capture() {
+                results.push(snapshot(&found, Some(index)));
+            }
+        }
+        _ => unreachable!(),
     }
-    assert_eq!(execution.error(), None);
     results
 }
 
@@ -1053,7 +1071,7 @@ fn chunked_predicates_and_streaming_entry_points() {
     ] {
         let query = Query::new(&grammar, pattern).unwrap();
         for optimized in [false, true] {
-            for mode in [0, 6] {
+            for mode in [0, 2, 4, 6] {
                 let expected = provider_results(&query, &tree, source.as_bytes(), mode, optimized);
                 // Every byte boundary includes splits inside UTF-8 and regex matches.
                 for width in [1, 2, 5, source.len()] {
@@ -1098,7 +1116,7 @@ fn chunked_predicates_and_streaming_entry_points() {
         "not-eq? @text \"x\"",
     ] {
         let query = Query::new(&grammar, &format!("((string) @text (#{predicate}))")).unwrap();
-        for mode in [0, 6] {
+        for mode in [0, 2, 4, 6] {
             let empty = |_: tree_squatter::Node<'_>| std::iter::empty::<Vec<u8>>();
             let empty_chunk = |_: tree_squatter::Node<'_>| std::iter::once(Vec::<u8>::new());
             let expected = provider_results(&query, &tree, empty_chunk, mode, true);
@@ -1229,6 +1247,198 @@ fn metadata_diagnostics_and_independent_clones() {
         assert_eq!(error.kind, tree_squatter::QueryErrorKind::Predicate);
         assert_eq!(error.row, usize::from(pattern.starts_with('\n')));
         assert!(!error.message.is_empty());
+    }
+}
+
+#[test]
+fn removal_keeps_current_captures_readable_and_nodes_independent() {
+    use tree_squatter::StreamingIterator;
+    let source = "[1,2,3,4]";
+    let (grammar, tree) = json_query_tree(source);
+    let query = Query::new(&grammar, "(array (number)+ @number) @array").unwrap();
+    for optimized in [false, true] {
+        let mut cursor = QueryCursor::new();
+        cursor.set_optimized(optimized);
+        for explicit in [false, true] {
+            let mut execution = cursor.execute(&query, tree.root_node(), source.as_bytes());
+            let (found, _) = execution.next_capture().unwrap();
+            let id = found.id();
+            let captures = found.captures();
+            let saved = captures.to_vec();
+            if !explicit {
+                found.remove();
+                found.remove();
+                assert_eq!(captures, saved);
+            }
+            let node = captures[0].node;
+            if explicit {
+                execution.remove_match(id);
+                execution.remove_match(id);
+            }
+            while let Some((found, _)) = execution.next_capture() {
+                assert_ne!(found.id(), id);
+            }
+            drop(execution);
+            assert!(!node.kind().is_empty());
+        }
+        let mut captures = cursor.captures(&query, tree.root_node(), source.as_bytes());
+        let (found, _) = captures.next().unwrap();
+        let id = found.id();
+        let borrowed = found.captures();
+        let saved = borrowed.to_vec();
+        found.remove();
+        found.remove();
+        assert_eq!(borrowed, saved);
+        // Moving an iterator after its first result must not invalidate removal state.
+        let mut moved = captures;
+        moved.set_byte_range(0..0);
+        moved.get().unwrap().0.remove();
+        while let Some((found, _)) = moved.next() {
+            assert_ne!(found.id(), id);
+        }
+        drop(moved);
+        let query = Query::new(
+            &grammar,
+            "(array (number) @number (number) @number (number) @number (number) @number) @array",
+        )
+        .unwrap();
+        let mut matches = cursor.matches(&query, tree.root_node(), source.as_bytes());
+        let found = matches.next().unwrap();
+        let nodes: Vec<_> = found
+            .nodes_for_capture_index(query.capture_index_for_name("number").unwrap())
+            .collect();
+        assert_eq!(nodes.len(), 4);
+        assert_eq!(found.captures().len(), 5);
+        found.remove();
+        assert!(matches.next().is_none());
+        drop(matches);
+        assert_eq!(nodes[0].utf8_text(source.as_bytes()).unwrap(), "1");
+        assert_eq!(
+            provider_results(&query, &tree, source.as_bytes(), 4, optimized).len(),
+            5
+        );
+    }
+}
+
+#[test]
+fn cursor_and_iterator_ranges_narrow_validate_and_persist() {
+    use tree_sitter::Point;
+    use tree_squatter::StreamingIterator;
+    let source = "[1,2,3,4]";
+    let (grammar, tree) = json_query_tree(source);
+    let query = Query::new(&grammar, "(number) @number").unwrap();
+    let reference_query =
+        tree_sitter::Query::new(&grammar.tree_sitter_language(), "(number) @number").unwrap();
+    let mut parser = tree_sitter::Parser::new();
+    parser
+        .set_language(&grammar.tree_sitter_language())
+        .unwrap();
+    let reference_tree = parser.parse(source, None).unwrap();
+    let mut ranges = vec![0..0, 3..6, 4..4, 7..2, 4..0];
+    if usize::BITS > 32 {
+        let wide = (u32::MAX as usize) + 1;
+        ranges.extend([wide + 3..wide + 6, wide + 4..wide, wide + 7..wide + 2]);
+    }
+    for optimized in [false, true] {
+        for range in ranges.clone() {
+            for points in [false, true] {
+                let mut reference = tree_sitter::QueryCursor::new();
+                let mut cursor = QueryCursor::new();
+                cursor.set_optimized(optimized);
+                // Reversed ranges must keep a previously stored restriction.
+                if points {
+                    reference.set_point_range(Point::new(0, 3)..Point::new(0, 6));
+                    cursor.set_point_range(Point::new(0, 3)..Point::new(0, 6));
+                    reference.set_point_range(Point::new(0, range.start)..Point::new(0, range.end));
+                    cursor.set_point_range(Point::new(0, range.start)..Point::new(0, range.end));
+                } else {
+                    reference.set_byte_range(3..6).set_byte_range(range.clone());
+                    cursor.set_byte_range(3..6).set_byte_range(range.clone());
+                }
+                let mut expected = Vec::new();
+                let mut matches = reference.matches(
+                    &reference_query,
+                    reference_tree.root_node(),
+                    source.as_bytes(),
+                );
+                while let Some(found) = matches.next() {
+                    expected.push(found.captures()[0].node.byte_range());
+                }
+                let mut actual = Vec::new();
+                let mut matches = cursor.matches(&query, tree.root_node(), source.as_bytes());
+                while let Some(found) = matches.next() {
+                    actual.push(found.captures()[0].node.byte_range());
+                }
+                assert_eq!(
+                    actual, expected,
+                    "{range:?}, points={points}, optimized={optimized}"
+                );
+            }
+        }
+        let mut cursor = QueryCursor::new();
+        cursor.set_optimized(optimized);
+        cursor.set_match_limit(17);
+        assert_eq!(cursor.match_limit(), 17);
+        cursor.set_max_start_depth(Some(0));
+        assert!(
+            cursor
+                .matches(&query, tree.root_node(), source.as_bytes())
+                .next()
+                .is_none()
+        );
+        cursor.set_max_start_depth(None);
+        if usize::BITS > 32 {
+            let wide = (u32::MAX as usize) + 1;
+            cursor.set_point_range(
+                tree_sitter::Point::new(wide, wide + 5)..tree_sitter::Point::new(wide, wide + 6),
+            );
+            assert_eq!(
+                cursor
+                    .matches(&query, tree.root_node(), source.as_bytes())
+                    .next()
+                    .unwrap()
+                    .captures()[0]
+                    .node
+                    .start_byte(),
+                5
+            );
+            cursor.set_point_range(tree_sitter::Point::new(0, 0)..tree_sitter::Point::new(0, 0));
+        }
+        {
+            let mut matches = cursor.matches(&query, tree.root_node(), source.as_bytes());
+            assert_eq!(matches.next().unwrap().captures()[0].node.start_byte(), 1);
+            matches.set_byte_range(5..8);
+            matches.set_point_range(Point::new(0, 5)..Point::new(0, 8));
+            assert_eq!(matches.next().unwrap().captures()[0].node.start_byte(), 5);
+            assert_eq!(matches.next().unwrap().captures()[0].node.start_byte(), 7);
+            assert!(matches.next().is_none());
+        }
+        {
+            let mut captures = cursor.captures(&query, tree.root_node(), source.as_bytes());
+            let (found, index) = captures.next().unwrap();
+            assert_eq!(found.captures()[index.0 as usize].node.start_byte(), 5);
+            captures.set_byte_range(7..8);
+            captures.set_point_range(Point::new(0, 7)..Point::new(0, 8));
+            let (found, index) = captures.next().unwrap();
+            assert_eq!(found.captures()[index.0 as usize].node.start_byte(), 7);
+            assert!(captures.next().is_none());
+        }
+        let found = cursor
+            .execute(&query, tree.root_node(), source.as_bytes())
+            .next_match()
+            .unwrap()
+            .captures()[0]
+            .node;
+        assert_eq!(found.start_byte(), 7);
+        cursor
+            .set_byte_range(0..0)
+            .set_point_range(Point::new(0, 0)..Point::new(0, 0));
+        assert_eq!(
+            cursor
+                .matches(&query, tree.root_node(), source.as_bytes())
+                .count(),
+            4
+        );
     }
 }
 

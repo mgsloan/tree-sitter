@@ -107,9 +107,9 @@ fn point_free_trees_use_byte_offsets_as_single_line_points() {
         ranges
     };
     let mut byte_cursor = QueryCursor::new();
-    assert!(byte_cursor.set_byte_range(3..4));
+    byte_cursor.set_byte_range(3..4);
     let mut point_cursor = QueryCursor::new();
-    assert!(point_cursor.set_point_range(Point::new(0, 3)..Point::new(0, 4)));
+    point_cursor.set_point_range(Point::new(0, 3)..Point::new(0, 4));
     assert_eq!(captures(&mut byte_cursor), captures(&mut point_cursor));
 
     let compact = tree.repack().unwrap();

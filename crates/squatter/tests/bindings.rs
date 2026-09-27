@@ -329,13 +329,13 @@ fn check_cursor_reuse(
             .is_none()
     );
     let query = Query::new(&grammar, "(_ (_)+ @child) @parent")?;
-    assert!(cursor.set_byte_range(1..12));
+    cursor.set_byte_range(1..12);
     {
         let mut execution = cursor.execute(&query, packed.root_node(), b"".as_slice());
         assert!(execution.next_match().is_some());
         assert_eq!(execution.error(), None);
     }
-    assert!(cursor.set_byte_range(0..0)); // Zero end restores the unbounded range.
+    cursor.set_byte_range(0..0); // Zero end restores the unbounded range.
     let mut execution = cursor.execute(&query, packed.root_node(), b"".as_slice());
     assert!(execution.next_match().is_some());
     assert_eq!(execution.error(), None);
