@@ -154,10 +154,11 @@ pub trait NodeLike<'tree>: Copy + Eq {
     /// Check if this node represents a syntax error or contains any syntax
     /// errors anywhere within it.
     fn has_error(&self) -> bool;
-    /// Preorder including this node, using the backend's native traversal.
+    /// Iterates over this node and its descendants in preorder, using the backend's
+    /// native traversal.
     ///
-    /// **Not in Tree-sitter**. Builds a subtree scan; filters and group traversal remain
-    /// available.
+    /// **Not in Tree-sitter:** Returns a plain iterator. Packed scan filters and group
+    /// traversal are available through the inherent [`Node::preorder`] method.
     fn preorder(self) -> impl Iterator<Item = Self>;
     /// Public kind IDs, in preorder including this node. Never leaves its subtree.
     ///
