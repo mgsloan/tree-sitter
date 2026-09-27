@@ -29,48 +29,53 @@ inherent APIs remain available on `tree_sitter::Parser`.
 pub trait Parse {
     type Tree: TreeLike;
     type Error;
+    type Options<'a>: Default;
 
-    fn parse(&mut self, source: impl AsRef<[u8]>) -> Result<Self::Tree, Self::Error>;
+    fn parse_with_options(
+        &mut self,
+        source: impl AsRef<[u8]>,
+        options: Self::Options<'_>,
+    ) -> Result<Self::Tree, Self::Error>;
+
+    fn parse(&mut self, source: impl AsRef<[u8]>) -> Result<Self::Tree, Self::Error> {
+        self.parse_with_options(source, Default::default())
+    }
 }
 
 impl Parse for Parser {
     type Tree = Tree;
     type Error = ParserError;
+    type Options<'a> = ParseOptions<'a>;
 }
 
 impl Parse for TreeFellerParser {
     type Tree = Tree;
     type Error = ParseError;
+    type Options<'a> = TreeFellerParseOptions<'a>;
 }
 
 impl Parse for tree_sitter::Parser {
     type Tree = tree_sitter::Tree;
     type Error = ParserError;
+    type Options<'a> = tree_sitter::ParseOptions<'a>;
 }
 
 pub trait ParseWithCallback: Parse {
-    type Options<'a>: Default;
-
-    fn parse_with_options<T: AsRef<[u8]>, F: FnMut(usize, Point) -> T>(
+    fn parse_with_callback<T: AsRef<[u8]>, F: FnMut(usize, Point) -> T>(
         &mut self,
         callback: &mut F,
-        options: Option<Self::Options<'_>>,
+        options: Self::Options<'_>,
     ) -> Result<Self::Tree, Self::Error>;
 }
 
-impl ParseWithCallback for Parser {
-    type Options<'a> = ParseOptions<'a>;
-}
-
-impl ParseWithCallback for tree_sitter::Parser {
-    type Options<'a> = tree_sitter::ParseOptions<'a>;
-}
+impl ParseWithCallback for Parser {}
+impl ParseWithCallback for tree_sitter::Parser {}
 ```
 
 `ParseWithCallback` shares chunked UTF-8 input while retaining each parser's
-result, error, and options types. Generic callers can pass `None` for default
-options or constrain the associated options type when they need specific
-controls. They can require packed output with
+result, error, and options types from `Parse`. Generic callers can pass
+`Default::default()` or constrain the associated options type when they need
+specific controls. They can require packed output with
 `P: ParseWithCallback<Tree = Tree>`. Its implementations omit old-tree input,
 as in `Parse`.
 `TreeFellerParser` does not implement it because tree-feller currently
@@ -100,22 +105,29 @@ the direct parser returns syntax errors rather than recovering from them.
 The `Parse` trait covers only contiguous byte input interpreted as UTF-8.
 The direct backend has no chunked input reader, and its input size is limited
 to `u32::MAX` bytes. The native implementation resets any previously
-interrupted parse before calling `tree_sitter::Parser::parse(source, None)`.
-It returns `NoLanguage` when no
-language was selected; it has no progress callback in this method. The
-compatible parser's contiguous input method checks the byte limit before
+interrupted parse before calling Tree-sitter with no old tree.
+It returns `NoLanguage` when no language was selected. The default
+`parse()` call has no progress callback; `parse_with_options` can supply one.
+The compatible parser's contiguous input method checks the byte limit before
 parsing so packing cannot receive offsets outside its representation.
 
 `Parse` uses associated tree and error types because a native parser should
 return its native tree, while the direct parser retains its diagnostic error.
 Callers requiring packed output use `P: Parse<Tree = Tree>`; other callers
-can use `P::Tree: TreeLike`. The trait does not include language selection,
-options, or reset: their contracts differ. Both traits have generic methods,
-so they are unsuitable for trait objects; dynamic dispatch is not required.
+can use `P::Tree: TreeLike`. `parse()` defaults to
+`parse_with_options(source, Default::default())`. The two callback parsers
+can share a byte-slice-to-callback helper, but implement `Parse` explicitly:
+the packed parser checks contiguous length before parsing, while the native
+parser follows Tree-sitter's input behavior. A blanket `Parse` implementation
+for `ParseWithCallback` would need an extra per-parser validation hook and
+would conflict with the current supertrait relationship. Neither trait
+includes language selection or reset; their contracts differ. Both traits
+have generic methods, so they are unsuitable for trait objects.
 
 Tree-sitter's inherent parsing methods shadow the trait methods on a concrete
-`tree_sitter::Parser`. Use `Parse::parse(&mut parser, source)` and
-`ParseWithCallback::parse_with_options(&mut parser, callback, options)` there.
+`tree_sitter::Parser`. Use `Parse::parse(&mut parser, source)`,
+`Parse::parse_with_options(&mut parser, source, options)`, and
+`ParseWithCallback::parse_with_callback(&mut parser, callback, options)` there.
 
 ## Compatible parser
 
@@ -135,10 +147,15 @@ impl Parser {
     pub fn language(&self) -> Option<&Language>;
     pub fn reset(&mut self);
     pub fn parse(&mut self, source: impl AsRef<[u8]>) -> Result<Tree, ParserError>;
-    pub fn parse_with_options<T: AsRef<[u8]>, F: FnMut(usize, Point) -> T>(
+    pub fn parse_with_options(
+        &mut self,
+        source: impl AsRef<[u8]>,
+        options: ParseOptions<'_>,
+    ) -> Result<Tree, ParserError>;
+    pub fn parse_with_callback<T: AsRef<[u8]>, F: FnMut(usize, Point) -> T>(
         &mut self,
         callback: &mut F,
-        options: Option<ParseOptions<'_>>,
+        options: ParseOptions<'_>,
     ) -> Result<Tree, ParserError>;
     pub fn trim(&mut self);
 }
@@ -179,7 +196,7 @@ return bytes starting there; an empty slice ends input. `parse()` adapts a
 contiguous slice to that callback. `ParseOptions::pack` defaults to the existing
 `PackOptions` defaults: zero initial group capacity, no repacking, presence and
 points enabled. `reborrow()` copies `pack` and reborrows the mutable callback.
-`None` options use these defaults.
+`parse()` uses these defaults.
 
 The callback input path follows Tree-sitter's size behavior. Its Rust binding
 passes a `u32` byte offset to the callback and casts each returned chunk length
@@ -275,7 +292,8 @@ without reset. The direct callback also runs during packing. Its
 1. Rename the current direct parser and update exports and call sites. Preserve
    its existing parsing and diagnostic behavior.
 2. Add `Parse` with three implementations and `ParseWithCallback` with two,
-   including associated tree, error, and options types. Add the compatible
+   including associated tree, error, and options types. Share the callback
+   adapter between contiguous methods where possible. Add the compatible
    `Parser` using Tree-sitter and `PackContext`.
 3. Add options, callback input, cancellation, and reset to the compatible parser.
 4. Add progress and cancellation to conversion traversal and finalization, then
