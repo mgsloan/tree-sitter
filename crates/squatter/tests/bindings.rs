@@ -553,3 +553,81 @@ fn mainline_parse_keeps_error_recovery() -> Result<(), Box<dyn Error>> {
     );
     Ok(())
 }
+
+#[test]
+fn language_inspection_matches_native() {
+    for native in [json_language(), c_language()] {
+        let language = tree_squatter::Language::new(&native).unwrap();
+        assert_eq!(language.is_parseable(), native.is_parseable());
+        assert_eq!(language.name(), native.name());
+        assert_eq!(language.abi_version(), native.abi_version());
+        let version = |metadata: tree_sitter::LanguageMetadata| {
+            (
+                metadata.major_version,
+                metadata.minor_version,
+                metadata.patch_version,
+            )
+        };
+        assert_eq!(
+            language.metadata().map(version),
+            native.metadata().map(version)
+        );
+        assert_eq!(language.node_kind_count(), native.node_kind_count());
+        assert_eq!(language.parse_state_count(), native.parse_state_count());
+        assert_eq!(language.field_count(), native.field_count());
+        assert_eq!(
+            language
+                .supertypes()
+                .iter()
+                .map(|id| id.get())
+                .collect::<Vec<_>>(),
+            native.supertypes()
+        );
+        for &supertype in language.supertypes() {
+            assert_eq!(
+                language
+                    .subtypes_for_supertype(supertype)
+                    .iter()
+                    .map(|id| id.get())
+                    .collect::<Vec<_>>(),
+                native.subtypes_for_supertype(supertype.get())
+            );
+        }
+        for raw in (0..native.node_kind_count() as u16).chain([u16::MAX - 1, u16::MAX]) {
+            let id = KindId::new(raw);
+            assert_eq!(language.node_kind_for_id(id), native.node_kind_for_id(raw));
+            assert_eq!(
+                language.node_kind_is_named(id),
+                native.node_kind_is_named(raw)
+            );
+            assert_eq!(
+                language.node_kind_is_visible(id),
+                native.node_kind_is_visible(raw)
+            );
+            assert_eq!(
+                language.node_kind_is_supertype(id),
+                native.node_kind_is_supertype(raw)
+            );
+            if let Some(name) = native.node_kind_for_id(raw) {
+                for named in [false, true] {
+                    assert_eq!(
+                        language.id_for_node_kind(name, named).get(),
+                        native.id_for_node_kind(name, named)
+                    );
+                }
+            }
+        }
+        assert_eq!(
+            language.id_for_node_kind("unknown-kind", true),
+            KindId::new(0)
+        );
+        assert_eq!(language.kind_id_for_name("unknown-kind", true), None);
+        for raw in 1..=native.field_count() as u16 {
+            let id = FieldId::new(raw).unwrap();
+            let name = language.field_name_for_id(id).unwrap();
+            assert_eq!(Some(name), native.field_name_for_id(raw));
+            assert_eq!(language.field_id_for_name(name.as_bytes()), Some(id));
+        }
+        assert_eq!(language.field_id_for_name([255]), None);
+    }
+}

@@ -194,6 +194,11 @@ impl KindId {
     }
 }
 impl GrammarKindId {
+    pub(crate) fn from_slice(symbols: &[u16]) -> &[Self] {
+        // GrammarKindId is transparent over u16 and accepts every symbol value.
+        unsafe { std::slice::from_raw_parts(symbols.as_ptr().cast(), symbols.len()) }
+    }
+
     /// Wrap a raw ID without checking membership in a grammar.
     #[inline]
     pub const fn new(value: u16) -> Self {

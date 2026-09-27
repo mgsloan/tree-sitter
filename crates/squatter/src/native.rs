@@ -198,6 +198,7 @@ impl GrammarView {
 /// Construction prepares packing tables; cloning shares them without rebuilding.
 /// Direct-parser tables are prepared on first use.
 pub struct Language {
+    language: TreeSitterLanguage,
     pub(crate) raw: NonNull<GrammarHandle>,
     view: NonNull<GrammarView>,
 }
@@ -211,6 +212,7 @@ impl Clone for Language {
             sq_native_grammar_copy(self.raw.as_ptr());
         }
         Self {
+            language: self.language.clone(),
             raw: self.raw,
             view: self.view,
         }
@@ -235,6 +237,7 @@ impl Language {
     }
 
     fn create(language: &TreeSitterLanguage, bytes: Option<&[u8]>) -> Result<Self, Error> {
+        let owned_language = language.clone();
         let language = language.clone().into_raw();
         let mut error = 0;
         let raw = unsafe {
@@ -252,7 +255,11 @@ impl Language {
         let raw = NonNull::new(raw).ok_or_else(|| Error::from_code(error))?;
         let view = NonNull::new(unsafe { sq_native_grammar_view(raw.as_ptr()).cast_mut() })
             .expect("valid grammar has a view");
-        Ok(Self { raw, view })
+        Ok(Self {
+            language: owned_language,
+            raw,
+            view,
+        })
     }
 
     pub(crate) fn tables(&self) -> &GrammarView {
@@ -260,10 +267,67 @@ impl Language {
     }
 
     pub fn tree_sitter_language(&self) -> TreeSitterLanguage {
-        let borrowed = std::mem::ManuallyDrop::new(unsafe {
-            TreeSitterLanguage::from_raw(self.tables().language.cast())
-        });
-        TreeSitterLanguage::clone(&borrowed)
+        self.language.clone()
+    }
+
+    pub fn is_parseable(&self) -> bool {
+        self.language.is_parseable()
+    }
+
+    pub fn name(&self) -> Option<&str> {
+        self.language.name()
+    }
+
+    pub fn abi_version(&self) -> usize {
+        self.language.abi_version()
+    }
+
+    pub fn metadata(&self) -> Option<tree_sitter::LanguageMetadata> {
+        self.language.metadata()
+    }
+
+    pub fn node_kind_count(&self) -> usize {
+        self.language.node_kind_count()
+    }
+
+    pub fn parse_state_count(&self) -> usize {
+        self.language.parse_state_count()
+    }
+
+    pub fn field_count(&self) -> usize {
+        self.language.field_count()
+    }
+
+    pub fn node_kind_for_id(&self, id: KindId) -> Option<&str> {
+        self.language.node_kind_for_id(id.get())
+    }
+
+    pub fn node_kind_is_named(&self, id: KindId) -> bool {
+        self.language.node_kind_is_named(id.get())
+    }
+
+    pub fn node_kind_is_visible(&self, id: KindId) -> bool {
+        self.language.node_kind_is_visible(id.get())
+    }
+
+    pub fn node_kind_is_supertype(&self, id: KindId) -> bool {
+        self.language.node_kind_is_supertype(id.get())
+    }
+
+    pub fn field_name_for_id(&self, id: FieldId) -> Option<&str> {
+        self.language.field_name_for_id(id.get())
+    }
+
+    pub fn id_for_node_kind(&self, kind: &str, named: bool) -> KindId {
+        KindId::new(self.language.id_for_node_kind(kind, named))
+    }
+
+    pub fn supertypes(&self) -> &[GrammarKindId] {
+        GrammarKindId::from_slice(self.language.supertypes())
+    }
+
+    pub fn subtypes_for_supertype(&self, supertype: GrammarKindId) -> &[GrammarKindId] {
+        GrammarKindId::from_slice(self.language.subtypes_for_supertype(supertype.get()))
     }
 
     /// Resolve a displayed kind name in this grammar.
@@ -286,10 +350,8 @@ impl Language {
     }
 
     /// Resolve a field name in this grammar.
-    pub fn field_id_for_name(&self, name: &str) -> Option<FieldId> {
-        self.tree_sitter_language()
-            .field_id_for_name(name)
-            .map(FieldId::from)
+    pub fn field_id_for_name(&self, name: impl AsRef<[u8]>) -> Option<FieldId> {
+        self.language.field_id_for_name(name).map(FieldId::from)
     }
 
     pub fn cache(&self) -> Result<Vec<u8>, Error> {
