@@ -2,7 +2,10 @@
 
 Step 2 of 3: [side data](side-data.md) → forests →
 [injections](injections-design.md). Assume step 1 is implemented, including
-optional materialized points and independently owned side data.
+optional materialized points and independently owned side data. Also assume
+[API alignment](../main/api-differences-to-fix.md) and the
+[query revamp](../main/query-revamp.md) are implemented. Forests extend their
+navigation and selection APIs and inherit their resolved query contracts.
 
 Decision draft for `crates/squatter`, not implemented API. Rust excerpts show
 proposed types and signatures; routine constructors and errors are omitted.
@@ -40,7 +43,7 @@ pub struct ForestRegion<'forest> {
 }
 
 pub struct PackInput<'tree> {
-    pub grammar: &'tree Grammar,
+    pub language: &'tree Language,
     pub root: tree_sitter::Node<'tree>,
 }
 
@@ -67,16 +70,17 @@ impl Forest {
 
 impl<'forest> ForestRegion<'forest> {
     pub fn index(&self) -> RegionIx;
-    pub fn grammar(&self) -> &'forest Grammar;
+    pub fn language(&self) -> &'forest Language;
     pub fn trees(&self) -> impl Iterator<Item = Tree<'forest>>;
 }
 
 impl<'forest> Tree<'forest> {
-    pub fn grammar(self) -> &'forest Grammar;
-    pub fn root_node(self) -> Node<'forest> {
+    pub fn language(&self) -> &'forest Language;
+    pub fn root_node(&self) -> Node<'forest> {
         self.0
     }
-    pub fn has_points(self) -> bool;
+    pub fn has_points(&self) -> bool;
+    pub fn walk(&self) -> TreeCursor<'forest>;
 }
 
 impl<'forest> std::ops::Deref for Tree<'forest> {
@@ -119,10 +123,10 @@ IDs, or serialized bytes.
 Packing preserves the supplied node's coordinate frame. The core stores its
 byte coordinates; requested point data preserves its native point coordinates.
 Callers place relative trees before packing, for example with
-`root_node_with_offset(origin_byte, origin_point)`, and check that translation
-before constructing the positioned node. There is no separate `byte_origin`
-parameter or additional placement during node access. Nodes can span gaps in
-native included ranges; the forest does not retain parser requests. Trees may
+`tree_sitter::Tree::root_node_with_offset(origin_byte, origin_point)`, and check
+that translation before constructing the positioned node. There is no separate `byte_origin`
+parameter or additional placement during node access. Packed trees do not expose
+offset views. Nodes can span gaps in native included ranges; the forest does not retain parser requests. Trees may
 come from unrelated sources and use independent byte and point coordinate frames,
 including within one region. Neither core storage nor point data requires a
 shared source or a forest-wide coordinate frame.
@@ -139,9 +143,9 @@ physical order makes no tree the document root.
 let positioned_second = second.root_node_with_offset(second_origin, second_point);
 let third_subtree = third.root_node().named_child(0).unwrap();
 let inputs = [
-    PackInput { grammar: &grammar_a, root: first.root_node() },
-    PackInput { grammar: &grammar_b, root: positioned_second },
-    PackInput { grammar: &grammar_a, root: third_subtree },
+    PackInput { language: &language_a, root: first.root_node() },
+    PackInput { language: &language_b, root: positioned_second },
+    PackInput { language: &language_a, root: third_subtree },
 ];
 let options = PackOptions {
     symbol_presence: false,
@@ -163,10 +167,17 @@ lifetime of its forest borrow.
 The `Tree` wrapper provides the same read-only `TreeLike` entry point as
 `tree_sitter::Tree`, so generic client code can specialize for either backend.
 It contains the root `Node` directly and dereferences to it, exposing all node
-operations. `root_node()` returns that node; `grammar()` and `has_points()`
-delegate to it. There is no separate `index()` method; the tree index is available
-through the node's `id().tree()`. The wrapper adds no allocation or indirection
-to node access. Its private field preserves the root-node invariant.
+operations. `root_node()` returns that node; `language()` and `has_points()`
+delegate to it, as does `walk()`. There is no separate `Tree::index()` method:
+`tree.id().tree()` obtains the tree index through the root node. The wrapper adds
+no allocation or indirection to node access. Its private field preserves the
+root-node invariant.
+
+Preserve the aligned node and cursor APIs, including `&self` receivers on shared
+operations, infallible `walk()`, and cursor-taking child enumeration. Child lookup
+and counts use `ChildIx` or `NamedChildIx`; child iterators remain plain iterators
+without an initial counting pass. Native input nodes retain Tree-sitter's
+primitive child indices, as in the packing example above.
 
 ## Packing bounds
 
@@ -229,7 +240,7 @@ struct ForestData {
 struct RegionData {
     slots: Range<SlotIx>,
     trees: Range<TreeIx>,
-    grammar: Grammar,
+    language: Language,
     presence: Option<NonNull<u8>>, // bitmap segment in the forest cache
 }
 
@@ -240,9 +251,9 @@ struct TreeData {
 
 impl Forest {
     pub fn as_bytes(&self) -> &[u8];
-    pub fn from_bytes(grammars: &[Grammar], bytes: &[u8]) -> Result<Self, Error>;
+    pub fn from_bytes(languages: &[Language], bytes: &[u8]) -> Result<Self, Error>;
     pub fn from_retained(
-        grammars: &[Grammar],
+        languages: &[Language],
         owner: impl StableSlab,
     ) -> Result<Self, Error>;
 }
@@ -319,7 +330,7 @@ pub struct Node<'forest> {
     id: NodeId,
 }
 
-pub struct Cursor<'forest> {
+pub struct TreeCursor<'forest> {
     node: Node<'forest>,
     // traversal state
 }
@@ -328,21 +339,22 @@ pub struct QueryCursor {
     // reusable scratch, independent of any forest
 }
 
-pub struct QueryExecution<'cursor, 'forest> {
-    cursor: &'cursor mut QueryCursor,
-    root: Node<'forest>,
-    // query, source, and matching state
-}
-
 impl<'forest> Node<'forest> {
-    pub fn id(self) -> NodeId;
-    pub fn walk(self) -> Result<Cursor<'forest>, Error>;
+    pub fn id(&self) -> NodeId;
+    pub fn slot(self) -> SlotIx;
+    pub fn walk(&self) -> TreeCursor<'forest>;
 }
 
-impl<'forest> Cursor<'forest> {
+impl<'forest> TreeCursor<'forest> {
     pub fn node(&self) -> Node<'forest>;
 }
 ```
+
+Forest nodes expose the composite `NodeId` through both inherent `Node::id()`
+and `NodeLike::id()` (`type Id = NodeId`). This supersedes the API alignment
+plan's slot-only identity and omission of an inherent `id()` for standalone trees.
+Keep `slot()` for physical addressing. The composite ID carries the tree context
+needed for descriptor lookup and caller-owned source selection.
 
 `NodeId` stores `TreeIx` in bits 63–32 and `SlotIx` in bits 31–0. The slot remains
 forest-global, not relative to the tree. Constructing an ID only combines the
@@ -383,26 +395,52 @@ of point data. Presence attachment and removal operate on the whole forest.
 impl TreeLike for Tree<'_> {
     type Node<'tree> = Node<'tree> where Self: 'tree;
 
-    fn root(&self) -> Node<'_>;
+    fn root_node(&self) -> Node<'_>;
 }
 
 // existing APIs operate on a forest node without a second query framework
 let root = forest.tree(input_trees[0]).unwrap().root_node();
 let nodes = root.preorder();
-let execution = cursor.execute(&query, root, bytes);
+let selected = root.all().overlapping_bytes(viewport);
+let execution = cursor.execute(&query, &selected, text_provider);
 ```
 
-Node traversal, child/sibling/parent navigation, scan iterators, structural
-matching, traversal depth, anchors, and pending-match state never cross a tree
-boundary. Root parent and sibling navigation terminate there. Node identity and
-equality must distinguish independent trees even when their bytes overlap.
+Child/sibling/parent navigation, structural matching, traversal depth, anchors,
+and pending structural state never cross a tree boundary. Root parent and sibling
+navigation terminate there. Subtree scans stay within their scope; forest and
+region scans may enumerate candidates across selected trees. Node identity and
+equality distinguish independent trees even when their bytes overlap.
 
-Start with existing per-tree query cursors behind the region iterator. The caller
-selects a query for each tree and decides how to order results. Equal grammars
-do not imply equal application query configurations. Skip unqueried regions and
-unselected trees; a tree requiring fallback must not disable fast execution for
-unrelated trees. Region iteration follows physical input order, which need not
-be source order; a grammar may appear more than once.
+Extend `DescribeSelection` and `ScanSelection` with contiguous tree-range scopes
+backed by forest metadata. Forest and region scopes describe their tree intervals;
+subtree scopes continue to use a root node. Use the same `matches`, `captures`,
+`execute`, and options variants for all supported scopes. Preserve generic scan
+builders for direct scanning; normalize their descriptions once per execution
+and prepare scan state outside the per-node matching loop. Descriptions borrow
+filter storage and preserve repeated restrictions as intersections. They describe
+selections, not partially consumed iterators.
+
+All selected trees must use the query's exact language; reject incompatible
+selections. A mixed-language forest requires caller-selected compatible scopes.
+Equal grammars do not imply equal application query configurations. Arbitrary
+tree sets and unions of overlapping subtrees remain deferred. Region iteration
+follows physical input order, which need not be source order; a grammar may
+appear more than once.
+
+Initially process a tree-range selection one tree at a time using the existing
+matcher. Shared candidate scanning is a later optimization, not a prerequisite
+for multi-tree selection. Skip unqueried regions and unselected trees; a tree
+requiring fallback must not disable fast execution for unrelated trees. Preserve
+execution-wide match identity and removal behavior across tree transitions.
+
+Candidate restrictions select eligible query-start nodes. Structural matching
+may inspect other nodes within the same subtree or tree scope, including children
+excluded by candidate filters. Inherit the revamp's start-node rules for supported
+rootless and sibling-sequence patterns, range composition, limits, and callback
+cancellation/resumption. Scan restrictions do not become whole-match containment
+or Tree-sitter query-range semantics. Preserve the revamp's capture order,
+provisional snapshots, duplicate behavior, and completed-capture coverage; add no
+cross-tree source-order guarantee. Result merging remains caller-owned.
 
 Forests do not retain or prove source provenance. Source is needed for explicit
 point-data construction and text queries, not node access. The caller selects
@@ -412,6 +450,18 @@ cross-tree source ordering and range indexes require caller-supplied context.
 Point accessors and point-bounded queries use that tree's attached coordinates
 or its row-zero frame from step 1. `has_points()` reports availability, not a
 common source or document frame. Query source bytes do not supply missing points.
+
+`TextProvider` documentation must explain source disambiguation: obtain `TreeIx`
+from `node.id().tree()` and use it to select the caller-owned source for that tree.
+The index is local to the node's forest. A byte-slice provider suffices only when
+that slice matches every selected tree's byte coordinate frame. Providers retain
+responsibility for resolving node coordinates into their source or text chunks;
+the forest retains neither the provider nor source bytes after execution.
+
+Byte and point restrictions apply in each selected tree's coordinate frame.
+Caller-owned source indexes may select contiguous tree intervals before applying
+viewport restrictions. Pruning must account for tree ends when ranges overlap
+or nest; region membership and sorted starts alone do not establish safe pruning.
 
 ## Extend side data to forests
 
@@ -638,6 +688,9 @@ without introducing another forest owning type.
 4. Add checked serialization, retained grammar bindings, and storage-independent
    read paths for allocated and retained storage. Serialize only region
    descriptors and reconstruct runtime tree metadata from root spans.
+5. Extend scan selection and query execution to contiguous tree ranges, initially
+   matching one tree at a time. Preserve the prerequisite navigation/query APIs,
+   with composite node identity as the explicit forest extension.
 
 Verify empty, single-tree, mixed-grammar, and repeated-grammar inputs without any
 discovery engine. Compare each packed tree with its native and one-tree forest
@@ -694,6 +747,19 @@ stale reader pointers.
 Verify `NodeId` composition and extraction, including the high bits of each
 32-bit index. Equal IDs from different forests must not make their nodes equal;
 node construction must reject wasted slots and mismatched tree/slot pairs.
+Check that `NodeLike::id()` and inherent `id()` return the same composite identity
+and that `slot()` agrees with its slot component.
+
+Verify subtree, region, and contiguous tree-range selections, including empty
+ranges and rejection of incompatible languages. Compare direct-scan candidate
+sets with query candidates, including repeated filters, and verify structural
+matching can inspect nodes outside the candidate set without leaving its scope.
+Exercise borrowed filter lifetimes, viewport pruning with overlapping/nested
+trees, and providers selecting distinct sources through `node.id().tree()`.
+Cover match removal across tree transitions, cancellation during and between
+trees, and subsequent cursor reuse. Preserve the revamp's resolved resumption,
+limit, range, and capture contracts across tree transitions; do not add stricter
+capture ordering or finite-limit result-subset parity requirements.
 
 Verify presence serialization is exactly the concatenation of region encodings,
 including empty, single-region, repeated-grammar, and differently sized regions.
@@ -707,5 +773,6 @@ forests; rejected attachment must preserve existing side data.
 Later, compare per-tree/segmented queries with shared candidate scanning and
 contiguous reassembly. Include viewport selection, predicates, merging, copying,
 validation, and index construction in measurements. Candidate scanning may cross
-tree boundaries; structural matching may not. Batching, result merging, and
-placement/relocation APIs remain outside the initial forest interface.
+tree boundaries; structural matching may not. Shared candidate-scan batching,
+result merging, and placement/relocation APIs remain outside the initial forest
+interface.
