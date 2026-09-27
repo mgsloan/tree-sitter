@@ -34,6 +34,8 @@ pub use tree_sitter::{CaptureQuantifier, QueryErrorKind, StreamingIterator};
 
 #[derive(Debug)]
 /// A query compilation or predicate-validation error, with byte-based coordinates.
+/// Predicate errors identify the pattern's row, with column and offset zero,
+/// matching Tree-sitter's Rust binding.
 pub struct QueryError {
     pub row: usize,
     pub column: usize,
@@ -151,71 +153,113 @@ impl Query {
             let mut settings = Vec::new();
             let mut properties = Vec::new();
             let offset = query.compiled.patterns()[pattern].start_byte as usize;
-            let invalid = |message: &str| {
-                QueryError::at(source, offset, QueryErrorKind::Predicate, message.into())
+            let invalid = |message| QueryError {
+                row: source.as_bytes()[..offset]
+                    .iter()
+                    .filter(|&&byte| byte == b'\n')
+                    .count(),
+                column: 0,
+                offset: 0,
+                kind: QueryErrorKind::Predicate,
+                message,
             };
             for group in steps
                 .split(|step| step.kind == 0)
                 .filter(|group| !group.is_empty())
             {
                 if group[0].kind != 2 {
-                    return Err(invalid("predicate must start with a name"));
+                    return Err(invalid(format!(
+                        "Expected predicate to start with a function name. Got @{}.",
+                        query.capture_names[group[0].value_id as usize]
+                    )));
                 }
                 let name = query.string_value(QueryStringId(group[0].value_id));
                 let arguments = &group[1..];
-                let capture = |index: usize| -> Result<CaptureIx, QueryError> {
-                    arguments
-                        .get(index)
-                        .filter(|step| step.kind == 1)
-                        .map(|step| CaptureIx(step.value_id))
-                        .ok_or_else(|| invalid("predicate requires a capture argument"))
-                };
-                let string = |index: usize| -> Result<String, QueryError> {
-                    arguments
-                        .get(index)
-                        .filter(|step| step.kind == 2)
-                        .map(|step| query.string_value(QueryStringId(step.value_id)))
-                        .ok_or_else(|| invalid("predicate requires a string argument"))
+                let string =
+                    |index: usize| query.string_value(QueryStringId(arguments[index].value_id));
+                let first_capture = |operator: &str| {
+                    if arguments[0].kind == 1 {
+                        Ok(CaptureIx(arguments[0].value_id))
+                    } else {
+                        Err(invalid(format!(
+                            "First argument to #{operator} predicate must be a capture name. Got literal \"{}\".",
+                            string(0)
+                        )))
+                    }
                 };
                 match name.as_str() {
                     "eq?" | "not-eq?" | "any-eq?" | "any-not-eq?" => {
                         if arguments.len() != 2 {
-                            return Err(invalid("equality predicate requires two arguments"));
+                            return Err(invalid(format!(
+                                "Wrong number of arguments to #eq? predicate. Expected 2, got {}.",
+                                arguments.len()
+                            )));
                         }
-                        let first = capture(0)?;
+                        let first = first_capture("eq?")?;
                         let positive = !name.contains("not-");
                         let all = !name.starts_with("any-");
                         predicates.push(if arguments[1].kind == 1 {
-                            Predicate::EqualCapture(first, capture(1)?, positive, all)
+                            Predicate::EqualCapture(
+                                first,
+                                CaptureIx(arguments[1].value_id),
+                                positive,
+                                all,
+                            )
                         } else {
-                            Predicate::EqualString(first, string(1)?.into_bytes(), positive, all)
+                            Predicate::EqualString(first, string(1).into_bytes(), positive, all)
                         });
                     }
                     "match?" | "not-match?" | "any-match?" | "any-not-match?" => {
                         if arguments.len() != 2 {
-                            return Err(invalid("match predicate requires two arguments"));
+                            return Err(invalid(format!(
+                                "Wrong number of arguments to #match? predicate. Expected 2, got {}.",
+                                arguments.len()
+                            )));
                         }
-                        let regex =
-                            Regex::new(&string(1)?).map_err(|error| invalid(&error.to_string()))?;
+                        let first = first_capture("match?")?;
+                        if arguments[1].kind == 1 {
+                            return Err(invalid(format!(
+                                "Second argument to #match? predicate must be a literal. Got capture @{}.",
+                                query.capture_names[arguments[1].value_id as usize]
+                            )));
+                        }
+                        let expression = string(1);
+                        let regex = Regex::new(&expression)
+                            .map_err(|_| invalid(format!("Invalid regex '{expression}'")))?;
                         predicates.push(Predicate::Match(
-                            capture(0)?,
+                            first,
                             regex,
                             !name.contains("not-"),
                             !name.starts_with("any-"),
                         ));
                     }
                     "any-of?" | "not-any-of?" => {
-                        let first = capture(0)?;
+                        if arguments.is_empty() {
+                            return Err(invalid(
+                                "Wrong number of arguments to #any-of? predicate. Expected at least 1, got 0.".into(),
+                            ));
+                        }
+                        let first = first_capture("any-of?")?;
                         let values = (1..arguments.len())
-                            .map(|index| string(index).map(String::into_bytes))
+                            .map(|index| {
+                                if arguments[index].kind == 1 {
+                                    Err(invalid(format!(
+                                        "Arguments to #any-of? predicate must be literals. Got capture @{}.",
+                                        query.capture_names[arguments[index].value_id as usize]
+                                    )))
+                                } else {
+                                    Ok(string(index).into_bytes())
+                                }
+                            })
                             .collect::<Result<_, _>>()?;
                         predicates.push(Predicate::AnyOf(first, values, name == "any-of?"));
                     }
                     "set!" | "is?" | "is-not?" => {
                         if arguments.is_empty() || arguments.len() > 3 {
-                            return Err(invalid(
-                                "property predicate requires one to three arguments",
-                            ));
+                            return Err(invalid(format!(
+                                "Wrong number of arguments to {name} predicate. Expected 1 to 3, got {}.",
+                                arguments.len()
+                            )));
                         }
                         let mut capture_id = None;
                         let mut key = None;
@@ -223,9 +267,10 @@ impl Query {
                         for argument in arguments {
                             if argument.kind == 1 {
                                 if capture_id.replace(CaptureIx(argument.value_id)).is_some() {
-                                    return Err(invalid(
-                                        "property predicate has multiple captures",
-                                    ));
+                                    return Err(invalid(format!(
+                                        "Invalid arguments to {name} predicate. Unexpected second capture name @{}",
+                                        query.capture_names[argument.value_id as usize]
+                                    )));
                                 }
                             } else {
                                 let text = query
@@ -236,12 +281,17 @@ impl Query {
                                 } else if value.is_none() {
                                     value = Some(text);
                                 } else {
-                                    return Err(invalid("property predicate has too many strings"));
+                                    return Err(invalid(format!(
+                                        "Invalid arguments to {name} predicate. Unexpected third argument @{text}"
+                                    )));
                                 }
                             }
                         }
-                        let key =
-                            key.ok_or_else(|| invalid("property predicate requires a key"))?;
+                        let key = key.ok_or_else(|| {
+                            invalid(format!(
+                                "Invalid arguments to {name} predicate. Missing key argument"
+                            ))
+                        })?;
                         let property = QueryProperty {
                             key,
                             value,
@@ -655,21 +705,6 @@ impl<'options> QueryCursorOptions<'options> {
 }
 
 impl QueryError {
-    pub(crate) fn at(source: &str, offset: usize, kind: QueryErrorKind, message: String) -> Self {
-        let prefix = &source.as_bytes()[..offset];
-        let row = prefix.iter().filter(|&&byte| byte == b'\n').count();
-        let column = prefix
-            .iter()
-            .rposition(|&byte| byte == b'\n')
-            .map_or(offset, |position| offset - position - 1);
-        Self {
-            row,
-            column,
-            offset,
-            kind,
-            message,
-        }
-    }
     pub(crate) fn compile(source: &str, offset: usize, error_type: u32) -> Self {
         let mut line_start = 0;
         let mut row = 0;

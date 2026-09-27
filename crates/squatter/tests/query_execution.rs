@@ -1247,11 +1247,13 @@ fn metadata_diagnostics_and_independent_clones() {
         "((number) (#eq? @missing \"a\"))",
         "\n(",
         "(number (number))",
+        "((number) @number (#@number))",
     ] {
         let actual = Query::new(&grammar, pattern).err().unwrap();
         let expected = tree_sitter::Query::new(&grammar.tree_sitter_language(), pattern)
             .err()
             .unwrap();
+        assert_eq!(actual.to_string(), expected.to_string());
         assert_eq!(
             (
                 actual.row,
@@ -1269,16 +1271,101 @@ fn metadata_diagnostics_and_independent_clones() {
             )
         );
     }
-    for pattern in [
-        "\n((number) @number (#eq? @number))",
-        "((number) @number (#set! @number))",
-        "((number) @number (#is? @number @number key))",
-        "((number) @number (#match? @number \"[\"))",
+}
+
+#[test]
+fn predicate_diagnostics_match_tree_sitter() {
+    let (grammar, _) = json_query_tree("0");
+    let mut predicates = Vec::new();
+    for (operators, arguments) in [
+        (
+            &["eq?", "not-eq?", "any-eq?", "any-not-eq?"][..],
+            &[
+                "",
+                "@number",
+                "@number one two",
+                "\"café\" @other",
+                "literal text",
+            ][..],
+        ),
+        (
+            &["match?", "not-match?", "any-match?", "any-not-match?"][..],
+            &[
+                "",
+                "@number",
+                "@number one two",
+                "literal text",
+                "@number @other",
+                "@number \"[\"",
+                "literal \"[\"",
+                "literal @other",
+            ][..],
+        ),
+        (
+            &["any-of?", "not-any-of?"][..],
+            &[
+                "",
+                "literal",
+                "literal @other",
+                "@number @other",
+                "@number one @other",
+            ][..],
+        ),
+        (
+            &["set!", "is?", "is-not?"][..],
+            &[
+                "",
+                "@number",
+                "@number @other",
+                "@number @other key",
+                "key @number @other",
+                "key value extra",
+                "key value extra fourth",
+            ][..],
+        ),
     ] {
-        let error = Query::new(&grammar, pattern).err().unwrap();
-        assert_eq!(error.kind, tree_squatter::QueryErrorKind::Predicate);
-        assert_eq!(error.row, usize::from(pattern.starts_with('\n')));
-        assert!(!error.message.is_empty());
+        for operator in operators {
+            for arguments in arguments {
+                predicates.push(format!("#{operator} {arguments}"));
+            }
+        }
+    }
+    for prefix in [
+        "",
+        "\n  ",
+        "; café\n(string) @previous\n  ",
+        "(string) @previous ",
+    ] {
+        for predicate in &predicates {
+            let source = format!("{prefix}((number) @number @other\n  ({predicate}))");
+            let actual = Query::new(&grammar, &source).err().unwrap();
+            let expected = tree_sitter::Query::new(&grammar.tree_sitter_language(), &source)
+                .err()
+                .unwrap();
+            assert_eq!(
+                expected.kind,
+                tree_squatter::QueryErrorKind::Predicate,
+                "{source}"
+            );
+            assert_eq!(actual.to_string(), expected.to_string(), "{source}");
+            assert_eq!(
+                (
+                    actual.row,
+                    actual.column,
+                    actual.offset,
+                    actual.kind,
+                    actual.message
+                ),
+                (
+                    expected.row,
+                    expected.column,
+                    expected.offset,
+                    expected.kind,
+                    expected.message
+                ),
+                "{source}"
+            );
+        }
     }
 }
 
