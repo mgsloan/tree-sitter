@@ -233,9 +233,14 @@ fn sidecars_can_be_evicted_independently_of_core_and_readers() {
                     },
                 )
                 .unwrap();
-            assert!(without.file.cache_hit());
-            assert!(without.pending_write.is_none());
-            assert_eq!(without.file.tree().as_bytes(), core);
+            assert_eq!(without.file.cache_hit(), kind == SidecarKind::Presence);
+            assert_eq!(
+                without.pending_write.is_none(),
+                kind == SidecarKind::Presence
+            );
+            if kind == SidecarKind::Presence {
+                assert_eq!(without.file.tree().as_bytes(), core);
+            }
 
             let rebuilt = cache
                 .load_with_options(
@@ -248,8 +253,8 @@ fn sidecars_can_be_evicted_independently_of_core_and_readers() {
                     },
                 )
                 .unwrap();
-            assert!(rebuilt.file.cache_hit());
-            assert_eq!(rebuilt.file.tree().as_bytes(), core);
+            assert_eq!(rebuilt.file.cache_hit(), kind == SidecarKind::Presence);
+            assert_eq!(rebuilt.file.tree().repack().unwrap().as_bytes(), core);
             assert_eq!(
                 rebuilt.file.tree().presence_cache().unwrap().as_bytes(),
                 presence

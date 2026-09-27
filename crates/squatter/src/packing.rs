@@ -1,9 +1,9 @@
 use crate::{
     Error, FieldId, Language, Tree,
     native::{Point, Reduction},
-    side_data::{PointData, PresenceCache},
+    side_data::{PointsData, PresenceCache},
     storage::*,
-    types::{SlabOffset, SquatterGrammarId, SquatterKindId},
+    types::{PackedPoint, SlabOffset, SquatterGrammarId, SquatterKindId},
 };
 
 mod traversal;
@@ -18,6 +18,7 @@ pub struct PackOptions {
     pub initial_group_capacity: u32,
     pub repack: bool,
     pub symbol_presence: bool,
+    /// Store coordinates during construction; enabling points can change grouping.
     pub points: bool,
 }
 
@@ -161,6 +162,10 @@ impl Tree {
 
 #[derive(Clone, Copy, Default)]
 struct Values {
+    start_row: u32,
+    end_row: u32,
+    start_column: u32,
+    end_column: u32,
     span: u32,
     start_byte: u32,
     end_byte: u32,
@@ -184,7 +189,7 @@ struct Builder {
     missing: u64,
     error: u64,
     optional: u32,
-    points: Option<PointData>,
+    points: Option<PointsData>,
 }
 
 impl Builder {
@@ -203,7 +208,7 @@ impl Builder {
 
     fn new(language: &Language, capacity: u32, points: bool) -> Result<Self, Error> {
         let tree = Tree::empty(language, capacity)?;
-        let points = points.then(|| PointData::empty(&tree)).transpose()?;
+        let points = points.then(|| PointsData::empty(&tree)).transpose()?;
         Ok(Self {
             tree,
             pending: [Pending::default(); GROUP_SIZE as usize],
@@ -259,6 +264,29 @@ impl Builder {
             return false;
         }
 
+        if self.points.is_some()
+            && (!extend(
+                value.start_row,
+                &mut base.start_row,
+                &mut maximum.start_row,
+                255,
+            ) || !extend(value.end_row, &mut base.end_row, &mut maximum.end_row, 255)
+                || !extend(
+                    value.start_column,
+                    &mut base.start_column,
+                    &mut maximum.start_column,
+                    255,
+                )
+                || !extend(
+                    value.end_column,
+                    &mut base.end_column,
+                    &mut maximum.end_column,
+                    255,
+                ))
+        {
+            return false;
+        }
+
         self.base = base;
         self.maximum = maximum;
         true
@@ -277,6 +305,10 @@ impl Builder {
             // Closing a partial group adds physical waste slots. Recompute the
             // span on each attempt so ancestors include that waste.
             let value = Values {
+                start_row: event.start_point.row,
+                end_row: event.end_point.row,
+                start_column: event.start_point.column,
+                end_column: event.end_point.column,
                 span: self.distance() - boundary,
                 start_byte: event.start_byte,
                 end_byte: event.end_byte,
@@ -296,21 +328,10 @@ impl Builder {
             }
 
             let slot = self.distance();
-            if let Some(points) = &mut self.points {
-                if slot % GROUP_SIZE == 0 {
-                    points.grow(slot / GROUP_SIZE + 1)?;
-                }
-                points.put(
-                    slot,
-                    tree_sitter::Point::new(
-                        event.start_point.row as usize,
-                        event.start_point.column as usize,
-                    ),
-                    tree_sitter::Point::new(
-                        event.end_point.row as usize,
-                        event.end_point.column as usize,
-                    ),
-                )?;
+            if slot % GROUP_SIZE == 0
+                && let Some(points) = &mut self.points
+            {
+                points.grow(slot / GROUP_SIZE + 1)?;
             }
             let data = self.tree.data_mut();
             let layout = data.layout;
@@ -381,6 +402,18 @@ impl Builder {
             self.optional |= ERRORS;
         }
 
+        if let Some(points) = &mut self.points {
+            points.put_bases(
+                group,
+                PackedPoint(
+                    (u64::from(self.base.start_row) << 32) | u64::from(self.base.start_column),
+                ),
+                PackedPoint(
+                    (u64::from(self.maximum.end_row) << 32) | u64::from(self.maximum.end_column),
+                ),
+            );
+        }
+
         let mut writer = data.writer();
         let pending = &self.pending[..self.count as usize];
         for (index, pending) in pending.iter().enumerate() {
@@ -410,6 +443,15 @@ impl Builder {
                 (self.maximum.end_byte - value.end_byte) as u16,
             );
             writer.put_short(layout.supertype, slot, pending.supertype);
+            if let Some(points) = &mut self.points {
+                points.put_deltas(
+                    slot,
+                    (((value.start_row - self.base.start_row) << 8)
+                        | (value.start_column - self.base.start_column)) as u16,
+                    (((self.maximum.end_row - value.end_row) << 8)
+                        | (self.maximum.end_column - value.end_column)) as u16,
+                );
+            }
         }
 
         self.count = 0;

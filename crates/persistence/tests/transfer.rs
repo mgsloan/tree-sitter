@@ -22,10 +22,11 @@ fn load(cache: &Persistence, write: WritePolicy) -> LoadResult {
 #[test]
 fn transfer_survives_producer_and_keeps_original_capture() {
     let root = tempfile::tempdir().unwrap();
-    fs::write(root.path().join("file.json"), "[1,2,3]").unwrap();
+    fs::write(root.path().join("file.json"), "[1,\n2,3]").unwrap();
     let producer = Persistence::open_existing(root.path(), Options::default()).unwrap();
     let loaded = load(&producer, WritePolicy::Transfer);
     assert!(!root.path().join(CACHE_DIRECTORY).exists());
+    let points = loaded.file.tree().point_data().unwrap().as_bytes().to_vec();
     let pending = loaded.pending_write.unwrap();
     let mut bytes = vec![];
     pending.write_transfer(&mut bytes).unwrap();
@@ -40,10 +41,15 @@ fn transfer_survives_producer_and_keeps_original_capture() {
         .unwrap();
     assert_eq!(work.publish().unwrap(), WriteOutcome::Published);
     assert!(!load(&consumer, WritePolicy::Disabled).file.cache_hit());
-    fs::write(root.path().join("file.json"), "[1,2,3]").unwrap();
+    fs::write(root.path().join("file.json"), "[1,\n2,3]").unwrap();
     let original = load(&consumer, WritePolicy::Disabled).file;
     assert!(original.cache_hit());
-    assert_eq!(original.source(), b"[1,2,3]");
+    assert_eq!(original.source(), b"[1,\n2,3]");
+    assert_eq!(original.tree().point_data().unwrap().as_bytes(), points);
+    assert_eq!(
+        original.tree().root_node().end_position(),
+        tree_sitter::Point::new(1, 4)
+    );
 }
 
 #[test]
@@ -81,7 +87,7 @@ fn transfer_rejects_bad_identity_lengths_and_truncation() {
             .read_transfer(overflow.as_slice(), &language(42), bytes.len())
             .is_err()
     );
-    bytes[184 + 1 + "file.json".len()] ^= 1; // captured source bytes
+    bytes[200 + 1 + "file.json".len()] ^= 1; // captured source bytes
     assert!(
         cache
             .read_transfer(bytes.as_slice(), &language(42), bytes.len())
@@ -139,4 +145,57 @@ fn outside_root_sources_cannot_be_transferred() {
     let cache = Persistence::open_existing(root.path(), Options::default()).unwrap();
     assert!(load(&cache, WritePolicy::Transfer).pending_write.is_none());
     assert!(!root.path().join(CACHE_DIRECTORY).exists());
+}
+
+#[test]
+fn transfer_preserves_points_policy() {
+    let root = tempfile::tempdir().unwrap();
+    fs::write(root.path().join("file.json"), "[\n0]").unwrap();
+    for points in [false, true] {
+        let cache = Persistence::open(
+            root.path(),
+            Options {
+                points,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let pending = cache
+            .load_with_options(
+                Path::new("file.json"),
+                &language(42),
+                &mut tree_sitter::Parser::new(),
+                LoadOptions {
+                    pack: tree_sitter_squatter::PackOptions {
+                        points,
+                        ..Default::default()
+                    },
+                    write: WritePolicy::Transfer,
+                    cancel: None,
+                },
+            )
+            .unwrap()
+            .pending_write
+            .unwrap();
+        let mut bytes = Vec::new();
+        pending.write_transfer(&mut bytes).unwrap();
+        assert_eq!(pending.transfer_len(), Some(bytes.len()));
+        let imported = cache
+            .read_transfer(bytes.as_slice(), &language(42), bytes.len())
+            .unwrap();
+        assert_eq!(imported.publish().unwrap(), WriteOutcome::Published);
+        let opposite = Persistence::open(
+            root.path(),
+            Options {
+                points: !points,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(
+            opposite
+                .read_transfer(bytes.as_slice(), &language(42), bytes.len())
+                .is_err()
+        );
+    }
 }

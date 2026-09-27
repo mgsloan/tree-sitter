@@ -43,7 +43,7 @@ fn navigation_and_indexed_ranges_survive_loading() {
             let mut expected = Tree::from_bytes(&grammar, actual.as_bytes()).unwrap();
             if let Some(points) = actual.point_data() {
                 let points =
-                    tree_squatter::PointData::copy_from_bytes(&expected, points.as_bytes())
+                    tree_squatter::PointsData::copy_from_bytes(&expected, points.as_bytes())
                         .unwrap();
                 expected.set_point_data(points).unwrap();
             }
@@ -196,7 +196,7 @@ fn navigation_and_indexed_ranges_survive_loading() {
 #[test]
 fn indexed_points_follow_attachment_across_wide_trees() {
     use tree_sitter::Point;
-    use tree_squatter::{LineIndex, PointData};
+    use tree_squatter::PointsData;
 
     let language =
         unsafe { tree_sitter::Language::from_raw(tree_sitter_json::LANGUAGE.into_raw()().cast()) };
@@ -205,21 +205,33 @@ fn indexed_points_follow_attachment_across_wide_trees() {
     parser.set_language(&language).unwrap();
     let source = format!("[{}0]\n", "\"é\",\r\n".repeat(20_000));
     let native = parser.parse(&source, None).unwrap();
-    let index = LineIndex::new(source.as_bytes()).unwrap();
+    let line_starts: Vec<_> = std::iter::once(0)
+        .chain(
+            source
+                .bytes()
+                .enumerate()
+                .filter_map(|(index, byte)| (byte == b'\n').then_some(index + 1)),
+        )
+        .collect();
+    let point = |byte| {
+        let row = line_starts.partition_point(|&start| start <= byte) - 1;
+        Point::new(row, byte - line_starts[row])
+    };
     let mut tree = Tree::pack_with_options(
         &grammar,
         &native,
         PackOptions {
-            points: false,
+            points: true,
             ..PackOptions::default()
         },
     )
     .unwrap();
     let address = tree.as_bytes().as_ptr();
+    let points = tree.point_data().unwrap().as_bytes().to_vec();
 
     for stored in [false, true, false] {
         if stored {
-            tree.set_point_data(PointData::build(&tree, &index).unwrap())
+            tree.set_point_data(PointsData::copy_from_bytes(&tree, &points).unwrap())
                 .unwrap();
         } else {
             tree.drop_point_data();
@@ -237,7 +249,7 @@ fn indexed_points_follow_attachment_across_wide_trees() {
                 for end in [start, (start + 1).min(source.len()), source.len()] {
                     let point = |byte| {
                         if stored {
-                            index.point(byte)
+                            point(byte)
                         } else {
                             Point::new(0, byte)
                         }

@@ -129,7 +129,7 @@ pub(crate) fn get(
         tree.set_presence_cache(cache).ok()?;
     }
     if request.points {
-        let loaded = store
+        let points = store
             .points
             .get(&snapshot.tx, &request.tree_key)
             .ok()
@@ -140,15 +140,12 @@ pub(crate) fn get(
                     length: bytes.len(),
                     _snapshot: snapshot.clone(),
                 };
-                tree_sitter_squatter::PointData::from_backing(&tree, owner)
+                tree_sitter_squatter::PointsData::from_backing(&tree, owner)
                     .ok()
-                    .or_else(|| tree_sitter_squatter::PointData::copy_from_bytes(&tree, bytes).ok())
-            });
-        complete &= loaded.is_some();
-        let points = loaded.or_else(|| {
-            let line_index = tree_sitter_squatter::LineIndex::new(source).ok()?;
-            tree_sitter_squatter::PointData::build(&tree, &line_index).ok()
-        })?;
+                    .or_else(|| {
+                        tree_sitter_squatter::PointsData::copy_from_bytes(&tree, bytes).ok()
+                    })
+            })?;
         tree.set_point_data(points).ok()?;
     }
     Some((tree, complete))

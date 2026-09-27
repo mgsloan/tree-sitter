@@ -235,7 +235,7 @@ fn packing_variants_and_invalid_syntax_are_cacheable() {
     assert!(!load(&a).cache_hit());
     assert!(load(&b).cache_hit());
     let without_points = load(&c);
-    assert!(without_points.cache_hit());
+    assert!(!without_points.cache_hit());
     assert!(!without_points.tree().has_points());
     let root = without_points.tree().root_node();
     assert_eq!(root.start_position().row, 0);
@@ -534,14 +534,17 @@ fn side_data_policy_applies_to_hits_and_late_publication() {
     assert!(!bare.file.cache_hit());
     assert!(!bare.file.tree().has_points());
     assert!(bare.file.tree().presence_cache().is_none());
+    let presence = load_with(true, false, WritePolicy::Deferred, &mut parser);
+    assert!(presence.file.cache_hit());
+    assert!(presence.file.tree().presence_cache().is_some());
+    assert_eq!(
+        presence.pending_write.unwrap().publish().unwrap(),
+        WriteOutcome::Published
+    );
     let with_side_data = load_with(true, true, WritePolicy::Deferred, &mut parser);
-    assert!(with_side_data.file.cache_hit());
+    assert!(!with_side_data.file.cache_hit());
     assert!(with_side_data.file.tree().has_points());
     assert!(with_side_data.file.tree().presence_cache().is_some());
-    assert_eq!(
-        with_side_data.file.tree().as_bytes(),
-        bare.file.tree().repack().unwrap().as_bytes()
-    );
     assert_eq!(
         with_side_data
             .pending_write

@@ -53,9 +53,10 @@ Implemented:
   published later. Source generations and grammar variants coexist.
 - `LoadedFile::evict_sidecar` deletes presence or points independently, preserving
   the core, other sidecar, and existing readers. Subsequent loads or publishers
-  can recreate evicted data.
+  can rebuild evicted presence data; missing requested points require reparsing.
 - `LoadOptions::pack` selects side data on both cache hits and misses. The simple
-  `load` method uses the side-data defaults in `Options`.
+  `load` method uses the side-data defaults in `Options`. Points affect grouping,
+  so point-enabled and point-free trees use separate cache variants.
 - Publication compacts used columns directly into heed `put_reserved` storage,
   including envelope and initialized padding, without an intermediate compact
   tree or combined value buffer. Misses retain spare capacity until publication;
@@ -66,14 +67,16 @@ Implemented:
   owned copies. `LoadedFile::transaction_backed` reports the actual storage mode;
   `detach` copies without invalidating aliases. Sources remain owned disk captures.
 - Structural safety loading of the core, with cheap sidecar dimension checks
-  and debug content checks; no slab checksum. Node source bounds are checked
+  and point-delta overflow checks, plus debug content checks; no slab checksum. Node source bounds are checked
   before returning the pair. See [the validator audit](validation.md).
 - Parser reset, whole-file ranges, cancellation checks and no partial publication.
 - Inline, deferred, and disabled writes. Deferred work retains no transaction.
 - `open_existing` avoids foreground cache creation; `WritePolicy::Transfer`
   returns captured publication work even before a cache exists. Bounded,
   same-build transfer decoding validates identity and structural safety before
-  publication. Transfer frames are an IPC format, not a durable schema.
+  publication. Frames carry compressed points from the original packing; presence
+  can be rebuilt from the transferred core. Transfer frames are an IPC format,
+  not a durable schema.
 - Per-worker `LoadContext` reuses parser and packing scratch across grammar
   changes, including resumable loads. Packing contexts are allocated only on misses.
   Prepared grammars share immutable tables across workers and trees; callers retain

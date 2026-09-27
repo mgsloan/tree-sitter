@@ -19,7 +19,7 @@ pub struct Forest {
     core: ForestSlab,
     grammars: Vec<Grammar>,
     presence_caches: Vec<Option<PresenceCache>>, // one independently owned entry per region
-    point_data: Option<PointData>,
+    point_data: Option<PointsData>,
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct TreeId(u32);   // local to one forest
@@ -76,7 +76,8 @@ interval. Grouping trees never combines their native parser inputs.
 region; `points` requests completed point data for the forest. Both default to
 true as in step 1. Requested sidecars use their own allocations, even when filled
 during forest packing. Failure to construct requested side data fails the
-operation. These flags do not change core grouping, IDs, or serialized bytes.
+operation. Points must be requested during packing: their delta limits affect
+core grouping and physical IDs. Presence does not affect grouping.
 
 Packing adds `byte_origin` to native byte coordinates with checked arithmetic.
 The core stores those resulting bytes; there is no additional placement applied
@@ -146,16 +147,15 @@ unselected trees; a tree requiring fallback must not disable fast execution for
 unrelated trees. Grammar iteration is not source order.
 
 Forests do not prove source provenance or require that every tree came from one
-source. Source is needed for explicit point-data construction, not node access.
-A shared-source forest can reuse one line index during construction. Point
-accessors and point-bounded queries use attached coordinates or the row-zero
-frame from step 1. Callers requiring document points check `has_points()`;
+source. Point data comes from parser coordinates during packing, not from a
+later source lookup. Point accessors and point-bounded queries use attached
+coordinates or the row-zero frame from step 1. Callers requiring document points check `has_points()`;
 query source bytes do not supply missing points.
 
 ## Extend side data to forests
 
-Keep the standalone builders and set/drop methods from step 1. Add region
-presence and whole-forest point builders using the same owned side-data types:
+Keep the presence builder and side-data set/drop methods. Add region presence
+builders and whole-forest point loading using the same owned side-data types:
 
 ```rust
 impl PresenceCache {
@@ -175,13 +175,7 @@ impl PresenceCache {
     ) -> Result<Self, SideDataError>;
 }
 
-impl PointData {
-    pub fn build_forest(
-        forest: &Forest,
-        source: &LineIndex,
-        cancel: Option<&AtomicBool>,
-    ) -> Result<Self, SideDataError>;
-
+impl PointsData {
     pub fn from_forest_backing(
         forest: &Forest,
         backing: impl StableSlab,
@@ -195,7 +189,7 @@ impl PointData {
 
 impl Forest {
     pub fn set_presence_cache(&mut self, cache: PresenceCache) -> Result<(), SideDataError>;
-    pub fn set_point_data(&mut self, points: PointData) -> Result<(), SideDataError>;
+    pub fn set_point_data(&mut self, points: PointsData) -> Result<(), SideDataError>;
     pub fn drop_presence_cache(&mut self, region: RegionId);
     pub fn drop_point_data(&mut self);
 }
@@ -206,14 +200,14 @@ physical group in that region; tree views borrow them with a region-relative
 group offset. An uncached region uses ordinary symbol scanning even if other
 regions have caches.
 
-Point data covers the entire forest using one source. Build it only
-when every tree uses that source's coordinate frame. Ignore wasted slots.
+Point data covers the entire forest. Create it during packing, when every tree
+uses the same coordinate frame. Group boundaries must account for point deltas.
 Attachment is all-or-nothing; `Forest::has_points()`, `TreeView::has_points()`,
 and its nodes report the same availability. Without point data they all use
 row-zero access, including forests containing trees from unrelated sources.
 
-The caller supplies point data for the matching forest and source. Point access
-performs no source lookup and needs no retained source bytes. Forests with unrelated
+The caller supplies persisted point data for the exact matching forest. Point
+access performs no source lookup and needs no retained source bytes. Forests with unrelated
 sources can use explicit source conversion outside accessors, or separate owners when they need
 attached points. Per-tree point attachments are outside this initial interface.
 
@@ -221,14 +215,14 @@ Side data uses the `as_bytes` representation from step 1. The backing constructo
 read mapped payloads directly and retain their owners; the copy constructors
 allocate aligned storage and memcpy the same layout. Neither path decodes fields
 into another representation or reconstructs indexes. Release loading
-and attachment only check target kind, region counts, dimensions, alignment, and payload
-sizes. Content scans run only in debug builds, as in step 1. The caller supplies
-data built for the matching forest/region; count checks alone do not prove that
+and attachment check target kind, region counts, dimensions, alignment, payload
+sizes, and point-delta overflow. Other content checks run only in debug builds.
+The caller supplies data built for the matching forest/region; count checks alone do not prove that
 pairing. Reordering trees/groups while rebuilding a core requires fresh side
 data or a correct remapping. Loading or setting side data does not rebuild the
-core. Failed attachment leaves current side data unchanged. Workers can build through immutable region/forest borrows; completed
-values retain no borrow. Set/drop requires exclusive owner access after those
-borrows end. Set replaces existing data on success; drop frees owned storage or
+core. Failed attachment leaves current side data unchanged. Workers can build
+presence caches through immutable region borrows; completed values retain no
+borrow. Set/drop requires exclusive owner access after those borrows end. Set replaces existing data on success; drop frees owned storage or
 releases the mapped backing handle, returns nothing, and is a no-op when absent.
 Point attachment/removal preserves layout and IDs but switches the coordinate
 frame; presence attachment/removal preserves query results.

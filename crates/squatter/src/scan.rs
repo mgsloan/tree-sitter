@@ -32,7 +32,7 @@
 //! # }
 //! ```
 use crate::{
-    FieldId, FieldSet, GrammarId, KindId, KindSet, Node, PointData, SlotIx,
+    FieldId, FieldSet, GrammarId, KindId, KindSet, Node, SlotIx,
     native::GrammarView,
     simd::{self, WordMask, load_words},
     storage::{ColumnPointer, GROUP_SIZE, Layout, TreeData},
@@ -358,17 +358,10 @@ impl<'tree> GroupRef<'tree> {
     #[inline]
     pub(crate) fn first_point_start_before(&self, start: u64, first: u32) -> u32 {
         // Seek needs the first qualifying slot, not a mask of the whole group.
-        let points = self
-            .columns
-            .tree()
-            .point_data
-            .as_ref()
-            .unwrap()
-            .group(self.index.get());
+        let column = PointPositions::<true> { group: self }.start();
         let mut slot = first;
         while slot < self.used() {
-            let offset = slot as usize * 16;
-            let position = u64::from_le_bytes(points[offset..offset + 8].try_into().unwrap());
+            let position = column.get(slot).get();
             if position <= start {
                 break;
             }
@@ -385,17 +378,10 @@ impl<'tree> GroupRef<'tree> {
         first: u32,
     ) -> Option<u32> {
         if POINTS {
-            let points = self
-                .columns
-                .tree()
-                .point_data
-                .as_ref()
-                .unwrap()
-                .group(self.index.get());
+            let column = PointPositions::<true> { group: self }.end();
             let mut slot = first;
             while slot < self.used() {
-                let offset = slot as usize * 16 + 8;
-                let position = u64::from_le_bytes(points[offset..offset + 8].try_into().unwrap());
+                let position = column.get(slot).get();
                 if position >= end && position > start {
                     return Some(slot);
                 }
@@ -1438,33 +1424,6 @@ struct BytePositions<'group, 'tree>(&'group GroupRef<'tree>);
 struct PointPositions<'group, 'tree, const STORED: bool> {
     group: &'group GroupRef<'tree>,
 }
-struct AbsolutePointColumn<'tree, const END: bool> {
-    points: &'tree PointData,
-    first_slot: u32,
-    count: u32,
-}
-impl<const END: bool> PositionColumn for AbsolutePointColumn<'_, END> {
-    type Position = PackedPoint;
-    fn minimum(&self) -> PackedPoint {
-        (0..self.count)
-            .map(|slot| self.get(slot))
-            .min()
-            .unwrap_or(PackedPoint(0))
-    }
-    fn maximum(&self) -> PackedPoint {
-        (0..self.count)
-            .map(|slot| self.get(slot))
-            .max()
-            .unwrap_or(PackedPoint(0))
-    }
-    fn get(&self, slot: u32) -> PackedPoint {
-        if END {
-            self.points.end(self.first_slot + slot)
-        } else {
-            self.points.start(self.first_slot + slot)
-        }
-    }
-}
 struct ByteColumn<'tree, const END: bool> {
     base: usize,
     deltas: ColumnDeltas<'tree>,
@@ -1775,20 +1734,36 @@ impl<'tree> Positions for PointPositions<'_, 'tree, false> {
 }
 impl<'tree> Positions for PointPositions<'_, 'tree, true> {
     type Position = PackedPoint;
-    type Start = AbsolutePointColumn<'tree, false>;
-    type End = AbsolutePointColumn<'tree, true>;
+    type Start = PointColumn<'tree, false, true>;
+    type End = PointColumn<'tree, true, true>;
+    #[inline]
     fn start(&self) -> Self::Start {
-        AbsolutePointColumn {
-            points: self.group.columns.tree().point_data.as_ref().unwrap(),
-            first_slot: self.group.first_slot().get(),
-            count: self.group.used(),
+        let (base, deltas) = self
+            .group
+            .columns
+            .tree()
+            .point_data
+            .as_ref()
+            .unwrap()
+            .column::<false>(self.group.index.get());
+        PointColumn {
+            base,
+            deltas: ColumnDeltas(deltas),
         }
     }
+    #[inline]
     fn end(&self) -> Self::End {
-        AbsolutePointColumn {
-            points: self.group.columns.tree().point_data.as_ref().unwrap(),
-            first_slot: self.group.first_slot().get(),
-            count: self.group.used(),
+        let (base, deltas) = self
+            .group
+            .columns
+            .tree()
+            .point_data
+            .as_ref()
+            .unwrap()
+            .column::<true>(self.group.index.get());
+        PointColumn {
+            base,
+            deltas: ColumnDeltas(deltas),
         }
     }
 }

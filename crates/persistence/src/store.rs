@@ -532,19 +532,14 @@ impl Store {
             tree.set_presence_cache(cache).ok()?;
         }
         if request.points {
-            let loaded = self
+            let points = self
                 .points
                 .get(&tx, &request.tree_key)
                 .ok()
                 .flatten()
                 .and_then(|bytes| {
-                    tree_sitter_squatter::PointData::copy_from_bytes(&tree, bytes).ok()
-                });
-            complete &= loaded.is_some();
-            let points = loaded.or_else(|| {
-                let line_index = tree_sitter_squatter::LineIndex::new(source).ok()?;
-                tree_sitter_squatter::PointData::build(&tree, &line_index).ok()
-            })?;
+                    tree_sitter_squatter::PointsData::copy_from_bytes(&tree, bytes).ok()
+                })?;
             tree.set_point_data(points).ok()?;
         }
         Some((tree, complete))

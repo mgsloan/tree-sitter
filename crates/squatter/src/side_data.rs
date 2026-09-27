@@ -3,7 +3,6 @@ use crate::{
     storage::{GROUP_SIZE, StableSlab, slab_format},
     types::PackedPoint,
 };
-use tree_sitter::Point;
 
 const PRESENCE_FORMAT: u32 = slab_format(0xfe, 0);
 const POINT_FORMAT: u32 = slab_format(0xfd, 0);
@@ -272,38 +271,22 @@ impl PresenceCache {
     }
 }
 
+const POINT_GROUP_BYTES: usize = 16 + GROUP_SIZE as usize * 4;
+
 fn point_length(tree: &Tree) -> Result<usize, SideDataError> {
-    HEADER_BYTES
-        .checked_add(
-            (tree.slot_count() as usize)
-                .checked_mul(16)
-                .ok_or(Error::Overflow)?,
-        )
+    (tree.group_count() as usize)
+        .checked_mul(POINT_GROUP_BYTES)
+        .and_then(|length| length.checked_add(HEADER_BYTES))
         .ok_or(Error::Overflow.into())
 }
 
-/// Optional per-slot row/column coordinates, persisted separately
-/// from the tree slab.
+/// Optional row/column coordinates created while parsing or packing with
+/// [`crate::PackOptions::points`]. Persist separately from the tree slab.
+/// Points affect grouping and cannot be computed for an existing tree.
 ///
 /// **Not in Tree-sitter**
-pub struct PointData(Sidecar);
-impl PointData {
-    /// Builds coordinates from the matching source line index.
-    pub fn build(tree: &Tree, line_index: &LineIndex) -> Result<Self, SideDataError> {
-        let mut result = Self::empty(tree)?;
-        let root = tree.root_node();
-        for group in 0..tree.group_count() {
-            for slot in group * GROUP_SIZE..tree.data().group_end(group) {
-                let node = root.at(crate::SlotIx(slot));
-                result.put(
-                    slot,
-                    line_index.point(node.start_byte()),
-                    line_index.point(node.end_byte()),
-                )?;
-            }
-        }
-        Ok(result)
-    }
+pub struct PointsData(Sidecar);
+impl PointsData {
     pub(crate) fn empty(tree: &Tree) -> Result<Self, SideDataError> {
         Ok(Self(Sidecar::new(
             POINT_FORMAT,
@@ -314,8 +297,8 @@ impl PointData {
     }
     pub(crate) fn grow(&mut self, groups: u32) -> Result<(), SideDataError> {
         let slots = groups.checked_mul(GROUP_SIZE).ok_or(Error::Overflow)?;
-        let length = (slots as usize)
-            .checked_mul(2)
+        let length = (groups as usize)
+            .checked_mul(POINT_GROUP_BYTES / 8)
             .and_then(|words| words.checked_add(HEADER_BYTES / 8))
             .ok_or(Error::Overflow)?;
         let Storage::Owned(words) = &mut self.0.storage else {
@@ -332,24 +315,42 @@ impl PointData {
         Ok(())
     }
 
-    pub(crate) fn put(&mut self, slot: u32, start: Point, end: Point) -> Result<(), SideDataError> {
-        let start = PackedPoint::from_point(start).ok_or(Error::Overflow)?;
-        let end = PackedPoint::from_point(end).ok_or(Error::Overflow)?;
-        let offset = HEADER_BYTES + slot as usize * 16;
+    pub(crate) fn put_bases(&mut self, group: u32, start: PackedPoint, end: PackedPoint) {
+        let offset = HEADER_BYTES + group as usize * POINT_GROUP_BYTES;
         self.0.put_word(offset, start.get());
         self.0.put_word(offset + 8, end.get());
-        Ok(())
     }
-    pub(crate) fn start(&self, slot: u32) -> PackedPoint {
-        PackedPoint(self.0.word(HEADER_BYTES + slot as usize * 16))
-    }
-    pub(crate) fn end(&self, slot: u32) -> PackedPoint {
-        PackedPoint(self.0.word(HEADER_BYTES + slot as usize * 16 + 8))
+    pub(crate) fn put_deltas(&mut self, slot: u32, start: u16, end: u16) {
+        let offset = HEADER_BYTES
+            + (slot / GROUP_SIZE) as usize * POINT_GROUP_BYTES
+            + 16
+            + (slot % GROUP_SIZE) as usize * 2;
+        let bytes = self.0.bytes_mut();
+        bytes[offset..offset + 2].copy_from_slice(&start.to_le_bytes());
+        let offset = offset + GROUP_SIZE as usize * 2;
+        bytes[offset..offset + 2].copy_from_slice(&end.to_le_bytes());
     }
     #[inline]
-    pub(crate) fn group(&self, group: u32) -> &[u8] {
-        let start = HEADER_BYTES + (group * GROUP_SIZE) as usize * 16;
-        &self.0.bytes()[start..start + GROUP_SIZE as usize * 16]
+    pub(crate) fn column<const END: bool>(&self, group: u32) -> (PackedPoint, &[u8]) {
+        let offset = HEADER_BYTES + group as usize * POINT_GROUP_BYTES;
+        let base = PackedPoint(self.0.word(offset + usize::from(END) * 8));
+        let offset = offset + 16 + usize::from(END) * GROUP_SIZE as usize * 2;
+        (
+            base,
+            &self.0.bytes()[offset..offset + GROUP_SIZE as usize * 2],
+        )
+    }
+    fn point<const END: bool>(&self, slot: u32) -> PackedPoint {
+        let (base, deltas) = self.column::<END>(slot / GROUP_SIZE);
+        let offset = (slot % GROUP_SIZE) as usize * 2;
+        let delta = u64::from(deltas[offset + 1]) << 32 | u64::from(deltas[offset]);
+        if END { base - delta } else { base + delta }
+    }
+    pub(crate) fn start(&self, slot: u32) -> PackedPoint {
+        self.point::<false>(slot)
+    }
+    pub(crate) fn end(&self, slot: u32) -> PackedPoint {
+        self.point::<true>(slot)
     }
     /// Borrows separately serializable side-data bytes.
     pub fn as_bytes(&self) -> &[u8] {
@@ -374,15 +375,33 @@ impl PointData {
     }
     fn validate_loaded(&self, tree: &Tree) -> Result<(), SideDataError> {
         self.0.validate(tree, POINT_FORMAT, point_length(tree)?)?;
-        #[cfg(debug_assertions)]
         for group in 0..tree.group_count() {
-            for slot in group * GROUP_SIZE..tree.data().group_end(group) {
-                if self.start(slot) > self.end(slot) {
+            let used = (tree.data().group_end(group) - group * GROUP_SIZE) as usize;
+            for (end, (base, deltas)) in [
+                (false, self.column::<false>(group)),
+                (true, self.column::<true>(group)),
+            ] {
+                let base = base.point();
+                for delta in deltas[..used * 2].chunks_exact(2) {
+                    let row = u32::from(delta[1]);
+                    let column = u32::from(delta[0]);
+                    let valid = if end {
+                        base.row as u32 >= row && base.column as u32 >= column
+                    } else {
+                        base.row as u32 <= u32::MAX - row && base.column as u32 <= u32::MAX - column
+                    };
+                    if !valid {
+                        return Err(SideDataError::InvalidTarget);
+                    }
+                }
+                #[cfg(debug_assertions)]
+                if deltas[used * 2..].iter().any(|&byte| byte != 0) {
                     return Err(SideDataError::InvalidTarget);
                 }
             }
-            for slot in tree.data().group_end(group)..(group + 1) * GROUP_SIZE {
-                if self.start(slot) != PackedPoint(0) || self.end(slot) != PackedPoint(0) {
+            #[cfg(debug_assertions)]
+            for slot in group * GROUP_SIZE..tree.data().group_end(group) {
+                if self.start(slot) > self.end(slot) {
                     return Err(SideDataError::InvalidTarget);
                 }
             }
@@ -401,7 +420,7 @@ impl Tree {
     /// Borrows the attached point data, if any.
     ///
     /// **Not in Tree-sitter**
-    pub fn point_data(&self) -> Option<&PointData> {
+    pub fn point_data(&self) -> Option<&PointsData> {
         self.data().point_data.as_ref()
     }
     /// Validates and attaches separately loaded symbol-presence
@@ -417,7 +436,7 @@ impl Tree {
     /// borrowed tree views before replacing side data.
     ///
     /// **Not in Tree-sitter**
-    pub fn set_point_data(&mut self, points: PointData) -> Result<(), SideDataError> {
+    pub fn set_point_data(&mut self, points: PointsData) -> Result<(), SideDataError> {
         points.validate_loaded(self)?;
         self.data_mut().point_data = Some(points);
         Ok(())
@@ -435,34 +454,5 @@ impl Tree {
     /// **Not in Tree-sitter**
     pub fn drop_point_data(&mut self) {
         self.data_mut().point_data = None;
-    }
-}
-
-/// Maps UTF-8 source byte offsets to rows and byte columns using
-/// newline positions.
-///
-/// **Not in Tree-sitter**
-pub struct LineIndex {
-    line_starts: Vec<usize>,
-}
-impl LineIndex {
-    /// Indexes newline positions in UTF-8 source bytes.
-    pub fn new(bytes: &[u8]) -> Result<Self, Error> {
-        let mut line_starts = Vec::new();
-        line_starts.try_reserve(1).map_err(|_| Error::Allocation)?;
-        line_starts.push(0);
-        for (index, &byte) in bytes.iter().enumerate() {
-            if byte == b'\n' {
-                line_starts.try_reserve(1).map_err(|_| Error::Allocation)?;
-                line_starts.push(index + 1);
-            }
-        }
-        Ok(Self { line_starts })
-    }
-    /// Returns the row and byte column for an offset.
-    /// Offsets past EOF extend the final row's byte column.
-    pub fn point(&self, byte: usize) -> Point {
-        let row = self.line_starts.partition_point(|&start| start <= byte) - 1;
-        Point::new(row, byte - self.line_starts[row])
     }
 }

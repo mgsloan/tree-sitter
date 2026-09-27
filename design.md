@@ -87,13 +87,6 @@ struct Node {
   start_byte: u8,
   /// End byte offset in the input text (subtract from end_byte_base).
   end_byte_sub: u16,
-  /// Row delta in the high byte and column delta in the low byte.
-  /// Add both components to start_point_base.
-  start_point: u16,
-  /// Row delta in the high byte and column delta in the low byte.
-  /// Subtract both components from end_point_base.
-  end_point: u16,
-
   /// Compact public kind after aliasing.
   display_symbol: u8 | u16,
   /// Compact original grammar symbol; omitted when derivable from display_symbol.
@@ -115,8 +108,6 @@ struct Group {
   subtree_size_max: u32,
   start_byte_base: u32,
   end_byte_base: u32,
-  start_point_base: u64,
-  end_point_base: u64,
 }
 ```
 
@@ -179,6 +170,25 @@ errors, without rows for omitted hidden or duplicate native symbols.
 After the 16-byte header, each row contains `ceil(group_count / 64)` little-endian
 `u64` words. A set bit indicates that the group contains a node of that kind.
 Unused bits, wasted slots, and unused allocation capacity contribute no membership.
+
+
+# Compressed points
+
+`PointsData` is created during parsing or packing when `PackOptions::points` is
+set. It has a separate allocation and can be persisted, dropped, and reattached
+for the exact matching core. It cannot be derived from an existing packed tree.
+
+After the 16-byte header, each group stores two `u64` bases, then a column of
+`u16` start deltas and a column of `u16` end deltas. Each base packs a row in the
+high 32 bits and a column in the low 32 bits. Each delta packs a row difference
+in the high byte and a column difference in the low byte. Start components add
+to their minima; end components subtract from their maxima. Waste deltas are zero.
+This uses 4 bytes per physical slot plus 16 bytes per group.
+
+With points enabled, packing closes a group whenever any row or column range
+would exceed 255. Grouping and physical slot IDs can therefore differ between
+point-enabled and point-free trees. Missing persisted points require reparsing;
+presence caches can still be reconstructed from the matching core.
 
 
 # C API

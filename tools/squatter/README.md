@@ -50,13 +50,10 @@ under allocation instrumentation such as heaptrack. Pin these processes external
 and alternate their order. Reports retain raw times, iteration counts, input and
 binary hashes, sizes, and the objects kept resident.
 
-`source-points` measures line-index construction and destruction,
-`point-build` measures point-sidecar materialization using a prebuilt index, and
 `point-access` measures preorder traversal reading both endpoints of every node.
-These operations are separate: accessor timing includes no source lookup or
-materialization. `--no-points` switches accessor measurements to synthetic points;
-it does not disable explicit materialization. Use the existing `seek-point`
-workload in `squatter-bench` to measure indexed navigation.
+Point data is compressed during packing; accessor timing includes no source lookup.
+`--no-points` switches accessor measurements to synthetic points. Use the existing
+`seek-point` workload in `squatter-bench` to measure indexed navigation.
 
 ## Measurement contract
 

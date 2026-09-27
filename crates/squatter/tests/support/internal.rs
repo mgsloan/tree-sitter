@@ -128,6 +128,97 @@ fn leaf(symbol: u16, grammar: u16, supertype: u16, flags: u8) -> InputNode {
     }
 }
 
+#[test]
+fn point_delta_limits_control_grouping() {
+    let fixture = Fixture::symbols(16);
+    for component in 0..4 {
+        for difference in [255, 256] {
+            let mut first = leaf(1, 1, 0, 1);
+            first.start_point = Point {
+                row: 100,
+                column: 100,
+            };
+            first.end_point = Point {
+                row: 1000,
+                column: 1000,
+            };
+            let mut second = leaf(1, 1, 0, 0);
+            second.start_point = first.start_point;
+            second.end_point = first.end_point;
+            match component {
+                0 => first.start_point.row += difference,
+                1 => first.start_point.column += difference,
+                2 => first.end_point.row += difference,
+                _ => first.end_point.column += difference,
+            }
+            let mut root = leaf(1, 1, 0, 1);
+            root.start_point = second.start_point;
+            root.end_point = first.end_point;
+            for points in [false, true] {
+                let mut builder = Builder::new(&fixture.grammar, 1, points).unwrap();
+                builder.emit(&first, builder.distance()).unwrap();
+                builder.emit(&second, builder.distance()).unwrap();
+                builder.emit(&root, 0).unwrap();
+                let tree = builder
+                    .finish(PackOptions {
+                        points,
+                        ..Default::default()
+                    })
+                    .unwrap();
+                assert_eq!(tree.group_count() == 1, !points || difference == 255);
+                let nodes: Vec<_> = tree.root_node().preorder().nodes().collect();
+                assert_eq!(nodes.len(), 3);
+                if points {
+                    assert_eq!(
+                        tree.point_data().unwrap().as_bytes().len(),
+                        16 + tree.group_count() as usize * (16 + GROUP_SIZE as usize * 4)
+                    );
+                    for (node, input) in nodes.iter().zip([&root, &second, &first]) {
+                        assert_eq!(
+                            node.start_position(),
+                            tree_sitter::Point::new(
+                                input.start_point.row as usize,
+                                input.start_point.column as usize
+                            )
+                        );
+                        assert_eq!(
+                            node.end_position(),
+                            tree_sitter::Point::new(
+                                input.end_point.row as usize,
+                                input.end_point.column as usize
+                            )
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn compressed_points_preserve_maximum_coordinates() {
+    let fixture = Fixture::symbols(16);
+    let mut builder = Builder::new(&fixture.grammar, 1, true).unwrap();
+    let mut root = leaf(1, 1, 0, 1);
+    root.start_point = Point {
+        row: u32::MAX,
+        column: u32::MAX,
+    };
+    root.end_point = root.start_point;
+    builder.emit(&root, 0).unwrap();
+    let tree = builder.finish(PackOptions::default()).unwrap();
+    let expected = tree_sitter::Point::new(u32::MAX as usize, u32::MAX as usize);
+    assert_eq!(tree.root_node().start_position(), expected);
+    assert_eq!(tree.root_node().end_position(), expected);
+    assert_eq!(
+        tree.root_node()
+            .all()
+            .within_points(expected..expected)
+            .count(),
+        1
+    );
+}
+
 fn check_masks(tree: &Tree, slots: &[SlotIx], bits: u32) {
     for (mask, &slot) in slots.iter().enumerate() {
         let node = tree.node_at_slot(slot).unwrap();

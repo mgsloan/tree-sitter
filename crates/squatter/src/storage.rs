@@ -1,7 +1,7 @@
 use crate::{
     Error, KindId, Language,
     native::GrammarView,
-    side_data::{PointData, PresenceCache, SideDataError},
+    side_data::{PointsData, PresenceCache, SideDataError},
     types::{SlabOffset, SquatterGrammarId, SquatterKindId},
 };
 use std::{
@@ -270,7 +270,7 @@ pub(crate) struct TreeData {
     allocation_length: u32,
     owned: bool,
     pub presence_cache: Option<PresenceCache>,
-    pub point_data: Option<PointData>,
+    pub point_data: Option<PointsData>,
 }
 
 // Capture the slab address once: raw stores otherwise make LLVM reload it
@@ -852,7 +852,7 @@ impl Tree {
                 .set_presence_cache(PresenceCache::copy_from_bytes(&result, cache.as_bytes())?)?;
         }
         if let Some(points) = &self.data().point_data {
-            result.set_point_data(PointData::copy_from_bytes(&result, points.as_bytes())?)?;
+            result.set_point_data(PointsData::copy_from_bytes(&result, points.as_bytes())?)?;
         }
         Ok(result)
     }
@@ -931,7 +931,7 @@ impl BackedTree {
 
     /// Validates and attaches separately loaded point data. Release
     /// borrowed tree views before replacing side data.
-    pub fn set_point_data(&mut self, points: PointData) -> Result<(), SideDataError> {
+    pub fn set_point_data(&mut self, points: PointsData) -> Result<(), SideDataError> {
         self.tree.set_point_data(points)
     }
 
@@ -955,7 +955,7 @@ impl BackedTree {
             tree.set_presence_cache(PresenceCache::copy_from_bytes(&tree, cache.as_bytes())?)?;
         }
         if let Some(points) = self.point_data() {
-            tree.set_point_data(PointData::copy_from_bytes(&tree, points.as_bytes())?)?;
+            tree.set_point_data(PointsData::copy_from_bytes(&tree, points.as_bytes())?)?;
         }
         Ok(tree)
     }

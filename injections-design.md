@@ -17,7 +17,7 @@ the source of the compatibility requirements below.
 
 ```text
 squatter
-  Forest / Tree / LineIndex / PresenceCache / PointData from steps 1 and 2
+  Forest / Tree / PresenceCache / PointsData from steps 1 and 2
 
 injections → squatter / tree-sitter
   Engine owns reusable parsing/discovery scratch
@@ -62,7 +62,6 @@ impl Engine {
     pub fn parse(
         &mut self,
         source: &[u8],
-        line_index: &LineIndex,
         language: &Language,
         request: &ParseRequest,
         cancel: Option<&AtomicBool>,
@@ -134,7 +133,6 @@ impl Engine {
     pub fn discover(
         &mut self,
         source: &[u8],
-        line_index: &LineIndex,
         host: HostTree<'_>,
         registry: &impl Registry,
         limits: DiscoveryLimits,
@@ -151,7 +149,7 @@ impl Injections {
     pub fn take_native(&mut self, tree: TreeId) -> Option<tree_sitter::Tree>;
 
     pub fn set_presence_cache(&mut self, cache: PresenceCache) -> Result<(), SideDataError>;
-    pub fn set_point_data(&mut self, points: PointData) -> Result<(), SideDataError>;
+    pub fn set_point_data(&mut self, points: PointsData) -> Result<(), SideDataError>;
     pub fn drop_presence_cache(&mut self, region: RegionId);
     pub fn drop_point_data(&mut self);
 }
@@ -209,22 +207,23 @@ language/grammar and captured source. Validate that pairing before discovery.
 After parsing, use `PackContext::pack_forest` and its input-to-tree mapping to
 populate parsed layer states; never infer logical order from physical IDs.
 Forward `pack_options` to forest packing so callers choose initial presence and
-point sidecars. The engine already has the captured source for explicit point
-construction and coordinate conversion. Side-data flags do not affect native
-parse requests or core contents. Map cancelled packing to
+point sidecars. Points are captured during packing and their delta limits affect
+core grouping. The engine uses captured source for coordinate conversion.
+Side-data flags do not affect native parse requests. Map cancelled packing to
 `InjectionError::Cancelled`.
 
 Discovery must not rely on packed point accessors: a host loaded without point
 data returns row-zero coordinates. Query captures supply byte ranges; the engine
-explicitly derives parser-request points through `LineIndex::point`. Use
+derives parser-request points from captured source using an internal newline
+index. This index belongs to discovery, not the core tree API. Use
 byte-based selection for discovery and test native/packed equivalence with and
 without point data. This explicit source work belongs to discovery, not to a
 node accessor or an implicit query fallback.
 
 The set/drop methods on `Injections` delegate to its forest. Callers supply point
-data built from the matching forest and captured source. Do not expose
+data persisted for the exact matching forest. Do not expose
 `&mut Forest`: replacing it could invalidate every tree ID in the
-manifest. Workers can build side data from `forest()` without mutable access;
+manifest. Workers can build presence data from `forest()` without mutable access;
 set/drop requires exclusive access to `Injections` and preserves the mapping.
 Presence changes only
 performance; point data changes coordinates and point-bounded query behavior.
@@ -342,13 +341,10 @@ participating owner. Passing text to a query does not derive those points.
 let loaded = persistence.load_injections(
     &host, &host_language, &registry, &mut engine, limits, options,
 )?;
-let mut injections = loaded.injections;
+let injections = loaded.injections;
 
-// this consumer requires document points; source uses the host's captured bytes
-if !injections.forest().has_points() {
-    let points = PointData::build_forest(injections.forest(), &source, None)?;
-    injections.set_point_data(points)?;
-}
+// this consumer requests points in its packing options
+assert!(injections.forest().has_points());
 
 let forest = injections.forest();
 // layer order is independent of TreeId

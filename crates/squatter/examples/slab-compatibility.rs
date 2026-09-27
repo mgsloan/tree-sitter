@@ -1,5 +1,5 @@
 use std::{env, fs, mem::MaybeUninit};
-use tree_squatter::{Language, PackOptions, PointData, PresenceCache, SlotIx, Tree};
+use tree_squatter::{Language, PackOptions, PointsData, PresenceCache, SlotIx, Tree};
 
 fn compare(expected: &Tree, actual: &Tree) {
     assert_eq!(expected.slot_count(), actual.slot_count());
@@ -83,8 +83,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             if let Some(points) = tree.point_data() {
                 let bytes = fs::read(format!("{prefix}-{variant}.points"))?;
                 assert_eq!(bytes, points.as_bytes());
-                copied.set_point_data(PointData::copy_from_bytes(&copied, &bytes)?)?;
-                checked.set_point_data(PointData::copy_from_bytes(&checked, &bytes)?)?;
+                copied.set_point_data(PointsData::copy_from_bytes(&copied, &bytes)?)?;
+                checked.set_point_data(PointsData::copy_from_bytes(&checked, &bytes)?)?;
             }
             if let Some(presence) = tree.presence_cache() {
                 let bytes = fs::read(format!("{prefix}-{variant}.presence"))?;

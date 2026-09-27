@@ -8,8 +8,8 @@ use std::sync::Arc;
 
 // Prototype formats stay at version 0; no persisted data needs backward compatibility.
 const TRANSFER_SIGNATURE: &[u8; 8] = b"TSQXFR00";
-const HEADER_LEN: usize = 152;
-const PREFIX_LEN: usize = 8 + 3 * 8 + HEADER_LEN;
+const HEADER_LEN: usize = 160;
+const PREFIX_LEN: usize = 8 + 4 * 8 + HEADER_LEN;
 
 fn invalid() -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, "invalid publication transfer")
@@ -21,7 +21,13 @@ impl PendingWrite {
         PREFIX_LEN
             .checked_add(self.request.path.len())?
             .checked_add(self.file.source().len())?
-            .checked_add(self.file.tree().as_bytes().len())
+            .checked_add(self.file.tree().as_bytes().len())?
+            .checked_add(
+                self.file
+                    .tree()
+                    .point_data()
+                    .map_or(0, |points| points.as_bytes().len()),
+            )
     }
 
     /// Copy the original capture to an IPC sink without compacting the tree,
@@ -33,13 +39,21 @@ impl PendingWrite {
             self.request.path.len(),
             self.file.source().len(),
             self.file.tree().as_bytes().len(),
+            self.file
+                .tree()
+                .point_data()
+                .map_or(0, |points| points.as_bytes().len()),
         ] {
             output.write_all(&(length as u64).to_le_bytes())?;
         }
         output.write_all(&self.request.header)?;
         output.write_all(&self.request.path)?;
         output.write_all(self.file.source())?;
-        output.write_all(self.file.tree().as_bytes())
+        output.write_all(self.file.tree().as_bytes())?;
+        if let Some(points) = self.file.tree().point_data() {
+            output.write_all(points.as_bytes())?;
+        }
+        Ok(())
     }
 }
 
@@ -73,10 +87,12 @@ impl Persistence {
         let path_len = length(8)?;
         let source_len = length(16)?;
         let tree_len = length(24)?;
+        let points_len = length(32)?;
         let total = PREFIX_LEN
             .checked_add(path_len)
             .and_then(|n| n.checked_add(source_len))
             .and_then(|n| n.checked_add(tree_len))
+            .and_then(|n| n.checked_add(points_len))
             .filter(|n| *n <= max_bytes && source_len <= u32::MAX as usize)
             .ok_or_else(invalid)?;
         let mut bytes = Vec::new();
@@ -103,12 +119,12 @@ impl Persistence {
             self.options.symbol_presence,
             self.options.points,
         );
-        if request.header.as_slice() != &prefix[32..] {
+        if request.header.as_slice() != &prefix[40..] {
             return Err(invalid().into());
         }
         let mut tree = tree_sitter_squatter::Tree::from_bytes_safety_checked(
             &language.prepared,
-            &bytes[path_len + source_len..],
+            &bytes[path_len + source_len..path_len + source_len + tree_len],
         )
         .map_err(io::Error::other)?;
         if tree
@@ -124,10 +140,15 @@ impl Persistence {
                 tree_sitter_squatter::PresenceCache::build(&tree).map_err(io::Error::other)?;
             tree.set_presence_cache(cache).map_err(io::Error::other)?;
         }
+        if request.points != (points_len != 0) {
+            return Err(invalid().into());
+        }
         if request.points {
-            let index = tree_sitter_squatter::LineIndex::new(&source).map_err(io::Error::other)?;
-            let points =
-                tree_sitter_squatter::PointData::build(&tree, &index).map_err(io::Error::other)?;
+            let points = tree_sitter_squatter::PointsData::copy_from_bytes(
+                &tree,
+                &bytes[path_len + source_len + tree_len..],
+            )
+            .map_err(io::Error::other)?;
             tree.set_point_data(points).map_err(io::Error::other)?;
         }
         let store = self

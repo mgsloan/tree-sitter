@@ -150,6 +150,8 @@ impl Request {
         identity.extend_from_slice(&language.identity.hash.0.to_le_bytes());
         identity.extend_from_slice(&runtime());
         identity.extend_from_slice(&representation());
+        // Keep the envelope aligned for transaction-backed core slabs.
+        identity.extend_from_slice(&u64::from(points).to_le_bytes());
         let variant = digest("tree-squatter cache variant v0", &identity);
         let mut tree_key = [0; 104];
         tree_key[..72].copy_from_slice(&source_key);
