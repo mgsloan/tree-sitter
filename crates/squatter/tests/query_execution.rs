@@ -1486,6 +1486,67 @@ fn progress_cancellation_resumes_every_entry_point() {
 }
 
 #[test]
+fn optimized_capture_progress_tracks_later_subtrees() {
+    use std::cell::Cell;
+    use tree_squatter::QueryCursorState;
+
+    let nested = (0..150).fold("[[],[]]".to_string(), |nested, _| format!("[{nested},[]]"));
+    let source = format!("[{nested},{nested},{nested}]");
+    let second_start = nested.len() + 2;
+    let (grammar, tree) = json_query_tree(&source);
+    let query = Query::new(&grammar, "(array . (array) @first . (array) @last .)").unwrap();
+    let expected = provider_results(&query, &tree, source.as_bytes(), 6, true);
+
+    for cancel in [false, true] {
+        let reached_second = Cell::new(false);
+        let requested = Cell::new(false);
+        let mut positions = Vec::new();
+        let mut progress = |state: &QueryCursorState| {
+            if reached_second.get() {
+                positions.push(state.current_byte_offset());
+                if cancel && positions.len() <= 3 {
+                    requested.set(true);
+                    return ControlFlow::Break(());
+                }
+            }
+            ControlFlow::Continue(())
+        };
+        let mut cursor = QueryCursor::new();
+        let mut execution = cursor.execute_with_options(
+            &query,
+            tree.root_node(),
+            source.as_bytes(),
+            QueryCursorOptions::new().progress_callback(&mut progress),
+        );
+        let mut actual = Vec::new();
+        let mut stops = 0;
+        loop {
+            if let Some((found, index)) = execution.next_capture() {
+                let node = found.captures()[index.0 as usize].node;
+                if node.start_byte() >= second_start {
+                    reached_second.set(true);
+                }
+                actual.push(snapshot(&found, Some(index)));
+            } else if requested.replace(false) {
+                stops += 1;
+            } else {
+                break;
+            }
+        }
+        drop(execution);
+        assert_eq!(actual, expected);
+        assert_eq!(stops, if cancel { 3 } else { 0 });
+        assert!(!positions.is_empty());
+        // The direct traversal cannot revisit the root after entering a later subtree.
+        assert!(
+            positions
+                .iter()
+                .all(|&position| (second_start..source.len()).contains(&position))
+        );
+    }
+}
+
+#[test]
 fn cursor_and_iterator_ranges_narrow_validate_and_persist() {
     use tree_sitter::Point;
     use tree_squatter::StreamingIterator;

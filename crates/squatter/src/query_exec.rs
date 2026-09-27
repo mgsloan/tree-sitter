@@ -2054,6 +2054,8 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
 
             self.cursor.direct_position = self.normalize_position(position + 1);
             let node = self.position_node(position);
+            // Shared capture bookkeeping polls the node currently being processed.
+            self.cursor.position = node.slot();
             let symbol = node.data().symbol_index(node.slot().get()).get();
             let mut roots = self.direct_roots(node);
             while roots != 0 {
