@@ -19,6 +19,7 @@ pub(crate) struct RawNode {
     pub slot: SlotIx,
 }
 
+/// A single node within a syntax [`Tree`].
 #[derive(Clone, Copy)]
 #[repr(transparent)]
 pub struct Node<'tree> {
@@ -56,14 +57,17 @@ impl std::fmt::Debug for Node<'_> {
 }
 
 impl Tree {
+    /// Create a new [`TreeCursor`] starting from the root of the tree.
     pub fn walk(&self) -> TreeCursor<'_> {
         self.root_node().walk()
     }
 
+    /// Get the language that was used to parse the syntax tree.
     pub fn language(&self) -> &crate::Language {
         &self.data().language
     }
 
+    /// Get the root node of the syntax tree.
     pub fn root_node(&self) -> Node<'_> {
         Node {
             raw: RawNode {
@@ -106,10 +110,13 @@ impl<'tree> Node<'tree> {
         self.raw.slot
     }
 
+    /// Get the [`crate::Language`] that was used to parse this node's syntax tree.
     pub fn language(&self) -> &'tree crate::Language {
         &self.data().language
     }
 
+    /// Get the range of source code that this node represents, both in terms of
+    /// raw bytes and of row/column coordinates.
     pub fn range(&self) -> tree_sitter::Range {
         tree_sitter::Range {
             start_byte: self.start_byte(),
@@ -123,6 +130,7 @@ impl<'tree> Node<'tree> {
         &source[self.start_byte() / 2..self.end_byte() / 2]
     }
 
+    /// Get the byte range of source code that this node represents.
     pub fn byte_range(&self) -> Range<usize> {
         self.start_byte()..self.end_byte()
     }
@@ -157,26 +165,33 @@ impl<'tree> Node<'tree> {
         self.preorder().filter_kind_ids(kinds).nodes()
     }
 
+    /// Get this node's type as a numerical id.
     pub fn kind_id(&self) -> KindId {
         self.data()
             .tables()
             .decode_kind(self.data().symbol_index(self.slot().get()))
     }
 
+    /// Get the node's type as a numerical id as it appears in the grammar
+    /// ignoring aliases.
     pub fn grammar_id(&self) -> GrammarKindId {
         self.data()
             .tables()
             .decode_grammar_kind(self.data().grammar_index(self.slot().get()))
     }
 
+    /// Get this node's type as a string.
     pub fn kind(&self) -> &'tree str {
         self.data().tables().symbol_name(self.kind_id().get())
     }
 
+    /// Get this node's symbol name as it appears in the grammar ignoring
+    /// aliases as a string.
     pub fn grammar_name(&self) -> &'tree str {
         self.data().tables().symbol_name(self.grammar_id().get())
     }
 
+    /// Get the byte offset where this node starts.
     #[inline]
     pub fn start_byte(&self) -> usize {
         let data = self.data();
@@ -184,6 +199,7 @@ impl<'tree> Node<'tree> {
             + data.byte(data.layout.start_byte_delta, self.slot().get()) as u32) as usize
     }
 
+    /// Get the byte offset where this node ends.
     #[inline]
     pub fn end_byte(&self) -> usize {
         let data = self.data();
@@ -191,6 +207,7 @@ impl<'tree> Node<'tree> {
             - data.short(data.layout.end_byte_delta, self.slot().get()) as u32) as usize
     }
 
+    /// Get this node's start position in terms of rows and columns.
     pub fn start_position(&self) -> Point {
         self.packed_start_point().point()
     }
@@ -199,6 +216,7 @@ impl<'tree> Node<'tree> {
         self.data().has_points()
     }
 
+    /// Get this node's end position in terms of rows and columns.
     pub fn end_position(&self) -> Point {
         self.packed_end_point().point()
     }
@@ -221,16 +239,28 @@ impl<'tree> Node<'tree> {
         )
     }
 
+    /// Check if this node is *named*.
+    ///
+    /// Named nodes correspond to named rules in the grammar, whereas
+    /// *anonymous* nodes correspond to string literals in the grammar.
     #[inline]
     pub fn is_named(&self) -> bool {
         self.data().tables().named(self.kind_id().get())
     }
 
+    /// Check if this node is *extra*.
+    ///
+    /// Extra nodes represent things like comments, which are not required by the
+    /// grammar, but can appear anywhere.
     pub fn is_extra(&self) -> bool {
         self.data().flags() & EXTRAS != 0
             && self.data().bit(self.data().layout.extra, self.slot().get())
     }
 
+    /// Check if this node is *missing*.
+    ///
+    /// Missing nodes are inserted by the parser in order to recover from
+    /// certain kinds of syntax errors.
     pub fn is_missing(&self) -> bool {
         self.data().flags() & MISSING != 0
             && self
@@ -238,10 +268,16 @@ impl<'tree> Node<'tree> {
                 .bit(self.data().layout.missing, self.slot().get())
     }
 
+    /// Check if this node represents a syntax error.
+    ///
+    /// Syntax errors represent parts of the code that could not be incorporated
+    /// into a valid syntax tree.
     pub fn is_error(&self) -> bool {
         self.kind_id() == KindId::ERROR
     }
 
+    /// Check if this node represents a syntax error or contains any syntax
+    /// errors anywhere within it.
     pub fn has_error(&self) -> bool {
         self.data().flags() & ERRORS != 0
             && self.data().bit(self.data().layout.error, self.slot().get())
@@ -278,6 +314,7 @@ impl<'tree> Node<'tree> {
         }
     }
 
+    /// Get the node's number of descendants, including one for the node itself.
     pub fn descendant_count(&self) -> usize {
         let first = self.first_slot();
         let waste: u32 = (first / GROUP_SIZE..self.slot().group().get())
@@ -321,6 +358,9 @@ impl<'tree> Node<'tree> {
         }
     }
 
+    /// Get this node's immediate parent.
+    /// Prefer [`child_with_descendant`](Node::child_with_descendant)
+    /// for iterating over this node's ancestors.
     pub fn parent(&self) -> Option<Self> {
         let data = self.data();
         let mut slot = self.slot().get() + 1;
@@ -352,6 +392,15 @@ impl<'tree> Node<'tree> {
         }
     }
 
+    /// Iterate over this node's children.
+    ///
+    /// A [`TreeCursor`] is used to retrieve the children efficiently. Obtain
+    /// a [`TreeCursor`] by calling [`Tree::walk`] or [`Node::walk`]. To avoid
+    /// unnecessary allocations, you should reuse the same cursor for
+    /// subsequent calls to this method.
+    ///
+    /// If you're walking the tree recursively, you may want to use the
+    /// [`TreeCursor`] APIs directly instead.
     pub fn children<'cursor>(
         &self,
         cursor: &'cursor mut TreeCursor<'tree>,
@@ -368,6 +417,9 @@ impl<'tree> Node<'tree> {
         })
     }
 
+    /// Iterate over this node's named children.
+    ///
+    /// See also [`Node::children`].
     pub fn named_children<'cursor>(
         &self,
         cursor: &'cursor mut TreeCursor<'tree>,
@@ -394,6 +446,9 @@ impl<'tree> Node<'tree> {
         })
     }
 
+    /// Iterate over this node's children with a given field id.
+    ///
+    /// See also [`Node::children_by_field_name`].
     pub fn children_by_field_id<'cursor>(
         &self,
         field: FieldId,
@@ -403,6 +458,9 @@ impl<'tree> Node<'tree> {
             .filter(move |node| node.field_id() == Some(field))
     }
 
+    /// Iterate over this node's children with a given field name.
+    ///
+    /// See also [`Node::children`].
     pub fn children_by_field_name<'cursor>(
         &self,
         name: &str,
@@ -438,10 +496,14 @@ impl<'tree> Node<'tree> {
             .is_some()
     }
 
+    /// Get this node's number of children.
     pub fn child_count(&self) -> ChildIx {
         ChildIx::new(self.structural_children().count() as u32)
     }
 
+    /// Get this node's number of *named* children.
+    ///
+    /// See also [`Node::is_named`].
     pub fn named_child_count(&self) -> NamedChildIx {
         NamedChildIx::new(
             self.structural_children()
@@ -450,16 +512,32 @@ impl<'tree> Node<'tree> {
         )
     }
 
+    /// Get the node's child at the given index, where zero represents the first
+    /// child.
+    ///
+    /// This method scans preceding children, so if
+    /// you might be iterating over a long list of children, you should use
+    /// [`Node::children`] instead.
     pub fn child(&self, index: ChildIx) -> Option<Self> {
         self.structural_children().nth(index.get() as usize)
     }
 
+    /// Get this node's *named* child at the given index.
+    ///
+    /// See also [`Node::is_named`].
+    /// This method scans preceding children, so if
+    /// you might be iterating over a long list of children, you should use
+    /// [`Node::named_children`] instead.
     pub fn named_child(&self, index: NamedChildIx) -> Option<Self> {
         self.structural_children()
             .filter(|node| node.is_named())
             .nth(index.get() as usize)
     }
 
+    /// Get this node's child with the given numerical field id.
+    ///
+    /// See also [`child_by_field_name`](Node::child_by_field_name). You can
+    /// convert a field name to an id using [`crate::Language::field_id_for_name`].
     pub fn child_by_field_id(&self, field: FieldId) -> Option<Self> {
         // ERROR productions have no field map, even if descendants contributed
         // inherited fields to enumeration.
@@ -471,6 +549,10 @@ impl<'tree> Node<'tree> {
         }
     }
 
+    /// Get the first child with the given field name.
+    ///
+    /// If multiple children may have the same field name, access them using
+    /// [`children_by_field_name`](Node::children_by_field_name)
     pub fn child_by_field_name(&self, field: impl AsRef<[u8]>) -> Option<Self> {
         let tables = self.data().tables();
         let field = (1..=tables.field_count as u16)
@@ -478,6 +560,9 @@ impl<'tree> Node<'tree> {
         self.child_by_field_id(FieldId::new(field)?)
     }
 
+    /// Get the node that contains `descendant`.
+    ///
+    /// Note that this can return `descendant` itself.
     pub fn child_with_descendant(&self, descendant: Self) -> Option<Self> {
         if self.raw.tree != descendant.raw.tree
             || descendant.slot() >= self.slot()
@@ -489,6 +574,7 @@ impl<'tree> Node<'tree> {
             .find(|child| child.first_slot() <= descendant.slot().get())
     }
 
+    /// Get this node's next sibling.
     pub fn next_sibling(&self) -> Option<Self> {
         let end = self.end_byte();
         let mut next = self.next_sibling_including_empty();
@@ -498,6 +584,7 @@ impl<'tree> Node<'tree> {
         next
     }
 
+    /// Get this node's next named sibling.
     pub fn next_named_sibling(&self) -> Option<Self> {
         let end = self.end_byte();
         let mut next = self.next_sibling_including_empty();
@@ -507,6 +594,7 @@ impl<'tree> Node<'tree> {
         next
     }
 
+    /// Get this node's previous sibling.
     pub fn prev_sibling(&self) -> Option<Self> {
         self.parent()?
             .structural_children()
@@ -514,6 +602,7 @@ impl<'tree> Node<'tree> {
             .last()
     }
 
+    /// Get this node's previous named sibling.
     pub fn prev_named_sibling(&self) -> Option<Self> {
         self.parent()?
             .structural_children()
@@ -522,12 +611,14 @@ impl<'tree> Node<'tree> {
             .last()
     }
 
+    /// Get this node's first child that contains or starts after the given byte offset.
     pub fn first_child_for_byte(&self, byte: usize) -> Option<Self> {
         let byte = byte as u32 as usize;
         self.structural_children()
             .find(|node| node.end_byte() > byte)
     }
 
+    /// Get this node's first named child that contains or starts after the given byte offset.
     pub fn first_named_child_for_byte(&self, byte: usize) -> Option<Self> {
         let byte = byte as u32 as usize;
         self.structural_children()
@@ -555,6 +646,10 @@ impl<'tree> Node<'tree> {
         }
     }
 
+    /// Create a new [`TreeCursor`] starting from this node.
+    ///
+    /// Note that the given node is considered the root of the cursor,
+    /// and the cursor cannot walk outside this node.
     pub fn walk(&self) -> TreeCursor<'tree> {
         TreeCursor {
             node: *self,
@@ -562,14 +657,17 @@ impl<'tree> Node<'tree> {
         }
     }
 
+    /// Get the smallest node within this node that spans the given byte range.
     pub fn descendant_for_byte_range(&self, start: usize, end: usize) -> Option<Self> {
         self.seek::<false>(start as u32 as u64, end as u32 as u64, false)
     }
 
+    /// Get the smallest named node within this node that spans the given byte range.
     pub fn named_descendant_for_byte_range(&self, start: usize, end: usize) -> Option<Self> {
         self.seek::<false>(start as u32 as u64, end as u32 as u64, true)
     }
 
+    /// Get the smallest node within this node that spans the given point range.
     pub fn descendant_for_point_range(&self, start: Point, end: Point) -> Option<Self> {
         self.seek::<true>(
             PackedPoint::from_point_cast(start).get(),
@@ -578,6 +676,7 @@ impl<'tree> Node<'tree> {
         )
     }
 
+    /// Get the smallest named node within this node that spans the given point range.
     pub fn named_descendant_for_point_range(&self, start: Point, end: Point) -> Option<Self> {
         self.seek::<true>(
             PackedPoint::from_point_cast(start).get(),
@@ -779,6 +878,7 @@ impl<'tree> Iterator for Children<'tree> {
 
 impl std::iter::FusedIterator for Children<'_> {}
 
+/// A stateful object for walking a syntax [`Tree`] efficiently.
 #[derive(Clone)]
 pub struct TreeCursor<'tree> {
     node: Node<'tree>,
@@ -786,6 +886,9 @@ pub struct TreeCursor<'tree> {
 }
 
 impl<'tree> TreeCursor<'tree> {
+    /// Get the numerical field id of this tree cursor's current node.
+    ///
+    /// See also [`field_name`](TreeCursor::field_name).
     pub fn field_id(&self) -> Option<FieldId> {
         if self.parents.is_empty() {
             None
@@ -794,11 +897,16 @@ impl<'tree> TreeCursor<'tree> {
         }
     }
 
+    /// Get the field name of this tree cursor's current node.
     pub fn field_name(&self) -> Option<&'tree str> {
         self.field_id()
             .and_then(|field| self.node.data().tables().field_name(field.get()))
     }
 
+    /// Re-initialize a tree cursor to the same position as another cursor.
+    ///
+    /// Unlike [`reset`](TreeCursor::reset), this will not lose parent
+    /// information and allows reusing already created cursors.
     pub fn reset_to(&mut self, cursor: &Self) {
         self.node = cursor.node;
         self.parents.clone_from(&cursor.parents);
@@ -808,6 +916,7 @@ impl<'tree> TreeCursor<'tree> {
         self.node.attributes()
     }
 
+    /// Get the tree cursor's current [`Node`].
     pub fn node(&self) -> Node<'tree> {
         self.node
     }
@@ -816,16 +925,22 @@ impl<'tree> TreeCursor<'tree> {
         self.parents.last().map(|slot| self.node.at(*slot))
     }
 
-    /// Start at another node, retaining allocated ancestor storage.
+    /// Re-initialize this tree cursor to start at the given node.
     pub fn reset(&mut self, node: Node<'tree>) {
         self.node = node;
         self.parents.clear();
     }
 
+    /// Get the depth of the cursor's current node relative to the original
+    /// node that the cursor was constructed with.
     pub fn depth(&self) -> u32 {
         self.parents.len() as u32
     }
 
+    /// Move this cursor to the first child of its current node.
+    ///
+    /// This returns `true` if the cursor successfully moved, and returns
+    /// `false` if there were no children.
     pub fn goto_first_child(&mut self) -> bool {
         let Some(child) = self.node.first_child() else {
             return false;
@@ -835,6 +950,14 @@ impl<'tree> TreeCursor<'tree> {
         true
     }
 
+    /// Move this cursor to the last child of its current node.
+    ///
+    /// This returns `true` if the cursor successfully moved, and returns
+    /// `false` if there were no children.
+    ///
+    /// Note that this function may be slower than
+    /// [`goto_first_child`](TreeCursor::goto_first_child) because it needs to
+    /// iterate through all the children to compute the child's position.
     pub fn goto_last_child(&mut self) -> bool {
         if !self.goto_first_child() {
             return false;
@@ -843,6 +966,13 @@ impl<'tree> TreeCursor<'tree> {
         true
     }
 
+    /// Move this cursor to the next sibling of its current node.
+    ///
+    /// This returns `true` if the cursor successfully moved, and returns
+    /// `false` if there was no next sibling node.
+    ///
+    /// Note that the node the cursor was constructed with is considered the root
+    /// of the cursor, and the cursor cannot walk outside this node.
     pub fn goto_next_sibling(&mut self) -> bool {
         if self.parents.is_empty() {
             return false;
@@ -854,6 +984,14 @@ impl<'tree> TreeCursor<'tree> {
         true
     }
 
+    /// Move this cursor to the parent of its current node.
+    ///
+    /// This returns `true` if the cursor successfully moved, and returns
+    /// `false` if there was no parent node (the cursor was already on the
+    /// root node).
+    ///
+    /// Note that the node the cursor was constructed with is considered the root
+    /// of the cursor, and the cursor cannot walk outside this node.
     pub fn goto_parent(&mut self) -> bool {
         let Some(slot) = self.parents.pop() else {
             return false;
@@ -862,7 +1000,17 @@ impl<'tree> TreeCursor<'tree> {
         true
     }
 
-    /// Can scan preceding siblings; does not reconstruct the parent.
+    /// Move this cursor to the previous sibling of its current node.
+    ///
+    /// This returns `true` if the cursor successfully moved, and returns
+    /// `false` if there was no previous sibling node.
+    ///
+    /// Note, that this function may be slower than
+    /// [`goto_next_sibling`](TreeCursor::goto_next_sibling) due to how node
+    /// positions are stored. In the worst case, this will need to iterate
+    /// through all the children up to the previous sibling node to recalculate
+    /// its position. Also note that the node the cursor was constructed with is
+    /// considered the root of the cursor, and the cursor cannot walk outside this node.
     pub fn goto_previous_sibling(&mut self) -> bool {
         let previous = self.parent_node().and_then(|parent| {
             parent
@@ -877,8 +1025,11 @@ impl<'tree> TreeCursor<'tree> {
         true
     }
 
-    /// Seek the first child ending after the byte, returning its child index.
-    /// Can scan children. Failure leaves the cursor unchanged.
+    /// Move this cursor to the first child of its current node that contains or
+    /// starts after the given byte offset.
+    ///
+    /// This returns the index of the child node if one was found, and returns
+    /// `None` if no such child was found.
     pub fn goto_first_child_for_byte(&mut self, byte: usize) -> Option<ChildIx> {
         let byte = byte as u32 as usize;
         self.goto_child_matching(|node| {
@@ -886,7 +1037,11 @@ impl<'tree> TreeCursor<'tree> {
         })
     }
 
-    /// Point counterpart of `goto_first_child_for_byte`.
+    /// Move this cursor to the first child of its current node that contains or
+    /// starts after the given point.
+    ///
+    /// This returns the index of the child node if one was found, and returns
+    /// `None` if no such child was found.
     pub fn goto_first_child_for_point(&mut self, point: Point) -> Option<ChildIx> {
         let point = PackedPoint::from_point_cast(point).point();
         self.goto_child_matching(|node| node.end_byte() > 0 && node.end_position() > point)

@@ -41,7 +41,9 @@ pub trait TreeLike {
     type Node<'tree>: NodeLike<'tree>
     where
         Self: 'tree;
+    /// Get the root node of the syntax tree.
     fn root_node(&self) -> Self::Node<'_>;
+    /// Create a new [`TreeCursor`] starting from the root of the tree.
     fn walk(&self) -> <Self::Node<'_> as NodeLike<'_>>::Cursor {
         self.root_node().walk()
     }
@@ -51,46 +53,95 @@ pub trait NodeLike<'tree>: Copy + Eq {
     type Cursor: CursorLike<'tree, Node = Self>;
     /// Stable within this tree; not comparable across representations.
     type Id: Copy + Eq + std::hash::Hash;
+    /// Get a numeric id for this node that is unique.
+    ///
+    /// Within a given syntax tree, no two nodes have the same id.
     fn id(&self) -> Self::Id;
     /// Read constant-time attributes; counts are separate operations below.
     fn attributes(self) -> Attributes<'tree>;
+    /// Get this node's type as a numerical id.
     fn kind_id(&self) -> KindId;
+    /// Get the node's type as a numerical id as it appears in the grammar
+    /// ignoring aliases.
     fn grammar_id(&self) -> GrammarKindId;
+    /// Get this node's type as a string.
     fn kind(&self) -> &'tree str;
+    /// Get this node's symbol name as it appears in the grammar ignoring
+    /// aliases as a string.
     fn grammar_name(&self) -> &'tree str;
+    /// Get the range of source code that this node represents, both in terms of
+    /// raw bytes and of row/column coordinates.
     fn range(&self) -> tree_sitter::Range;
     fn utf8_text<'source>(
         &self,
         source: &'source [u8],
     ) -> Result<&'source str, std::str::Utf8Error>;
     fn utf16_text<'source>(&self, source: &'source [u16]) -> &'source [u16];
+    /// Get the byte range of source code that this node represents.
     fn byte_range(&self) -> Range<usize>;
+    /// Get the byte offset where this node starts.
     fn start_byte(&self) -> usize;
+    /// Get the byte offset where this node ends.
     fn end_byte(&self) -> usize;
+    /// Get this node's start position in terms of rows and columns.
     fn start_position(&self) -> Point;
+    /// Get this node's end position in terms of rows and columns.
     fn end_position(&self) -> Point;
     fn has_points(self) -> bool;
+    /// Check if this node is *named*.
+    ///
+    /// Named nodes correspond to named rules in the grammar, whereas
+    /// *anonymous* nodes correspond to string literals in the grammar.
     fn is_named(&self) -> bool;
+    /// Check if this node is *extra*.
+    ///
+    /// Extra nodes represent things like comments, which are not required by the
+    /// grammar, but can appear anywhere.
     fn is_extra(&self) -> bool;
+    /// Check if this node is *missing*.
+    ///
+    /// Missing nodes are inserted by the parser in order to recover from
+    /// certain kinds of syntax errors.
     fn is_missing(&self) -> bool;
+    /// Check if this node represents a syntax error.
+    ///
+    /// Syntax errors represent parts of the code that could not be incorporated
+    /// into a valid syntax tree.
     fn is_error(&self) -> bool;
+    /// Check if this node represents a syntax error or contains any syntax
+    /// errors anywhere within it.
     fn has_error(&self) -> bool;
     /// Preorder including this node, using the backend's native traversal.
     fn preorder(self) -> impl Iterator<Item = Self>;
     /// Public kind IDs, in preorder including this node. Never leaves its subtree.
     fn descendants_matching_kinds<K: IdSelection>(self, kinds: K) -> impl Iterator<Item = Self>;
+    /// Iterate over this node's children.
+    ///
+    /// A [`TreeCursor`] is used to retrieve the children efficiently. Obtain
+    /// a [`TreeCursor`] by calling [`Tree::walk`] or [`Node::walk`]. To avoid
+    /// unnecessary allocations, you should reuse the same cursor for
+    /// subsequent calls to this method.
+    ///
+    /// If you're walking the tree recursively, you may want to use the
+    /// [`TreeCursor`] APIs directly instead.
     fn children<'cursor>(
         &self,
         cursor: &'cursor mut Self::Cursor,
     ) -> impl Iterator<Item = Self> + 'cursor
     where
         Self: 'cursor;
+    /// Iterate over this node's named children.
+    ///
+    /// See also [`Node::children`].
     fn named_children<'cursor>(
         &self,
         cursor: &'cursor mut Self::Cursor,
     ) -> impl Iterator<Item = Self> + 'cursor
     where
         Self: 'cursor;
+    /// Iterate over this node's children with a given field id.
+    ///
+    /// See also [`Node::children_by_field_name`].
     fn children_by_field_id<'cursor>(
         &self,
         field: FieldId,
@@ -98,6 +149,9 @@ pub trait NodeLike<'tree>: Copy + Eq {
     ) -> impl Iterator<Item = Self> + 'cursor
     where
         Self: 'cursor;
+    /// Iterate over this node's children with a given field name.
+    ///
+    /// See also [`Node::children`].
     fn children_by_field_name<'cursor>(
         &self,
         name: &str,
@@ -105,56 +159,146 @@ pub trait NodeLike<'tree>: Copy + Eq {
     ) -> impl Iterator<Item = Self> + 'cursor
     where
         Self: 'cursor;
+    /// Get the field name of this node's child at the given index.
     fn field_name_for_child(&self, index: ChildIx) -> Option<&'tree str>;
+    /// Get the field name of this node's named child at the given index.
     fn field_name_for_named_child(&self, index: NamedChildIx) -> Option<&'tree str>;
     fn has_children(self) -> bool;
     /// May scan unnamed children; stops at the first named child.
     fn has_named_children(self) -> bool;
-    /// Count visible children; this can scan children in packed trees.
+    /// Get this node's number of children.
     fn child_count(&self) -> ChildIx;
-    /// Count named children; this can scan children in packed trees.
+    /// Get this node's number of *named* children.
+    ///
+    /// See also [`Node::is_named`].
     fn named_child_count(&self) -> NamedChildIx;
-    /// Count visible descendants including this node; this can scan packed groups.
+    /// Get the node's number of descendants, including one for the node itself.
     fn descendant_count(&self) -> usize;
+    /// Create a new [`TreeCursor`] starting from this node.
+    ///
+    /// Note that the given node is considered the root of the cursor,
+    /// and the cursor cannot walk outside this node.
     fn walk(&self) -> Self::Cursor;
-    /// Can scan packed nodes; a cursor retains ancestry during traversal.
+    /// Get this node's immediate parent.
+    /// Prefer [`child_with_descendant`](Node::child_with_descendant)
+    /// for iterating over this node's ancestors.
     fn parent(&self) -> Option<Self>;
-    /// Can scan preceding children. Prefer iteration when visiting all children.
+    /// Get the node's child at the given index, where zero represents the first
+    /// child.
+    ///
+    /// This method scans preceding children, so if
+    /// you might be iterating over a long list of children, you should use
+    /// [`Node::children`] instead.
     fn child(&self, index: ChildIx) -> Option<Self>;
+    /// Get this node's *named* child at the given index.
+    ///
+    /// See also [`Node::is_named`].
+    /// This method scans preceding children, so if
+    /// you might be iterating over a long list of children, you should use
+    /// [`Node::named_children`] instead.
     fn named_child(&self, index: NamedChildIx) -> Option<Self>;
+    /// Get this node's next sibling.
     fn next_sibling(&self) -> Option<Self>;
+    /// Get this node's previous sibling.
     fn prev_sibling(&self) -> Option<Self>;
+    /// Get this node's next named sibling.
     fn next_named_sibling(&self) -> Option<Self>;
+    /// Get this node's previous named sibling.
     fn prev_named_sibling(&self) -> Option<Self>;
+    /// Get this node's child with the given numerical field id.
+    ///
+    /// See also [`child_by_field_name`](Node::child_by_field_name). You can
+    /// convert a field name to an id using [`crate::Language::field_id_for_name`].
     fn child_by_field_id(&self, field: FieldId) -> Option<Self>;
+    /// Get the first child with the given field name.
+    ///
+    /// If multiple children may have the same field name, access them using
+    /// [`children_by_field_name`](Node::children_by_field_name)
     fn child_by_field_name(&self, name: impl AsRef<[u8]>) -> Option<Self>;
+    /// Get the smallest node within this node that spans the given byte range.
     fn descendant_for_byte_range(&self, start: usize, end: usize) -> Option<Self>;
+    /// Get the smallest node within this node that spans the given point range.
     fn descendant_for_point_range(&self, start: Point, end: Point) -> Option<Self>;
 }
 
 pub trait CursorLike<'tree>: Clone {
     type Node: NodeLike<'tree>;
+    /// Get the tree cursor's current [`Node`].
     fn node(&self) -> Self::Node;
     /// Current node constant-time attributes.
     fn attributes(&mut self) -> Attributes<'tree> {
         self.node().attributes()
     }
-    /// Change the traversal root, retaining allocated cursor storage.
+    /// Re-initialize this tree cursor to start at the given node.
     fn reset(&mut self, node: Self::Node);
-    /// Can scan siblings. Failure leaves the cursor unchanged.
+    /// Move this cursor to the previous sibling of its current node.
+    ///
+    /// This returns `true` if the cursor successfully moved, and returns
+    /// `false` if there was no previous sibling node.
+    ///
+    /// Note, that this function may be slower than
+    /// [`goto_next_sibling`](TreeCursor::goto_next_sibling) due to how node
+    /// positions are stored. In the worst case, this will need to iterate
+    /// through all the children up to the previous sibling node to recalculate
+    /// its position. Also note that the node the cursor was constructed with is
+    /// considered the root of the cursor, and the cursor cannot walk outside this node.
     fn goto_previous_sibling(&mut self) -> bool;
-    /// Move to the first child ending after the byte and return its index. Can scan children.
-    /// Failure leaves the cursor unchanged.
+    /// Move this cursor to the first child of its current node that contains or
+    /// starts after the given byte offset.
+    ///
+    /// This returns the index of the child node if one was found, and returns
+    /// `None` if no such child was found.
     fn goto_first_child_for_byte(&mut self, byte: usize) -> Option<ChildIx>;
-    /// Point counterpart of goto_first_child_for_byte, with the same failure behavior.
+    /// Move this cursor to the first child of its current node that contains or
+    /// starts after the given point.
+    ///
+    /// This returns the index of the child node if one was found, and returns
+    /// `None` if no such child was found.
     fn goto_first_child_for_point(&mut self, point: Point) -> Option<ChildIx>;
+    /// Get the numerical field id of this tree cursor's current node.
+    ///
+    /// See also [`field_name`](TreeCursor::field_name).
     fn field_id(&self) -> Option<FieldId>;
+    /// Get the field name of this tree cursor's current node.
     fn field_name(&self) -> Option<&'tree str>;
+    /// Re-initialize a tree cursor to the same position as another cursor.
+    ///
+    /// Unlike [`reset`](TreeCursor::reset), this will not lose parent
+    /// information and allows reusing already created cursors.
     fn reset_to(&mut self, cursor: &Self);
+    /// Get the depth of the cursor's current node relative to the original
+    /// node that the cursor was constructed with.
     fn depth(&self) -> u32;
+    /// Move this cursor to the first child of its current node.
+    ///
+    /// This returns `true` if the cursor successfully moved, and returns
+    /// `false` if there were no children.
     fn goto_first_child(&mut self) -> bool;
+    /// Move this cursor to the last child of its current node.
+    ///
+    /// This returns `true` if the cursor successfully moved, and returns
+    /// `false` if there were no children.
+    ///
+    /// Note that this function may be slower than
+    /// [`goto_first_child`](TreeCursor::goto_first_child) because it needs to
+    /// iterate through all the children to compute the child's position.
     fn goto_last_child(&mut self) -> bool;
+    /// Move this cursor to the next sibling of its current node.
+    ///
+    /// This returns `true` if the cursor successfully moved, and returns
+    /// `false` if there was no next sibling node.
+    ///
+    /// Note that the node the cursor was constructed with is considered the root
+    /// of the cursor, and the cursor cannot walk outside this node.
     fn goto_next_sibling(&mut self) -> bool;
+    /// Move this cursor to the parent of its current node.
+    ///
+    /// This returns `true` if the cursor successfully moved, and returns
+    /// `false` if there was no parent node (the cursor was already on the
+    /// root node).
+    ///
+    /// Note that the node the cursor was constructed with is considered the root
+    /// of the cursor, and the cursor cannot walk outside this node.
     fn goto_parent(&mut self) -> bool;
 }
 

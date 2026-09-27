@@ -484,6 +484,7 @@ fn allocation(length: u32, owned: bool) -> Result<Allocation, Error> {
         .map_err(|_| Error::Overflow)
 }
 
+/// A tree that represents the syntactic structure of a source code file.
 pub struct Tree(pub(crate) NonNull<TreeData>);
 unsafe impl Send for Tree {}
 unsafe impl Sync for Tree {}
