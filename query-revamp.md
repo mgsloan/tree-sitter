@@ -208,7 +208,11 @@ pub struct QueryPredicate {
 }
 // QueryMatches::Item = QueryMatch<'cursor, 'tree>
 // QueryCaptures::Item = (QueryMatch<'cursor, 'tree>, MatchCaptureIx)
-impl<'tree> QueryExecution<'_, '_, 'tree, '_> {
+impl<'tree, Provider, Chunk> QueryExecution<'_, '_, 'tree, Provider, Chunk>
+where
+    Provider: TextProvider<Chunk>,
+    Chunk: AsRef<[u8]>,
+{
     pub fn next_match(&mut self) -> Option<QueryMatch<'_, 'tree>>;
     pub fn next_capture(&mut self) -> Option<(QueryMatch<'_, 'tree>, MatchCaptureIx)>;
     pub fn remove_match(&mut self, id: MatchId);
@@ -297,10 +301,8 @@ while let Some((found, index)) = captures.next() {
 
 - Accept a root `Node` by value in `matches`, `captures`, `execute`, and their
   options variants, following tree-sitter's query entry points.
-- Add `matches`/`captures` streaming iterators and a text-provider abstraction
-  with the same shape, accepting packed nodes. Providers for noncontiguous text
-  must remain possible; byte slices remain a convenient implementation. Predicate
-  evaluation must handle text chunks and preserve node/source lifetimes.
+- Add `matches`/`captures` streaming iterators using the text-provider interface
+  below, shared with `execute`.
 - Add `QueryMatch::captures()` and `remove()` with compatible borrowing and
   removal behavior. Preserve capture/node lifetimes while adapting the executor.
 - Preserve current capture ordering, provisional snapshot contents, and duplicate
@@ -312,6 +314,63 @@ while let Some((found, index)) = captures.next() {
   an optimization is unavailable.
 - The snippets show independent iteration modes. Drop an iterator before borrowing
   its cursor again, and supply each iterator with its own text-provider value.
+
+## Text providers and predicate evaluation
+
+Define a squatter-owned `TextProvider` with tree-sitter's trait shape, accepting
+packed `Node` values. Retain the associated iterator name `I` for compatibility.
+
+```rust
+pub trait TextProvider<Chunk: AsRef<[u8]>> {
+    type I: Iterator<Item = Chunk>;
+    fn text(&mut self, node: Node<'_>) -> Self::I;
+}
+
+impl<'text> TextProvider<&'text [u8]> for &'text [u8] {
+    type I = std::iter::Once<&'text [u8]>;
+
+    fn text(&mut self, node: Node<'_>) -> Self::I {
+        std::iter::once(&self[node.byte_range()])
+    }
+}
+```
+
+Also support closures returning chunk iterators, as tree-sitter does. Chunks may
+be borrowed or owned. Each call supplies the node's complete text in source order;
+chunk boundaries have no semantic significance. The byte-slice implementation
+indexes source bytes using the node's byte range, without copying.
+
+All query entry points take the provider by value and retain it for execution.
+Use the same `Provider: TextProvider<Chunk>` and `Chunk: AsRef<[u8]>` bounds in
+`matches`, `captures`, `execute`, and their options variants. For example:
+
+```rust
+pub fn execute<'cursor, 'query, 'tree, Provider, Chunk>(
+    &'cursor mut self,
+    query: &'query Query,
+    root: Node<'tree>,
+    text_provider: Provider,
+) -> QueryExecution<'cursor, 'query, 'tree, Provider, Chunk>
+where
+    Provider: TextProvider<Chunk>,
+    Chunk: AsRef<[u8]>;
+```
+
+`QueryMatches` and `QueryCaptures` carry the same provider/chunk type parameters.
+Source borrows are represented by the provider and chunk types; preserve their
+lifetimes independently of the tree borrow. Captures continue to borrow nodes
+from the tree, not text from the provider.
+
+Built-in text predicates evaluate the concatenation of all chunks for each
+capture. Equality, membership, and regex results must be independent of chunking,
+including regex matches spanning chunk boundaries. Apply negation and repeated-
+capture quantifiers to complete capture texts, not individual chunks. Continue
+to expose general predicates for host evaluation.
+
+Borrow a single chunk directly when possible. When contiguous text is needed
+for multiple chunks, assemble it in reusable execution buffers. An empty chunk
+iterator represents empty text; empty chunks do not alter the result. Do not
+require callers to flatten a noncontiguous source before executing a query.
 
 ## Query ranges, limits, and cancellation
 
@@ -468,6 +527,11 @@ Range tests cover zero-end, empty, reversed, and wider-coordinate inputs,
 structural context outside the query range, and subtree boundaries. Cancellation
 tests cover resuming the same iterator, preserving in-progress matches and
 capture consumption, repeated stops, searches without results, and fresh reuse.
+
+Compare byte-slice and chunked providers across all query entry points. Cover
+equality, membership, and regex predicates, with splits inside matching text and
+UTF-8 sequences, empty text/chunks, and repeated captures. Predicate results must
+remain identical across chunkings.
 
 Copy and annotate tree-sitter API documentation where behavior is shared;
 explicitly document retained differences. Do not copy capture-order guarantees
