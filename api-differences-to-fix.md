@@ -442,7 +442,6 @@ impl<'tree> Node<'tree> {
     pub fn has_error(&self) -> bool;
     pub fn has_points(self) -> bool;
 }
-impl Clone for Tree { /* preserve tree contents and optional side data */ }
 ```
 
 - Include `Tree::walk`, tree/node `language`, `Node::range`, `Node::utf16_text`,
@@ -453,8 +452,8 @@ impl Clone for Tree { /* preserve tree contents and optional side data */ }
   stored in the tree; no per-view coordinate translation is planned.
 - Preserve optional point data. Without it, document the existing row-zero,
   byte-as-column behavior across all point-dependent APIs.
-- Add cloning with compatible observable semantics. Copying cost may differ;
-  preserve side data and keep fallible copying/detachment as additions.
+- Defer `Tree::clone()` and its ownership design. Retain existing explicit
+  copying/detachment operations.
 
 ## Shared navigation traits
 
