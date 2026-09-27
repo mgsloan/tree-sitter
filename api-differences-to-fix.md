@@ -344,7 +344,9 @@ impl Clone for TreeCursor<'_> { /* independent cursor state */ }
   traversal root. A physical slot is not a descendant index. Resetting the cursor
   to a different root changes the index's interpretation.
 - Return `ChildIx` from child-positioning methods, consistently with child lookup.
-- Add reset-from-cursor and cloning with independent mutable traversal state.
+- Include `Clone` and `reset_to` in this API pass. Copy the current node and
+  ancestor stack so traversal state is independent; `reset_to` should reuse the
+  destination stack allocation where possible. Neither operation copies the tree.
 - Retain existing movement methods and additional bundled attribute access.
 
 ## Tree views, coordinates, and source text
@@ -746,8 +748,6 @@ impl QueryCursor {
     pub fn match_limit(&self) -> u32;
     pub fn set_byte_range(&mut self, range: Range<usize>) -> &mut Self;
     pub fn set_point_range(&mut self, range: Range<Point>) -> &mut Self;
-    pub fn set_containing_byte_range(&mut self, range: Range<usize>) -> &mut Self;
-    pub fn set_containing_point_range(&mut self, range: Range<Point>) -> &mut Self;
     pub fn set_max_start_depth(&mut self, depth: Option<u32>) -> &mut Self;
 
     pub fn set_optimized(&mut self, enabled: bool);
@@ -760,8 +760,11 @@ let matches = cursor.matches_with_options(&query, root, text_provider, options);
 - Follow tree-sitter's Rust wrapper: range setters return `&mut Self` for chaining
   and discard the internal acceptance result. Rejected ranges leave the stored
   range unchanged. Do not add separate `try_set_*` methods. Use `None` to remove
-  the depth limit. Coordinate narrowing remains a separate decision.
-- Add containing ranges, the limit getter, and range setters on result iterators.
+  the depth limit. Narrow coordinates with `as u32`, matching tree-sitter's Rust
+  wrapper rather than rejecting values that do not fit.
+- Add the limit getter and range setters on result iterators.
+- Defer query containing-range setters. They require new query filtering behavior
+  beyond this API-matching pass. Retain existing scan containment APIs unchanged.
 - Support bounded branching/rootless queries through a compatible fallback when
   a specialized plan is ineligible.
 - Add progress options and compatible cancellation/resumption behavior. Remove
@@ -914,10 +917,12 @@ new differential testing.
   predicates. Move them to the corresponding dedicated metadata interfaces.
 - **Range validation:** both implementations reject reversed ranges without
   changing the stored range, after interpreting a zero end as unbounded.
-  Tree-squatter also rejects values outside `u32`; tree-sitter's Rust wrapper
-  truncates byte offsets and point components to `u32` and returns the cursor
-  without exposing the native setter's success flag. Decide whether shared
-  setters should retain checked conversion or reproduce truncation.
+  Currently tree-squatter also rejects values outside `u32`. Change shared
+  coordinate-taking APIs, including query setters and node/cursor lookups, to
+  cast byte offsets and point components with `as u32` wherever tree-sitter's
+  Rust wrapper does. Do not check narrowing conversions. Range validity checks
+  apply after conversion; setters discard the internal success flag. Retain
+  existing wider-coordinate behavior in squatter-only scan APIs.
 - **Finite match limits:** discovery/eviction order can retain a different valid
   subset. Retain and document this behavior; no dedicated compatibility audit
   is planned.
