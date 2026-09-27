@@ -776,7 +776,6 @@ impl QueryCursor {
         self.scan_cooldown = 0;
         self.direct = self.optimized
             && query.program.direct.is_some()
-            && !root.has_error()
             && self.max_start_depth == NONE
             && !self.halted;
         self.direct_position =
@@ -1551,7 +1550,7 @@ impl<'query, 'tree> QueryExecution<'_, 'query, 'tree, '_> {
     }
 
     fn presence_matches(&mut self, requirement: u16, root: Node<'tree>) -> bool {
-        if !self.cursor.optimized || self.root_has_error {
+        if !self.cursor.optimized {
             return true;
         }
         let index = requirement as usize - 1;
@@ -1828,7 +1827,12 @@ impl<'query, 'tree> QueryExecution<'_, 'query, 'tree, '_> {
                 let operation = plan.steps[state.step as usize];
                 let step = self.step(state.step);
                 let sibling = self.node_end(node);
-                let matches = (operation.symbol == 0 || operation.symbol == symbol)
+                // Root symbols, including local alternatives, were checked by the root table.
+                let symbol_matches =
+                    matches!(operation.relation, crate::query_plan::Relation::Root)
+                        || operation.symbol == symbol
+                        || (operation.symbol == 0 && symbol != DONE);
+                let matches = symbol_matches
                     && (operation.field == 0 || FieldId::new(operation.field) == node.field_id())
                     && (!operation.last_named_child
                         || self.named_child_position(sibling, current.end) == current.end);
@@ -2702,6 +2706,82 @@ fn equal_column(
 mod scan_tests {
     use super::*;
     use crate::{Language, PackOptions, Tree};
+
+    #[test]
+    fn error_plans_match_general_execution() {
+        let language = unsafe {
+            tree_sitter::Language::from_raw(tree_sitter_json::LANGUAGE.into_raw()().cast())
+        };
+        let grammar = Language::new(&language).unwrap();
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&language).unwrap();
+
+        for source in ["x", "[\n1, ?,\n2]", "{\"key\":}", "[1,"] {
+            let tree = Tree::parse(&grammar, &mut parser, source).unwrap();
+            assert!(tree.root_node().has_error());
+            for pattern in [
+                "(ERROR) @error",
+                "[(ERROR) (number)] @value",
+                "(ERROR) @error (number) @number",
+                "(_) @node",
+                "(_ . (_) @first)",
+                "(_ . (_) @first . (_) @second .)",
+                "(ERROR . (_) @first)",
+                "(_ . (ERROR) @first)",
+            ] {
+                let query = Query::new(&grammar, pattern).unwrap();
+                for root in tree.root_node().preorder().nodes() {
+                    for range in [0..0, 0..1, 1..source.len(), source.len()..source.len() + 1] {
+                        for captures in [false, true] {
+                            let collect = |optimized| {
+                                let mut cursor = QueryCursor::new();
+                                cursor.set_optimized(optimized);
+                                assert!(cursor.set_byte_range(range.clone()));
+                                let mut execution = cursor.execute(&query, root, source.as_bytes());
+                                assert_eq!(execution.cursor.direct, optimized, "{pattern}");
+                                let mut results = Vec::new();
+                                loop {
+                                    let result = if captures {
+                                        execution.next_capture().map(|(result, index)| {
+                                            (
+                                                result.pattern_index,
+                                                &result.captures[index..index + 1],
+                                            )
+                                        })
+                                    } else {
+                                        execution
+                                            .next_match()
+                                            .map(|result| (result.pattern_index, result.captures))
+                                    };
+                                    let Some((pattern, captures)) = result else {
+                                        break;
+                                    };
+                                    results.push((
+                                        pattern,
+                                        captures
+                                            .iter()
+                                            .map(|capture| {
+                                                (capture.node.slot().get(), capture.index)
+                                            })
+                                            .collect::<Vec<_>>(),
+                                    ));
+                                    assert!(results.len() < 100);
+                                }
+                                assert_eq!(execution.error(), None);
+                                results.sort();
+                                results
+                            };
+                            assert_eq!(
+                                collect(true),
+                                collect(false),
+                                "{pattern}, {source:?}, {root:?}, {range:?}, captures={captures}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     #[test]
     fn bounded_plans_match_general_execution() {

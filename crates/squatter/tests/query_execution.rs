@@ -111,6 +111,154 @@ fn queries_match_with_and_without_plans() {
 }
 
 #[test]
+fn malformed_queries_match_with_and_without_plans() {
+    use std::collections::BTreeSet;
+
+    for (name, language, source) in [
+        (
+            "json",
+            tree_sitter_json::LANGUAGE,
+            "{\"key\": [1,2,3], \"nested\": {\"value\":\"text\"}}",
+        ),
+        (
+            "c",
+            tree_sitter_c::LANGUAGE,
+            "int f(int x) { int y = 1; return x + y; }",
+        ),
+        (
+            "c_sharp",
+            tree_sitter_c_sharp::LANGUAGE,
+            "class C { int M(int x) { return x + 1; } }",
+        ),
+    ] {
+        let language = unsafe { tree_sitter::Language::from_raw(language.into_raw()().cast()) };
+        let grammar = Language::new(&language).unwrap();
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&language).unwrap();
+        let native = parser.parse(source, None).unwrap();
+        assert!(!native.root_node().has_error());
+        let tree = Tree::pack(&grammar, &native).unwrap();
+        let mut patterns = [
+            "(ERROR) @error",
+            "(MISSING) @missing",
+            "(_) @node",
+            "(_ . (_) @first)",
+            "(_ . (_) @first . (_) @second .)",
+            "(ERROR . (_) @first)",
+            "(ERROR (_) @child) @error",
+            "(_ (ERROR) @error) @parent",
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<BTreeSet<_>>();
+        for parent in tree
+            .root_node()
+            .preorder()
+            .nodes()
+            .filter(|node| node.is_named())
+        {
+            for child in parent.named_children(&mut parent.walk()) {
+                patterns.insert(format!(
+                    "({} ({}) @child) @parent",
+                    parent.kind(),
+                    child.kind()
+                ));
+                patterns.insert(format!("({} . ({}) @child)", parent.kind(), child.kind()));
+                if let Some(field) = child.field_id() {
+                    let field = language.field_name_for_id(field.get()).unwrap();
+                    patterns.insert(format!(
+                        "({} {field}: ({}) @child) @parent",
+                        parent.kind(),
+                        child.kind()
+                    ));
+                }
+                for descendant in child.named_children(&mut child.walk()) {
+                    patterns.insert(format!(
+                        "({} ({} ({}) @descendant)) @parent",
+                        parent.kind(),
+                        child.kind(),
+                        descendant.kind()
+                    ));
+                }
+            }
+        }
+        let queries = patterns
+            .into_iter()
+            .filter_map(|pattern| {
+                Query::new(&grammar, &pattern)
+                    .ok()
+                    .map(|query| (pattern, query))
+            })
+            .collect::<Vec<_>>();
+        let mut sources = BTreeSet::new();
+        for offset in 0..=source.len() {
+            sources.insert(source[..offset].to_owned());
+            let mut inserted = source.to_owned();
+            inserted.insert(offset, '?');
+            sources.insert(inserted);
+            if offset < source.len() {
+                let mut deleted = source.to_owned();
+                deleted.remove(offset);
+                sources.insert(deleted);
+            }
+        }
+        let mut errors = 0;
+        for source in sources {
+            let native = parser.parse(&source, None).unwrap();
+            if !native.root_node().has_error() {
+                continue;
+            }
+            errors += 1;
+            let tree = Tree::pack(&grammar, &native).unwrap();
+            let capturable_slots = tree
+                .root_node()
+                .preorder()
+                .nodes()
+                .filter(|node| node.end_byte() > 0)
+                .map(|node| node.slot().get())
+                .collect::<BTreeSet<_>>();
+            for (pattern, query) in &queries {
+                for bounded in [false, true] {
+                    let mut optimized = QueryCursor::new();
+                    let mut reference = QueryCursor::new();
+                    reference.set_optimized(false);
+                    if bounded {
+                        let start = source.len() / 2;
+                        assert!(optimized.set_byte_range(start..start + 1));
+                        assert!(reference.set_byte_range(start..start + 1));
+                    }
+                    let expected = matches!(&mut reference, query, tree, source);
+                    assert_eq!(
+                        matches!(&mut optimized, query, tree, source),
+                        expected,
+                        "{name}, {pattern}, {source:?}, bounded={bounded}"
+                    );
+                    if !bounded {
+                        let actual = captures!(&mut optimized, query, tree, source);
+                        for (pattern_index, captures) in expected {
+                            for (slot, index) in captures {
+                                if capturable_slots.contains(&slot) {
+                                    assert!(
+                                        actual.contains(&(pattern_index, slot, index)),
+                                        "capture {index}, {name}, {pattern}, {source:?}"
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert!(errors > 50, "{name}: {errors}");
+        eprintln!(
+            "{name}: {errors} malformed inputs, {} queries, {} match comparisons",
+            queries.len(),
+            errors * queries.len() * 2
+        );
+    }
+}
+
+#[test]
 fn presence_scans_across_groups() {
     let language =
         unsafe { tree_sitter::Language::from_raw(tree_sitter_json::LANGUAGE.into_raw()().cast()) };
@@ -119,32 +267,39 @@ fn presence_scans_across_groups() {
     parser.set_language(&language).unwrap();
 
     for count in [1, 7, 31, 32, 33, 63, 64, 65, 255, 256, 257] {
-        let source = format!(
-            "[{}]",
-            (0..count)
-                .map(|index| match index % 3 {
-                    0 => "{\"a\":[0]}",
-                    1 => "{\"a\":[false]}",
-                    _ => "{\"a\":[true]}",
-                })
-                .collect::<Vec<_>>()
-                .join(",")
-        );
-        let tree = Tree::parse(&grammar, &mut parser, &source).unwrap();
-        for pattern in [
-            "(object (pair value: (array (false) @value)))",
-            "(object (pair value: (array (null) @value)))",
-            "(array (object (pair value: (array (true) @value))))",
-        ] {
-            let query = Query::new(&grammar, pattern).unwrap();
-            let mut optimized = QueryCursor::new();
-            let mut reference = QueryCursor::new();
-            reference.set_optimized(false);
-            assert_eq!(
-                matches!(&mut optimized, &query, tree, source),
-                matches!(&mut reference, &query, tree, source),
-                "count={count}, {pattern}"
+        for errors in [false, true] {
+            let source = format!(
+                "[{}]",
+                (0..count)
+                    .map(|index| if errors && index % 5 == 0 {
+                        "{\"a\":[?]}"
+                    } else {
+                        match index % 3 {
+                            0 => "{\"a\":[0]}",
+                            1 => "{\"a\":[false]}",
+                            _ => "{\"a\":[true]}",
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join(",")
             );
+            let tree = Tree::parse(&grammar, &mut parser, &source).unwrap();
+            assert_eq!(tree.root_node().has_error(), errors);
+            for pattern in [
+                "(object (pair value: (array (false) @value)))",
+                "(object (pair value: (array (null) @value)))",
+                "(array (object (pair value: (array (true) @value))))",
+            ] {
+                let query = Query::new(&grammar, pattern).unwrap();
+                let mut optimized = QueryCursor::new();
+                let mut reference = QueryCursor::new();
+                reference.set_optimized(false);
+                assert_eq!(
+                    matches!(&mut optimized, &query, tree, source),
+                    matches!(&mut reference, &query, tree, source),
+                    "count={count}, errors={errors}, {pattern}"
+                );
+            }
         }
     }
 }
@@ -319,6 +474,7 @@ fn query_edge_cases_match_tree_sitter() {
         let mut parser = tree_sitter::Parser::new();
         parser.set_language(&language).unwrap();
         let mut patterns = vec![
+            "(ERROR) @error".to_owned(),
             "(_) @node".to_owned(),
             "(_) @one (_) @two".to_owned(),
             "((_) @first (_) @second)".to_owned(),

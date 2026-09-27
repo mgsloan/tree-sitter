@@ -362,18 +362,23 @@ impl DirectPlan {
         plan.roots
             .resize(compiled.view.symbol_count as usize + 2, 0);
         let public = unsafe { compiled.view.public_symbols.as_slice() };
-        for symbol in 0..compiled.view.symbol_count as usize {
-            if public[symbol] != symbol as u16 {
+        for index in 0..=compiled.view.symbol_count as usize {
+            let symbol = if index == compiled.view.symbol_count as usize {
+                u16::MAX
+            } else if public[index] == index as u16 {
+                index as u16
+            } else {
                 continue;
-            }
+            };
             for entry in compiled.entries() {
                 let step = compiled.steps()[entry.step_index as usize];
                 if if step.symbol != 0 {
-                    step.symbol == symbol as u16
+                    step.symbol == symbol
                 } else {
-                    !step.has(IS_NAMED) || language.node_kind_is_named(symbol as u16)
+                    symbol != u16::MAX
+                        && (!step.has(IS_NAMED) || language.node_kind_is_named(symbol))
                 } {
-                    plan.roots[symbol] |= 1 << entry.pattern_index.get();
+                    plan.roots[index] |= 1 << entry.pattern_index.get();
                 }
             }
         }
