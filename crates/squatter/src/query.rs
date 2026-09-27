@@ -389,7 +389,7 @@ pub struct QueryCapture<'tree> {
 ///
 /// ```compile_fail
 /// use tree_squatter::QueryExecution;
-/// fn invalid(execution: &mut QueryExecution<'_, '_, '_, '_>) {
+/// fn invalid(execution: &mut QueryExecution<'_, '_, '_, &[u8], &[u8]>) {
 ///     let first = execution.next_match().unwrap();
 ///     execution.next_match();
 ///     println!("{}", first.captures().len()); // Still borrows the cursor.
@@ -422,8 +422,17 @@ impl<'tree> QueryMatch<'_, 'tree> {
             .map(|capture| capture.node)
     }
 
-    pub(crate) fn satisfies(&self, query: &Query, source: &[u8]) -> bool {
-        let text = |node: Node<'tree>| source.get(node.byte_range()).unwrap_or_default();
+    pub(crate) fn satisfies<Provider, Chunk>(
+        &self,
+        query: &Query,
+        provider: &mut Provider,
+        buffers: &mut [Vec<u8>; 2],
+    ) -> bool
+    where
+        Provider: TextProvider<Chunk>,
+        Chunk: AsRef<[u8]>,
+    {
+        let [left_buffer, right_buffer] = buffers;
         // Preserve mainline Rust's quantifier and empty-capture behavior.
         query.predicates[self.pattern_index.0]
             .iter()
@@ -432,7 +441,10 @@ impl<'tree> QueryMatch<'_, 'tree> {
                     let mut left = self.nodes_for_capture_index(*first).peekable();
                     let mut right = self.nodes_for_capture_index(*second).peekable();
                     while left.peek().is_some() && right.peek().is_some() {
-                        let equal = text(left.next().unwrap()) == text(right.next().unwrap());
+                        let left = capture_text(provider.text(left.next().unwrap()), left_buffer);
+                        let right =
+                            capture_text(provider.text(right.next().unwrap()), right_buffer);
+                        let equal = left.as_ref() == right.as_ref();
                         if equal != *positive && *all {
                             return false;
                         }
@@ -444,7 +456,8 @@ impl<'tree> QueryMatch<'_, 'tree> {
                 }
                 Predicate::EqualString(capture, value, positive, all) => {
                     for node in self.nodes_for_capture_index(*capture) {
-                        let equal = text(node) == value;
+                        let text = capture_text(provider.text(node), left_buffer);
+                        let equal = text.as_ref() == value;
                         if equal != *positive && *all {
                             return false;
                         }
@@ -456,7 +469,8 @@ impl<'tree> QueryMatch<'_, 'tree> {
                 }
                 Predicate::Match(capture, regex, positive, all) => {
                     for node in self.nodes_for_capture_index(*capture) {
-                        let matches = regex.is_match(text(node));
+                        let text = capture_text(provider.text(node), left_buffer);
+                        let matches = regex.is_match(text.as_ref());
                         if matches != *positive && *all {
                             return false;
                         }
@@ -466,9 +480,12 @@ impl<'tree> QueryMatch<'_, 'tree> {
                     }
                     true
                 }
-                Predicate::AnyOf(capture, values, positive) => self
-                    .nodes_for_capture_index(*capture)
-                    .all(|node| values.iter().any(|value| value == text(node)) == *positive),
+                Predicate::AnyOf(capture, values, positive) => {
+                    self.nodes_for_capture_index(*capture).all(|node| {
+                        let text = capture_text(provider.text(node), left_buffer);
+                        values.iter().any(|value| value == text.as_ref()) == *positive
+                    })
+                }
             })
     }
 }
@@ -501,6 +518,62 @@ pub enum QueryPredicateArg {
 pub struct QueryPredicate {
     pub operator: Box<str>,
     pub args: Box<[QueryPredicateArg]>,
+}
+
+/// Supplies a node's complete text in source order. Chunks may be borrowed or
+/// owned; boundaries, including boundaries inside UTF-8 sequences, are ignored.
+pub trait TextProvider<Chunk: AsRef<[u8]>> {
+    type I: Iterator<Item = Chunk>;
+    fn text(&mut self, node: Node<'_>) -> Self::I;
+}
+impl<'text> TextProvider<&'text [u8]> for &'text [u8] {
+    type I = std::iter::Once<&'text [u8]>;
+    fn text(&mut self, node: Node<'_>) -> Self::I {
+        std::iter::once(&self[node.byte_range()])
+    }
+}
+impl<Function, Chunks, Chunk> TextProvider<Chunk> for Function
+where
+    Function: FnMut(Node<'_>) -> Chunks,
+    Chunks: Iterator<Item = Chunk>,
+    Chunk: AsRef<[u8]>,
+{
+    type I = Chunks;
+    fn text(&mut self, node: Node<'_>) -> Self::I {
+        self(node)
+    }
+}
+
+enum CaptureText<'buffer, Chunk> {
+    Chunk(Chunk),
+    Buffer(&'buffer [u8]),
+}
+impl<Chunk: AsRef<[u8]>> AsRef<[u8]> for CaptureText<'_, Chunk> {
+    fn as_ref(&self) -> &[u8] {
+        match self {
+            Self::Chunk(chunk) => chunk.as_ref(),
+            Self::Buffer(buffer) => buffer,
+        }
+    }
+}
+fn capture_text<Chunk: AsRef<[u8]>>(
+    chunks: impl Iterator<Item = Chunk>,
+    buffer: &mut Vec<u8>,
+) -> CaptureText<'_, Chunk> {
+    let mut chunks = chunks.filter(|chunk| !chunk.as_ref().is_empty());
+    let Some(first) = chunks.next() else {
+        return CaptureText::Buffer(&[]);
+    };
+    let Some(second) = chunks.next() else {
+        return CaptureText::Chunk(first);
+    };
+    buffer.clear();
+    buffer.extend_from_slice(first.as_ref());
+    buffer.extend_from_slice(second.as_ref());
+    for chunk in chunks {
+        buffer.extend_from_slice(chunk.as_ref());
+    }
+    CaptureText::Buffer(buffer)
 }
 
 impl QueryError {

@@ -1003,15 +1003,109 @@ fn snapshot(
     )
 }
 
-fn completed_results(query: &Query, tree: &Tree, source: &[u8]) -> Vec<QuerySnapshot> {
+fn provider_results<Provider, Chunk>(
+    query: &Query,
+    tree: &Tree,
+    provider: Provider,
+    mode: usize,
+    optimized: bool,
+) -> Vec<QuerySnapshot>
+where
+    Provider: tree_squatter::TextProvider<Chunk>,
+    Chunk: AsRef<[u8]>,
+{
     let mut cursor = QueryCursor::new();
-    let mut execution = cursor.execute(query, tree.root_node(), source);
+    cursor.set_optimized(optimized);
+    let mut execution = cursor.execute(query, tree.root_node(), provider);
     let mut results = Vec::new();
-    while let Some(found) = execution.next_match() {
-        results.push(snapshot(&found, None));
+    if mode == 0 {
+        while let Some(found) = execution.next_match() {
+            results.push(snapshot(&found, None));
+        }
+    } else {
+        while let Some((found, index)) = execution.next_capture() {
+            results.push(snapshot(&found, Some(index)));
+        }
     }
     assert_eq!(execution.error(), None);
     results
+}
+
+#[test]
+fn chunked_predicates_and_streaming_entry_points() {
+    let source = "[\"héllo\",\"héllo\",\"world\",\"\",12,12,34]";
+    let (grammar, tree) = json_query_tree(source);
+    for pattern in [
+        "((string_content) @text (#eq? @text \"héllo\"))",
+        "((string_content) @text (#not-eq? @text \"héllo\"))",
+        "((string_content) @text (#match? @text \"^hé.*lo$\"))",
+        "((string_content) @text (#not-match? @text \"é.*lo\"))",
+        "((string_content) @text (#any-of? @text \"héllo\" \"world\"))",
+        "((string_content) @text (#not-any-of? @text \"world\"))",
+        "((array (number)+ @number) (#eq? @number \"12\"))",
+        "((array (number)+ @number) (#any-eq? @number \"12\"))",
+        "((array (number)+ @number) (#any-not-eq? @number \"12\"))",
+        "((array (number)+ @number) (#any-match? @number \"^12$\"))",
+        "((array (number)+ @number) (#any-not-match? @number \"^12$\"))",
+        "((array (number)+ @number) (#not-any-of? @number \"34\"))",
+        "((array (number) @left (number) @right) (#eq? @left @right))",
+        "((array (number)+ @left (number)+ @right) (#any-not-eq? @left @right))",
+    ] {
+        let query = Query::new(&grammar, pattern).unwrap();
+        for optimized in [false, true] {
+            for mode in [0, 6] {
+                let expected = provider_results(&query, &tree, source.as_bytes(), mode, optimized);
+                // Every byte boundary includes splits inside UTF-8 and regex matches.
+                for width in [1, 2, 5, source.len()] {
+                    let borrowed = |node: tree_squatter::Node<'_>| {
+                        source.as_bytes()[node.byte_range()].chunks(width)
+                    };
+                    assert_eq!(
+                        provider_results(&query, &tree, borrowed, mode, optimized),
+                        expected,
+                        "{pattern}, mode={mode}, width={width}"
+                    );
+                    let owned = |node: tree_squatter::Node<'_>| {
+                        let mut chunks = vec![Vec::new()];
+                        for chunk in source.as_bytes()[node.byte_range()].chunks(width) {
+                            chunks.push(chunk.to_vec());
+                            chunks.push(Vec::new());
+                        }
+                        chunks.into_iter()
+                    };
+                    assert_eq!(
+                        provider_results(&query, &tree, owned, mode, optimized),
+                        expected
+                    );
+                }
+                assert_eq!(
+                    expected,
+                    provider_results(
+                        &query,
+                        &tree,
+                        source.as_bytes(),
+                        if mode < 4 { 0 } else { 6 },
+                        optimized
+                    )
+                );
+            }
+        }
+    }
+    for predicate in [
+        "eq? @text \"\"",
+        "match? @text \"^$\"",
+        "any-of? @text \"\"",
+        "not-eq? @text \"x\"",
+    ] {
+        let query = Query::new(&grammar, &format!("((string) @text (#{predicate}))")).unwrap();
+        for mode in [0, 6] {
+            let empty = |_: tree_squatter::Node<'_>| std::iter::empty::<Vec<u8>>();
+            let empty_chunk = |_: tree_squatter::Node<'_>| std::iter::once(Vec::<u8>::new());
+            let expected = provider_results(&query, &tree, empty_chunk, mode, true);
+            assert!(!expected.is_empty());
+            assert_eq!(provider_results(&query, &tree, empty, mode, true), expected);
+        }
+    }
 }
 
 #[test]
@@ -1082,20 +1176,20 @@ fn metadata_diagnostics_and_independent_clones() {
     query.disable_pattern(PatternIx(1));
     query.disable_capture("array");
     let mut cloned = query.deep_clone();
-    let expected = completed_results(&query, &tree, source.as_bytes());
+    let expected = provider_results(&query, &tree, source.as_bytes(), 0, true);
     assert_eq!(
-        completed_results(&cloned, &tree, source.as_bytes()),
+        provider_results(&cloned, &tree, source.as_bytes(), 0, true),
         expected
     );
     query.disable_capture("number");
     drop(query);
     assert_eq!(cloned.capture_names(), reference.capture_names());
     assert_eq!(
-        completed_results(&cloned, &tree, source.as_bytes()),
+        provider_results(&cloned, &tree, source.as_bytes(), 0, true),
         expected
     );
     cloned.disable_pattern(PatternIx(0));
-    assert!(completed_results(&cloned, &tree, source.as_bytes()).is_empty());
+    assert!(provider_results(&cloned, &tree, source.as_bytes(), 0, true).is_empty());
 
     for pattern in [
         "\n(not_a_node)",
@@ -1156,4 +1250,50 @@ fn query_language_mismatch_is_an_execution_error() {
         assert!(execution.next_match().is_none());
         assert!(execution.next_capture().is_none());
     }
+}
+
+#[test]
+fn execution_owns_provider_and_releases_it_on_drop() {
+    use std::{cell::Cell, rc::Rc};
+    use tree_squatter::{Node, TextProvider};
+    struct Provider {
+        source: Vec<u8>,
+        dropped: Rc<Cell<bool>>,
+    }
+    impl TextProvider<Vec<u8>> for Provider {
+        type I = std::vec::IntoIter<Vec<u8>>;
+        fn text(&mut self, node: Node<'_>) -> Self::I {
+            self.source[node.byte_range()]
+                .chunks(1)
+                .map(<[u8]>::to_vec)
+                .collect::<Vec<_>>()
+                .into_iter()
+        }
+    }
+    impl Drop for Provider {
+        fn drop(&mut self) {
+            self.dropped.set(true);
+        }
+    }
+    let source = "[123]";
+    let (grammar, tree) = json_query_tree(source);
+    let query = Query::new(&grammar, "((number) @number (#eq? @number \"123\"))").unwrap();
+    let dropped = Rc::new(Cell::new(false));
+    let provider = Provider {
+        source: source.as_bytes().to_vec(),
+        dropped: dropped.clone(),
+    };
+    let mut cursor = QueryCursor::new();
+    let mut execution = cursor.execute(&query, tree.root_node(), provider);
+    let node = execution.next_match().unwrap().captures()[0].node;
+    assert!(!dropped.get());
+    drop(execution);
+    assert!(dropped.get());
+    assert_eq!(node.utf8_text(source.as_bytes()).unwrap(), "123");
+    assert!(
+        cursor
+            .execute(&query, tree.root_node(), source.as_bytes())
+            .next_match()
+            .is_some()
+    );
 }

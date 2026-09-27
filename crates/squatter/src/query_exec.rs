@@ -1,12 +1,13 @@
 use crate::{
     FieldId, GrammarId, MatchCaptureIx, Node, PatternIx, Query, QueryCapture,
-    QueryExecutionError, QueryMatch, RawNode, SlotIx,
+    QueryExecutionError, QueryMatch, RawNode, SlotIx, TextProvider,
     native::{Pattern, PatternEntry, Step, flags::*},
     storage::ColumnPointer,
     types::{CaptureIx, GroupIx, MatchId, PackedPoint, PatternIndex, SquatterKindId},
 };
 use std::{
     cmp::Ordering,
+    marker::PhantomData,
     time::{Duration, Instant},
 };
 use tree_sitter::Point;
@@ -592,6 +593,10 @@ impl ComparisonBlock {
     }
 }
 
+/// Reusable query settings and execution storage. Each execution exclusively
+/// borrows the cursor; dropping it releases the query, tree, provider.
+/// Finite match limits bound in-progress storage. Discovery and eviction order
+/// can retain a different valid subset of results than Tree-sitter.
 pub struct QueryCursor {
     timeout: Option<Duration>,
     optimized: bool,
@@ -679,6 +684,7 @@ impl QueryCursor {
         }
     }
 
+    /// Enable execution plans and root seeking when available.
     pub fn set_optimized(&mut self, enabled: bool) {
         self.optimized = enabled;
     }
@@ -687,10 +693,12 @@ impl QueryCursor {
         self.timeout = timeout;
     }
 
+    /// Set the maximum in-progress capture-list capacity.
     pub fn set_match_limit(&mut self, limit: u32) {
         self.pool.limit = limit;
     }
 
+    /// Whether the most recent execution exceeded its in-progress capacity.
     pub fn did_exceed_match_limit(&self) -> bool {
         self.exceeded_limit
     }
@@ -733,12 +741,18 @@ impl QueryCursor {
         true
     }
 
-    pub fn execute<'cursor, 'query, 'tree, 'text>(
+    /// Start a fresh execution, retaining the provider and borrowing this cursor
+    /// until dropped. Unavailable optimizations fall back to general execution.
+    pub fn execute<'cursor, 'query, 'tree, Provider, Chunk>(
         &'cursor mut self,
         query: &'query Query,
         root: Node<'tree>,
-        source: &'text [u8],
-    ) -> QueryExecution<'cursor, 'query, 'tree, 'text> {
+        text_provider: Provider,
+    ) -> QueryExecution<'cursor, 'query, 'tree, Provider, Chunk>
+    where
+        Provider: TextProvider<Chunk>,
+        Chunk: AsRef<[u8]>,
+    {
         self.pool.reset();
         self.states.clear();
         self.pending.clear();
@@ -814,13 +828,21 @@ impl QueryCursor {
             root_has_error: root.has_error(),
             total_slots: root.data().groups() * crate::storage::GROUP_SIZE,
             root,
-            source,
+            text_provider,
             started,
+            text_buffers: Default::default(),
+            chunk: PhantomData,
         }
     }
 }
 
-pub struct QueryExecution<'cursor, 'query, 'tree, 'text> {
+/// An execution owns its text provider. Results borrow the current advancement;
+/// copied nodes retain only the tree lifetime.
+pub struct QueryExecution<'cursor, 'query, 'tree, Provider, Chunk>
+where
+    Provider: TextProvider<Chunk>,
+    Chunk: AsRef<[u8]>,
+{
     cursor: &'cursor mut QueryCursor,
     query: &'query Query,
     // Borrow native records once; hot transitions need no repeated view conversion.
@@ -832,11 +854,15 @@ pub struct QueryExecution<'cursor, 'query, 'tree, 'text> {
     root_has_error: bool,
     total_slots: u32,
     root: Node<'tree>,
-    source: &'text [u8],
+    text_provider: Provider,
     started: Option<Instant>,
+    text_buffers: [Vec<u8>; 2],
+    chunk: PhantomData<Chunk>,
 }
 
-impl Drop for QueryExecution<'_, '_, '_, '_> {
+impl<Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>> Drop
+    for QueryExecution<'_, '_, '_, Provider, Chunk>
+{
     fn drop(&mut self) {
         // Retain allocations, but leave no live logical state referring to an
         // input after its guard ends. Raw capture buffers are reset before reuse.
@@ -847,11 +873,15 @@ impl Drop for QueryExecution<'_, '_, '_, '_> {
     }
 }
 
-impl<'query, 'tree> QueryExecution<'_, 'query, 'tree, '_> {
+impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
+    QueryExecution<'_, 'query, 'tree, Provider, Chunk>
+{
+    /// Report a query/node language mismatch.
     pub fn error(&self) -> Option<QueryExecutionError> {
         self.cursor.error
     }
 
+    /// Advance to the next completed match.
     pub fn next_match(&mut self) -> Option<QueryMatch<'_, 'tree>> {
         self.next(false).map(|(result, _)| result)
     }
@@ -870,9 +900,12 @@ impl<'query, 'tree> QueryExecution<'_, 'query, 'tree, '_> {
 
         loop {
             let output = if capture {
-                self.next_capture_output()?
+                self.next_capture_output()
             } else {
-                self.next_match_output()?
+                self.next_match_output()
+            };
+            let Some(output) = output else {
+                return None;
             };
             // Both records have the same C layout. Nodes inherit the execution's
             // retained tree lifetime; the slice expires before any pool reuse.
@@ -891,8 +924,15 @@ impl<'query, 'tree> QueryExecution<'_, 'query, 'tree, '_> {
                 pattern_index: PatternIx(output.pattern.get() as usize),
                 captures,
             };
-            if result.satisfies(self.query, self.source) {
-                return Some((result, MatchCaptureIx(output.index as u32)));
+            if result.satisfies(self.query, &mut self.text_provider, &mut self.text_buffers) {
+                return Some((
+                    QueryMatch {
+                        id: result.id(),
+                        pattern_index: result.pattern_index,
+                        captures,
+                    },
+                    MatchCaptureIx(output.index as u32),
+                ));
             }
             if capture {
                 self.remove_match(output.id);
@@ -989,7 +1029,9 @@ impl QueryCursor {
     }
 }
 
-impl<'query, 'tree> QueryExecution<'_, 'query, 'tree, '_> {
+impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
+    QueryExecution<'_, 'query, 'tree, Provider, Chunk>
+{
     fn update_key(&self, state: &mut State) {
         let captures = self.cursor.pool.get(state.captures);
         state.set(EXHAUSTED, state.consumed as usize >= captures.len());
@@ -1065,6 +1107,7 @@ impl<'query, 'tree> QueryExecution<'_, 'query, 'tree, '_> {
     fn first_in_progress(&mut self, eviction: bool) -> Option<FirstCapture> {
         let mut result: Option<FirstCapture> = None;
         for index in 0..self.cursor.states.len() {
+            self.poll();
             let mut state = self.cursor.states[index];
             if state.has(DEAD) {
                 continue;

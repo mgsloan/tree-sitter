@@ -26,7 +26,7 @@ pub use native::{Language, LanguageHash, language_hash};
 pub use query::{
     CaptureQuantifier, Query, QueryCapture, QueryCursor, QueryError, QueryErrorKind,
     QueryExecution, QueryExecutionError, QueryMatch, QueryPredicate, QueryPredicateArg,
-    QueryProperty,
+    QueryProperty, TextProvider,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
