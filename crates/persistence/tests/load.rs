@@ -482,7 +482,7 @@ fn worker_context_switches_grammars_and_loads_restored_dictionary() {
             assert!(!result.file.tree().root_node().has_error());
         }
     }
-    context.trim();
+    context.drop_scratch();
     let result = cache
         .load_step_with_context(
             Path::new("input.cs"),

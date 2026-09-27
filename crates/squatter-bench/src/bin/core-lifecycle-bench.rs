@@ -57,7 +57,7 @@ struct Case<'input> {
 const WORKLOADS: &[&str] = &[
     "pack-cold",
     "pack-reuse",
-    "pack-trim",
+    "pack-drop-scratch",
     "point-access",
     "load-full",
     "load-safety",
@@ -97,8 +97,8 @@ impl Case<'_> {
                     .pack_with_options(&self.language, self.native, self.options)
                     .unwrap()
             ),
-            "pack-trim" => measure!({
-                self.packer.trim();
+            "pack-drop-scratch" => measure!({
+                self.packer.drop_scratch();
                 self.packer
                     .pack_with_options(&self.language, self.native, self.options)
                     .unwrap()

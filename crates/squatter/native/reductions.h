@@ -28,7 +28,7 @@ typedef struct {
 
 SQParser *sq_native_parser_new(SQGrammar *, SQParseError *);
 void sq_native_parser_delete(SQParser *);
-void sq_native_parser_trim(SQParser *);
+void sq_native_parser_drop_scratch(SQParser *);
 const SQReduction *sq_native_parser_reductions(const SQParser *, uint32_t *, uint32_t *);
 
 #endif

@@ -104,10 +104,10 @@ bool tf_parse(const TFLanguage *lang, const void *source, size_t size, const TFS
               void **root, TFError *error);
 
 // Reusable parser storage. The language and sink are borrowed only for a call;
-// reuse is exclusive and remains valid after failure. trim/delete accept NULL.
+// reuse is exclusive and remains valid after failure. drop_scratch/delete accept NULL.
 typedef struct TFParser TFParser;
 TFParser *tf_parser_new(void);
-void tf_parser_trim(TFParser *self);
+void tf_parser_drop_scratch(TFParser *self);
 void tf_parser_delete(TFParser *self);
 bool tf_parser_parse(TFParser *self, const TFLanguage *lang, const void *source, size_t size,
                      const TFSink *sink, void **root, TFError *error);

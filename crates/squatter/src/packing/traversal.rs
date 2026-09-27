@@ -240,7 +240,7 @@ pub(super) struct Traversal {
 unsafe impl Send for Traversal {}
 
 impl Traversal {
-    pub fn trim(&mut self) {
+    pub fn drop_scratch(&mut self) {
         *self = Self::default();
     }
 }

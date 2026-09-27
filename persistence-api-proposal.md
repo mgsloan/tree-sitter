@@ -6,7 +6,7 @@ maintenance and transfer APIs. Storage changes are specified below.
 See [client examples](cache-api-examples.md) for usage patterns and remaining gaps.
 
 Rename the exported `tree_squatter::PackContext` to `TreePacker`, retaining
-its `new`, `pack`, `pack_with_options`, and `trim` methods.
+its `new`, `pack`, `pack_with_options`, and `drop_scratch` methods.
 
 One shared project cache, one mutable loader per worker. `load` never parses.
 An asynchronous `Source` supplies metadata, preprocessed streams, and prepared

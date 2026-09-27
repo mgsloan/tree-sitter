@@ -103,8 +103,8 @@ impl PackContext {
     }
 
     /// Releases retained traversal scratch.
-    pub fn trim(&mut self) {
-        self.traversal.trim();
+    pub fn drop_scratch(&mut self) {
+        self.traversal.drop_scratch();
     }
 }
 

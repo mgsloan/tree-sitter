@@ -515,8 +515,8 @@ fn direct_parser_reuses_after_failure_and_owns_grammar() -> Result<(), Box<dyn E
     assert_eq!(syntax_failure.code, SquatError::Parse);
     let after = parser.parse("int after;")?;
     assert_eq!(after.root_node().byte_range(), 0..10);
-    parser.trim();
-    let trimmed = parser.parse("int f(void) { return 1; }")?;
+    parser.drop_scratch();
+    let after_drop = parser.parse("int f(void) { return 1; }")?;
     drop(parser);
     assert_eq!(first.root_node().byte_range(), 0..11);
     assert_eq!(
@@ -528,7 +528,7 @@ fn direct_parser_reuses_after_failure_and_owns_grammar() -> Result<(), Box<dyn E
         "declaration"
     );
     assert_eq!(
-        trimmed
+        after_drop
             .root_node()
             .named_child(tree_squatter::NamedChildIx::new(0))
             .unwrap()

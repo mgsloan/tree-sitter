@@ -447,7 +447,7 @@ TFParser *tf_parser_new(void) {
   return calloc(1, sizeof(TFParser));
 }
 
-void tf_parser_trim(TFParser *self) {
+void tf_parser_drop_scratch(TFParser *self) {
   if (!self) return;
   free(self->states);
   free(self->nodes);
@@ -457,7 +457,7 @@ void tf_parser_trim(TFParser *self) {
 
 void tf_parser_delete(TFParser *self) {
   if (!self) return;
-  tf_parser_trim(self);
+  tf_parser_drop_scratch(self);
   free(self);
 }
 

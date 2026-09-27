@@ -1004,9 +1004,9 @@ impl NativeParser {
         Ok(Reductions(self))
     }
 
-    pub fn trim(&mut self) {
+    pub fn drop_scratch(&mut self) {
         unsafe {
-            sq_native_parser_trim(self.raw.as_ptr());
+            sq_native_parser_drop_scratch(self.raw.as_ptr());
         }
     }
 }
@@ -1048,7 +1048,7 @@ unsafe extern "C" {
         error: *mut ParseStatus,
     ) -> *mut ParserHandle;
     fn sq_native_parser_delete(parser: *mut ParserHandle);
-    fn sq_native_parser_trim(parser: *mut ParserHandle);
+    fn sq_native_parser_drop_scratch(parser: *mut ParserHandle);
     fn sq_native_parser_clear(parser: *mut ParserHandle);
     fn sq_native_parser_parse(
         parser: *mut ParserHandle,

@@ -80,7 +80,7 @@ Implemented:
 - Per-worker `LoadContext` reuses parser and packing scratch across grammar
   changes, including resumable loads. Packing contexts are allocated only on misses.
   Prepared grammars share immutable tables across workers and trees; callers retain
-  grammar handles between batches. `LoadContext::trim` releases packing scratch.
+  grammar handles between batches. `LoadContext::drop_scratch` releases packing scratch.
 - Parse-table-derived supertype dictionaries are stored once per grammar/runtime
   in LMDB. `prepare_language` restores them directly from borrowed transaction bytes
   into owned tables, without an intermediate byte buffer or retained transaction.

@@ -217,21 +217,21 @@ SQParser *sq_native_parser_new(SQGrammar *grammar, SQParseError *error) {
 }
 
 // Release reduction and parser scratch while retaining the grammar for reuse.
-void sq_native_parser_trim(SQParser *parser) {
+void sq_native_parser_drop_scratch(SQParser *parser) {
   if (!parser) return;
 
   free(parser->reductions);
   parser->reductions = NULL;
   parser->count = parser->capacity = 0;
   parser->failure = (SQParseError){0};
-  tf_parser_trim(parser->feller);
+  tf_parser_drop_scratch(parser->feller);
 }
 
 // Release this parser's scratch and grammar reference; NULL is accepted on failure paths.
 void sq_native_parser_delete(SQParser *parser) {
   if (!parser) return;
 
-  sq_native_parser_trim(parser);
+  sq_native_parser_drop_scratch(parser);
   tf_parser_delete(parser->feller);
   sq_native_grammar_delete(parser->grammar);
   free(parser);

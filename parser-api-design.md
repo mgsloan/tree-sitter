@@ -218,7 +218,7 @@ impl Parser {
         callback: &mut F,
         options: PackedParseOptions<'_>,
     ) -> Result<Tree, ParserError>;
-    pub fn trim(&mut self);
+    pub fn drop_scratch(&mut self);
 }
 
 pub struct ParseState { /* valid only during the callback */ }
@@ -266,7 +266,7 @@ neither phase is it a monotonic work counter or completion estimate.
 A parse that returns `None` after language selection is cancellation. Reset
 the underlying parser before returning so the next call starts a fresh
 document. `reset()` explicitly discards any partial parse state while
-retaining language and allocation capacity. `trim()` releases packing
+retaining language and allocation capacity. `drop_scratch()` releases packing
 scratch; it does not change language.
 
 Packing errors return `ParserError::Pack(error)`. Poll conversion traversal
@@ -287,7 +287,7 @@ impl TreeFellerParser {
         source: impl AsRef<[u8]>,
         options: PackedParseOptions<'_>,
     ) -> Result<Tree, ParseError>;
-    pub fn trim(&mut self);
+    pub fn drop_scratch(&mut self);
 }
 
 pub struct TreeFellerParseState { /* valid only during the callback */ }

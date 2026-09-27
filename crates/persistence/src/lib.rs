@@ -235,9 +235,9 @@ impl Default for LoadContext {
 
 impl LoadContext {
     /// Release packing scratch while keeping the parser and prepared language.
-    pub fn trim(&mut self) {
+    pub fn drop_scratch(&mut self) {
         if let Some(packing) = &mut self.packing {
-            packing.trim();
+            packing.drop_scratch();
         }
     }
 }

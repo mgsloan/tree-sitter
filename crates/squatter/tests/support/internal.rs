@@ -100,7 +100,7 @@ fn lexer_fallback_and_concurrent_parser_preparation() {
                             .as_bytes(),
                         expected.as_bytes()
                     );
-                    parser.trim();
+                    parser.drop_scratch();
                     assert_eq!(
                         parser
                             .parse_with_options("\nx", options)
@@ -927,7 +927,7 @@ fn packing_rejects_wrong_grammar_and_recovers_after_overflow() {
         Error::Overflow
     );
     assert_eq!(context.pack(&grammar, &native).unwrap().as_bytes(), bytes);
-    context.trim();
+    context.drop_scratch();
     assert_eq!(context.pack(&grammar, &native).unwrap().as_bytes(), bytes);
     drop(context);
     drop(grammar);

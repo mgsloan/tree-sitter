@@ -71,9 +71,9 @@ impl Parser {
     }
 
     /// Release high-water scratch while retaining the prepared language.
-    pub fn trim(&mut self) {
-        self.native.trim();
-        self.pack.trim();
+    pub fn drop_scratch(&mut self) {
+        self.native.drop_scratch();
+        self.pack.drop_scratch();
     }
 }
 

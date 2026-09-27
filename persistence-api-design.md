@@ -18,7 +18,7 @@ request ownership; the proposal and examples retain their original API.
 
 Detailed storage and decoder-extraction requirements remain in the proposal.
 The accompanying packing change is renaming `tree_sitter_squatter::PackContext`
-to `TreePacker`, retaining `new`, `pack`, `pack_with_options`, and `trim`.
+to `TreePacker`, retaining `new`, `pack`, `pack_with_options`, and `drop_scratch`.
 `PackOptions` stays in that crate with its existing defaults: zero initial
 capacity, no repacking, symbol presence enabled, and points enabled.
 

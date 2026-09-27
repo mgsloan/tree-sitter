@@ -164,7 +164,7 @@ fn packing_context_matches_fresh_packing_and_loading() {
                     }
                 }
             }
-            context.trim();
+            context.drop_scratch();
         }
     }
 }

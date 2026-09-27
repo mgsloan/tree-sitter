@@ -202,7 +202,7 @@ fn shared_grammars_support_concurrent_packing_and_outlive_handles() {
                         retained.push(tree);
                     }
                 }
-                context.trim();
+                context.drop_scratch();
                 retained
             })
         })
