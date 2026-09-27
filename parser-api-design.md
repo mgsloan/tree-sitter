@@ -7,9 +7,10 @@ and method bodies.
 
 `Parser` is the recommended entry point and returns packed `Tree` snapshots. It
 uses Tree-sitter to parse, then `PackContext` to pack. This supports Tree-sitter's
-error recovery for grammars accepted by `Language::new`. Do not select the direct backend
-automatically in this implementation: its grammar, input, and error behavior
-differs. A later fast path needs equivalent output and cancellation semantics.
+error recovery for grammars accepted by `Language::new`. Do not select the
+direct backend automatically in this implementation: its grammar, input, and
+error behavior differs. A later fast path needs equivalent output and
+cancellation semantics.
 
 Rename the current `Parser` to `TreeFellerParser`. It remains the explicit direct
 backend: ABI 15 only, no external scanners or nonterminal extras, and no syntax
@@ -29,7 +30,7 @@ inherent APIs remain available on `tree_sitter::Parser`.
 pub trait Parse {
     type Tree: TreeLike;
     type Error;
-    type Options<'a>: Default;
+    type Options<'a>: Default + From<ParseOptions<'a>>;
 
     fn parse_with_options(
         &mut self,
@@ -45,19 +46,19 @@ pub trait Parse {
 impl Parse for Parser {
     type Tree = Tree;
     type Error = ParserError;
-    type Options<'a> = ParseOptions<'a>;
+    type Options<'a> = PackedParseOptions<'a>;
 }
 
 impl Parse for TreeFellerParser {
     type Tree = Tree;
     type Error = ParseError;
-    type Options<'a> = TreeFellerParseOptions<'a>;
+    type Options<'a> = PackedParseOptions<'a>;
 }
 
 impl Parse for tree_sitter::Parser {
     type Tree = tree_sitter::Tree;
     type Error = ParserError;
-    type Options<'a> = tree_sitter::ParseOptions<'a>;
+    type Options<'a> = ParseOptions<'a>;
 }
 
 pub trait ParseWithCallback: Parse {
@@ -74,12 +75,11 @@ impl ParseWithCallback for tree_sitter::Parser {}
 
 `ParseWithCallback` shares chunked UTF-8 input while retaining each parser's
 result, error, and options types from `Parse`. Generic callers can pass
-`Default::default()` or constrain the associated options type when they need
-specific controls. They can require packed output with
+`Default::default()` or convert shared `ParseOptions` with `.into()`.
+They can require packed output with
 `P: ParseWithCallback<Tree = Tree>`. Its implementations omit old-tree input,
-as in `Parse`.
-`TreeFellerParser` does not implement it because tree-feller currently
-requires contiguous input.
+as in `Parse`. `TreeFellerParser` does not implement it because tree-feller
+currently requires contiguous input.
 
 Progress callbacks use parser-specific state types. A separate shared trait
 exposes the offset and its traversal direction:
@@ -94,6 +94,45 @@ pub trait ParseStateLike {
 
 impl ParseStateLike for ParseState { /* delegate to inherent methods */ }
 impl ParseStateLike for TreeFellerParseState { /* delegate to inherent methods */ }
+impl ParseStateLike for tree_sitter::ParseState { /* native accessors */ }
+```
+
+Shared `ParseOptions` carries only parser controls. Packed parsers add
+`PackOptions` without making native Tree-sitter accept meaningless packing
+settings:
+
+```rust
+#[derive(Default)]
+pub struct ParseOptions<'a> {
+    pub progress_callback:
+        Option<&'a mut dyn FnMut(&dyn ParseStateLike) -> ControlFlow<()>>,
+}
+
+impl<'a> ParseOptions<'a> {
+    pub fn new() -> Self;
+    pub fn progress_callback<F: FnMut(&dyn ParseStateLike) -> ControlFlow<()>>(
+        self,
+        callback: &'a mut F,
+    ) -> Self;
+    pub fn reborrow(&mut self) -> ParseOptions<'_>;
+}
+
+#[derive(Default)]
+pub struct PackedParseOptions<'a> {
+    pub parse: ParseOptions<'a>,
+    pub pack: PackOptions,
+}
+
+impl<'a> PackedParseOptions<'a> {
+    pub fn new() -> Self;
+    pub fn reborrow(&mut self) -> PackedParseOptions<'_>;
+}
+
+impl<'a> From<ParseOptions<'a>> for PackedParseOptions<'a> {
+    fn from(parse: ParseOptions<'a>) -> Self {
+        Self { parse, pack: PackOptions::default() }
+    }
+}
 ```
 
 `current_byte_offset_descends()` is true during packing and false during parsing
@@ -101,6 +140,28 @@ for both Squatter state types. It describes the phase's traversal direction;
 individual offsets are not guaranteed to change monotonically.
 `TreeFellerParseState::has_error()` is always false when a callback runs:
 the direct parser returns syntax errors rather than recovering from them.
+For native `tree_sitter::ParseState`, `is_converting()` and
+`current_byte_offset_descends()` are false; the other methods delegate to
+Tree-sitter. A false direction flag is not a monotonicity guarantee.
+
+The shared callback receives a borrowed `dyn ParseStateLike` valid only during
+the call. Each backend adapts its own progress state to that interface. Native
+trait implementations adapt shared `ParseOptions` to Tree-sitter's inherent
+`tree_sitter::ParseOptions`. The callback is absent by default, so no state
+adaptation runs unless progress reporting is requested.
+
+Generic callers can install the same callback for all three parsers:
+
+```rust
+fn parse_with_progress<P: Parse>(
+    parser: &mut P,
+    source: &[u8],
+    callback: &mut impl FnMut(&dyn ParseStateLike) -> ControlFlow<()>,
+) -> Result<P::Tree, P::Error> {
+    let options = ParseOptions::new().progress_callback(callback);
+    parser.parse_with_options(source, options.into())
+}
+```
 
 The `Parse` trait covers only contiguous byte input interpreted as UTF-8.
 The direct backend has no chunked input reader, and its input size is limited
@@ -150,29 +211,14 @@ impl Parser {
     pub fn parse_with_options(
         &mut self,
         source: impl AsRef<[u8]>,
-        options: ParseOptions<'_>,
+        options: PackedParseOptions<'_>,
     ) -> Result<Tree, ParserError>;
     pub fn parse_with_callback<T: AsRef<[u8]>, F: FnMut(usize, Point) -> T>(
         &mut self,
         callback: &mut F,
-        options: ParseOptions<'_>,
+        options: PackedParseOptions<'_>,
     ) -> Result<Tree, ParserError>;
     pub fn trim(&mut self);
-}
-
-#[derive(Default)]
-pub struct ParseOptions<'a> {
-    pub pack: PackOptions,
-    pub progress_callback: Option<&'a mut dyn FnMut(&ParseState) -> ControlFlow<()>>,
-}
-
-impl<'a> ParseOptions<'a> {
-    pub fn new() -> Self;
-    pub fn progress_callback<F: FnMut(&ParseState) -> ControlFlow<()>>(
-        self,
-        callback: &'a mut F,
-    ) -> Self;
-    pub fn reborrow(&mut self) -> ParseOptions<'_>;
 }
 
 pub struct ParseState { /* valid only during the callback */ }
@@ -193,10 +239,10 @@ retained wrapper; parsing without it returns `NoLanguage`.
 
 The callback input contract matches Tree-sitter: given a byte offset and point,
 return bytes starting there; an empty slice ends input. `parse()` adapts a
-contiguous slice to that callback. `ParseOptions::pack` defaults to the existing
-`PackOptions` defaults: zero initial group capacity, no repacking, presence and
-points enabled. `reborrow()` copies `pack` and reborrows the mutable callback.
-`parse()` uses these defaults.
+contiguous slice to that callback. `PackedParseOptions::pack` uses the
+existing `PackOptions` defaults: zero initial group capacity, no repacking,
+presence and points enabled. `PackedParseOptions::reborrow()` copies `pack`
+and reborrows the shared progress callback. `parse()` uses these defaults.
 
 The callback input path follows Tree-sitter's size behavior. Its Rust binding
 passes a `u32` byte offset to the callback and casts each returned chunk length
@@ -239,25 +285,9 @@ impl TreeFellerParser {
     pub fn parse_with_options(
         &mut self,
         source: impl AsRef<[u8]>,
-        options: TreeFellerParseOptions<'_>,
+        options: PackedParseOptions<'_>,
     ) -> Result<Tree, ParseError>;
     pub fn trim(&mut self);
-}
-
-#[derive(Default)]
-pub struct TreeFellerParseOptions<'a> {
-    pub pack: PackOptions,
-    pub progress_callback:
-        Option<&'a mut dyn FnMut(&TreeFellerParseState) -> ControlFlow<()>>,
-}
-
-impl<'a> TreeFellerParseOptions<'a> {
-    pub fn new() -> Self;
-    pub fn progress_callback<F: FnMut(&TreeFellerParseState) -> ControlFlow<()>>(
-        self,
-        callback: &'a mut F,
-    ) -> Self;
-    pub fn reborrow(&mut self) -> TreeFellerParseOptions<'_>;
 }
 
 pub struct TreeFellerParseState { /* valid only during the callback */ }
@@ -273,7 +303,7 @@ Keep the direct constructor fallible. It validates the language and prepares
 driver tables; an infallible `new()` would need deferred table preparation and
 new no-language behavior. `language()` borrows its retained wrapper. Rename the
 current `parse_with_options(source, PackOptions)` use sites to pass
-`TreeFellerParseOptions { pack, ..Default::default() }`. Keep `Tree::parse_direct`
+`PackedParseOptions { pack, ..Default::default() }`. Keep `Tree::parse_direct`
 and `Tree::parse_direct_with_options` as convenience methods taking `PackOptions`.
 
 Add a progress hook to tree-feller's parsing loop, including long speculative
@@ -292,9 +322,10 @@ without reset. The direct callback also runs during packing. Its
 1. Rename the current direct parser and update exports and call sites. Preserve
    its existing parsing and diagnostic behavior.
 2. Add `Parse` with three implementations and `ParseWithCallback` with two,
-   including associated tree, error, and options types. Share the callback
-   adapter between contiguous methods where possible. Add the compatible
-   `Parser` using Tree-sitter and `PackContext`.
+   including associated tree and error types. Add shared `ParseOptions`,
+   `PackedParseOptions`, and progress-state adapters. Share the callback
+   input adapter where possible. Add the compatible `Parser` using
+   Tree-sitter and `PackContext`.
 3. Add options, callback input, cancellation, and reset to the compatible parser.
 4. Add progress and cancellation to conversion traversal and finalization, then
    to tree-feller and its Rust wrapper. Rename the direct options parameter as
