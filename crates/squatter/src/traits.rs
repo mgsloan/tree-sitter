@@ -72,9 +72,6 @@ pub trait NodeLike<'tree>: Copy + Eq {
     /// inherent `slot()`; `id()` requires this trait in scope.
     fn id(&self) -> Self::Id;
     /// Read constant-time attributes; counts are separate operations below.
-    ///
-    /// **Not in Tree-sitter**. Bundles constant-time node attributes; child and descendant
-    /// counts are separate.
     fn attributes(self) -> Attributes<'tree>;
     /// Get this node's type as a numerical id.
     fn kind_id(&self) -> KindId;
@@ -122,8 +119,6 @@ pub trait NodeLike<'tree>: Copy + Eq {
     fn end_position(&self) -> Point;
     /// Reports whether point data is attached. Without it, point
     /// accessors, ranges, point lookups, and point scans use `(0, byte_offset)`.
-    ///
-    /// **Not in Tree-sitter**
     fn has_points(self) -> bool;
     /// Check if this node is *named*.
     ///
@@ -151,13 +146,12 @@ pub trait NodeLike<'tree>: Copy + Eq {
     /// Iterates over this node and its descendants in preorder, using the backend's
     /// native traversal.
     ///
-    /// **Not in Tree-sitter:** Returns a plain iterator. Packed scan filters and group
-    /// traversal are available through the inherent [`Node::preorder`] method.
+    /// Returns a plain iterator. Packed scan filters and group traversal are available
+    /// through the inherent [`Node::preorder`] method.
     fn preorder(self) -> impl Iterator<Item = Self>;
     /// Public kind IDs, in preorder including this node. Never leaves its subtree.
     ///
-    /// **Not in Tree-sitter**. Scans this subtree in preorder for the selected public kind
-    /// IDs. Missing presence caches affect cost, not results.
+    /// Missing presence caches affect cost, not results.
     fn descendants_matching_kinds<K: IdSelection>(self, kinds: K) -> impl Iterator<Item = Self>;
     /// Iterate over this node's children.
     ///
@@ -235,12 +229,8 @@ pub trait NodeLike<'tree>: Copy + Eq {
     /// intervening unnamed children, then resolve the stored field.
     fn field_name_for_named_child(&self, index: NamedChildIx) -> Option<&'tree str>;
     /// Tests for a structural child without counting children.
-    ///
-    /// **Not in Tree-sitter**
     fn has_children(self) -> bool;
     /// May scan unnamed children; stops at the first named child.
-    ///
-    /// **Not in Tree-sitter**. Scans children until finding a named child.
     fn has_named_children(self) -> bool;
     /// Get this node's number of children.
     ///
@@ -330,8 +320,6 @@ pub trait CursorLike<'tree>: Clone {
     /// Get the tree cursor's current [`Node`].
     fn node(&self) -> Self::Node;
     /// Current node constant-time attributes.
-    ///
-    /// **Not in Tree-sitter**. Bundles attributes of the current node.
     fn attributes(&mut self) -> Attributes<'tree> {
         self.node().attributes()
     }

@@ -489,7 +489,7 @@ fn allocation(length: u32, owned: bool) -> Result<Allocation, Error> {
 
 /// A tree that represents the syntactic structure of a source code file.
 ///
-/// **Not in Tree-sitter**. Owns an immutable packed snapshot with separately attachable
+/// **Different than Tree-sitter:** Owns an immutable packed snapshot with separately attachable
 /// side data. Loading slab bytes does not restore point data or presence caches. Use
 /// explicit copying or detachment; `Clone`, offset views, and incremental change tracking
 /// are not provided.
@@ -919,40 +919,30 @@ impl Deref for BackedTree {
 impl BackedTree {
     /// Validates and attaches separately loaded symbol-presence
     /// data. Release borrowed tree views before replacing side data.
-    ///
-    /// **Not in Tree-sitter**
     pub fn set_presence_cache(&mut self, cache: PresenceCache) -> Result<(), SideDataError> {
         self.tree.set_presence_cache(cache)
     }
 
     /// Validates and attaches separately loaded point data. Release
     /// borrowed tree views before replacing side data.
-    ///
-    /// **Not in Tree-sitter**
     pub fn set_point_data(&mut self, points: PointData) -> Result<(), SideDataError> {
         self.tree.set_point_data(points)
     }
 
     /// Drops the optional cache. Scan results stay the same; scan
     /// cost can change.
-    ///
-    /// **Not in Tree-sitter**
     pub fn drop_presence_cache(&mut self) {
         self.tree.drop_presence_cache();
     }
 
     /// Drops point data. Point-dependent APIs then use row zero and
     /// byte offsets as columns.
-    ///
-    /// **Not in Tree-sitter**
     pub fn drop_point_data(&mut self) {
         self.tree.drop_point_data();
     }
 
     /// Copies the retained slab and attached side data into an
     /// independent owned tree.
-    ///
-    /// **Not in Tree-sitter**
     pub fn detach(&self) -> Result<Tree, Error> {
         let mut tree = Tree::from_bytes_safety_checked(&self.data().language, self.as_bytes())?;
         if let Some(cache) = self.presence_cache() {

@@ -184,8 +184,6 @@ pub struct PresenceCache(Sidecar);
 impl PresenceCache {
     /// Builds symbol membership from the tree. Returns a
     /// cancellation error when the supplied flag is set.
-    ///
-    /// **Not in Tree-sitter**
     pub fn build(tree: &Tree, cancel: Option<&AtomicBool>) -> Result<Self, SideDataError> {
         let symbols = tree.data().tables().symbol_count + 2;
         let mut sidecar = Sidecar::new(
@@ -207,16 +205,12 @@ impl PresenceCache {
         Ok(Self(sidecar))
     }
     /// Borrows separately serializable side-data bytes.
-    ///
-    /// **Not in Tree-sitter**
     pub fn as_bytes(&self) -> &[u8] {
         self.0.bytes()
     }
     /// Validates and retains stable backing bytes for this tree.
     /// Use data persisted for this exact snapshot; structural checks do not establish
     /// source identity.
-    ///
-    /// **Not in Tree-sitter**
     pub fn from_backing(tree: &Tree, backing: impl StableSlab) -> Result<Self, SideDataError> {
         let result = Self(Sidecar::from_backing(backing)?);
         result.validate_loaded(tree)?;
@@ -225,8 +219,6 @@ impl PresenceCache {
     /// Validates and copies side-data bytes for this tree. Use data
     /// persisted for this exact snapshot; structural checks do not establish source
     /// identity.
-    ///
-    /// **Not in Tree-sitter**
     pub fn copy_from_bytes(tree: &Tree, bytes: &[u8]) -> Result<Self, SideDataError> {
         Sidecar::validate_bytes(bytes, tree, PRESENCE_FORMAT, presence_length(tree)?)?;
         let result = Self(Sidecar::copy_from_bytes(bytes)?);
@@ -310,8 +302,6 @@ pub struct PointData(Sidecar);
 impl PointData {
     /// Builds coordinates from the matching source line index.
     /// Returns a cancellation error when the supplied flag is set.
-    ///
-    /// **Not in Tree-sitter**
     pub fn build(
         tree: &Tree,
         line_index: &LineIndex,
@@ -380,16 +370,12 @@ impl PointData {
         &self.0.bytes()[start..start + GROUP_SIZE as usize * 16]
     }
     /// Borrows separately serializable side-data bytes.
-    ///
-    /// **Not in Tree-sitter**
     pub fn as_bytes(&self) -> &[u8] {
         self.0.bytes()
     }
     /// Validates and retains stable backing bytes for this tree.
     /// Use data persisted for this exact snapshot; structural checks do not establish
     /// source identity.
-    ///
-    /// **Not in Tree-sitter**
     pub fn from_backing(tree: &Tree, backing: impl StableSlab) -> Result<Self, SideDataError> {
         let result = Self(Sidecar::from_backing(backing)?);
         result.validate_loaded(tree)?;
@@ -398,8 +384,6 @@ impl PointData {
     /// Validates and copies side-data bytes for this tree. Use data
     /// persisted for this exact snapshot; structural checks do not establish source
     /// identity.
-    ///
-    /// **Not in Tree-sitter**
     pub fn copy_from_bytes(tree: &Tree, bytes: &[u8]) -> Result<Self, SideDataError> {
         Sidecar::validate_bytes(bytes, tree, POINT_FORMAT, point_length(tree)?)?;
         let result = Self(Sidecar::copy_from_bytes(bytes)?);
@@ -481,8 +465,6 @@ pub struct LineIndex {
 }
 impl LineIndex {
     /// Indexes newline positions in UTF-8 source bytes.
-    ///
-    /// **Not in Tree-sitter**
     pub fn new(bytes: &[u8]) -> Result<Self, Error> {
         let mut line_starts = Vec::new();
         line_starts.try_reserve(1).map_err(|_| Error::Allocation)?;
@@ -495,9 +477,8 @@ impl LineIndex {
         }
         Ok(Self { line_starts })
     }
+    /// Returns the row and byte column for an offset.
     /// Offsets past EOF extend the final row's byte column.
-    ///
-    /// **Not in Tree-sitter**. Returns the row and byte column for an offset.
     pub fn point(&self, byte: usize) -> Point {
         let row = self.line_starts.partition_point(|&start| start <= byte) - 1;
         Point::new(row, byte - self.line_starts[row])

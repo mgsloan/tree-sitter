@@ -54,8 +54,6 @@ pub struct PackContext {
 
 impl PackContext {
     /// Creates empty reusable packing scratch.
-    ///
-    /// **Not in Tree-sitter**
     pub fn new() -> Result<Self, Error> {
         Ok(Self {
             traversal: traversal::Traversal::default(),
@@ -63,16 +61,12 @@ impl PackContext {
     }
 
     /// Packs a tree with default options while reusing scratch.
-    ///
-    /// **Not in Tree-sitter**
     pub fn pack(&mut self, language: &Language, tree: &tree_sitter::Tree) -> Result<Tree, Error> {
         self.pack_with_options(language, tree, PackOptions::default())
     }
 
     /// Packs a tree with selected storage and side-data options
     /// while reusing scratch.
-    ///
-    /// **Not in Tree-sitter**
     pub fn pack_with_options(
         &mut self,
         language: &Language,
@@ -108,8 +102,6 @@ impl PackContext {
     }
 
     /// Releases retained traversal scratch.
-    ///
-    /// **Not in Tree-sitter**
     pub fn trim(&mut self) {
         self.traversal.trim();
     }

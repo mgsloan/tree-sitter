@@ -18,7 +18,7 @@
 //! **Different behavior than Tree-sitter:** Point ranges use row/column order; trees without
 //! point data use `(0, byte_offset)`.
 //!
-//! **Not in Tree-sitter**. Scan coordinates retain their wider-range behavior; they
+//! Scan coordinates retain their wider-range behavior; they
 //! do not use the narrowing casts of shared node/cursor lookup methods. Presence
 //! caches can change scan cost, never results.
 //!
@@ -268,30 +268,24 @@ impl SymbolIndex {
 }
 
 /// Bits address physical slots within a group; unused slots are always clear.
+///
+/// **Not in Tree-sitter**
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct Mask(u64);
 impl Mask {
     /// Returns the physical-slot mask bits.
-    ///
-    /// **Not in Tree-sitter**
     pub fn bits(self) -> u64 {
         self.0
     }
     /// Reports whether the mask contains no slots.
-    ///
-    /// **Not in Tree-sitter**
     pub fn is_empty(self) -> bool {
         self.0 == 0
     }
     /// Counts selected slots.
-    ///
-    /// **Not in Tree-sitter**
     pub fn count_ones(self) -> u32 {
         self.0.count_ones()
     }
     /// Intersects two masks for the same physical group.
-    ///
-    /// **Not in Tree-sitter**
     pub fn intersection(self, other: Self) -> Self {
         Self(self.0 & other.0)
     }
@@ -304,8 +298,6 @@ impl Mask {
         remaining == 0
     }
     /// Tests a group-relative slot.
-    ///
-    /// **Not in Tree-sitter**
     pub fn contains(self, slot: u32) -> bool {
         slot < 64 && self.0 & (1u64 << slot) != 0
     }
@@ -344,6 +336,8 @@ impl Mask {
 }
 
 /// An immutable physical group, borrowing the tree independently of a scan.
+///
+/// **Not in Tree-sitter**
 #[derive(Clone, Copy)]
 pub struct GroupRef<'tree> {
     columns: Columns<'tree>,
@@ -439,27 +433,19 @@ impl<'tree> GroupRef<'tree> {
     }
 
     /// Returns the physical group index.
-    ///
-    /// **Not in Tree-sitter**
     pub fn index(self) -> u32 {
         self.index.get()
     }
     /// Returns the group’s first absolute physical slot.
-    ///
-    /// **Not in Tree-sitter**
     pub fn first_slot(self) -> SlotIx {
         self.index.first_slot()
     }
     /// Selects live slots, excluding group waste.
-    ///
-    /// **Not in Tree-sitter**
     #[inline]
     pub fn valid_mask(self) -> Mask {
         Mask::lower(self.used())
     }
     /// Resolve a group-relative physical slot; waste and out-of-group slots fail.
-    ///
-    /// **Not in Tree-sitter**. Returns a node at a live group-relative slot.
     pub fn node(self, slot: u32) -> Option<Node<'tree>> {
         (slot < self.used()).then(|| self.columns.root.at(self.index.slot(GroupSlotIx(slot))))
     }
@@ -562,6 +548,8 @@ impl<'tree> GroupRef<'tree> {
 }
 
 /// An ordered fragment of a physical group. Postorder may revisit the same group.
+///
+/// **Not in Tree-sitter**
 #[derive(Clone, Copy)]
 pub struct GroupMatches<'tree> {
     group: GroupRef<'tree>,
@@ -570,20 +558,14 @@ pub struct GroupMatches<'tree> {
 }
 impl<'tree> GroupMatches<'tree> {
     /// Returns the underlying physical group.
-    ///
-    /// **Not in Tree-sitter**
     pub fn group(self) -> GroupRef<'tree> {
         self.group
     }
     /// Returns this fragment’s selected-slot mask.
-    ///
-    /// **Not in Tree-sitter**
     pub fn matches(self) -> Mask {
         self.matches
     }
     /// Enumerates selected nodes in traversal order.
-    ///
-    /// **Not in Tree-sitter**
     #[inline]
     pub fn nodes(self) -> GroupNodes<'tree> {
         GroupNodes {
@@ -788,6 +770,8 @@ fn count_groups<'tree, S: GroupScan<'tree>, P: Predicate>(
 }
 
 /// A column scan pipeline. Select ranges before filters, then consume nodes or groups.
+///
+/// **Not in Tree-sitter**
 pub struct Scan<'tree, S> {
     source: S,
     lifetime: PhantomData<&'tree crate::Tree>,
@@ -802,8 +786,6 @@ impl<'tree, S> Scan<'tree, S> {
 }
 impl<'tree, S: GroupScan<'tree>> Scan<'tree, S> {
     /// Enumerates selected nodes in traversal order.
-    ///
-    /// **Not in Tree-sitter**
     pub fn nodes(self) -> Nodes<'tree, S> {
         Nodes {
             base: 0,
@@ -813,28 +795,20 @@ impl<'tree, S: GroupScan<'tree>> Scan<'tree, S> {
         }
     }
     /// Enumerates selected group fragments in traversal order.
-    ///
-    /// **Not in Tree-sitter**
     pub fn groups(self) -> Groups<'tree, S> {
         Groups(self.source, PhantomData)
     }
     /// Count matching nodes without constructing handles.
-    ///
-    /// **Not in Tree-sitter**. Counts selected nodes without constructing each node handle.
     pub fn count(self) -> usize {
         self.source.count()
     }
     /// Reverse this scan before calling `nodes()` or `groups()`.
     /// The resulting type retains only the selected traversal's state.
-    ///
-    /// **Not in Tree-sitter**. Reverses this scan’s traversal order.
     pub fn rev(self) -> Scan<'tree, S::Reversed> {
         Scan::new(self.source.reverse())
     }
     /// Match public kind IDs. Arrays preserve their length for kernel specialization;
     /// borrowed `KindSet`s support dynamically sized sets.
-    ///
-    /// **Not in Tree-sitter**. Keeps nodes with any selected displayed kind ID.
     #[inline(always)]
     pub fn filter_kind_ids<K: IdSelection>(
         self,
@@ -843,10 +817,8 @@ impl<'tree, S: GroupScan<'tree>> Scan<'tree, S> {
         let predicate = kinds.into_kind_predicate(self.source.group());
         self.filtered(predicate)
     }
-    /// `None` matches nodes with no field, including the tree root.
-    ///
-    /// **Not in Tree-sitter**. Keeps nodes with the selected field; `None` selects absent
-    /// fields.
+    /// Keeps nodes with the selected field. `None` matches nodes with no field,
+    /// including the tree root.
     pub fn filter_field_id(
         self,
         field: impl Into<Option<FieldId>>,
@@ -855,8 +827,6 @@ impl<'tree, S: GroupScan<'tree>> Scan<'tree, S> {
     }
     /// Match any selected field ID. `None` includes nodes with no field; an empty
     /// selection matches nothing. Arrays specialize the kernel for their length.
-    ///
-    /// **Not in Tree-sitter**. Keeps nodes with any selected field.
     pub fn filter_field_ids<F: FieldSelection>(
         self,
         fields: F,
@@ -864,8 +834,6 @@ impl<'tree, S: GroupScan<'tree>> Scan<'tree, S> {
         self.filtered(fields.into_field_predicate())
     }
     /// Keeps nodes belonging to the original grammar supertype.
-    ///
-    /// **Not in Tree-sitter**
     pub fn filter_supertype_id(
         self,
         supertype: GrammarKindId,
@@ -876,14 +844,10 @@ impl<'tree, S: GroupScan<'tree>> Scan<'tree, S> {
         })
     }
     /// Keeps nodes whose extra flag matches the supplied value.
-    ///
-    /// **Not in Tree-sitter**
     pub fn filter_extra(self, value: bool) -> Scan<'tree, Filtered<S, Extra>> {
         self.filtered(Extra(value))
     }
     /// Keeps nodes whose missing flag matches the supplied value.
-    ///
-    /// **Not in Tree-sitter**
     pub fn filter_missing(self, value: bool) -> Scan<'tree, Filtered<S, Missing>> {
         self.filtered(Missing(value))
     }
