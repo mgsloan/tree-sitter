@@ -611,7 +611,6 @@ pub struct QueryCursor {
     halted: bool,
     error: Option<QueryExecutionError>,
     exceeded_limit: bool,
-    cancelled: bool,
     operations: u32,
     dirty_patterns: u64,
     states_need_sort: bool,
@@ -661,7 +660,6 @@ impl QueryCursor {
             halted: false,
             error: None,
             exceeded_limit: false,
-            cancelled: false,
             operations: 0,
             dirty_patterns: 0,
             states_need_sort: false,
@@ -762,7 +760,6 @@ impl QueryCursor {
         self.position = root.slot();
         self.ascending = false;
         self.exceeded_limit = false;
-        self.cancelled = false;
         self.operations = 0;
         self.dirty_patterns = 0;
         self.states_need_sort = false;
@@ -855,10 +852,6 @@ impl<'query, 'tree> QueryExecution<'_, 'query, 'tree, '_> {
         self.cursor.error
     }
 
-    pub fn did_cancel(&self) -> bool {
-        self.cursor.cancelled
-    }
-
     pub fn next_match(&mut self) -> Option<QueryMatch<'_, 'tree>> {
         self.next(false).map(|(result, _)| result)
     }
@@ -923,7 +916,6 @@ impl<'query, 'tree> QueryExecution<'_, 'query, 'tree, '_> {
         self.cursor.operations = 0;
         if let (Some(started), Some(timeout)) = (self.started, self.cursor.timeout) {
             if started.elapsed() >= timeout {
-                self.cursor.cancelled = true;
                 self.cursor.halted = true;
                 return true;
             }

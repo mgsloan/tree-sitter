@@ -233,7 +233,9 @@ impl Queries {
         for (query_index, pair) in self.pairs.iter().enumerate() {
             let mut cursor = tree_squatter::QueryCursor::new();
             cursor.set_optimized(optimized);
-            cursor.set_timeout(Some(Duration::from_secs(30)));
+            let timeout = Duration::from_secs(30);
+            cursor.set_timeout(Some(timeout));
+            let started = Instant::now();
             let mut execution = cursor.execute(&pair.squat, root, source);
             loop {
                 let next = if captures {
@@ -286,8 +288,8 @@ impl Queries {
                 });
             }
             ensure!(
-                !execution.did_cancel(),
-                "squat query timed out: {}",
+                started.elapsed() < timeout,
+                "squat query exceeded time budget: {}",
                 pair.name
             );
             ensure!(

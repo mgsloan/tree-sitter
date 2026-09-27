@@ -473,8 +473,12 @@ fn cancellation_limits_ranges_and_reuse() {
 
     cursor.set_timeout(Some(Duration::ZERO));
     let mut execution = cursor.execute(&query, tree.root_node(), source.as_bytes());
-    while execution.next_match().is_some() {}
-    assert!(execution.did_cancel());
+    let mut completed_matches = 0;
+    while execution.next_match().is_some() {
+        completed_matches += 1;
+    }
+    assert!(completed_matches < results.len());
+    assert_eq!(execution.error(), None);
     drop(execution);
 
     cursor.set_timeout(None);

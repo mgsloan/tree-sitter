@@ -276,7 +276,6 @@ while let Some((found, index)) = execution.next_capture() {
     let capture = found.captures[index]; // provisional, unspecified event order
 }
 let error = execution.error();
-let cancelled = execution.did_cancel();
 ```
 
 **Proposed tree-squatter**
@@ -293,7 +292,7 @@ let mut captures = cursor.captures(&query, root, text_provider);
 while let Some((found, index)) = captures.next() {
     let capture = found.captures()[index.0 as usize];
 }
-// execute and explicit status reporting remain additional capabilities
+// execute and explicit execution errors remain additional capabilities
 ```
 
 - Accept a root `Node` by value in `matches`, `captures`, `execute`, and their
@@ -381,13 +380,12 @@ let matches = cursor.matches_with_options(&query, root, text_provider, options);
 - Ordinary byte/point ranges already support branching and rootless patterns
   in general and optimized execution (`b8782a5a9`). Optimized root seeking respects
   range traversal boundaries while allowing active matches to finish outside the
-  range. `UnsupportedRange` remains an API compatibility variant but is no longer
-  emitted. Optimizations also support trees with parse errors (`7669d1345`).
+  range. Optimizations also support trees with parse errors (`7669d1345`).
 - Add progress options and compatible cancellation/resumption behavior. Remove
   `set_timeout`; callers can check a deadline in the progress callback. Poll
   during execution so a long search with no results can still be cancelled.
-  Explicit status and optimization control remain additions. Cancellation
-  preserves execution state for resumption; see below.
+  Explicit execution errors and optimization control remain additions.
+  Cancellation preserves execution state for resumption; see below.
 - Preserve and document current finite-limit execution behavior. Discovery and
   eviction order can retain a different valid subset from tree-sitter; no
   dedicated eviction or result-subset compatibility audit is planned.
@@ -436,9 +434,9 @@ Adopt resumable callback cancellation, matching this tree-sitter checkout:
   captures can also be returned before iteration reports the stop.
 - Creating a new iterator through `matches`/`captures` or their options variants
   starts a fresh execution. The explicit `execute` API likewise starts afresh.
-- Tree-sitter has no query cancellation-status accessor; `None` alone does not
-  distinguish cancellation from exhaustion. Retain squatter's explicit status
-  while allowing the same execution to resume.
+- Follow tree-sitter in providing no query cancellation-status accessor. `None`
+  alone does not distinguish cancellation from exhaustion; callers that need
+  this distinction can track whether their progress callback requested a stop.
 
 This is observed implementation behavior, not an explicit resumption guarantee
 in tree-sitter's API documentation. See the callback check in
