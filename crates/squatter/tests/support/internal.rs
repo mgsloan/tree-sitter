@@ -88,6 +88,57 @@ fn compatible_parser_preserves_language_after_failed_selection() {
 }
 
 #[test]
+fn cancellation_during_packing_finalization() {
+    use std::ops::ControlFlow;
+
+    let fixture = Fixture::symbols(3);
+    let build = || {
+        let mut builder = Builder::new(&fixture.grammar, 2048, true).unwrap();
+        for index in 0..1024 * GROUP_SIZE {
+            builder
+                .emit(&leaf(1, 1, 0, u8::from(index == 0)), builder.distance())
+                .unwrap();
+        }
+        builder.emit(&leaf(1, 1, 0, 1), 0).unwrap();
+        builder
+    };
+    let options = PackOptions {
+        repack: true,
+        ..Default::default()
+    };
+    let mut reports = 0;
+    let mut report = |_| {
+        reports += 1;
+        ControlFlow::Continue(())
+    };
+    let tree = build()
+        .finish(options, &mut Progress::new(&mut report))
+        .unwrap();
+    assert!(tree.presence_cache().is_some());
+    assert!(tree.point_data().is_some());
+    assert!(reports > 10);
+
+    for stop_at in 1..=reports {
+        let mut count = 0;
+        let mut cancel = |_| {
+            count += 1;
+            if count == stop_at {
+                ControlFlow::Break(())
+            } else {
+                ControlFlow::Continue(())
+            }
+        };
+        assert_eq!(
+            build()
+                .finish(options, &mut Progress::new(&mut cancel))
+                .unwrap_err(),
+            Error::Canceled,
+        );
+        assert_eq!(count, stop_at);
+    }
+}
+
+#[test]
 fn lexer_fallback_and_concurrent_parser_preparation() {
     unsafe { sq_test_lexer_fallback() };
     let language = unsafe { tree_sitter::Language::from_raw(sq_test_parser_language().cast()) };

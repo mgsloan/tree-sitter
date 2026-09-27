@@ -200,6 +200,7 @@ impl Parser {
 
     /// Returns bytes starting at the requested offset; an empty chunk ends input.
     /// Chunk sizes and input offsets must fit Tree-sitter's u32 representation.
+    /// Sizes are not checked on this path.
     pub fn parse_with_callback<T: AsRef<[u8]>, F: FnMut(usize, Point) -> T>(
         &mut self,
         callback: &mut F,

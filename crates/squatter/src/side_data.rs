@@ -383,17 +383,18 @@ impl PointsData {
         Ok(result)
     }
     fn validate_loaded(&self, tree: &Tree) -> Result<(), SideDataError> {
-        self.0.validate(tree, POINT_FORMAT, point_length(tree)?)?;
-        self.validate_points(tree, &mut Default::default())
+        self.validate_with_progress(tree, &mut Default::default())
     }
 
-    fn validate_points(
+    fn validate_with_progress(
         &self,
         tree: &Tree,
-        _progress: &mut crate::packing::Progress<'_>,
+        progress: &mut crate::packing::Progress<'_>,
     ) -> Result<(), SideDataError> {
+        progress.poll()?;
+        self.0.validate(tree, POINT_FORMAT, point_length(tree)?)?;
         for group in 0..tree.group_count() {
-            _progress.tick()?;
+            progress.tick()?;
             let used = (tree.data().group_end(group) - group * GROUP_SIZE) as usize;
             for (end, (base, deltas)) in [
                 (false, self.column::<false>(group)),
@@ -463,9 +464,7 @@ impl Tree {
         points: PointsData,
         progress: &mut crate::packing::Progress<'_>,
     ) -> Result<(), SideDataError> {
-        progress.poll()?;
-        points.0.validate(self, POINT_FORMAT, point_length(self)?)?;
-        points.validate_points(self, progress)?;
+        points.validate_with_progress(self, progress)?;
         self.data_mut().point_data = Some(points);
         Ok(())
     }

@@ -3,6 +3,13 @@
 Implementation design for `tree-squatter`. Signatures omit routine lifetimes
 and method bodies.
 
+Implementation scope: direct-parser progress and cancellation are deferred to
+`experimental/tree-feller-cancel`. On `parser-api`, `TreeFellerParser` keeps
+`parse_with_options(source, PackOptions)` and does not implement `Parse` or
+expose `TreeFellerParseState`. The direct-parser callback design below describes
+that experiment; the compatible parser and native Tree-sitter implement the
+shared parsing traits.
+
 ## Scope
 
 `Parser` is the recommended entry point and returns packed `Tree` snapshots. It

@@ -238,10 +238,11 @@ fn packed_options_progress_and_equivalence() {
     assert!(tree.presence_cache().is_none());
 }
 
-fn check_cancellation<P: Parse>(parser: &mut P, source: &str, converting: bool)
-where
-    P::Error: std::fmt::Debug,
-{
+fn check_cancellation<P: Parse<Error = ParserError>>(
+    parser: &mut P,
+    source: &str,
+    converting: bool,
+) {
     let mut reports = 0;
     let mut progress = |state: &dyn ParseStateLike| {
         if state.is_converting() == converting {
@@ -267,13 +268,14 @@ where
             }
             ControlFlow::Continue(())
         };
-        assert!(
+        assert_eq!(
             parser
                 .parse_with_options(
                     source,
                     ParseOptions::new().progress_callback(&mut progress).into()
                 )
-                .is_err()
+                .err(),
+            Some(ParserError::Canceled),
         );
         assert_eq!(count, stop_at);
         let tree = Parse::parse(parser, "int after;").unwrap();

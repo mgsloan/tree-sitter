@@ -52,10 +52,10 @@ impl<'a> Progress<'a> {
     }
 
     pub fn poll(&mut self) -> Result<(), Error> {
-        if let Some(callback) = &mut self.callback {
-            if callback(self.byte).is_break() {
-                return Err(Error::Canceled);
-            }
+        if let Some(callback) = &mut self.callback
+            && callback(self.byte).is_break()
+        {
+            return Err(Error::Canceled);
         }
         Ok(())
     }
