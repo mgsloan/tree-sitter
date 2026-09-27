@@ -1,7 +1,7 @@
 use crate::{
-    FieldId, GrammarId, MatchCaptureIx, Node, PatternIx, Query, QueryCapture,
-    QueryCursorOptions, QueryCursorState, QueryExecutionError, QueryMatch, RawNode, SlotIx,
-    StreamingIterator, TextProvider,
+    FieldId, GrammarId, MatchCaptureIx, Node, PatternIx, Query, QueryCapture, QueryCursorOptions,
+    QueryCursorState, QueryExecutionError, QueryMatch, RawNode, SlotIx, StreamingIterator,
+    TextProvider,
     native::{Pattern, PatternEntry, Step, flags::*},
     storage::ColumnPointer,
     types::{CaptureIx, GroupIx, MatchId, PackedPoint, PatternIndex, SquatterKindId},

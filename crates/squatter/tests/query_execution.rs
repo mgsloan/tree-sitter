@@ -1274,6 +1274,26 @@ fn metadata_diagnostics_and_independent_clones() {
 }
 
 #[test]
+fn cloned_queries_preserve_compact_error_symbols() {
+    let source = "[1, {broken}, 2]";
+    let (grammar, tree) = json_query_tree(source);
+    assert!(tree.root_node().has_error());
+    for pattern in ["(_) @node", "(ERROR) @error", "(array (_) @child) @array"] {
+        let query = Query::new(&grammar, pattern).unwrap();
+        let cloned = query.deep_clone();
+        for optimized in [false, true] {
+            for mode in [0, 6] {
+                assert_eq!(
+                    provider_results(&cloned, &tree, source.as_bytes(), mode, optimized),
+                    provider_results(&query, &tree, source.as_bytes(), mode, optimized),
+                    "{pattern}, mode={mode}, optimized={optimized}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn predicate_diagnostics_match_tree_sitter() {
     let (grammar, _) = json_query_tree("0");
     let mut predicates = Vec::new();
