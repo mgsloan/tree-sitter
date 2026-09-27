@@ -200,8 +200,6 @@ impl<'tree> Node<'tree> {
     }
 
     /// Get this node's type as a numerical id.
-    ///
-    /// **Different than Tree-sitter:** Returns `KindId` instead of `u16`.
     pub fn kind_id(&self) -> KindId {
         self.data()
             .tables()
@@ -210,8 +208,6 @@ impl<'tree> Node<'tree> {
 
     /// Get the node's type as a numerical id as it appears in the grammar
     /// ignoring aliases.
-    ///
-    /// **Different than Tree-sitter:** Returns `GrammarKindId` instead of `u16`.
     pub fn grammar_id(&self) -> GrammarKindId {
         self.data()
             .tables()
@@ -535,8 +531,6 @@ impl<'tree> Node<'tree> {
     /// **Different than Tree-sitter:** Returns a plain iterator with `size_hint() == (0,
     /// None)`. No initial counting pass is needed. Iteration resets and moves the supplied
     /// cursor; dropping the iterator leaves the cursor at its current position.
-    ///
-    /// **Different than Tree-sitter:** Takes the nonzero `FieldId` wrapper.
     pub fn children_by_field_id<'cursor>(
         &self,
         field: FieldId,
@@ -597,9 +591,6 @@ impl<'tree> Node<'tree> {
 
     /// Get this node's number of children.
     ///
-    /// **Different than Tree-sitter:** Returns `ChildIx`, an exclusive upper bound,
-    /// including zero for a leaf. Use `.get()` for the primitive count.
-    ///
     /// **Different performance than Tree-sitter:** Scans children.
     pub fn child_count(&self) -> ChildIx {
         ChildIx::new(self.structural_children().count() as u32)
@@ -608,10 +599,6 @@ impl<'tree> Node<'tree> {
     /// Get this node's number of *named* children.
     ///
     /// See also [`Node::is_named`].
-    ///
-    /// **Different than Tree-sitter:** Returns `NamedChildIx`, an exclusive upper bound,
-    /// including zero when there are no named children. Use `.get()` for the primitive
-    /// count.
     ///
     /// **Different performance than Tree-sitter:** Scans all children.
     pub fn named_child_count(&self) -> NamedChildIx {
@@ -629,8 +616,6 @@ impl<'tree> Node<'tree> {
     /// you might be iterating over a long list of children, you should use
     /// [`Node::children`] instead.
     ///
-    /// **Different than Tree-sitter:** Takes `ChildIx` instead of `u32`.
-    ///
     /// **Different performance than Tree-sitter:** Visits up to index + 1 children. Repeated
     /// indexed lookup across a wide node can be quadratic; prefer one traversal.
     pub fn child(&self, index: ChildIx) -> Option<Self> {
@@ -644,8 +629,6 @@ impl<'tree> Node<'tree> {
     /// you might be iterating over a long list of children, you should use
     /// [`Node::named_children`] instead.
     ///
-    /// **Different than Tree-sitter:** Takes `NamedChildIx` instead of `u32`.
-    ///
     /// **Different performance than Tree-sitter:** Scans preceding children, including
     /// unnamed children. Prefer one traversal for several children.
     pub fn named_child(&self, index: NamedChildIx) -> Option<Self> {
@@ -658,8 +641,6 @@ impl<'tree> Node<'tree> {
     ///
     /// See also [`child_by_field_name`](Node::child_by_field_name). You can
     /// convert a field name to an id using [`crate::Language::field_id_for_name`].
-    ///
-    /// **Different than Tree-sitter:** Takes a nonzero `FieldId`.
     ///
     /// **Different performance than Tree-sitter:** Scans children.
     ///
@@ -1035,8 +1016,7 @@ impl<'tree> TreeCursor<'tree> {
     ///
     /// See also [`field_name`](TreeCursor::field_name).
     ///
-    /// **Different than Tree-sitter:** Returns `Option<FieldId>`. The traversal root has
-    /// no field.
+    /// The traversal root has no field.
     pub fn field_id(&self) -> Option<FieldId> {
         if self.parents.is_empty() {
             None
@@ -1189,8 +1169,6 @@ impl<'tree> TreeCursor<'tree> {
     /// This returns the index of the child node if one was found, and returns
     /// `None` if no such child was found.
     ///
-    /// **Different than Tree-sitter:** Returns `ChildIx`.
-    ///
     /// **Different performance than Tree-sitter:** Scans children.
     pub fn goto_first_child_for_byte(&mut self, byte: usize) -> Option<ChildIx> {
         let byte = byte as u32 as usize;
@@ -1204,8 +1182,6 @@ impl<'tree> TreeCursor<'tree> {
     ///
     /// This returns the index of the child node if one was found, and returns
     /// `None` if no such child was found.
-    ///
-    /// **Different than Tree-sitter:** Returns `ChildIx`.
     ///
     /// **Different behavior than Tree-sitter:** Without point data, positions use row zero and
     /// the byte offset as column. Check `has_points()` before relying on line/column

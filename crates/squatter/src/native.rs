@@ -332,62 +332,49 @@ impl Language {
     }
 
     /// Get the name of the node kind for the given numerical id.
-    ///
-    /// **Different than Tree-sitter:** Takes `KindId` instead of `u16`.
     pub fn node_kind_for_id(&self, id: KindId) -> Option<&str> {
         self.language.node_kind_for_id(id.get())
     }
 
     /// Check if the node type for the given numerical id is named (as opposed
     /// to an anonymous node type).
-    ///
-    /// **Different than Tree-sitter:** Takes `KindId` instead of `u16`.
     pub fn node_kind_is_named(&self, id: KindId) -> bool {
         self.language.node_kind_is_named(id.get())
     }
 
     /// Check if the node type for the given numerical id is visible (as opposed
     /// to a hidden node type).
-    ///
-    /// **Different than Tree-sitter:** Takes `KindId` instead of `u16`.
     pub fn node_kind_is_visible(&self, id: KindId) -> bool {
         self.language.node_kind_is_visible(id.get())
     }
 
     /// Check if the node type for the given numerical id is a supertype.
-    ///
-    /// **Different than Tree-sitter:** Takes `KindId` instead of `u16`.
     pub fn node_kind_is_supertype(&self, id: KindId) -> bool {
         self.language.node_kind_is_supertype(id.get())
     }
 
     /// Get the field name for the given numerical id.
-    ///
-    /// **Different than Tree-sitter:** Takes the nonzero `FieldId` wrapper.
     pub fn field_name_for_id(&self, id: FieldId) -> Option<&str> {
         self.language.field_name_for_id(id.get())
     }
 
     /// Get the numeric id for the given node kind.
     ///
-    /// **Different than Tree-sitter:** Returns `KindId`; an unsuccessful lookup returns
-    /// `KindId::new(0)`.
+    /// An unsuccessful lookup returns `KindId::new(0)`.
     pub fn id_for_node_kind(&self, kind: &str, named: bool) -> KindId {
         KindId::new(self.language.id_for_node_kind(kind, named))
     }
 
     /// Get a list of all supertype symbols for the language.
     ///
-    /// **Different than Tree-sitter:** Borrows `GrammarKindId` values without allocating.
-    /// Hidden symbols retain their upstream IDs.
+    /// Borrows the original grammar symbols without allocating or remapping hidden symbols.
     pub fn supertypes(&self) -> &[GrammarKindId] {
         GrammarKindId::from_slice(self.language.supertypes())
     }
 
     /// Get a list of all subtype symbols for a given supertype symbol.
     ///
-    /// **Different than Tree-sitter:** Takes and borrows original `GrammarKindId` values
-    /// without allocating or remapping hidden symbols.
+    /// Borrows the original grammar symbols without allocating or remapping hidden symbols.
     pub fn subtypes_for_supertype(&self, supertype: GrammarKindId) -> &[GrammarKindId] {
         GrammarKindId::from_slice(self.language.subtypes_for_supertype(supertype.get()))
     }
@@ -418,8 +405,6 @@ impl Language {
     }
 
     /// Get the numerical id for the given field name.
-    ///
-    /// **Different than Tree-sitter:** Returns the nonzero `FieldId` wrapper.
     pub fn field_id_for_name(&self, name: impl AsRef<[u8]>) -> Option<FieldId> {
         self.language.field_id_for_name(name).map(FieldId::from)
     }

@@ -67,11 +67,9 @@ pub trait NodeLike<'tree>: Copy + Eq {
     ///
     /// Within a given syntax tree, no two nodes have the same id.
     ///
-    /// **Different than Tree-sitter:** Uses an associated identity type: `SlotIx` for
-    /// packed nodes and native `usize` for tree-sitter. Identity is scoped to one immutable
-    /// snapshot; it is not guaranteed across repacking, reloads, or edits. An ID does not
-    /// keep its tree alive. Packed nodes also expose inherent `slot()`; `id()` requires
-    /// this trait in scope.
+    /// Identity is scoped to one immutable snapshot; it is not guaranteed across repacking,
+    /// reloads, or edits. An ID does not keep its tree alive. Packed nodes also expose
+    /// inherent `slot()`; `id()` requires this trait in scope.
     fn id(&self) -> Self::Id;
     /// Read constant-time attributes; counts are separate operations below.
     ///
@@ -79,13 +77,9 @@ pub trait NodeLike<'tree>: Copy + Eq {
     /// counts are separate.
     fn attributes(self) -> Attributes<'tree>;
     /// Get this node's type as a numerical id.
-    ///
-    /// **Different than Tree-sitter:** Returns `KindId` instead of `u16`.
     fn kind_id(&self) -> KindId;
     /// Get the node's type as a numerical id as it appears in the grammar
     /// ignoring aliases.
-    ///
-    /// **Different than Tree-sitter:** Returns `GrammarKindId` instead of `u16`.
     fn grammar_id(&self) -> GrammarKindId;
     /// Get this node's type as a string.
     fn kind(&self) -> &'tree str;
@@ -207,8 +201,6 @@ pub trait NodeLike<'tree>: Copy + Eq {
     /// None)`. Packed iteration needs no initial counting pass. Iteration resets and moves
     /// the supplied cursor; dropping the iterator leaves the cursor at its current
     /// position.
-    ///
-    /// **Different than Tree-sitter:** Takes the nonzero `FieldId` wrapper.
     fn children_by_field_id<'cursor>(
         &self,
         field: FieldId,
@@ -234,14 +226,10 @@ pub trait NodeLike<'tree>: Copy + Eq {
         Self: 'cursor;
     /// Get the field name of this node's child at the given index.
     ///
-    /// **Different than Tree-sitter:** Takes `ChildIx`.
-    ///
     /// **Different performance than Tree-sitter:** Packed nodes scan preceding children, then
     /// resolve the stored field. Prefer a single child traversal and direct field access.
     fn field_name_for_child(&self, index: ChildIx) -> Option<&'tree str>;
     /// Get the field name of this node's named child at the given index.
-    ///
-    /// **Different than Tree-sitter:** Takes `NamedChildIx`.
     ///
     /// **Different performance than Tree-sitter:** Packed nodes scan children, including
     /// intervening unnamed children, then resolve the stored field.
@@ -256,18 +244,11 @@ pub trait NodeLike<'tree>: Copy + Eq {
     fn has_named_children(self) -> bool;
     /// Get this node's number of children.
     ///
-    /// **Different than Tree-sitter:** Returns `ChildIx`, an exclusive upper bound,
-    /// including zero for a leaf. Use `.get()` for the primitive count.
-    ///
     /// **Different performance than Tree-sitter:** For packed nodes, scans children.
     fn child_count(&self) -> ChildIx;
     /// Get this node's number of *named* children.
     ///
     /// See also [`Node::is_named`].
-    ///
-    /// **Different than Tree-sitter:** Returns `NamedChildIx`, an exclusive upper bound,
-    /// including zero when there are no named children. Use `.get()` for the primitive
-    /// count.
     ///
     /// **Different performance than Tree-sitter:** For packed nodes, scans all children.
     fn named_child_count(&self) -> NamedChildIx;
@@ -298,8 +279,6 @@ pub trait NodeLike<'tree>: Copy + Eq {
     /// you might be iterating over a long list of children, you should use
     /// [`Node::children`] instead.
     ///
-    /// **Different than Tree-sitter:** Takes `ChildIx` instead of `u32`.
-    ///
     /// **Different performance than Tree-sitter:** For packed nodes, visits up to index + 1
     /// children. Repeated indexed lookup across a wide node can be quadratic; prefer one
     /// traversal.
@@ -310,8 +289,6 @@ pub trait NodeLike<'tree>: Copy + Eq {
     /// This method scans preceding children, so if
     /// you might be iterating over a long list of children, you should use
     /// [`Node::named_children`] instead.
-    ///
-    /// **Different than Tree-sitter:** Takes `NamedChildIx` instead of `u32`.
     ///
     /// **Different performance than Tree-sitter:** For packed nodes, scans preceding
     /// children, including unnamed children. Prefer one traversal for several children.
@@ -378,8 +355,7 @@ pub trait CursorLike<'tree>: Clone {
     /// This returns the index of the child node if one was found, and returns
     /// `None` if no such child was found.
     ///
-    /// **Different than Tree-sitter:** Returns `ChildIx`; coordinates narrow with `as
-    /// u32`.
+    /// Coordinates narrow with `as u32`.
     fn goto_first_child_for_byte(&mut self, byte: usize) -> Option<ChildIx>;
     /// Move this cursor to the first child of its current node that contains or
     /// starts after the given point.
@@ -387,8 +363,7 @@ pub trait CursorLike<'tree>: Clone {
     /// This returns the index of the child node if one was found, and returns
     /// `None` if no such child was found.
     ///
-    /// **Different than Tree-sitter:** Returns `ChildIx`; point components narrow with
-    /// `as u32`.
+    /// Point components narrow with `as u32`.
     ///
     /// **Different behavior than Tree-sitter:** For packed trees without point data, positions
     /// use row zero and the byte offset as column. Check `has_points()` before relying on
@@ -397,8 +372,6 @@ pub trait CursorLike<'tree>: Clone {
     /// Get the numerical field id of this tree cursor's current node.
     ///
     /// See also [`field_name`](TreeCursor::field_name).
-    ///
-    /// **Different than Tree-sitter:** Returns `Option<FieldId>` on both backends.
     fn field_id(&self) -> Option<FieldId>;
     /// Get the field name of this tree cursor's current node.
     fn field_name(&self) -> Option<&'tree str>;
