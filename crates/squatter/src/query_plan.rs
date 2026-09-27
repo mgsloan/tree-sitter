@@ -17,7 +17,8 @@ pub(crate) enum Relation {
 #[derive(Clone, Copy, Default)]
 pub(crate) struct DirectStep {
     pub relation: Relation,
-    pub symbol: u16,
+    pub symbol_start: u16,
+    pub symbol_span: u16,
     pub field: u16,
     pub last_named_child: bool,
 }
@@ -248,7 +249,14 @@ impl DirectPlan {
             return None;
         }
         let mut plan = Self {
-            steps: vec![DirectStep::default(); compiled.steps().len()],
+            // Root symbols, including local alternatives, are checked by dispatch.
+            steps: vec![
+                DirectStep {
+                    symbol_span: u16::MAX,
+                    ..Default::default()
+                };
+                compiled.steps().len()
+            ],
             roots: Vec::new(),
             start_steps: [0; 64],
             end_steps: [0; 64],
@@ -335,6 +343,14 @@ impl DirectPlan {
                         return None;
                     }
                 }
+                let (symbol_start, symbol_span) = if root {
+                    (0, u16::MAX)
+                } else if step.symbol == 0 {
+                    // Named child traversal excludes the other reserved kind, _ERROR.
+                    (0, compiled.view.symbol_count as u16 - 1)
+                } else {
+                    (step.symbol, 0)
+                };
                 plan.steps[step_index] = DirectStep {
                     relation: if root {
                         Relation::Root
@@ -343,7 +359,8 @@ impl DirectPlan {
                     } else {
                         Relation::NextNamedSibling
                     },
-                    symbol: step.symbol,
+                    symbol_start,
+                    symbol_span,
                     field: step.field,
                     last_named_child: step.has(IS_LAST_CHILD),
                 };

@@ -1805,12 +1805,8 @@ impl<'query, 'tree> QueryExecution<'_, 'query, 'tree, '_> {
                 let operation = plan.steps[state.step as usize];
                 let step = self.step(state.step);
                 let sibling = self.node_end(node);
-                // Root symbols, including local alternatives, were checked by the root table.
                 let symbol_matches =
-                    matches!(operation.relation, crate::query_plan::Relation::Root)
-                        || operation.symbol == symbol
-                        || (operation.symbol == 0
-                            && symbol as u32 != query.compiled.view.symbol_count);
+                    symbol.wrapping_sub(operation.symbol_start) <= operation.symbol_span;
                 let matches = symbol_matches
                     && (operation.field == 0 || FieldId::new(operation.field) == node.field_id())
                     && (!operation.last_named_child
