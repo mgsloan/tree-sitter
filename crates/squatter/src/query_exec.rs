@@ -1572,7 +1572,12 @@ impl<'query, 'tree> QueryExecution<'_, 'query, 'tree, '_> {
                     .remap_kind(KindId::new(requirement.symbol))
                     .is_some_and(|symbol| {
                         presence
-                            .next_group(groups, symbol.get() as usize, data.groups(), false)
+                            .find_matching_group(
+                                groups,
+                                symbol.get() as usize,
+                                data.groups(),
+                                false,
+                            )
                             .is_some()
                     });
                 if !found {

@@ -244,7 +244,7 @@ impl PresenceCache {
             & (1 << (group % 64))
             != 0
     }
-    pub(crate) fn next_group(
+    pub(crate) fn find_matching_group(
         &self,
         mut range: std::ops::Range<u32>,
         symbol: usize,

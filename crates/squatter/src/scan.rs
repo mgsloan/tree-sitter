@@ -240,7 +240,7 @@ impl SymbolIndex {
     fn enabled(self) -> bool {
         self.enabled
     }
-    fn next_group(
+    fn find_matching_group(
         self,
         group: &GroupRef<'_>,
         targets: impl Iterator<Item = RemappedKindId>,
@@ -250,7 +250,7 @@ impl SymbolIndex {
         let cache = group.columns.tree().presence_cache.as_ref()?;
         targets
             .filter_map(|target| {
-                cache.next_group(
+                cache.find_matching_group(
                     groups.clone(),
                     target.get() as usize,
                     group.columns.tree().groups(),
@@ -1022,7 +1022,8 @@ impl<'tree> Preorder<'tree> {
                 }
             }
             self.group.index = GroupIx(if INDEXED {
-                let Some(index) = predicate.next_group(&self.group, self.groups.clone(), REVERSE)
+                let Some(index) =
+                    predicate.find_matching_group(&self.group, self.groups.clone(), REVERSE)
                 else {
                     self.groups.end = self.groups.start;
                     return None;
@@ -2418,7 +2419,7 @@ pub trait Predicate: sealed::Predicate {
     }
     /// The nearest possible match in the remaining physical group interval.
     #[inline(always)]
-    fn next_group(
+    fn find_matching_group(
         &mut self,
         _group: &GroupRef<'_>,
         groups: Range<u32>,
@@ -2491,13 +2492,13 @@ impl<P: Predicate> Predicate for &mut P {
         P::has_group_index(self)
     }
     #[inline(always)]
-    fn next_group(
+    fn find_matching_group(
         &mut self,
         group: &GroupRef<'_>,
         groups: Range<u32>,
         reverse: bool,
     ) -> Option<u32> {
-        P::next_group(self, group, groups, reverse)
+        P::find_matching_group(self, group, groups, reverse)
     }
     #[inline(always)]
     fn has_subtree_bound(&self) -> bool {
@@ -2542,16 +2543,16 @@ impl<P: Predicate, Q: Predicate> Predicate for And<P, Q> {
         self.0.has_group_index() || self.1.has_group_index()
     }
     #[inline(always)]
-    fn next_group(
+    fn find_matching_group(
         &mut self,
         group: &GroupRef<'_>,
         groups: Range<u32>,
         reverse: bool,
     ) -> Option<u32> {
         if self.0.has_group_index() {
-            self.0.next_group(group, groups, reverse)
+            self.0.find_matching_group(group, groups, reverse)
         } else {
-            self.1.next_group(group, groups, reverse)
+            self.1.find_matching_group(group, groups, reverse)
         }
     }
     #[inline(always)]
@@ -2842,14 +2843,14 @@ impl<const N: usize> Predicate for ArrayKindIds<N> {
         self.index.enabled()
     }
     #[inline(always)]
-    fn next_group(
+    fn find_matching_group(
         &mut self,
         group: &GroupRef<'_>,
         groups: Range<u32>,
         reverse: bool,
     ) -> Option<u32> {
         self.index
-            .next_group(group, self.values.ids.iter().copied(), groups, reverse)
+            .find_matching_group(group, self.values.ids.iter().copied(), groups, reverse)
     }
     #[inline(always)]
     fn prepare(&mut self, group: &GroupRef<'_>) {
@@ -2970,14 +2971,14 @@ impl Predicate for KindIds<'_> {
         self.index.enabled()
     }
     #[inline(always)]
-    fn next_group(
+    fn find_matching_group(
         &mut self,
         group: &GroupRef<'_>,
         groups: Range<u32>,
         reverse: bool,
     ) -> Option<u32> {
         self.index
-            .next_group(group, self.strategy.targets(group.columns), groups, reverse)
+            .find_matching_group(group, self.strategy.targets(group.columns), groups, reverse)
     }
     #[inline(always)]
     fn prepare(&mut self, group: &GroupRef<'_>) {
