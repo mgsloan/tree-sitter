@@ -1,40 +1,41 @@
-- [ ] Proper parser APIs
 
-- [ ] Move away from AtomicBool cancellation and to cancellation / progress callback
+parser api impl  ->  forests  ->  Viz
+                              ->  Lean
+                 ->  WIP use in Zed
+
+# Todos
+
+- [ ] What's with `tree_sitter_squatter` namespace?
+
+- [*] Proper parser APIs
+
+- [*] Move away from AtomicBool cancellation and to cancellation / progress callback
+
+- [*] Trickiness with building PointsCache after the fact: could be unrepresentable due to existing group decisions.
+
+- [ ] Update agent rules about documentation and refine documentation.  Should copy text from tree-sitter docs where sensible.  Should describe what's important / guaranteed to the user, not how it's implemented
 
 - [ ] Fuzz tests to help ensure that untrusted bytes don't cause wrong memory access etc.  To make this efficient the solution may be validation
 
-- [ ] What to do about Forest::clone() / Tree::clone()
-
-- [ ] Benchmark whether presence cache rare list actually helps
-
-- [ ] How does growing during parsing estimate how much more space?
-
 ## Organization
 
-- [ ] Review and polish design.md
+- [ ] Remove tree-sitter repo stuff since it's now a dependency.
 
-- [ ] Separate viz branch for visualizer
+## Forests
 
-- [ ] Put persistence and cache on a separate branch
+- [ ] Figure out forest construction and supplying all grammars.  How many bytes are used for symbols / grammar id needs to be known upfront
 
-- [ ] Split traits into a separate compat crate
+- [*] API for query scanning forest region
 
-## Injections
-
-- [ ] Forests
-
-- [ ] API for query scanning forest region
-
-- [ ] API for query scanning subset of forest region
+- [*] API for query scanning subset of forest region
 
 ## Use in Zed
 
 - [ ] Review and polish the traits
 
-- [ ] Make hot loops generic over representation
-
 - [ ] Test that Zed file decode/transform code works.  How to make sure it doesn't diverge? Divergence does not cause incorrectness, but does cause hash mismatches
+
+- [ ] Prototype without injections support
 
 
 
@@ -43,10 +44,7 @@
 
 ## Cleanup
 
-- [ ] fearless_simd is mostly used for feature tokens and the kernel! macro, which could be provied
-  by far less code than that crate.
-
-- [ ] API for construction of PointData
+- [ ] Review and polish design.md
 
 - [ ] Open Tree-sitter bug about documentation saying captures occur in source order.
 
@@ -55,6 +53,8 @@
       * Can still read columns from a single allocation, and pack them together on serialization
 
       * Could make sidecars a more homogenous thing - they are just columns stored in a separate allocation
+
+- [ ] Reduce unsafe via bytemuck?
 
 ## Parity
 
@@ -65,6 +65,8 @@
 - [ ] containing ranges for QueryCursor
 
 ## Tree-feller
+
+- [ ] Try implementing the callback in Rust not C
 
 - [ ] progress and cancellation?
 
@@ -82,6 +84,8 @@
 - [ ] Consider how to also check forwards compat efficiently.
 
 ## Persistence
+
+- [ ] Ability to use tree-feller
 
 - [ ] Define flat format that includes sidecars
 
@@ -108,9 +112,7 @@
 
 - [ ] Store last access info for GC
 
-- [ ] Optimize use of LineIndex (often prior access is nearby)
-
-- [ ] LineIndex should handle newlines the same as tree-sitter parsing.  This also informs wheher SIMD could be used to populate it.
+- [ ] Make PendingWrite cancellation clean up if it did get written
 
 ## Use in ast-grep / similar tools
 
@@ -118,23 +120,17 @@ Parse only the needed info.
 
 ## Performance tuning
 
-- [ ] try two columns for symbol_id. If symbol count is < 512 (almost all), can get away with one
-  read for the lowest symbols. Motivation is to be able to use memchr. Can also only have one column
-  if need be
-
-- [ ] try eliminating / reducing the conversion arena by storing post-order? Or modifying tree-feller?
-
 - [ ] threshold between scan and parent walk
 
 - [ ] symbol presence cache threshold
 
 - [ ] scan window
 
+- [ ] Threshold for eager subtree packing
+
 - [ ] Try pure Rust impl for better LTO - or just have Rust-side implementations for small ops
 
 - [ ] tune iterator code - could shorter impls inline more for more complex pipelines?
-
-- [ ] Update C version with all lessons learned from Rust version - enssure language choice isn't causing performance losses
 
 - [ ] symbol presence optimizations - bitmap per group and then do a SIMD transpose?
 
@@ -142,19 +138,19 @@ Parse only the needed info.
 
 - [ ] WASM / neon / etc simd
 
-# Backburner
+- [ ] How does growing during parsing estimate how much more space?
 
-- [ ] Return to query-simd-experiment?
+# Backburner
 
 - [ ] Dedupe query compiler with upstream TS?
 
 - [ ] Parent / previous sibling links (slot counts)
 
+- [ ] Remap symbol IDs to make some queries able to check an interval?  Remapping is already happening, but it is deterministic based on grammar definitions.  For example, if the symbols matched at the top of highlighting queries were all a contiguous range, it could benefit from SIMD comparisons
+
 ## Correctness
 
 - [ ] Shared comparison / property testing repo for tree-sitter, squatter, and feller.
-
-- [ ] Reduce unsafe via bytemuck
 
 ## Persistence
 
@@ -177,14 +173,6 @@ Parse only the needed info.
 ## Performance
 
 - [ ] Radix table on monotonic bases
-
-- [ ] Consider using fastpfor style exceptions?  Probably not, avoid branches
-
-- [ ] Potentially relevant technique: selection pushdown
-
-- [ ] Potentially relevant: vortex-array
-
-- [ ] Use blocking file reads during TS chunk reads to avoid full materialize? Skipping this for now, gnarly to block threads.
 
 - [ ] With feller parse, estimate capacity based on per-grammar stats
 
