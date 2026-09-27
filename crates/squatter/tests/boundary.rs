@@ -184,3 +184,61 @@ fn language_cache_round_trips_and_outlives_tree_sitter_language() {
     drop(language);
     assert_eq!(clone.cache().unwrap(), bytes);
 }
+
+#[test]
+#[cfg(target_pointer_width = "64")]
+fn shared_coordinates_narrow_like_tree_sitter() {
+    let language =
+        unsafe { tree_sitter::Language::from_raw(tree_sitter_json::LANGUAGE.into_raw()().cast()) };
+    let grammar = Language::new(&language).unwrap();
+    let mut parser = tree_sitter::Parser::new();
+    parser.set_language(&language).unwrap();
+    let native = parser.parse("[1,\n2]", None).unwrap();
+    let tree = Tree::pack(&grammar, &native).unwrap();
+    let root = tree.root_node();
+    let expected = native.root_node();
+    let wrap = 1usize << 32;
+    for start in [0, 1, 4, 6, wrap, wrap + 1, wrap + 4, usize::MAX] {
+        for end in [start, start.saturating_add(1)] {
+            assert_eq!(
+                root.descendant_for_byte_range(start, end)
+                    .map(|node| node.byte_range()),
+                expected
+                    .descendant_for_byte_range(start, end)
+                    .map(|node| node.byte_range())
+            );
+            let point = tree_sitter::Point::new(start, end);
+            assert_eq!(
+                root.descendant_for_point_range(point, point)
+                    .map(|node| node.byte_range()),
+                expected
+                    .descendant_for_point_range(point, point)
+                    .map(|node| node.byte_range())
+            );
+        }
+        assert_eq!(
+            root.first_child_for_byte(start)
+                .map(|node| node.byte_range()),
+            expected
+                .first_child_for_byte(start)
+                .map(|node| node.byte_range())
+        );
+        let mut cursor = root.walk().unwrap();
+        let mut native_cursor = expected.walk();
+        assert_eq!(
+            cursor.goto_first_child_for_byte(start),
+            native_cursor.goto_first_child_for_byte(start)
+        );
+        let point = tree_sitter::Point::new(wrap, start);
+        cursor.reset(root);
+        native_cursor.reset(expected);
+        assert_eq!(
+            cursor.goto_first_child_for_point(point),
+            native_cursor.goto_first_child_for_point(point)
+        );
+    }
+    let array = root
+        .named_child(tree_squatter::NamedChildIx::new(0))
+        .unwrap();
+    assert_eq!(array.child_by_field_name([255]), None);
+}

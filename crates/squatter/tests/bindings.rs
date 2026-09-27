@@ -19,7 +19,13 @@ fn error_flags_match_each_native_node() -> Result<(), Box<dyn Error>> {
     ] {
         let native = parse_native(&language, source);
         let expected: Vec<_> = NodeLike::preorder(native.root_node())
-            .map(|node| (node.kind_id(), node.byte_range(), node.has_error()))
+            .map(|node| {
+                (
+                    KindId::from(node.kind_id()),
+                    node.byte_range(),
+                    node.has_error(),
+                )
+            })
             .collect();
         assert!(expected.iter().any(|node| node.2));
         assert!(expected.iter().any(|node| !node.2));
@@ -43,7 +49,13 @@ fn error_flags_match_each_native_node() -> Result<(), Box<dyn Error>> {
                     .root_node()
                     .preorder()
                     .nodes()
-                    .map(|node| (node.kind_id(), node.byte_range(), node.has_error()))
+                    .map(|node| {
+                        (
+                            KindId::from(node.kind_id()),
+                            node.byte_range(),
+                            node.has_error(),
+                        )
+                    })
                     .collect();
                 assert_eq!(actual, expected, "{source}");
             }
@@ -56,7 +68,7 @@ fn check_shared_navigation<'tree, N: NodeLike<'tree>>(
     root: N,
     fields: u16,
 ) -> Result<(), Box<dyn Error>> {
-    let mut cursor = root.cursor()?;
+    let mut cursor = root.walk()?;
     let expected: Vec<_> = root.preorder().collect();
     let all_kinds = KindSet::new(expected.iter().map(|node| node.kind_id()));
     assert!(
@@ -102,7 +114,6 @@ fn check_shared_navigation<'tree, N: NodeLike<'tree>>(
         assert_eq!(node.is_missing(), attributes.is_missing);
         assert_eq!(node.is_error(), attributes.is_error);
         assert_eq!(node.has_error(), attributes.has_error);
-        assert_eq!(node.has_changes(), attributes.has_changes);
         assert_eq!(node.has_children(), node.child_count().get() != 0);
         assert_eq!(
             node.has_named_children(),

@@ -58,7 +58,7 @@ fn navigation_and_indexed_ranges_survive_loading() {
                 compare_attributes!(node, reference;
                     kind, grammar_name, field_name,
                     byte_range, start_position, end_position, is_named, is_extra,
-                    is_missing, is_error, has_error, has_changes, descendant_count,
+                    is_missing, is_error, has_error, descendant_count,
                     child_count, named_child_count);
                 macro_rules! compare_navigation {
                     ($($method:ident),*) => { $(assert_eq!(node.$method().map(|node| u32::from(node.slot())), reference.$method().map(|node| u32::from(node.slot())), "{} at {node:?}", stringify!($method));)* };

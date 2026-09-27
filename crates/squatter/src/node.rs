@@ -98,11 +98,14 @@ impl<'tree> Node<'tree> {
         self.raw.slot
     }
 
-    pub fn byte_range(self) -> Range<usize> {
+    pub fn byte_range(&self) -> Range<usize> {
         self.start_byte()..self.end_byte()
     }
 
-    pub fn utf8_text(self, source: &[u8]) -> Result<&str, std::str::Utf8Error> {
+    pub fn utf8_text<'source>(
+        &self,
+        source: &'source [u8],
+    ) -> Result<&'source str, std::str::Utf8Error> {
         std::str::from_utf8(&source[self.byte_range()])
     }
 
@@ -129,41 +132,41 @@ impl<'tree> Node<'tree> {
         self.preorder().filter_kind_ids(kinds).nodes()
     }
 
-    pub fn kind_id(self) -> KindId {
+    pub fn kind_id(&self) -> KindId {
         self.data()
             .tables()
             .decode_kind(self.data().symbol_index(self.slot().get()))
     }
 
-    pub fn grammar_id(self) -> GrammarKindId {
+    pub fn grammar_id(&self) -> GrammarKindId {
         self.data()
             .tables()
             .decode_grammar_kind(self.data().grammar_index(self.slot().get()))
     }
 
-    pub fn kind(self) -> &'tree str {
+    pub fn kind(&self) -> &'tree str {
         self.data().tables().symbol_name(self.kind_id().get())
     }
 
-    pub fn grammar_name(self) -> &'tree str {
+    pub fn grammar_name(&self) -> &'tree str {
         self.data().tables().symbol_name(self.grammar_id().get())
     }
 
     #[inline]
-    pub fn start_byte(self) -> usize {
+    pub fn start_byte(&self) -> usize {
         let data = self.data();
         (data.word(data.layout.start_byte_base, self.slot().group().get())
             + data.byte(data.layout.start_byte_delta, self.slot().get()) as u32) as usize
     }
 
     #[inline]
-    pub fn end_byte(self) -> usize {
+    pub fn end_byte(&self) -> usize {
         let data = self.data();
         (data.word(data.layout.end_byte_base, self.slot().group().get())
             - data.short(data.layout.end_byte_delta, self.slot().get()) as u32) as usize
     }
 
-    pub fn start_position(self) -> Point {
+    pub fn start_position(&self) -> Point {
         self.packed_start_point().point()
     }
 
@@ -171,7 +174,7 @@ impl<'tree> Node<'tree> {
         self.data().has_points()
     }
 
-    pub fn end_position(self) -> Point {
+    pub fn end_position(&self) -> Point {
         self.packed_end_point().point()
     }
 
@@ -194,33 +197,29 @@ impl<'tree> Node<'tree> {
     }
 
     #[inline]
-    pub fn is_named(self) -> bool {
+    pub fn is_named(&self) -> bool {
         self.data().tables().named(self.kind_id().get())
     }
 
-    pub fn is_extra(self) -> bool {
+    pub fn is_extra(&self) -> bool {
         self.data().flags() & EXTRAS != 0
             && self.data().bit(self.data().layout.extra, self.slot().get())
     }
 
-    pub fn is_missing(self) -> bool {
+    pub fn is_missing(&self) -> bool {
         self.data().flags() & MISSING != 0
             && self
                 .data()
                 .bit(self.data().layout.missing, self.slot().get())
     }
 
-    pub fn is_error(self) -> bool {
+    pub fn is_error(&self) -> bool {
         self.kind_id() == KindId::ERROR
     }
 
-    pub fn has_error(self) -> bool {
+    pub fn has_error(&self) -> bool {
         self.data().flags() & ERRORS != 0
             && self.data().bit(self.data().layout.error, self.slot().get())
-    }
-
-    pub fn has_changes(self) -> bool {
-        false
     }
 
     pub fn field_id(self) -> Option<FieldId> {
@@ -254,7 +253,7 @@ impl<'tree> Node<'tree> {
         }
     }
 
-    pub fn descendant_count(self) -> usize {
+    pub fn descendant_count(&self) -> usize {
         let first = self.first_slot();
         let waste: u32 = (first / GROUP_SIZE..self.slot().group().get())
             .map(|group| self.data().waste(group))
@@ -297,7 +296,7 @@ impl<'tree> Node<'tree> {
         }
     }
 
-    pub fn parent(self) -> Option<Self> {
+    pub fn parent(&self) -> Option<Self> {
         let data = self.data();
         let mut slot = self.slot().get() + 1;
         while slot < data.groups() * GROUP_SIZE {
@@ -345,23 +344,23 @@ impl<'tree> Node<'tree> {
         self.named_children().next().is_some()
     }
 
-    pub fn child_count(self) -> ChildIx {
+    pub fn child_count(&self) -> ChildIx {
         ChildIx::new(self.children().count() as u32)
     }
 
-    pub fn named_child_count(self) -> NamedChildIx {
+    pub fn named_child_count(&self) -> NamedChildIx {
         NamedChildIx::new(self.named_children().count() as u32)
     }
 
-    pub fn child(self, index: ChildIx) -> Option<Self> {
+    pub fn child(&self, index: ChildIx) -> Option<Self> {
         self.children().nth(index.get() as usize)
     }
 
-    pub fn named_child(self, index: NamedChildIx) -> Option<Self> {
+    pub fn named_child(&self, index: NamedChildIx) -> Option<Self> {
         self.named_children().nth(index.get() as usize)
     }
 
-    pub fn child_by_field_id(self, field: FieldId) -> Option<Self> {
+    pub fn child_by_field_id(&self, field: FieldId) -> Option<Self> {
         // ERROR productions have no field map, even if descendants contributed
         // inherited fields to enumeration.
         if self.is_error() {
@@ -371,14 +370,14 @@ impl<'tree> Node<'tree> {
         }
     }
 
-    pub fn child_by_field_name(self, field: &str) -> Option<Self> {
+    pub fn child_by_field_name(&self, field: impl AsRef<[u8]>) -> Option<Self> {
         let tables = self.data().tables();
         let field = (1..=tables.field_count as u16)
-            .find(|index| tables.field_name(*index) == Some(field))?;
+            .find(|index| tables.field_name(*index).map(str::as_bytes) == Some(field.as_ref()))?;
         self.child_by_field_id(FieldId::new(field)?)
     }
 
-    pub fn child_with_descendant(self, descendant: Self) -> Option<Self> {
+    pub fn child_with_descendant(&self, descendant: Self) -> Option<Self> {
         if self.raw.tree != descendant.raw.tree
             || descendant.slot() >= self.slot()
             || descendant.slot().get() < self.first_slot()
@@ -389,7 +388,7 @@ impl<'tree> Node<'tree> {
             .find(|child| child.first_slot() <= descendant.slot().get())
     }
 
-    pub fn next_sibling(self) -> Option<Self> {
+    pub fn next_sibling(&self) -> Option<Self> {
         let end = self.end_byte();
         let mut next = self.next_sibling_including_empty();
         while next.is_some_and(|node| node.end_byte() <= end) {
@@ -398,7 +397,7 @@ impl<'tree> Node<'tree> {
         next
     }
 
-    pub fn next_named_sibling(self) -> Option<Self> {
+    pub fn next_named_sibling(&self) -> Option<Self> {
         let end = self.end_byte();
         let mut next = self.next_sibling_including_empty();
         while next.is_some_and(|node| node.end_byte() <= end || !node.is_named()) {
@@ -407,26 +406,28 @@ impl<'tree> Node<'tree> {
         next
     }
 
-    pub fn prev_sibling(self) -> Option<Self> {
+    pub fn prev_sibling(&self) -> Option<Self> {
         self.parent()?
             .children()
-            .take_while(|node| *node != self)
+            .take_while(|node| *node != *self)
             .last()
     }
 
-    pub fn prev_named_sibling(self) -> Option<Self> {
+    pub fn prev_named_sibling(&self) -> Option<Self> {
         self.parent()?
             .children()
-            .take_while(|node| *node != self)
+            .take_while(|node| *node != *self)
             .filter(|node| node.is_named())
             .last()
     }
 
-    pub fn first_child_for_byte(self, byte: usize) -> Option<Self> {
+    pub fn first_child_for_byte(&self, byte: usize) -> Option<Self> {
+        let byte = byte as u32 as usize;
         self.children().find(|node| node.end_byte() > byte)
     }
 
-    pub fn first_named_child_for_byte(self, byte: usize) -> Option<Self> {
+    pub fn first_named_child_for_byte(&self, byte: usize) -> Option<Self> {
+        let byte = byte as u32 as usize;
         self.named_children().find(|node| node.end_byte() > byte)
     }
 
@@ -447,41 +448,36 @@ impl<'tree> Node<'tree> {
             is_missing: self.is_missing(),
             is_error: self.is_error(),
             has_error: self.has_error(),
-            has_changes: false,
         }
     }
 
-    pub fn walk(self) -> Result<Cursor<'tree>, Error> {
+    pub fn walk(&self) -> Result<Cursor<'tree>, Error> {
         Ok(Cursor {
-            node: self,
+            node: *self,
             parents: Vec::new(),
         })
     }
 
-    pub fn descendant_for_byte_range(self, start: usize, end: usize) -> Option<Self> {
-        u32::try_from(start).ok()?;
-        u32::try_from(end).ok()?;
-        self.seek::<false>(start as u64, end as u64, false)
+    pub fn descendant_for_byte_range(&self, start: usize, end: usize) -> Option<Self> {
+        self.seek::<false>(start as u32 as u64, end as u32 as u64, false)
     }
 
-    pub fn named_descendant_for_byte_range(self, start: usize, end: usize) -> Option<Self> {
-        u32::try_from(start).ok()?;
-        u32::try_from(end).ok()?;
-        self.seek::<false>(start as u64, end as u64, true)
+    pub fn named_descendant_for_byte_range(&self, start: usize, end: usize) -> Option<Self> {
+        self.seek::<false>(start as u32 as u64, end as u32 as u64, true)
     }
 
-    pub fn descendant_for_point_range(self, start: Point, end: Point) -> Option<Self> {
+    pub fn descendant_for_point_range(&self, start: Point, end: Point) -> Option<Self> {
         self.seek::<true>(
-            PackedPoint::from_point(start)?.get(),
-            PackedPoint::from_point(end)?.get(),
+            PackedPoint::from_point_cast(start).get(),
+            PackedPoint::from_point_cast(end).get(),
             false,
         )
     }
 
-    pub fn named_descendant_for_point_range(self, start: Point, end: Point) -> Option<Self> {
+    pub fn named_descendant_for_point_range(&self, start: Point, end: Point) -> Option<Self> {
         self.seek::<true>(
-            PackedPoint::from_point(start)?.get(),
-            PackedPoint::from_point(end)?.get(),
+            PackedPoint::from_point_cast(start).get(),
+            PackedPoint::from_point_cast(end).get(),
             true,
         )
     }
@@ -761,7 +757,7 @@ impl<'tree> Cursor<'tree> {
     /// Seek the first child ending after the byte, returning its child index.
     /// Can scan children. Failure leaves the cursor unchanged.
     pub fn goto_first_child_for_byte(&mut self, byte: usize) -> Option<usize> {
-        u32::try_from(byte).ok()?;
+        let byte = byte as u32 as usize;
         self.goto_child_matching(|node| {
             node.end_byte() > byte && node.end_position() > Point::default()
         })
@@ -769,8 +765,7 @@ impl<'tree> Cursor<'tree> {
 
     /// Point counterpart of `goto_first_child_for_byte`.
     pub fn goto_first_child_for_point(&mut self, point: Point) -> Option<usize> {
-        u32::try_from(point.row).ok()?;
-        u32::try_from(point.column).ok()?;
+        let point = PackedPoint::from_point_cast(point).point();
         self.goto_child_matching(|node| node.end_byte() > 0 && node.end_position() > point)
     }
 

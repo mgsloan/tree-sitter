@@ -101,6 +101,10 @@ impl std::ops::Sub<u32> for SlabOffset {
 }
 
 impl PackedPoint {
+    pub(crate) fn from_point_cast(point: tree_sitter::Point) -> Self {
+        Self((u64::from(point.row as u32) << 32) | u64::from(point.column as u32))
+    }
+
     pub(crate) fn from_point(point: tree_sitter::Point) -> Option<Self> {
         Some(Self(
             (u64::from(u32::try_from(point.row).ok()?) << 32)

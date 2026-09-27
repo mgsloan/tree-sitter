@@ -35,14 +35,13 @@ pub struct Attributes<'tree> {
     pub is_missing: bool,
     pub is_error: bool,
     pub has_error: bool,
-    pub has_changes: bool,
 }
 
 pub trait TreeLike {
     type Node<'tree>: NodeLike<'tree>
     where
         Self: 'tree;
-    fn root(&self) -> Self::Node<'_>;
+    fn root_node(&self) -> Self::Node<'_>;
 }
 
 pub trait NodeLike<'tree>: Copy + Eq {
@@ -52,22 +51,21 @@ pub trait NodeLike<'tree>: Copy + Eq {
     fn id(&self) -> Self::Id;
     /// Read constant-time attributes; counts are separate operations below.
     fn attributes(self) -> Attributes<'tree>;
-    fn kind_id(self) -> KindId;
-    fn grammar_id(self) -> GrammarKindId;
-    fn kind(self) -> &'tree str;
-    fn grammar_name(self) -> &'tree str;
-    fn byte_range(self) -> Range<usize>;
-    fn start_byte(self) -> usize;
-    fn end_byte(self) -> usize;
-    fn start_position(self) -> Point;
-    fn end_position(self) -> Point;
+    fn kind_id(&self) -> KindId;
+    fn grammar_id(&self) -> GrammarKindId;
+    fn kind(&self) -> &'tree str;
+    fn grammar_name(&self) -> &'tree str;
+    fn byte_range(&self) -> Range<usize>;
+    fn start_byte(&self) -> usize;
+    fn end_byte(&self) -> usize;
+    fn start_position(&self) -> Point;
+    fn end_position(&self) -> Point;
     fn has_points(self) -> bool;
-    fn is_named(self) -> bool;
-    fn is_extra(self) -> bool;
-    fn is_missing(self) -> bool;
-    fn is_error(self) -> bool;
-    fn has_error(self) -> bool;
-    fn has_changes(self) -> bool;
+    fn is_named(&self) -> bool;
+    fn is_extra(&self) -> bool;
+    fn is_missing(&self) -> bool;
+    fn is_error(&self) -> bool;
+    fn has_error(&self) -> bool;
     /// Preorder including this node, using the backend's native traversal.
     fn preorder(self) -> impl Iterator<Item = Self>;
     /// Public kind IDs, in preorder including this node. Never leaves its subtree.
@@ -83,24 +81,25 @@ pub trait NodeLike<'tree>: Copy + Eq {
     /// May scan unnamed children; stops at the first named child.
     fn has_named_children(self) -> bool;
     /// Count visible children; this can scan children in packed trees.
-    fn child_count(self) -> ChildIx;
+    fn child_count(&self) -> ChildIx;
     /// Count named children; this can scan children in packed trees.
-    fn named_child_count(self) -> NamedChildIx;
+    fn named_child_count(&self) -> NamedChildIx;
     /// Count visible descendants including this node; this can scan packed groups.
-    fn descendant_count(self) -> usize;
-    fn cursor(self) -> Result<Self::Cursor, Error>;
+    fn descendant_count(&self) -> usize;
+    fn walk(&self) -> Result<Self::Cursor, Error>;
     /// Can scan packed nodes; a cursor retains ancestry during traversal.
-    fn parent(self) -> Option<Self>;
+    fn parent(&self) -> Option<Self>;
     /// Can scan preceding children. Prefer iteration when visiting all children.
-    fn child(self, index: ChildIx) -> Option<Self>;
-    fn named_child(self, index: NamedChildIx) -> Option<Self>;
-    fn next_sibling(self) -> Option<Self>;
-    fn prev_sibling(self) -> Option<Self>;
-    fn next_named_sibling(self) -> Option<Self>;
-    fn prev_named_sibling(self) -> Option<Self>;
-    fn child_by_field_id(self, field: FieldId) -> Option<Self>;
-    fn descendant_for_byte_range(self, start: usize, end: usize) -> Option<Self>;
-    fn descendant_for_point_range(self, start: Point, end: Point) -> Option<Self>;
+    fn child(&self, index: ChildIx) -> Option<Self>;
+    fn named_child(&self, index: NamedChildIx) -> Option<Self>;
+    fn next_sibling(&self) -> Option<Self>;
+    fn prev_sibling(&self) -> Option<Self>;
+    fn next_named_sibling(&self) -> Option<Self>;
+    fn prev_named_sibling(&self) -> Option<Self>;
+    fn child_by_field_id(&self, field: FieldId) -> Option<Self>;
+    fn child_by_field_name(&self, name: impl AsRef<[u8]>) -> Option<Self>;
+    fn descendant_for_byte_range(&self, start: usize, end: usize) -> Option<Self>;
+    fn descendant_for_point_range(&self, start: Point, end: Point) -> Option<Self>;
 }
 
 pub trait CursorLike<'tree> {
@@ -115,7 +114,7 @@ pub trait CursorLike<'tree> {
     /// Can scan siblings. Failure leaves the cursor unchanged.
     fn goto_previous_sibling(&mut self) -> bool;
     /// Move to the first child ending after the byte and return its index. Can scan children.
-    /// Failure (including a coordinate exceeding u32) leaves the cursor unchanged.
+    /// Failure leaves the cursor unchanged.
     fn goto_first_child_for_byte(&mut self, byte: usize) -> Option<usize>;
     /// Point counterpart of goto_first_child_for_byte, with the same failure behavior.
     fn goto_first_child_for_point(&mut self, point: Point) -> Option<usize>;
@@ -129,13 +128,13 @@ pub trait CursorLike<'tree> {
 
 impl TreeLike for Tree {
     type Node<'tree> = Node<'tree>;
-    fn root(&self) -> Self::Node<'_> {
+    fn root_node(&self) -> Self::Node<'_> {
         self.root_node()
     }
 }
 impl TreeLike for tree_sitter::Tree {
     type Node<'tree> = tree_sitter::Node<'tree>;
-    fn root(&self) -> Self::Node<'_> {
+    fn root_node(&self) -> Self::Node<'_> {
         self.root_node()
     }
 }
@@ -143,81 +142,80 @@ impl TreeLike for tree_sitter::Tree {
 // Both node APIs intentionally share names and signatures. Keep the forwarding
 // list in one place so extending the comparison contract extends both backends.
 macro_rules! node_navigation {
-    ($node:ty $(, $borrow:tt)?) => {
-        fn parent(self) -> Option<Self> {
-            <$node>::parent($($borrow)? self)
+    ($node:ty) => {
+        fn parent(&self) -> Option<Self> {
+            <$node>::parent(self)
         }
 
-
-        fn next_sibling(self) -> Option<Self> {
-            <$node>::next_sibling($($borrow)? self)
+        fn next_sibling(&self) -> Option<Self> {
+            <$node>::next_sibling(self)
         }
-        fn prev_sibling(self) -> Option<Self> {
-            <$node>::prev_sibling($($borrow)? self)
+        fn prev_sibling(&self) -> Option<Self> {
+            <$node>::prev_sibling(self)
         }
-        fn next_named_sibling(self) -> Option<Self> {
-            <$node>::next_named_sibling($($borrow)? self)
+        fn next_named_sibling(&self) -> Option<Self> {
+            <$node>::next_named_sibling(self)
         }
-        fn prev_named_sibling(self) -> Option<Self> {
-            <$node>::prev_named_sibling($($borrow)? self)
+        fn prev_named_sibling(&self) -> Option<Self> {
+            <$node>::prev_named_sibling(self)
         }
-        fn child_by_field_id(self, field: FieldId) -> Option<Self> {
-            <$node>::child_by_field_id($($borrow)? self, field.into())
+        fn child_by_field_name(&self, name: impl AsRef<[u8]>) -> Option<Self> {
+            <$node>::child_by_field_name(self, name)
         }
-        fn descendant_for_byte_range(self, start: usize, end: usize) -> Option<Self> {
-            <$node>::descendant_for_byte_range($($borrow)? self, start, end)
+        fn child_by_field_id(&self, field: FieldId) -> Option<Self> {
+            <$node>::child_by_field_id(self, field.into())
         }
-        fn descendant_for_point_range(self, start: Point, end: Point) -> Option<Self> {
-            <$node>::descendant_for_point_range($($borrow)? self, start, end)
+        fn descendant_for_byte_range(&self, start: usize, end: usize) -> Option<Self> {
+            <$node>::descendant_for_byte_range(self, start, end)
+        }
+        fn descendant_for_point_range(&self, start: Point, end: Point) -> Option<Self> {
+            <$node>::descendant_for_point_range(self, start, end)
         }
     };
 }
 macro_rules! node_attributes {
-    ($node:ty $(, $borrow:tt)?) => {
-        fn kind_id(self) -> KindId {
-            <$node>::kind_id($($borrow)? self).into()
+    ($node:ty) => {
+        fn kind_id(&self) -> KindId {
+            <$node>::kind_id(self).into()
         }
-        fn grammar_id(self) -> GrammarKindId {
-            <$node>::grammar_id($($borrow)? self).into()
+        fn grammar_id(&self) -> GrammarKindId {
+            <$node>::grammar_id(self).into()
         }
-        fn kind(self) -> &'tree str {
-            <$node>::kind($($borrow)? self)
+        fn kind(&self) -> &'tree str {
+            <$node>::kind(self)
         }
-        fn grammar_name(self) -> &'tree str {
-            <$node>::grammar_name($($borrow)? self)
+        fn grammar_name(&self) -> &'tree str {
+            <$node>::grammar_name(self)
         }
-        fn byte_range(self) -> Range<usize> {
-            <$node>::byte_range($($borrow)? self)
+        fn byte_range(&self) -> Range<usize> {
+            <$node>::byte_range(self)
         }
-        fn start_byte(self) -> usize {
-            <$node>::start_byte($($borrow)? self)
+        fn start_byte(&self) -> usize {
+            <$node>::start_byte(self)
         }
-        fn end_byte(self) -> usize {
-            <$node>::end_byte($($borrow)? self)
+        fn end_byte(&self) -> usize {
+            <$node>::end_byte(self)
         }
-        fn start_position(self) -> Point {
-            <$node>::start_position($($borrow)? self)
+        fn start_position(&self) -> Point {
+            <$node>::start_position(self)
         }
-        fn end_position(self) -> Point {
-            <$node>::end_position($($borrow)? self)
+        fn end_position(&self) -> Point {
+            <$node>::end_position(self)
         }
-        fn is_named(self) -> bool {
-            <$node>::is_named($($borrow)? self)
+        fn is_named(&self) -> bool {
+            <$node>::is_named(self)
         }
-        fn is_extra(self) -> bool {
-            <$node>::is_extra($($borrow)? self)
+        fn is_extra(&self) -> bool {
+            <$node>::is_extra(self)
         }
-        fn is_missing(self) -> bool {
-            <$node>::is_missing($($borrow)? self)
+        fn is_missing(&self) -> bool {
+            <$node>::is_missing(self)
         }
-        fn is_error(self) -> bool {
-            <$node>::is_error($($borrow)? self)
+        fn is_error(&self) -> bool {
+            <$node>::is_error(self)
         }
-        fn has_error(self) -> bool {
-            <$node>::has_error($($borrow)? self)
-        }
-        fn has_changes(self) -> bool {
-            <$node>::has_changes($($borrow)? self)
+        fn has_error(&self) -> bool {
+            <$node>::has_error(self)
         }
     };
 }
@@ -238,13 +236,12 @@ macro_rules! attributes {
             is_missing: $node.is_missing(),
             is_error: $node.is_error(),
             has_error: $node.has_error(),
-            has_changes: $node.has_changes(),
         }
     };
 }
 impl<'tree> NodeLike<'tree> for tree_sitter::Node<'tree> {
     type Cursor = tree_sitter::TreeCursor<'tree>;
-    node_attributes!(tree_sitter::Node<'tree>, &);
+    node_attributes!(tree_sitter::Node<'tree>);
     fn has_points(self) -> bool {
         true
     }
@@ -269,14 +266,14 @@ impl<'tree> NodeLike<'tree> for tree_sitter::Node<'tree> {
     fn has_named_children(self) -> bool {
         tree_sitter::Node::named_child_count(&self) != 0
     }
-    fn child_count(self) -> ChildIx {
-        ChildIx::new(tree_sitter::Node::child_count(&self) as u32)
+    fn child_count(&self) -> ChildIx {
+        ChildIx::new(tree_sitter::Node::child_count(self) as u32)
     }
-    fn named_child_count(self) -> NamedChildIx {
-        NamedChildIx::new(tree_sitter::Node::named_child_count(&self) as u32)
+    fn named_child_count(&self) -> NamedChildIx {
+        NamedChildIx::new(tree_sitter::Node::named_child_count(self) as u32)
     }
-    fn descendant_count(self) -> usize {
-        tree_sitter::Node::descendant_count(&self)
+    fn descendant_count(&self) -> usize {
+        tree_sitter::Node::descendant_count(self)
     }
     type Id = usize;
     fn id(&self) -> Self::Id {
@@ -285,16 +282,16 @@ impl<'tree> NodeLike<'tree> for tree_sitter::Node<'tree> {
     fn attributes(self) -> Attributes<'tree> {
         attributes!(self)
     }
-    fn cursor(self) -> Result<Self::Cursor, Error> {
+    fn walk(&self) -> Result<Self::Cursor, Error> {
         Ok(self.walk())
     }
-    fn child(self, index: ChildIx) -> Option<Self> {
-        tree_sitter::Node::child(&self, index.get())
+    fn child(&self, index: ChildIx) -> Option<Self> {
+        tree_sitter::Node::child(self, index.get())
     }
-    fn named_child(self, index: NamedChildIx) -> Option<Self> {
-        tree_sitter::Node::named_child(&self, index.get())
+    fn named_child(&self, index: NamedChildIx) -> Option<Self> {
+        tree_sitter::Node::named_child(self, index.get())
     }
-    node_navigation!(tree_sitter::Node<'tree>, &);
+    node_navigation!(tree_sitter::Node<'tree>);
 }
 impl<'tree> NodeLike<'tree> for Node<'tree> {
     type Cursor = Cursor<'tree>;
@@ -320,13 +317,13 @@ impl<'tree> NodeLike<'tree> for Node<'tree> {
     fn has_named_children(self) -> bool {
         Node::has_named_children(self)
     }
-    fn child_count(self) -> ChildIx {
+    fn child_count(&self) -> ChildIx {
         Node::child_count(self)
     }
-    fn named_child_count(self) -> NamedChildIx {
+    fn named_child_count(&self) -> NamedChildIx {
         Node::named_child_count(self)
     }
-    fn descendant_count(self) -> usize {
+    fn descendant_count(&self) -> usize {
         Node::descendant_count(self)
     }
     type Id = SlotIx;
@@ -336,13 +333,13 @@ impl<'tree> NodeLike<'tree> for Node<'tree> {
     fn attributes(self) -> Attributes<'tree> {
         Node::attributes(self)
     }
-    fn cursor(self) -> Result<Self::Cursor, Error> {
+    fn walk(&self) -> Result<Self::Cursor, Error> {
         self.walk()
     }
-    fn child(self, index: ChildIx) -> Option<Self> {
+    fn child(&self, index: ChildIx) -> Option<Self> {
         Node::child(self, index)
     }
-    fn named_child(self, index: NamedChildIx) -> Option<Self> {
+    fn named_child(&self, index: NamedChildIx) -> Option<Self> {
         Node::named_child(self, index)
     }
     node_navigation!(Node<'tree>);
@@ -359,12 +356,9 @@ macro_rules! cursor_navigation {
             <$cursor>::goto_previous_sibling(self)
         }
         fn goto_first_child_for_byte(&mut self, byte: usize) -> Option<usize> {
-            let byte = u32::try_from(byte).ok()? as usize;
             <$cursor>::goto_first_child_for_byte(self, byte).map(|index| index as usize)
         }
         fn goto_first_child_for_point(&mut self, point: Point) -> Option<usize> {
-            u32::try_from(point.row).ok()?;
-            u32::try_from(point.column).ok()?;
             <$cursor>::goto_first_child_for_point(self, point).map(|index| index as usize)
         }
         fn depth(&self) -> u32 {
