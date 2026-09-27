@@ -1,65 +1,16 @@
 # Query revamp
 
-This document describes the proposed query API and retained behavior. Follow
-tree-sitter's API with the additions and differences specified below. Query work
-is separate from the navigation/storage API pass. Proposed API outlines describe
-planned functionality; current behavior and completed work are identified below.
+The query revamp is implemented: metadata and diagnostics, public index types,
+chunked text providers, streaming iterators, and resumable progress callbacks.
+This document describes the current API and its differences from the tree-sitter
+checkout in this repository. API outlines omit private fields and method bodies.
 
-The planned work covers metadata and diagnostics, public index types, text
-providers, streaming iterators, and resumable progress callbacks. Ordinary
-bounded queries are already supported in general and optimized execution,
-including trees with parse errors. Query containing-range setters remain deferred;
-existing scan APIs are outside this work.
+Ordinary bounded queries work in general and optimized execution, including trees
+with parse errors. Containing ranges and strict source ordering remain deferred.
+Callback cost measurement and tuning were skipped; the current polling threshold
+is unmeasured. Navigation, storage, and scan APIs are outside this revamp.
 
 ## Query compilation, metadata, and errors
-
-**Current tree-sitter**
-
-```rust
-impl Query {
-    pub fn pattern_count(&self) -> usize;
-    pub fn disable_pattern(&mut self, index: usize);
-    pub fn disable_capture(&mut self, name: &str);
-    pub const fn capture_names(&self) -> &[&str];
-    pub fn capture_index_for_name(&self, name: &str) -> Option<u32>;
-    pub const fn capture_quantifiers(&self, index: usize) -> &[CaptureQuantifier];
-    pub const fn property_settings(&self, index: usize) -> &[QueryProperty];
-    pub const fn property_predicates(&self, index: usize) -> &[(QueryProperty, bool)];
-    pub const fn general_predicates(&self, index: usize) -> &[QueryPredicate];
-    pub fn start_byte_for_pattern(&self, index: usize) -> usize;
-    pub fn end_byte_for_pattern(&self, index: usize) -> usize;
-    pub fn is_pattern_rooted(&self, index: usize) -> bool;
-    pub fn is_pattern_non_local(&self, index: usize) -> bool;
-    pub fn is_pattern_guaranteed_at_step(&self, offset: usize) -> bool;
-    pub fn deep_clone(&self) -> Self;
-}
-pub struct QueryError {
-    pub row: usize,
-    pub column: usize,
-    pub offset: usize,
-    pub message: String,
-    pub kind: QueryErrorKind,
-}
-```
-
-**Current tree-squatter**
-
-```rust
-impl Query {
-    pub fn pattern_count(&self) -> usize;
-    pub fn disable_pattern(&mut self, index: usize);
-    pub fn disable_capture(&mut self, name: &str);
-    pub fn capture_names(&self) -> &[String];
-    pub fn general_predicates(&self, pattern: usize) -> &[tree_sitter::QueryPredicate];
-    // other inspection methods above and deep_clone are absent
-}
-pub struct QueryError {
-    pub offset: usize,
-    pub message: String,
-}
-```
-
-**Proposed tree-squatter**
 
 ```rust
 impl Query {
@@ -91,90 +42,30 @@ pub struct QueryError {
 
 - `Query::new` accepts the prepared `Language` wrapper;
   `Language::tree_sitter_language()` exposes the underlying tree-sitter language.
-- Return borrowed string slices rather than exposing internal string ownership.
-- Add capture, pattern, and property inspection; reuse tree-sitter metadata types
-  where their shape is unchanged. Property/predicate types need `CaptureIx`.
-- Put `set!` in settings and `is?`/`is-not?` in property predicates. Exclude those
-  operators from general predicates, preserving host evaluation responsibilities.
-- Restore full compilation diagnostics and clone enabled-pattern/capture state.
+- Capture names are borrowed string slices. Disabling patterns or captures
+  does not renumber their indices.
+- `CaptureQuantifier` and `QueryErrorKind` are re-exported from tree-sitter.
+  Property and predicate types belong to squatter because they carry `CaptureIx`.
+- `set!` appears in settings and `is?`/`is-not?` in property predicates. These
+  operators are excluded from general predicates; the host evaluates both kinds
+  of property metadata and general predicates.
+- Compilation diagnostics match tree-sitter's error fields and `Display` output.
+  Predicate errors use the pattern's row with column and offset zero, including
+  errors in later predicates or patterns. Messages and validation order match
+  tree-sitter's Rust binding.
+- `deep_clone` copies disabled-pattern/capture state for independent mutation.
+  Queries may be shared across cursors and threads without cloning.
 
 ## Query indices and result types
 
-Use `PatternIx(usize)` for query-global pattern indices, `CaptureIx(u32)` for
-query-global capture-name indices, `MatchId(u32)` for match identity, and
-`MatchCaptureIx(u32)` for positions within a match's capture slice. These are
-separate domains, even when their values coincide.
+`PatternIx(usize)` identifies query-global patterns, `CaptureIx(u32)` identifies
+query-global capture names, `MatchId(u32)` identifies matches, and
+`MatchCaptureIx(u32)` identifies positions within a match's capture slice.
+These are separate domains, even when their values coincide.
 
 A pattern index is the zero-based position of a top-level pattern in the compiled
 query. Each match identifies the pattern that produced it; many matches can share
 one pattern index.
-
-**Current tree-sitter**
-
-```rust
-pub struct QueryCapture<'tree> {
-    pub node: Node<'tree>,
-    pub index: u32, // query-wide capture-name ID
-}
-pub struct QueryMatch<'cursor, 'tree> {
-    pub pattern_index: usize,
-    // private captures, match ID, and cursor
-}
-impl<'tree> QueryMatch<'_, 'tree> {
-    pub const fn id(&self) -> u32;
-    pub const fn captures(&self) -> &[QueryCapture<'tree>];
-    pub fn remove(&self);
-    pub fn nodes_for_capture_index(&self, capture_ix: u32)
-        -> impl Iterator<Item = Node<'tree>> + '_;
-}
-pub struct QueryProperty {
-    pub key: Box<str>,
-    pub value: Option<Box<str>>,
-    pub capture_id: Option<usize>, // also a query-wide capture-name ID
-}
-impl QueryProperty {
-    pub fn new(key: &str, value: Option<&str>, capture_id: Option<usize>) -> Self;
-}
-pub enum QueryPredicateArg {
-    Capture(u32), // query-wide capture-name ID
-    String(Box<str>),
-}
-pub struct QueryPredicate {
-    pub operator: Box<str>,
-    pub args: Box<[QueryPredicateArg]>,
-}
-// StreamingIterator associated item types, with generics omitted:
-// QueryMatches::Item = QueryMatch<'cursor, 'tree>
-// QueryCaptures::Item = (QueryMatch<'cursor, 'tree>, usize)
-// The tuple index selects an occurrence in found.captures().
-```
-
-**Current tree-squatter**
-
-```rust
-pub struct QueryCapture<'tree> {
-    pub node: Node<'tree>,
-    pub index: u32,
-}
-pub struct QueryMatch<'cursor, 'tree> {
-    pub id: u32,
-    pub pattern_index: usize,
-    pub captures: &'cursor [QueryCapture<'tree>],
-}
-impl<'tree> QueryMatch<'_, 'tree> {
-    pub fn nodes_for_capture_index(&self, index: u32)
-        -> impl Iterator<Item = Node<'tree>> + '_;
-}
-impl<'tree> QueryExecution<'_, '_, 'tree, '_> {
-    pub fn next_match(&mut self) -> Option<QueryMatch<'_, 'tree>>;
-    pub fn next_capture(&mut self) -> Option<(QueryMatch<'_, 'tree>, usize)>;
-    pub fn remove_match(&mut self, id: u32);
-}
-// general_predicates exposes tree_sitter::QueryPredicate and QueryPredicateArg.
-// No property metadata API; internal CaptureId(u32) is private.
-```
-
-**Proposed tree-squatter**
 
 ```rust
 pub struct PatternIx(pub usize);
@@ -230,10 +121,7 @@ pub enum QueryExecutionError {
 }
 ```
 
-- Add match accessors and removal through the match, retaining the explicit
-  executor interface. A match ID identifies an execution result; it is neither
-  a pattern index nor a capture-name ID.
-- Use `CaptureIx` consistently for `QueryCapture::index`,
+- `CaptureIx` is used consistently for `QueryCapture::index`,
   `Query::capture_index_for_name`, `QueryMatch::nodes_for_capture_index`,
   `QueryPredicateArg::Capture`, and `QueryProperty::capture_id` (including its
   constructor). The last currently uses `usize` in tree-sitter despite referring
@@ -242,64 +130,20 @@ pub enum QueryExecutionError {
   `query.capture_names()[capture_ix.0 as usize]` and
   `query.capture_quantifiers(pattern_ix)[capture_ix.0 as usize]`. Pattern
   arguments use `PatternIx` directly; slice positions use the inner integer.
-- Use `PatternIx` for `QueryMatch::pattern_index` and all pattern-index arguments
-  on `Query`, including `disable_pattern` and per-pattern metadata accessors.
-  Keep its backing type `usize`. Counts and query-source byte offsets remain
+- `PatternIx` is used for `QueryMatch::pattern_index` and all pattern-index
+  arguments on `Query`, including `disable_pattern` and per-pattern metadata accessors.
+  Its backing type is `usize`. Counts and query-source byte offsets remain
   `usize`; `is_pattern_guaranteed_at_step` takes a byte offset, not a pattern index.
-- Use `MatchCaptureIx` for capture-event positions in both iteration APIs.
+- `MatchCaptureIx` identifies capture-event positions in both iteration APIs.
   Convert its value to `usize` when indexing the match's capture slice. Repeated
   captures can have the same name ID and different positions;
   `nodes_for_capture_index` returns all occurrences of that name.
-- Keep the capture and match wrappers backed by `u32`. `CaptureIx` preserves
-  zero-based query-global indices without offset encoding. Tree-sitter returns
-  match-local positions as `u32`, although its match capture count is `u16`;
-  do not adopt that narrower count limit. Repetitions can yield many occurrences
-  of one name.
-- Rename the private `CaptureId` to `CaptureIx`; use one type for that domain.
-  Expose `MatchId` consistently through `QueryMatch::id()` and
-  `QueryExecution::remove_match()`.
-- Define squatter-owned property/predicate types to carry `CaptureIx`;
-  tree-sitter's types cannot carry it. Keep their remaining shape unchanged.
+- The capture and match wrappers use `u32`. `CaptureIx` preserves zero-based
+  indices without offset encoding. Squatter does not adopt tree-sitter's internal
+  `u16` match capture-count limit; repetitions can yield many occurrences of one
+  name. `MatchId` is shared by `QueryMatch::id()` and `remove_match()`.
 
 ## Query iteration and match access
-
-**Current tree-sitter**
-
-```rust
-use tree_sitter::StreamingIterator;
-
-let mut matches = cursor.matches(&query, root, source_bytes);
-while let Some(found) = matches.next() {
-    let captures = found.captures();
-    found.remove(); // optional: suppress subsequent results for this match
-}
-drop(matches);
-
-let mut captures = cursor.captures(&query, root, source_bytes);
-while let Some((found, index)) = captures.next() {
-    let capture = found.captures()[*index];
-}
-```
-
-**Current tree-squatter**
-
-```rust
-let mut execution = cursor.execute(&query, root, source_bytes);
-while let Some(found) = execution.next_match() {
-    let captures = found.captures;
-    let id = found.id;
-    execution.remove_match(id);
-}
-drop(execution);
-
-let mut execution = cursor.execute(&query, root, source_bytes);
-while let Some((found, index)) = execution.next_capture() {
-    let capture = found.captures[index]; // provisional, unspecified event order
-}
-let error = execution.error();
-```
-
-**Proposed tree-squatter**
 
 ```rust
 use tree_squatter::StreamingIterator;
@@ -315,20 +159,27 @@ let mut captures = cursor.captures(&query, root, source_bytes);
 while let Some((found, index)) = captures.next() {
     let capture = found.captures()[index.0 as usize];
 }
-// execute and explicit execution errors remain additional capabilities
+drop(captures);
+
+let mut execution = cursor.execute(&query, root, source_bytes);
+while let Some(found) = execution.next_match() {
+    let id = found.id();
+    execution.remove_match(id);
+}
+let error = execution.error();
 ```
 
-- Accept a root `Node` by value in `matches`, `captures`, `execute`, and their
-  options variants, following tree-sitter's query entry points.
-- Add `matches`/`captures` streaming iterators using the text-provider interface
-  below, shared with `execute`.
-- Preserve current capture ordering, provisional snapshot contents, and duplicate
-  behavior in `captures`, adapting `next_capture` without changing its execution
-  semantics. Document the differences from tree-sitter; no separately named
-  provisional-event API or strict source-order guarantee is required. Preserve
-  coverage of completed-match captures.
-- Retain `QueryExecution::error()` for query/node language mismatches.
-  Unavailable optimizations must not make valid queries fail.
+- `matches`, `captures`, `execute`, and their options variants accept a root `Node`
+  by value and use the same text-provider interface.
+- `matches` and `captures` implement the re-exported `StreamingIterator` trait.
+  `execute` retains explicit `next_match` and `next_capture` methods.
+- Capture events retain provisional snapshots, unspecified event order, and
+  duplicates. They cover completed-match captures but can expose snapshots that
+  later gain captures or lose longest-match filtering. Event order, provisional
+  contents, and multiplicity can differ from tree-sitter. Use completed matches
+  when provisional events are unsuitable.
+- `QueryExecution::error()` reports query/node language mismatches.
+  Unavailable optimizations fall back to general execution.
 - The snippets use `source_bytes: &[u8]`, which can be copied into each provider
   argument. A provider that is not `Copy` needs a separate value for each execution.
 
@@ -345,21 +196,21 @@ current item. In both APIs, advancing requires those result borrows to end.
 tree lifetime and does not prevent advancement.
 
 `QueryMatch::remove(&self)` suppresses subsequent results for that match ID in
-this execution. It must leave the current match and any borrowed capture slice
-readable. Record removal through interior-mutable state and apply it before the
-next advancement can emit results or reuse capture storage. Repeated removal is
-a no-op; already returned results remain valid. Dropping a match without calling
-`remove` does not suppress its remaining captures.
+this execution. It leaves the current match and any borrowed capture slice
+readable. Removal is recorded through interior-mutable state and applied before
+the next advancement can emit results or reuse capture storage. Repeated removal
+is a no-op; already returned results remain valid. Dropping a match without
+calling `remove` does not suppress its remaining captures.
 
 `QueryExecution::remove_match(MatchId)` provides the same suppression by ID after
 the result borrow ends. Match IDs belong to one execution and may be reused by a
-fresh execution. Keep capture storage and removal state private; iterator
-adapters must not expose references that outlive the current result borrow.
+fresh execution. Capture storage and removal state are private; iterator adapters
+expose references only for the current result borrow.
 
 ## Text providers and predicate evaluation
 
-Define a squatter-owned `TextProvider` with tree-sitter's trait shape, accepting
-packed `Node` values. Retain the associated iterator name `I` for compatibility.
+Squatter's `TextProvider` has tree-sitter's trait shape, accepting packed `Node`
+values and retaining the associated iterator name `I`.
 
 ```rust
 pub trait TextProvider<Chunk: AsRef<[u8]>> {
@@ -376,13 +227,13 @@ impl<'text> TextProvider<&'text [u8]> for &'text [u8] {
 }
 ```
 
-Also support closures returning chunk iterators, as tree-sitter does. Chunks may
-be borrowed or owned. Each call supplies the node's complete text in source order;
+Closures returning chunk iterators are also supported. Chunks may be borrowed or
+owned. Each call supplies the node's complete text in source order;
 chunk boundaries have no semantic significance. The byte-slice implementation
 indexes source bytes using the node's byte range, without copying.
 
 All query entry points take the provider by value and retain it for execution.
-Use the same bounds and lifetime order for `QueryMatches`, `QueryCaptures`, and
+The same bounds and lifetime order apply to `QueryMatches`, `QueryCaptures`, and
 `QueryExecution`: `<'cursor, 'query, 'tree, 'options, Provider, Chunk>`.
 The options lifetime represents the mutable callback borrow. Entry points
 without options use `'static` for that parameter because they hold no callback.
@@ -418,53 +269,17 @@ types, independently of the tree and callback borrows. Captures borrow nodes fro
 the tree, not text from the provider.
 
 Built-in text predicates evaluate the concatenation of all chunks for each
-capture. Equality, membership, and regex results must be independent of chunking,
-including regex matches spanning chunk boundaries. Apply negation and repeated-
-capture quantifiers to complete capture texts, not individual chunks. Continue
-to expose general predicates for host evaluation.
+capture. Equality, membership, and regex results are independent of chunking,
+including regex matches spanning chunk boundaries. Negation and repeated-capture
+quantifiers apply to complete capture texts. General predicates remain available
+for host evaluation.
 
-Borrow a single chunk directly when possible. When contiguous text is needed
-for multiple chunks, assemble it in reusable execution buffers. An empty chunk
-iterator represents empty text; empty chunks do not alter the result. Do not
-require callers to flatten a noncontiguous source before executing a query.
+A single chunk is borrowed directly. Multiple chunks are assembled in reusable
+execution buffers when contiguous text is needed. An empty chunk iterator
+represents empty text; empty chunks do not alter the result. Callers need not
+flatten a noncontiguous source before executing a query.
 
-## Query ranges, limits, and cancellation
-
-**Current tree-sitter**
-
-```rust
-impl QueryCursor {
-    pub fn set_match_limit(&mut self, limit: u32);
-    pub fn did_exceed_match_limit(&self) -> bool;
-    pub fn match_limit(&self) -> u32;
-    pub fn set_byte_range(&mut self, range: Range<usize>) -> &mut Self;
-    pub fn set_point_range(&mut self, range: Range<Point>) -> &mut Self;
-    pub fn set_containing_byte_range(&mut self, range: Range<usize>) -> &mut Self;
-    pub fn set_containing_point_range(&mut self, range: Range<Point>) -> &mut Self;
-    pub fn set_max_start_depth(&mut self, depth: Option<u32>) -> &mut Self;
-}
-let options = QueryCursorOptions::new().progress_callback(&mut progress);
-let matches = cursor.matches_with_options(&query, root, text_provider, options);
-// captures_with_options is also available
-```
-
-**Current tree-squatter**
-
-```rust
-impl QueryCursor {
-    pub fn set_match_limit(&mut self, limit: u32);
-    pub fn did_exceed_match_limit(&self) -> bool;
-    pub fn set_byte_range(&mut self, range: Range<usize>) -> bool;
-    pub fn set_point_range(&mut self, range: Range<Point>) -> bool;
-    pub fn set_max_start_depth(&mut self, depth: u32);
-    pub fn set_timeout(&mut self, timeout: Option<Duration>);
-    pub fn set_optimized(&mut self, enabled: bool);
-}
-// no match_limit getter, containing-range setters, or progress options
-// ordinary ranges support branching and rootless queries
-```
-
-**Proposed tree-squatter**
+## Query ranges and limits
 
 ```rust
 impl QueryCursor {
@@ -482,39 +297,28 @@ let matches = cursor.matches_with_options(&query, root, text_provider, options);
 // captures_with_options and execute_with_options use the same options interface
 ```
 
-- Keep ranges, maximum start depth, and match limits as persistent cursor
-  settings, following tree-sitter. Progress callbacks belong to per-execution
-  `QueryCursorOptions`.
-- Follow tree-sitter's Rust wrapper: range setters return `&mut Self` for chaining
-  and discard the internal acceptance result. A zero end means unbounded;
-  reversed ranges leave the stored range unchanged. Do not add separate
-  `try_set_*` methods. Use `None` to remove the depth limit. Narrow coordinates
-  with `as u32`, matching tree-sitter's Rust wrapper rather than rejecting values
-  that do not fit. Validate ranges after conversion. Squatter-only scan APIs
-  retain their wider-coordinate behavior.
-- Add the missing `match_limit` getter on the cursor. Retain `set_match_limit`
-  and `did_exceed_match_limit`: the limit bounds in-progress-match capacity,
-  not the number of results.
-- Add `set_byte_range(Range<usize>)` and `set_point_range(Range<Point>)` to
-  `QueryMatches` and `QueryCaptures`. These methods return `()`, as tree-sitter's
+- Ranges, maximum start depth, and match limits persist on the cursor, following
+  tree-sitter. Progress callbacks belong to per-execution `QueryCursorOptions`.
+- Cursor range setters return `&mut Self` for chaining. A zero end means
+  unbounded; reversed ranges leave the stored range unchanged. Coordinates
+  narrow with `as u32` before validation, matching tree-sitter's Rust wrapper.
+  Squatter-only scan APIs retain their wider-coordinate behavior.
+- `None` removes the maximum start depth. Match limits bound in-progress-match
+  capacity, not the number of results. Discovery and eviction order can retain
+  a different valid subset from tree-sitter.
+- `QueryMatches` and `QueryCaptures` provide `set_byte_range(Range<usize>)` and
+  `set_point_range(Range<Point>)`. These methods return `()`, as tree-sitter's
   iterator setters do, and update the borrowed cursor's stored ranges. Their
   validation and narrowing rules match the cursor setters.
-- Query containing-range setters remain deferred. They require every matched
-  node to be wholly inside a supplied range, independently of the ordinary
-  intersection range.
-- Preserve the implemented bounded-query behavior: optimized root seeking
-  respects range traversal boundaries while active matches may finish outside
-  the range. Branching, rootless patterns, and parse errors are supported.
-- Replace `set_timeout` with the resumable progress-callback interface below.
-  Retain explicit execution errors through `QueryExecution::error()` and
-  optimization control through `QueryCursor::set_optimized`.
-- Preserve and document current finite-limit execution behavior. Discovery and
-  eviction order can retain a different valid subset from tree-sitter; no
-  dedicated eviction or result-subset compatibility audit is planned.
+- Ordinary ranges select intersecting nodes. Optimized root seeking respects
+  range traversal boundaries while active matches may finish outside the range.
+  Branching, rootless patterns, and parse errors are supported.
+- Without point data, nodes use row zero and byte offsets as columns, including
+  in point-dependent queries. Missing presence caches do not change results.
 
 ## Progress and cancellation
 
-Use query-specific progress state and tree-sitter's Rust callback shape:
+Progress uses query-specific state and tree-sitter's Rust callback shape:
 
 ```rust
 pub struct QueryCursorState { /* private representation */ }
@@ -536,95 +340,86 @@ impl<'options> QueryCursorOptions<'options> {
 }
 ```
 
-`Continue(())` continues, `Break(())` cancels, and `None` disables callbacks.
-Callers can capture a deadline or atomic flag in place of `set_timeout`.
-An execution retains the options and callback borrow through cancellation and
-resumption. `reborrow()` permits sequential reuse of options; the earlier
+`Continue(())` continues, `Break(())` requests a pause, and `None` disables
+callbacks. `set_timeout` has been removed; callbacks can capture a deadline or
+atomic flag. An execution retains the options and callback borrow through
+cancellation and resumption. `reborrow()` permits sequential reuse of options; the earlier
 execution must be dropped before reborrowing them.
 
-Poll during searches without results, including long state-work loops. Decode
-byte positions only when invoking the callback; optimized scans must supply
-their local position rather than a stale general cursor position. This position
-is not a monotonic work counter.
+Searches poll even without results, including in long state-work loops. Byte
+positions are decoded only when invoking the callback. Optimized scans report
+their local position; shared capture bookkeeping uses the node being processed.
+The position is not a monotonic work counter.
 
-Exact callback cadence and work completed before cancellation may differ from
-tree-sitter. Internal throttling is allowed, and bookkeeping need not disappear
-when callbacks are absent. Measure costs before choosing thresholds or claiming
-a benefit. A public `progress_stride` is not required by this API; tree-sitter
-uses an internal threshold of 100 operations.
+Polling uses an internal threshold of 100 operations. Bookkeeping remains when
+callbacks are absent. This threshold has not been benchmarked or tuned; callback
+cost measurements were skipped. There is no public `progress_stride`.
 
-Adopt resumable callback cancellation, matching this tree-sitter checkout:
+Callback cancellation is resumable, matching this tree-sitter checkout:
 
 - Callback cancellation preserves traversal state, in-progress matches, and
   capture consumption state. It does not mark execution permanently halted.
 - After a cancellation returns `None`, calling `next()` again on the same
-  `QueryMatches` or `QueryCaptures` resumes execution. Apply the same rule to
-  `QueryExecution::next_match` and `next_capture`. Iterator wrappers must preserve
-  this behavior rather than treating the first `None` as terminal.
+  `QueryMatches` or `QueryCaptures` resumes execution. The same rule applies to
+  `QueryExecution::next_match` and `next_capture`; these streams are not fused.
+- A stop request lets the current node transition or capture bookkeeping finish
+  before yielding. Callback cadence and work completed before cancellation can
+  differ from tree-sitter.
 - The callback remains installed. Advancement may do work and return results
   before polling it again, even if it continues to return `Break(())`. Ready
   captures can also be returned before iteration reports the stop.
 - Creating a new iterator through `matches`/`captures` or their options variants
   starts a fresh execution. The explicit `execute` API likewise starts afresh.
-- Follow tree-sitter in providing no query cancellation-status accessor. `None`
+- There is no query cancellation-status accessor, as in tree-sitter. `None`
   alone does not distinguish cancellation from exhaustion; callers that need
   this distinction can track whether their progress callback requested a stop.
 
 Tree-sitter implements this resumption behavior in
 [`ts_query_cursor__advance`](lib/src/query.c) and the Rust iterators'
 [`advance` methods](lib/binding_rust/lib.rs), though its API documentation does
-not explicitly guarantee resumption. Callback cancellation must preserve live
-state rather than take squatter's current timeout path, which sets `halted`.
+not explicitly guarantee resumption.
 
-## Verification and documentation
+## Verification
 
-Use existing query differential tests, normalizing newtypes and representation-
-specific identities. Preserve contractual ordering and duplicates for completed
-matches. For capture events, check completed-capture coverage without requiring
-tree-sitter's event order, provisional snapshots, or multiplicity.
+The [query execution tests](crates/squatter/tests/query_execution.rs) cover:
 
-Cover range boundaries, cancellation, optional side data, and optimized and
-unoptimized execution as relevant to the changes. Absent point data retains the
-existing row-zero, byte-as-column behavior, including in point-dependent queries.
-Missing presence caches must not change results. No separate attached-point
-parity audit is planned.
+- Metadata, disabled patterns/captures, independent clones, and compilation
+  diagnostics. Predicate diagnostics compare every error field and `Display`
+  output across operator variants, invalid arguments, and multiline patterns.
+- General and optimized execution, including parse errors, branching, rootless
+  patterns, and missing optional side data. Differential tests compare completed
+  matches and duplicates while normalizing representation-specific identities.
+  Capture tests check completed-capture coverage without requiring tree-sitter's
+  event order, provisional snapshots, or multiplicity.
+- Range boundaries, zero-end, empty, reversed, and wider-coordinate inputs,
+  structural context outside the query range, and persistent iterator settings.
+- Byte-slice and chunked providers across all entry points: equality, membership,
+  regex matches across chunk boundaries, splits inside UTF-8 sequences, empty
+  text/chunks, and repeated captures.
+- Removal with readable borrowed captures, repeated removal, explicit removal by
+  ID, copied nodes, provider ownership, and cursor reuse after execution drops.
+- Resuming the same execution after repeated stops, preserving in-progress
+  matches, capture consumption, and result sequence; searches without results;
+  fresh cursor reuse; and progress offsets after optimized capture traversal
+  enters later subtrees.
 
-Check that live result borrows prevent advancement and cursor reuse, copied
-nodes retain their tree lifetime, and `remove()` leaves borrowed captures readable
-while suppressing subsequent events. Cover repeated removal, explicit removal by
-ID, callback/provider lifetimes, and dropping an execution before cursor reuse.
+[Boundary tests](crates/squatter/tests/boundary.rs) also check compiler metadata
+and mutation, and [storage tests](crates/squatter/tests/storage.rs) cover point attachment.
+Compile-fail examples in [query.rs](crates/squatter/src/query.rs) and
+[query_exec.rs](crates/squatter/src/query_exec.rs) check result, provider, and
+callback borrows. Live results prevent advancement and cursor reuse; copied
+nodes retain only their tree lifetime.
 
-Range tests cover zero-end, empty, reversed, and wider-coordinate inputs,
-structural context outside the query range, and subtree boundaries. Cancellation
-tests cover resuming the same iterator, preserving in-progress matches and
-capture consumption, repeated stops, searches without results, and fresh reuse.
+Run the suite, including borrowing doctests, with `cargo test -p tree-squatter`.
 
-Compare byte-slice and chunked providers across all query entry points. Cover
-equality, membership, and regex predicates, with splits inside matching text and
-UTF-8 sequences, empty text/chunks, and repeated captures. Predicate results must
-remain identical across chunkings.
+## Deferred work
 
-Copy and annotate tree-sitter API documentation where behavior is shared;
-explicitly document retained differences. Do not copy capture-order guarantees
-that the retained event contract does not provide. Strict source ordering is
-outside this revamp. See item 6 in
-[potential upstream bugs](/home/mgsloan/oss/tree-sitter/potential-upstream-bugs.md)
-for a counterexample in both implementations. Full provisional snapshots and
-source-sorted flattened completed matches are not requirements.
+- Containing-range setters, which require every matched node to be wholly inside
+  a supplied range independently of ordinary intersection ranges.
+- Strict source ordering, full provisional snapshots, and source-sorted flattened
+  completed matches. The retained capture-event contract does not promise these.
+- Callback cost measurements and threshold tuning. No performance benefit is
+  claimed for the current polling threshold.
 
-## Implementation order
-
-1. **Metadata and indices:** add the public newtypes, metadata types/accessors,
-   compilation diagnostics, and cloning. Update callers and existing tests with
-   each API change.
-2. **Text providers:** generalize `QueryExecution` and built-in predicates, retain
-   byte-slice convenience, and verify chunk-independent results.
-3. **Iteration and borrowing:** add match accessors/removal and streaming adapters;
-   align cursor and iterator settings while preserving current execution behavior.
-4. **Progress callbacks:** add options to all entry points, replace timeouts, and
-   verify cancellation, same-execution resumption, and fresh cursor reuse in each
-   execution path.
-
-Apply the verification and API documentation requirements as each step lands.
-Ordinary bounded-query support is complete; containing-range support remains
-outside this implementation sequence.
+Dedicated finite-limit eviction/result-subset and attached-point parity audits
+remain outside this revamp.
