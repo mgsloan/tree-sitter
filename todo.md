@@ -1,18 +1,38 @@
-# MVP
-
-## Polish
-
 - [ ] Review and polish design.md
 
 - [ ] Separate viz branch for visualizer
 
-- [x] Rename the prepared language wrapper to Language.
-
 - [ ] Put persistence and cache on a separate branch
+
+- [ ] 'next_group' presence cache function ugly name
+
+- [ ] Proper parser APIs
+
+- [ ] Don't disable query optimizations in the presence of errors
+
+- [ ] Move away from AtomicBool cancellation and to cancellation / progress callback
+
+- [ ] Less unsafe
+
+- [ ] Split traits into a separate compat crate
+
+- [ ] Fuzz tests to help ensure that untrusted bytes don't cause wrong memory access etc.  To make this efficient the solution may be validation
+
+- [ ] Implement descendant_index() and goto_descendant() with DescendantIx.  Optimize with index?
+
+- [ ] Fix UnsupportedRange for querying a range on certain queries
+
+- [ ] containing ranges for QueryCursor
+
+- [ ] What to do about Forest::clone() / Tree::clone()
 
 ## Injections
 
 - [ ] Forests
+
+- [ ] API for query scanning forest region
+
+- [ ] API for query scanning subset of forest region
 
 ## Use in Zed
 
@@ -33,6 +53,18 @@
   by far less code than that crate.
 
 - [ ] API for construction of PointData
+
+- [ ] Open Tree-sitter bug about documentation saying captures occur in source order.
+
+## Tree-feller
+
+- [ ] progress and cancellation?
+
+- [ ] operation on
+
+- [ ] ABI 13 and 14?
+
+- [ ] external scanners?
 
 ## Correctness
 
@@ -67,6 +99,10 @@
 - [ ] Make sure that the DB isn't trusted - no exploits via DB contents.
 
 - [ ] Store last access info for GC
+
+- [ ] Optimize use of LineIndex (often prior access is nearby)
+
+- [ ] LineIndex should handle newlines the same as tree-sitter parsing.  This also informs wheher SIMD could be used to populate it.
 
 ## Use in ast-grep / similar tools
 
@@ -106,6 +142,8 @@ Parse only the needed info.
 
 - [ ] Shared comparison / property testing repo for tree-sitter, squatter, and feller.
 
+- [ ] Reduce unsafe via bytemuck
+
 ## Persistence
 
 - [ ] Update persistence cache properly for renames
@@ -141,3 +179,5 @@ Parse only the needed info.
 - [ ] Reaally not worth it, but could use weak symbols to access "grow_in_place" functions for specific allocators. Interesting that there doesn't seem to be a crate for this.
 
 - [ ] Try OR-ing together presence bitmaps when appropriate
+
+- [ ] Consider progress calback stride
