@@ -19,7 +19,7 @@ macro_rules! integer_type {
 integer_type!(
     /// A displayed node kind, including aliases, in a particular grammar.
     ///
-    /// **Not in Tree-sitter:** uses `u16` instead.
+    /// **Not in Tree-sitter:** it uses `u16` instead.
     ///
     /// ```compile_fail
     /// # fn example(root: tree_squatter::Node<'_>) {
@@ -30,7 +30,7 @@ integer_type!(
 integer_type!(
     /// A node kind in the original grammar, ignoring aliases.
     ///
-    /// **Not in Tree-sitter:** uses `u16` instead.
+    /// **Not in Tree-sitter:** it uses `u16` instead.
     pub GrammarKindId(u16));
 integer_type!(
     /// An absolute physical slot in a particular tree's reverse-preorder storage.
@@ -40,7 +40,7 @@ integer_type!(
 
 /// A nonzero field identifier in a particular grammar. Absence is `None`.
 ///
-/// **Not in Tree-sitter:** uses `NonZeroU16` instead.
+/// **Not in Tree-sitter:** it uses `NonZeroU16` instead.
 ///
 /// ```compile_fail
 /// # fn example(root: tree_squatter::Node<'_>) {
@@ -232,7 +232,7 @@ integer_type!(
     /// Counts are exclusive upper bounds, not existing positions. This is distinct
     /// from named-child indices and physical slots.
     ///
-    /// **Not in Tree-sitter:** uses `u32` instead.
+    /// **Not in Tree-sitter:** it uses `u32` instead.
     ///
     /// ```compile_fail
     /// # fn example(node: tree_squatter::Node<'_>) {
@@ -253,7 +253,7 @@ integer_type!(
     /// Counts are exclusive upper bounds, not existing positions. This is distinct
     /// from all-child indices and physical slots.
     ///
-    /// **Not in Tree-sitter:** uses `u32` indices and `usize` counts instead.
+    /// **Not in Tree-sitter:** it uses `u32` indices and `usize` counts instead.
     ///
     /// ```compile_fail
     /// # fn example(node: tree_squatter::Node<'_>) {
