@@ -47,7 +47,34 @@ impl Parse for tree_sitter::Parser {
     type Tree = tree_sitter::Tree;
     type Error = ParserError;
 }
+
+pub trait ParseWithCallback: Parse {
+    type Options<'a>: Default;
+
+    fn parse_with_options<T: AsRef<[u8]>, F: FnMut(usize, Point) -> T>(
+        &mut self,
+        callback: &mut F,
+        options: Option<Self::Options<'_>>,
+    ) -> Result<Self::Tree, Self::Error>;
+}
+
+impl ParseWithCallback for Parser {
+    type Options<'a> = ParseOptions<'a>;
+}
+
+impl ParseWithCallback for tree_sitter::Parser {
+    type Options<'a> = tree_sitter::ParseOptions<'a>;
+}
 ```
+
+`ParseWithCallback` shares chunked UTF-8 input while retaining each parser's
+result, error, and options types. Generic callers can pass `None` for default
+options or constrain the associated options type when they need specific
+controls. They can require packed output with
+`P: ParseWithCallback<Tree = Tree>`. Its implementations omit old-tree input,
+as in `Parse`.
+`TreeFellerParser` does not implement it because tree-feller currently
+requires contiguous input.
 
 Progress callbacks use parser-specific state types. A separate shared trait
 exposes the offset and its traversal direction:
@@ -70,11 +97,11 @@ individual offsets are not guaranteed to change monotonically.
 `TreeFellerParseState::has_error()` is always false when a callback runs:
 the direct parser returns syntax errors rather than recovering from them.
 
-The trait covers only contiguous byte input interpreted as UTF-8. The direct
-backend has no chunked input reader, and its input size is limited to
-`u32::MAX` bytes. The native
-implementation resets any previously interrupted native parse, then calls
-`tree_sitter::Parser::parse(source, None)`. It returns `NoLanguage` when no
+The `Parse` trait covers only contiguous byte input interpreted as UTF-8.
+The direct backend has no chunked input reader, and its input size is limited
+to `u32::MAX` bytes. The native implementation resets any previously
+interrupted parse before calling `tree_sitter::Parser::parse(source, None)`.
+It returns `NoLanguage` when no
 language was selected; it has no progress callback in this method. The
 compatible parser's contiguous input method checks the byte limit before
 parsing so packing cannot receive offsets outside its representation.
@@ -83,11 +110,12 @@ parsing so packing cannot receive offsets outside its representation.
 return its native tree, while the direct parser retains its diagnostic error.
 Callers requiring packed output use `P: Parse<Tree = Tree>`; other callers
 can use `P::Tree: TreeLike`. The trait does not include language selection,
-callback input, options, or reset: their contracts differ. Its generic input
-method makes it unsuitable for trait objects; dynamic dispatch is not required.
+options, or reset: their contracts differ. Both traits have generic methods,
+so they are unsuitable for trait objects; dynamic dispatch is not required.
 
-Tree-sitter's inherent `parse(source, old_tree)` shadows the trait method on a
-concrete `tree_sitter::Parser`. Use `Parse::parse(&mut parser, source)` there.
+Tree-sitter's inherent parsing methods shadow the trait methods on a concrete
+`tree_sitter::Parser`. Use `Parse::parse(&mut parser, source)` and
+`ParseWithCallback::parse_with_options(&mut parser, callback, options)` there.
 
 ## Compatible parser
 
@@ -246,9 +274,9 @@ without reset. The direct callback also runs during packing. Its
 
 1. Rename the current direct parser and update exports and call sites. Preserve
    its existing parsing and diagnostic behavior.
-2. Add the shared `Parse` trait and its three implementations, with associated
-   tree and error types. Add the compatible `Parser` using Tree-sitter and
-   `PackContext`.
+2. Add `Parse` with three implementations and `ParseWithCallback` with two,
+   including associated tree, error, and options types. Add the compatible
+   `Parser` using Tree-sitter and `PackContext`.
 3. Add options, callback input, cancellation, and reset to the compatible parser.
 4. Add progress and cancellation to conversion traversal and finalization, then
    to tree-feller and its Rust wrapper. Rename the direct options parameter as
