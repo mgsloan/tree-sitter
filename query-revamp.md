@@ -2,9 +2,8 @@
 
 This document describes the proposed query API and retained behavior. Follow
 tree-sitter's API with the additions and differences specified below. Query work
-is separate from the navigation/storage API pass. API outlines describe proposed
-functionality, not current implementation. Remaining design decisions are
-collected at the end.
+is separate from the navigation/storage API pass. Proposed API outlines describe
+planned functionality; current behavior and completed work are identified below.
 
 ## Query compilation, metadata, and errors
 
@@ -344,7 +343,7 @@ impl QueryCursor {
     pub fn set_optimized(&mut self, enabled: bool);
 }
 // no match_limit getter, containing-range setters, or progress options
-// bounded branching/rootless queries can report UnsupportedRange
+// ordinary ranges support branching and rootless queries
 ```
 
 **Proposed tree-squatter**
@@ -379,9 +378,11 @@ let matches = cursor.matches_with_options(&query, root, text_provider, options);
 - Defer query containing-range setters. They require new query filtering behavior
   beyond this API-matching pass: matched nodes must be wholly inside the range,
   which can be combined with an ordinary intersection range.
-- Bounded branching/rootless query support remains an open scope decision; see
-  the remaining design decisions below. The restriction also applies to general
-  execution, so disabling specialized plans is not an existing fallback.
+- Ordinary byte/point ranges already support branching and rootless patterns
+  in general and optimized execution (`b8782a5a9`). Optimized root seeking respects
+  range traversal boundaries while allowing active matches to finish outside the
+  range. `UnsupportedRange` remains an API compatibility variant but is no longer
+  emitted. Optimizations also support trees with parse errors (`7669d1345`).
 - Add progress options and compatible cancellation/resumption behavior. Remove
   `set_timeout`; callers can check a deadline in the progress callback. Poll
   during execution so a long search with no results can still be cancelled.
@@ -478,17 +479,3 @@ for captured wildcard parents discovered through later children; see item 6 in
 [potential upstream bugs](/home/mgsloan/oss/tree-sitter/potential-upstream-bugs.md).
 Tree-sitter also emits unfinished-match snapshots. Neither full snapshots nor
 source-sorted flattened completed matches are required for this revamp.
-
-## Remaining design decisions
-
-### Bounded branching and rootless queries
-
-Ordinary query ranges currently require rooted patterns and compiled steps
-without alternative branches. Optional parts, repetitions, and alternations can
-introduce branches; sibling sequences can be non-rooted. Both match and capture
-execution can report `UnsupportedRange`, including with optimization disabled.
-Disabling specialized plans is therefore not an existing fallback.
-
-Decide whether this revamp retains that restriction or validates and extends
-general execution. The restriction is pending range validation; required fixes
-have not been established.
