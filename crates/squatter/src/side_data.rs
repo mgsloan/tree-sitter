@@ -10,6 +10,7 @@ const PRESENCE_FORMAT: u32 = slab_format(0xfe, 0);
 const POINT_FORMAT: u32 = slab_format(0xfd, 0);
 const HEADER_BYTES: usize = 16;
 
+/// **Tree-squatter only:** Failure to build, load, or attach separate tree data.
 #[derive(Debug)]
 pub enum SideDataError {
     Cancelled,
@@ -173,8 +174,12 @@ fn presence_length(tree: &Tree) -> Result<usize, SideDataError> {
         .ok_or(Error::Overflow.into())
 }
 
+/// **Tree-squatter only:** Optional per-group symbol membership data. Persist separately
+/// from the tree slab; removing it affects cost, not scan results.
 pub struct PresenceCache(Sidecar);
 impl PresenceCache {
+    /// **Tree-squatter only:** Builds symbol membership from the tree. Returns a
+    /// cancellation error when the supplied flag is set.
     pub fn build(tree: &Tree, cancel: Option<&AtomicBool>) -> Result<Self, SideDataError> {
         let symbols = tree.data().tables().symbol_count + 2;
         let mut sidecar = Sidecar::new(
@@ -195,14 +200,21 @@ impl PresenceCache {
         }
         Ok(Self(sidecar))
     }
+    /// **Tree-squatter only:** Borrows separately serializable side-data bytes.
     pub fn as_bytes(&self) -> &[u8] {
         self.0.bytes()
     }
+    /// **Tree-squatter only:** Validates and retains stable backing bytes for this tree.
+    /// Use data persisted for this exact snapshot; structural checks do not establish
+    /// source identity.
     pub fn from_backing(tree: &Tree, backing: impl StableSlab) -> Result<Self, SideDataError> {
         let result = Self(Sidecar::from_backing(backing)?);
         result.validate_loaded(tree)?;
         Ok(result)
     }
+    /// **Tree-squatter only:** Validates and copies side-data bytes for this tree. Use data
+    /// persisted for this exact snapshot; structural checks do not establish source
+    /// identity.
     pub fn copy_from_bytes(tree: &Tree, bytes: &[u8]) -> Result<Self, SideDataError> {
         Sidecar::validate_bytes(bytes, tree, PRESENCE_FORMAT, presence_length(tree)?)?;
         let result = Self(Sidecar::copy_from_bytes(bytes)?);
@@ -278,8 +290,12 @@ fn point_length(tree: &Tree) -> Result<usize, SideDataError> {
         .ok_or(Error::Overflow.into())
 }
 
+/// **Tree-squatter only:** Optional per-slot row/column coordinates, persisted separately
+/// from the tree slab.
 pub struct PointData(Sidecar);
 impl PointData {
+    /// **Tree-squatter only:** Builds coordinates from the matching source line index.
+    /// Returns a cancellation error when the supplied flag is set.
     pub fn build(
         tree: &Tree,
         line_index: &LineIndex,
@@ -347,14 +363,21 @@ impl PointData {
         let start = HEADER_BYTES + (group * GROUP_SIZE) as usize * 16;
         &self.0.bytes()[start..start + GROUP_SIZE as usize * 16]
     }
+    /// **Tree-squatter only:** Borrows separately serializable side-data bytes.
     pub fn as_bytes(&self) -> &[u8] {
         self.0.bytes()
     }
+    /// **Tree-squatter only:** Validates and retains stable backing bytes for this tree.
+    /// Use data persisted for this exact snapshot; structural checks do not establish
+    /// source identity.
     pub fn from_backing(tree: &Tree, backing: impl StableSlab) -> Result<Self, SideDataError> {
         let result = Self(Sidecar::from_backing(backing)?);
         result.validate_loaded(tree)?;
         Ok(result)
     }
+    /// **Tree-squatter only:** Validates and copies side-data bytes for this tree. Use data
+    /// persisted for this exact snapshot; structural checks do not establish source
+    /// identity.
     pub fn copy_from_bytes(tree: &Tree, bytes: &[u8]) -> Result<Self, SideDataError> {
         Sidecar::validate_bytes(bytes, tree, POINT_FORMAT, point_length(tree)?)?;
         let result = Self(Sidecar::copy_from_bytes(bytes)?);
@@ -381,34 +404,47 @@ impl PointData {
 }
 
 impl Tree {
+    /// **Tree-squatter only:** Borrows the attached symbol-presence cache, if any.
     pub fn presence_cache(&self) -> Option<&PresenceCache> {
         self.data().presence_cache.as_ref()
     }
+    /// **Tree-squatter only:** Borrows the attached point data, if any.
     pub fn point_data(&self) -> Option<&PointData> {
         self.data().point_data.as_ref()
     }
+    /// **Tree-squatter only:** Validates and attaches separately loaded symbol-presence
+    /// data. Release borrowed tree views before replacing side data.
     pub fn set_presence_cache(&mut self, cache: PresenceCache) -> Result<(), SideDataError> {
         cache.validate_loaded(self)?;
         self.data_mut().presence_cache = Some(cache);
         Ok(())
     }
+    /// **Tree-squatter only:** Validates and attaches separately loaded point data. Release
+    /// borrowed tree views before replacing side data.
     pub fn set_point_data(&mut self, points: PointData) -> Result<(), SideDataError> {
         points.validate_loaded(self)?;
         self.data_mut().point_data = Some(points);
         Ok(())
     }
+    /// **Tree-squatter only:** Drops the optional cache. Scan results stay the same; scan
+    /// cost can change.
     pub fn drop_presence_cache(&mut self) {
         self.data_mut().presence_cache = None;
     }
+    /// **Tree-squatter only:** Drops point data. Point-dependent APIs then use row zero and
+    /// byte offsets as columns.
     pub fn drop_point_data(&mut self) {
         self.data_mut().point_data = None;
     }
 }
 
+/// **Tree-squatter only:** Maps UTF-8 source byte offsets to rows and byte columns using
+/// newline positions.
 pub struct LineIndex {
     line_starts: Vec<usize>,
 }
 impl LineIndex {
+    /// **Tree-squatter only:** Indexes newline positions in UTF-8 source bytes.
     pub fn new(bytes: &[u8]) -> Result<Self, Error> {
         let mut line_starts = Vec::new();
         line_starts.try_reserve(1).map_err(|_| Error::Allocation)?;
@@ -422,6 +458,8 @@ impl LineIndex {
         Ok(Self { line_starts })
     }
     /// Offsets past EOF extend the final row's byte column.
+    ///
+    /// **Tree-squatter only:** Returns the row and byte column for an offset.
     pub fn point(&self, byte: usize) -> Point {
         let row = self.line_starts.partition_point(|&start| start <= byte) - 1;
         Point::new(row, byte - self.line_starts[row])

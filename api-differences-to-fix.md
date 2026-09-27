@@ -1,5 +1,33 @@
 # API differences to fix
 
+## Implementation status
+
+Implemented in the recommended order: typed child indices and snapshot identity;
+language metadata and lookups; shared names, receivers, field-name inputs, and
+coordinate casts; reusable cursors and child enumeration; tree language/walk,
+node ranges, and UTF-16 text. Both shared-trait implementations and callers were
+updated with each change. Upstream documentation and tree-squatter annotations
+are separate commits.
+
+`Node::to_sexp()` is deferred after cost review, as agreed. The packed slab does
+not retain unexpected-character values used by tree-sitter's `(UNEXPECTED ...)`
+output, or the hidden production/field information used by its S-expression
+writer. Exact output needs a storage design that preserves that information
+through packing and loading; reconstructing from visible nodes alone would
+change results. No approximate `to_sexp()` API was added.
+
+The other exclusions remain: parser/query redesigns, parse-state/lookahead and
+Wasm integration, descendant-index navigation, `Tree::clone()`, coordinate-offset
+views, edit registration, incremental reuse, and changed-range reporting.
+
+Validation includes navigation/cursor differential checks, typed-index misuse
+doctests, metadata and coordinate boundaries, optional side data, malformed slabs,
+and the squatter/persistence/benchmark suites. Rustdoc links, rendered API text,
+and doctests are checked for both documentation commits.
+
+The proposal below records the target and rationale; its “current” outlines
+describe the API before this implementation.
+
 Tree-squatter should follow tree-sitter's Rust API wherever it implements the
 same operation. Differences should be limited to:
 

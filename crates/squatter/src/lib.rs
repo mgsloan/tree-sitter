@@ -66,6 +66,8 @@ impl Error {
 }
 
 /// IDs supported by reusable scan sets.
+///
+/// **Tree-squatter only:** An identifier domain usable by reusable scan sets.
 pub trait Id: Copy + Ord + private::Id {
     #[doc(hidden)]
     fn raw(self) -> u16;
@@ -96,6 +98,9 @@ impl Id for Option<FieldId> {
 }
 
 /// A reusable set of IDs from one domain and grammar.
+///
+/// **Tree-squatter only:** Stores selected IDs from one grammar and domain for repeated
+/// scans.
 #[derive(Clone, Debug)]
 pub struct IdSet<I: Id> {
     ids: Vec<I>,

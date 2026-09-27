@@ -8,6 +8,8 @@ use crate::{
 
 mod traversal;
 
+/// **Tree-squatter only:** Controls slab capacity, compaction, and optional presence/point
+/// data when packing.
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
 pub struct PackOptions {
@@ -40,21 +42,27 @@ struct InputNode {
     flags: u16,
 }
 
+/// **Tree-squatter only:** Reusable traversal scratch for packing multiple trees. It does
+/// not retain input trees after packing.
 pub struct PackContext {
     traversal: traversal::Traversal,
 }
 
 impl PackContext {
+    /// **Tree-squatter only:** Creates empty reusable packing scratch.
     pub fn new() -> Result<Self, Error> {
         Ok(Self {
             traversal: traversal::Traversal::default(),
         })
     }
 
+    /// **Tree-squatter only:** Packs a tree with default options while reusing scratch.
     pub fn pack(&mut self, language: &Language, tree: &tree_sitter::Tree) -> Result<Tree, Error> {
         self.pack_with_options(language, tree, PackOptions::default())
     }
 
+    /// **Tree-squatter only:** Packs a tree with selected storage and side-data options
+    /// while reusing scratch.
     pub fn pack_with_options(
         &mut self,
         language: &Language,
@@ -89,16 +97,20 @@ impl PackContext {
         builder.finish(options)
     }
 
+    /// **Tree-squatter only:** Releases retained traversal scratch.
     pub fn trim(&mut self) {
         self.traversal.trim();
     }
 }
 
 impl Tree {
+    /// **Tree-squatter only:** Packs a tree-sitter snapshot with default options.
     pub fn pack(language: &Language, tree: &tree_sitter::Tree) -> Result<Self, Error> {
         Self::pack_with_options(language, tree, PackOptions::default())
     }
 
+    /// **Tree-squatter only:** Packs a snapshot with selected storage and side-data
+    /// options.
     pub fn pack_with_options(
         language: &Language,
         tree: &tree_sitter::Tree,
@@ -107,6 +119,8 @@ impl Tree {
         PackContext::new()?.pack_with_options(language, tree, options)
     }
 
+    /// **Tree-squatter only:** Parses using the supplied tree-sitter parser, then packs the
+    /// fresh snapshot.
     pub fn parse(
         language: &Language,
         parser: &mut tree_sitter::Parser,
@@ -115,6 +129,9 @@ impl Tree {
         Self::parse_with_options(language, parser, source, PackOptions::default())
     }
 
+    /// **Tree-squatter only:** Parses using the supplied tree-sitter parser, then packs
+    /// with selected options. Input exceeding the byte-offset representation limit is
+    /// rejected.
     pub fn parse_with_options(
         language: &Language,
         parser: &mut tree_sitter::Parser,

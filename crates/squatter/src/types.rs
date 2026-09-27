@@ -17,7 +17,7 @@ macro_rules! integer_type {
 }
 
 integer_type!(
-    /// A displayed node kind, including aliases, in a particular grammar.
+    /// **Tree-squatter API difference:** A displayed node kind, including aliases, in a particular grammar.
     ///
     /// ```compile_fail
     /// # fn example(root: tree_squatter::Node<'_>) {
@@ -25,12 +25,12 @@ integer_type!(
     /// # }
     /// ```
     pub KindId(u16));
-integer_type!(/// A node kind in the original grammar, ignoring aliases.
+integer_type!(/// **Tree-squatter API difference:** A node kind in the original grammar, ignoring aliases.
     pub GrammarKindId(u16));
-integer_type!(/// An absolute physical slot in a particular tree's reverse-preorder storage.
+integer_type!(/// **Tree-squatter only:** An absolute physical slot in a particular tree's reverse-preorder storage.
     pub SlotIx(u32));
 
-/// A nonzero field identifier in a particular grammar. Absence is `None`.
+/// **Tree-squatter API difference:** A nonzero field identifier in a particular grammar. Absence is `None`.
 ///
 /// ```compile_fail
 /// # fn example(root: tree_squatter::Node<'_>) {
@@ -217,7 +217,15 @@ impl SlotIx {
     }
 }
 
-integer_type!(/// A position or exclusive count among all children.
+integer_type!(/// **Tree-squatter API difference:** A position or exclusive count among all children.
+    /// Counts are exclusive upper bounds, not existing positions. This is distinct
+    /// from named-child indices and physical slots.
+    ///
+    /// ```compile_fail
+    /// # fn example(node: tree_squatter::Node<'_>) {
+    /// node.child(tree_squatter::NamedChildIx::new(0));
+    /// # }
+    /// ```
     pub ChildIx(u32));
 impl ChildIx {
     /// Wrap a position or count without checking whether a child exists.
@@ -227,7 +235,15 @@ impl ChildIx {
     }
 }
 
-integer_type!(/// A position or exclusive count among named children.
+integer_type!(/// **Tree-squatter API difference:** A position or exclusive count among named children.
+    /// Counts are exclusive upper bounds, not existing positions. This is distinct
+    /// from all-child indices and physical slots.
+    ///
+    /// ```compile_fail
+    /// # fn example(node: tree_squatter::Node<'_>) {
+    /// node.named_child(tree_squatter::ChildIx::new(0));
+    /// # }
+    /// ```
     pub NamedChildIx(u32));
 impl NamedChildIx {
     /// Wrap a position or count without checking whether a child exists.

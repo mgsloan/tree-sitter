@@ -19,6 +19,9 @@ use tree_sitter::Point;
 
 /// Constant-time attributes supported by both representations on freshly parsed trees.
 /// Child and descendant counts are separate node operations.
+///
+/// **Tree-squatter only:** Bundled inspection of a fresh snapshot. Edit registration and
+/// change tracking are excluded.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Attributes<'tree> {
     pub kind: &'tree str,
@@ -37,6 +40,7 @@ pub struct Attributes<'tree> {
     pub has_error: bool,
 }
 
+/// **Tree-squatter only:** Shared navigation over packed and tree-sitter trees.
 pub trait TreeLike {
     type Node<'tree>: NodeLike<'tree>
     where
@@ -49,6 +53,8 @@ pub trait TreeLike {
     }
 }
 
+/// **Tree-squatter only:** Statically dispatched navigation over both representations.
+/// Typed indices distinguish all-child and named-child domains.
 pub trait NodeLike<'tree>: Copy + Eq {
     type Cursor: CursorLike<'tree, Node = Self>;
     /// Stable within this tree; not comparable across representations.
@@ -56,13 +62,26 @@ pub trait NodeLike<'tree>: Copy + Eq {
     /// Get a numeric id for this node that is unique.
     ///
     /// Within a given syntax tree, no two nodes have the same id.
+    ///
+    /// **Tree-squatter API difference:** Uses an associated identity type: `SlotIx` for
+    /// packed nodes and native `usize` for tree-sitter. Identity is scoped to one immutable
+    /// snapshot; it is not guaranteed across repacking, reloads, or edits. An ID does not
+    /// keep its tree alive. Packed nodes also expose inherent `slot()`; `id()` requires
+    /// this trait in scope.
     fn id(&self) -> Self::Id;
     /// Read constant-time attributes; counts are separate operations below.
+    ///
+    /// **Tree-squatter only:** Bundles constant-time node attributes; child and descendant
+    /// counts are separate.
     fn attributes(self) -> Attributes<'tree>;
     /// Get this node's type as a numerical id.
+    ///
+    /// **Tree-squatter API difference:** Returns `KindId` instead of `u16`.
     fn kind_id(&self) -> KindId;
     /// Get the node's type as a numerical id as it appears in the grammar
     /// ignoring aliases.
+    ///
+    /// **Tree-squatter API difference:** Returns `GrammarKindId` instead of `u16`.
     fn grammar_id(&self) -> GrammarKindId;
     /// Get this node's type as a string.
     fn kind(&self) -> &'tree str;
@@ -71,11 +90,19 @@ pub trait NodeLike<'tree>: Copy + Eq {
     fn grammar_name(&self) -> &'tree str;
     /// Get the range of source code that this node represents, both in terms of
     /// raw bytes and of row/column coordinates.
+    ///
+    /// **Tree-squatter behavior change:** For packed trees without point data, positions
+    /// use row zero and the byte offset as column. Check `has_points()` before relying on
+    /// line/column coordinates.
     fn range(&self) -> tree_sitter::Range;
+    /// Returns the UTF-8 source slice for this node. Invalid UTF-8 returns an error;
+    /// out-of-bounds byte offsets panic.
     fn utf8_text<'source>(
         &self,
         source: &'source [u8],
     ) -> Result<&'source str, std::str::Utf8Error>;
+    /// Returns the source slice indexed by this node’s byte offsets divided by two. Supply
+    /// the UTF-16 input used to parse the tree; out-of-bounds offsets panic.
     fn utf16_text<'source>(&self, source: &'source [u16]) -> &'source [u16];
     /// Get the byte range of source code that this node represents.
     fn byte_range(&self) -> Range<usize>;
@@ -84,9 +111,19 @@ pub trait NodeLike<'tree>: Copy + Eq {
     /// Get the byte offset where this node ends.
     fn end_byte(&self) -> usize;
     /// Get this node's start position in terms of rows and columns.
+    ///
+    /// **Tree-squatter behavior change:** For packed trees without point data, positions
+    /// use row zero and the byte offset as column. Check `has_points()` before relying on
+    /// line/column coordinates.
     fn start_position(&self) -> Point;
     /// Get this node's end position in terms of rows and columns.
+    ///
+    /// **Tree-squatter behavior change:** For packed trees without point data, positions
+    /// use row zero and the byte offset as column. Check `has_points()` before relying on
+    /// line/column coordinates.
     fn end_position(&self) -> Point;
+    /// **Tree-squatter only:** Reports whether point data is attached. Without it, point
+    /// accessors, ranges, point lookups, and point scans use `(0, byte_offset)`.
     fn has_points(self) -> bool;
     /// Check if this node is *named*.
     ///
@@ -112,8 +149,14 @@ pub trait NodeLike<'tree>: Copy + Eq {
     /// errors anywhere within it.
     fn has_error(&self) -> bool;
     /// Preorder including this node, using the backend's native traversal.
+    ///
+    /// **Tree-squatter only:** Builds a subtree scan; filters and group traversal remain
+    /// available.
     fn preorder(self) -> impl Iterator<Item = Self>;
     /// Public kind IDs, in preorder including this node. Never leaves its subtree.
+    ///
+    /// **Tree-squatter only:** Scans this subtree in preorder for the selected public kind
+    /// IDs. Missing presence caches affect cost, not results.
     fn descendants_matching_kinds<K: IdSelection>(self, kinds: K) -> impl Iterator<Item = Self>;
     /// Iterate over this node's children.
     ///
@@ -124,6 +167,11 @@ pub trait NodeLike<'tree>: Copy + Eq {
     ///
     /// If you're walking the tree recursively, you may want to use the
     /// [`TreeCursor`] APIs directly instead.
+    ///
+    /// **Tree-squatter API difference:** Returns a plain iterator with `size_hint() == (0,
+    /// None)`. Packed iteration needs no initial counting pass. Iteration resets and moves
+    /// the supplied cursor; dropping the iterator leaves the cursor at its current
+    /// position.
     fn children<'cursor>(
         &self,
         cursor: &'cursor mut Self::Cursor,
@@ -133,6 +181,11 @@ pub trait NodeLike<'tree>: Copy + Eq {
     /// Iterate over this node's named children.
     ///
     /// See also [`Node::children`].
+    ///
+    /// **Tree-squatter API difference:** Returns a plain iterator with `size_hint() == (0,
+    /// None)`. Packed iteration needs no initial counting pass. Iteration resets and moves
+    /// the supplied cursor; dropping the iterator leaves the cursor at its current
+    /// position.
     fn named_children<'cursor>(
         &self,
         cursor: &'cursor mut Self::Cursor,
@@ -142,6 +195,13 @@ pub trait NodeLike<'tree>: Copy + Eq {
     /// Iterate over this node's children with a given field id.
     ///
     /// See also [`Node::children_by_field_name`].
+    ///
+    /// **Tree-squatter API difference:** Returns a plain iterator with `size_hint() == (0,
+    /// None)`. Packed iteration needs no initial counting pass. Iteration resets and moves
+    /// the supplied cursor; dropping the iterator leaves the cursor at its current
+    /// position.
+    ///
+    /// **Tree-squatter API difference:** Takes the nonzero `FieldId` wrapper.
     fn children_by_field_id<'cursor>(
         &self,
         field: FieldId,
@@ -152,6 +212,12 @@ pub trait NodeLike<'tree>: Copy + Eq {
     /// Iterate over this node's children with a given field name.
     ///
     /// See also [`Node::children`].
+    ///
+    /// **Tree-squatter API difference:** Returns a plain iterator with `size_hint() == (0,
+    /// None)`. Packed iteration needs no initial counting pass. Iteration resets and moves
+    /// the supplied cursor; dropping the iterator leaves the cursor at its current
+    /// position.
+    /// An unknown field name yields no children and leaves the cursor unchanged.
     fn children_by_field_name<'cursor>(
         &self,
         name: &str,
@@ -160,28 +226,61 @@ pub trait NodeLike<'tree>: Copy + Eq {
     where
         Self: 'cursor;
     /// Get the field name of this node's child at the given index.
+    ///
+    /// **Tree-squatter API difference:** Takes `ChildIx`.
+    ///
+    /// **Tree-squatter performance difference:** Packed nodes scan preceding children, then
+    /// resolve the stored field. Prefer a single child traversal and direct field access.
     fn field_name_for_child(&self, index: ChildIx) -> Option<&'tree str>;
     /// Get the field name of this node's named child at the given index.
+    ///
+    /// **Tree-squatter API difference:** Takes `NamedChildIx`.
+    ///
+    /// **Tree-squatter performance difference:** Packed nodes scan children, including
+    /// intervening unnamed children, then resolve the stored field.
     fn field_name_for_named_child(&self, index: NamedChildIx) -> Option<&'tree str>;
+    /// **Tree-squatter only:** Tests for a structural child without counting children.
     fn has_children(self) -> bool;
     /// May scan unnamed children; stops at the first named child.
+    ///
+    /// **Tree-squatter only:** Scans children until finding a named child.
     fn has_named_children(self) -> bool;
     /// Get this node's number of children.
+    ///
+    /// **Tree-squatter API difference:** Returns `ChildIx`, an exclusive upper bound,
+    /// including zero for a leaf. Use `.get()` for the primitive count.
+    ///
+    /// **Tree-squatter performance difference:** For packed nodes, scans children.
     fn child_count(&self) -> ChildIx;
     /// Get this node's number of *named* children.
     ///
     /// See also [`Node::is_named`].
+    ///
+    /// **Tree-squatter API difference:** Returns `NamedChildIx`, an exclusive upper bound,
+    /// including zero when there are no named children. Use `.get()` for the primitive
+    /// count.
+    ///
+    /// **Tree-squatter performance difference:** For packed nodes, scans all children.
     fn named_child_count(&self) -> NamedChildIx;
     /// Get the node's number of descendants, including one for the node itself.
+    ///
+    /// **Tree-squatter performance difference:** For packed nodes, scans packed groups in
+    /// this subtree.
     fn descendant_count(&self) -> usize;
     /// Create a new [`TreeCursor`] starting from this node.
     ///
     /// Note that the given node is considered the root of the cursor,
     /// and the cursor cannot walk outside this node.
+    ///
+    /// **Tree-squatter performance difference:** For packed nodes, creates an empty
+    /// ancestor stack. Reuse the cursor to retain its allocation.
     fn walk(&self) -> Self::Cursor;
     /// Get this node's immediate parent.
     /// Prefer [`child_with_descendant`](Node::child_with_descendant)
     /// for iterating over this node's ancestors.
+    ///
+    /// **Tree-squatter performance difference:** For packed nodes, can scan subsequent
+    /// packed groups. A cursor retains ancestry for repeated navigation.
     fn parent(&self) -> Option<Self>;
     /// Get the node's child at the given index, where zero represents the first
     /// child.
@@ -189,6 +288,12 @@ pub trait NodeLike<'tree>: Copy + Eq {
     /// This method scans preceding children, so if
     /// you might be iterating over a long list of children, you should use
     /// [`Node::children`] instead.
+    ///
+    /// **Tree-squatter API difference:** Takes `ChildIx` instead of `u32`.
+    ///
+    /// **Tree-squatter performance difference:** For packed nodes, visits up to index + 1
+    /// children. Repeated indexed lookup across a wide node can be quadratic; prefer one
+    /// traversal.
     fn child(&self, index: ChildIx) -> Option<Self>;
     /// Get this node's *named* child at the given index.
     ///
@@ -196,6 +301,11 @@ pub trait NodeLike<'tree>: Copy + Eq {
     /// This method scans preceding children, so if
     /// you might be iterating over a long list of children, you should use
     /// [`Node::named_children`] instead.
+    ///
+    /// **Tree-squatter API difference:** Takes `NamedChildIx` instead of `u32`.
+    ///
+    /// **Tree-squatter performance difference:** For packed nodes, scans preceding
+    /// children, including unnamed children. Prefer one traversal for several children.
     fn named_child(&self, index: NamedChildIx) -> Option<Self>;
     /// Get this node's next sibling.
     fn next_sibling(&self) -> Option<Self>;
@@ -218,14 +328,22 @@ pub trait NodeLike<'tree>: Copy + Eq {
     /// Get the smallest node within this node that spans the given byte range.
     fn descendant_for_byte_range(&self, start: usize, end: usize) -> Option<Self>;
     /// Get the smallest node within this node that spans the given point range.
+    ///
+    /// **Tree-squatter behavior change:** For packed trees without point data, positions
+    /// use row zero and the byte offset as column. Check `has_points()` before relying on
+    /// line/column coordinates.
     fn descendant_for_point_range(&self, start: Point, end: Point) -> Option<Self>;
 }
 
+/// **Tree-squatter only:** Shared cursor operations. Clones and `reset_to` preserve
+/// independent traversal state.
 pub trait CursorLike<'tree>: Clone {
     type Node: NodeLike<'tree>;
     /// Get the tree cursor's current [`Node`].
     fn node(&self) -> Self::Node;
     /// Current node constant-time attributes.
+    ///
+    /// **Tree-squatter only:** Bundles attributes of the current node.
     fn attributes(&mut self) -> Attributes<'tree> {
         self.node().attributes()
     }
@@ -248,16 +366,28 @@ pub trait CursorLike<'tree>: Clone {
     ///
     /// This returns the index of the child node if one was found, and returns
     /// `None` if no such child was found.
+    ///
+    /// **Tree-squatter API difference:** Returns `ChildIx`; coordinates narrow with `as
+    /// u32`.
     fn goto_first_child_for_byte(&mut self, byte: usize) -> Option<ChildIx>;
     /// Move this cursor to the first child of its current node that contains or
     /// starts after the given point.
     ///
     /// This returns the index of the child node if one was found, and returns
     /// `None` if no such child was found.
+    ///
+    /// **Tree-squatter API difference:** Returns `ChildIx`; point components narrow with
+    /// `as u32`.
+    ///
+    /// **Tree-squatter behavior change:** For packed trees without point data, positions
+    /// use row zero and the byte offset as column. Check `has_points()` before relying on
+    /// line/column coordinates.
     fn goto_first_child_for_point(&mut self, point: Point) -> Option<ChildIx>;
     /// Get the numerical field id of this tree cursor's current node.
     ///
     /// See also [`field_name`](TreeCursor::field_name).
+    ///
+    /// **Tree-squatter API difference:** Returns `Option<FieldId>` on both backends.
     fn field_id(&self) -> Option<FieldId>;
     /// Get the field name of this tree cursor's current node.
     fn field_name(&self) -> Option<&'tree str>;
