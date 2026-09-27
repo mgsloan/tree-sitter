@@ -356,3 +356,131 @@ let matches = cursor.matches_with_options(&query, root, text_provider, options);
   Explicit status and optimization control remain additions.
 - Preserve current finite-limit execution behavior; no dedicated eviction or
   result-subset compatibility audit is planned.
+
+## Shared scan selection for query execution
+
+Keep the existing `Scan<'forest, S>`, traversal structs, `Restricted<S, P>`,
+`Selection<C, R>`, and `Filtered<S, P>` as the selection builders. Direct scans
+continue to use their generic layering: store only selected operations, preserve
+fixed-size ID-array specialization, and avoid runtime checks for absent filters.
+Do not replace these structs with a concrete selection stored in every scan.
+
+Add a trait that describes a supported scan using one uniform struct at query
+initialization. Call the descriptor `ScanSelection` to distinguish it from the
+existing coordinate/relation `Selection<C, R>`. Illustrative private fields:
+
+```rust
+pub struct ScanSelection<'forest, 'filters> {
+    scope: SelectionScope<'forest>,
+    restrictions: SmallVec<[CandidateRestriction<'filters>; 2]>,
+}
+
+enum SelectionScope<'forest> {
+    Subtree(Node<'forest>),
+    Trees {
+        forest: &'forest ForestData,
+        trees: Range<TreeIx>,
+    },
+}
+
+pub trait DescribeSelection<'forest>: sealed::DescribeSelection {
+    fn selection(&self) -> ScanSelection<'forest, '_>;
+}
+```
+
+`CandidateRestriction` describes the supported byte/point relations and node
+filters already represented by scan layers: kind IDs, field IDs, supertype IDs,
+extra, and missing. Copy small scalar parameters and borrow filter storage where
+possible. The descriptor must preserve every restriction, including repeated
+filters as intersections. Inline capacity is an implementation choice; longer
+compositions may spill. Unsupported combinations must not implement the trait;
+do not silently omit a restriction or replace an earlier one.
+
+Implement the trait on supported `Scan` compositions by describing their source
+and accumulated restrictions. A `Node` can describe its unrestricted subtree;
+forest and region scopes can describe their tree intervals. The forest extension
+can therefore use the same query methods without separate region/source variants.
+All selected trees must use the query's language. Arbitrary tree sets and unions
+of overlapping subtrees are later extensions, not required by the initial scope.
+
+Query entry points borrow the description provider, normalize the selection once,
+and retain only the uniform descriptor and prepared execution state. Borrowing
+allows the descriptor to refer to ID arrays owned by scan layers without copying
+or retaining a generic scan inside the query iterator. For example:
+
+```rust
+let selected = root.all()
+    .overlapping_bytes(viewport)
+    .filter_kind_ids([call_kind]);
+
+{
+    let mut matches = cursor.matches(&query, &selected, text_provider);
+    while let Some(found) = matches.next() {
+        // consume query results
+    }
+}
+
+// Direct scanning still uses the original specialized pipeline.
+for node in selected.nodes() {
+    // consume selected nodes
+}
+```
+
+The query signature is generic only over description construction and the text
+provider; its return type does not depend on the scan's layered type:
+
+```rust
+pub fn matches<'cursor, 'query, 'forest, 'filters, S, T, I>(
+    &'cursor mut self,
+    query: &'query Query,
+    selection: &'filters S,
+    text_provider: T,
+) -> QueryMatches<'cursor, 'query, 'forest, 'filters, T, I>
+where
+    S: DescribeSelection<'forest>,
+    T: TextProvider<I>,
+    I: AsRef<[u8]>;
+```
+
+Apply the same input shape to `captures`, `execute`, and their options variants.
+These are follow-on selection APIs; reconcile the borrowed argument with the
+by-value node argument in the compatibility sketches above when implementing
+this extension. Keep cancellation and execution limits in execution options.
+Selection restrictions belong to the individual execution rather than persistent
+cursor state. Existing compatibility range setters, if retained, need an explicit
+composition rule; they must not silently override restrictions supplied by a scan.
+
+The trait describes the original selection, not a partially consumed iterator.
+Do not implement it for `Nodes`, `Groups`, or partially advanced traversal state.
+Traversal direction controls direct scan enumeration, not query result ordering;
+initially omit implementations for reversed scans rather than silently ignoring
+the requested direction. Preserve the query result behavior described above.
+
+Structural scope and candidate restrictions have different meanings. A subtree
+scope bounds structural matching; a tree range supplies independent tree scopes.
+Restrictions select eligible query-start nodes, while structural matching may
+inspect other nodes within the same scope. Filtering candidates to call nodes
+must still allow matching their identifier and argument children. Define the
+start-node rule for sibling-sequence and rootless patterns before supporting
+those combinations; use a correct fallback when specialized scanning cannot
+implement it. Candidate restrictions do not implicitly acquire Tree-sitter's
+query-range semantics or require every capture to satisfy the restriction.
+
+For source-sorted injections, the client can use its source index to select a
+contiguous tree interval before applying viewport restrictions. Queries and direct
+scans should both use those bounds to skip irrelevant trees/groups. Sorted starts
+alone do not justify excluding earlier trees when injections overlap or nest;
+the index must account for ends. No shared coordinate frame or source ordering
+is inferred from region membership.
+
+Generic description methods should inline well, but do not rely on the concrete
+descriptor disappearing. A shared query engine may retain optional/tag checks,
+and storing the descriptor retains its full representation. Perform conversion
+once per execution and prepare scan state outside the per-node matching loop.
+Keep the structural matcher independent of the builder type to limit code growth.
+
+Verify that description preserves scopes and all supported restrictions, including
+empty selections and repeated filters. Compare direct-scan candidate sets with
+those used by query execution, and verify structural context remains available
+outside the candidate set. Cover subtree/tree boundaries, borrowed filter
+lifetimes, and source-index-selected injection ranges.
