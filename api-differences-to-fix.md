@@ -600,6 +600,35 @@ new differential testing.
 Allocation sizes, traversal cost, and copying cost can differ without changing
 results.
 
+## Implementation order
+
+Parser and query implementation are out of scope for this pass; their designs
+are tracked separately. Do not add descendant-index navigation or `Tree::clone()`.
+
+1. **Identifiers and identity.** Introduce `ChildIx` and `NamedChildIx`, update
+   child lookup/count signatures, and give `NodeLike::id` an associated identity
+   type. Keep packed-node identity as `SlotIx` through the existing `slot()`.
+2. **Language APIs.** Add the enumerated metadata and lookup methods, preserving
+   the prepared wrapper, typed identifiers, and checked lookup additions.
+3. **Node and trait alignment.** Align shared names and receivers, accept byte-like
+   field names, and match tree-sitter's coordinate casts. Remove the no-op
+   `has_changes` API and corresponding bundled/trait exposure.
+4. **Cursors and child enumeration.** Rename `Cursor` to `TreeCursor`, make
+   `walk()` infallible, and implement cursor-taking child enumeration with its
+   side effects. Add name-based enumeration, inherent cursor field access,
+   `Clone`, and `reset_to`. Add indexed field-name access only through `NodeLike`.
+5. **Tree and node conveniences.** Add `Tree::walk`, tree/node `language`,
+   `Node::range`, `Node::utf16_text`, and `Node::to_sexp`. Preserve optional point
+   data behavior and existing packing/storage extensions.
+6. **Documentation.** Copy applicable upstream documentation, then annotate
+   differences and document additions in the separate commits described below.
+
+Update both shared-trait implementations, callers, and relevant tests with each
+change; do not postpone trait migration to the end. Keep intermediate commits
+compiling. Split these groups further where useful, and preserve unrelated
+working-tree changes. Use the verification guidance below without adding audits
+for deferred work.
+
 ## Commit plan
 
 1. **API implementation commits.** Split changes into coherent commits: names,
