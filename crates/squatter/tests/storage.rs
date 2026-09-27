@@ -213,14 +213,10 @@ fn side_data_changes_only_attached_coordinates() {
             tree.root_node().start_position(),
             tree_sitter::Point::new(0, tree.root_node().start_byte())
         );
-        let presence = std::thread::scope(|scope| {
-            scope
-                .spawn(|| PresenceCache::build(&tree, None))
-                .join()
-                .unwrap()
-        })
-        .unwrap();
-        let points = PointData::build(&tree, &line_index, None).unwrap();
+        let presence =
+            std::thread::scope(|scope| scope.spawn(|| PresenceCache::build(&tree)).join().unwrap())
+                .unwrap();
+        let points = PointData::build(&tree, &line_index).unwrap();
         tree.set_presence_cache(presence).unwrap();
         tree.set_point_data(points).unwrap();
         drop(line_index);
@@ -301,9 +297,8 @@ fn sidecar_mapping_copy_and_failed_replacement() {
         },
     )
     .unwrap();
-    let points =
-        PointData::build(&tree, &LineIndex::new(source.as_bytes()).unwrap(), None).unwrap();
-    let presence = PresenceCache::build(&tree, None).unwrap();
+    let points = PointData::build(&tree, &LineIndex::new(source.as_bytes()).unwrap()).unwrap();
+    let presence = PresenceCache::build(&tree).unwrap();
     let drops = Arc::new(AtomicUsize::new(0));
     let mapped_backing = backing(points.as_bytes(), drops.clone());
     let mapped_address = mapped_backing.bytes().as_ptr();
@@ -338,17 +333,12 @@ fn sidecar_mapping_copy_and_failed_replacement() {
     let other = Tree::pack(&grammar, &other_native).unwrap();
     assert_ne!(tree.group_count(), other.group_count());
     assert!(
-        tree.set_presence_cache(PresenceCache::build(&other, None).unwrap())
+        tree.set_presence_cache(PresenceCache::build(&other).unwrap())
             .is_err()
     );
     assert!(
         tree.set_point_data(
-            PointData::build(
-                &other,
-                &LineIndex::new(other_source.as_bytes()).unwrap(),
-                None,
-            )
-            .unwrap()
+            PointData::build(&other, &LineIndex::new(other_source.as_bytes()).unwrap()).unwrap()
         )
         .is_err()
     );
@@ -389,7 +379,7 @@ fn sidecar_mapping_copy_and_failed_replacement() {
     let core_address = owner.bytes().as_ptr();
     let mut backed = Tree::from_owned_slab(&grammar, owner).unwrap();
     backed
-        .set_presence_cache(PresenceCache::build(&backed, None).unwrap())
+        .set_presence_cache(PresenceCache::build(&backed).unwrap())
         .unwrap();
     backed
         .set_point_data(PointData::copy_from_bytes(&backed, points.as_bytes()).unwrap())
@@ -406,9 +396,8 @@ fn sidecar_mapping_copy_and_failed_replacement() {
 }
 
 #[test]
-fn line_index_is_byte_based_and_builds_can_cancel() {
-    use std::sync::atomic::AtomicBool;
-    use tree_squatter::{LineIndex, PointData, PresenceCache, SideDataError};
+fn line_index_is_byte_based() {
+    use tree_squatter::{LineIndex, PointData};
 
     let source = b"\xef\xbb\xbfa\r\n\xc3\xa9\n";
     let index = LineIndex::new(source).unwrap();
@@ -454,16 +443,7 @@ fn line_index_is_byte_based_and_builds_can_cancel() {
         },
     )
     .unwrap();
-    let cancelled = AtomicBool::new(true);
-    assert!(matches!(
-        PresenceCache::build(&tree, Some(&cancelled)),
-        Err(SideDataError::Cancelled)
-    ));
-    assert!(matches!(
-        PointData::build(&tree, &LineIndex::new(b"[1]").unwrap(), Some(&cancelled)),
-        Err(SideDataError::Cancelled)
-    ));
-    assert!(PointData::build(&tree, &LineIndex::new(b"[").unwrap(), None).is_ok());
+    assert!(PointData::build(&tree, &LineIndex::new(b"[").unwrap()).is_ok());
     assert!(!tree.has_points());
     assert!(tree.presence_cache().is_none());
     tree.drop_presence_cache();
@@ -503,7 +483,7 @@ fn point_bounded_queries_follow_attachment() {
         found
     };
     assert_eq!(count(&tree), 0);
-    let points = PointData::build(&tree, &LineIndex::new(source).unwrap(), None).unwrap();
+    let points = PointData::build(&tree, &LineIndex::new(source).unwrap()).unwrap();
     tree.set_point_data(points).unwrap();
     assert_eq!(count(&tree), 1);
     tree.drop_point_data();

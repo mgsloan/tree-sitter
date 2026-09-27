@@ -770,7 +770,7 @@ fn presence_ignores_waste_and_invalid_symbols() {
         }
         for indexed in [false, true] {
             if indexed {
-                let cache = PresenceCache::build(&tree, None).unwrap();
+                let cache = PresenceCache::build(&tree).unwrap();
                 tree.set_presence_cache(cache).unwrap();
             }
             for symbol in [

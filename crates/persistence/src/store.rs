@@ -3,10 +3,7 @@ use std::{
     fs::{self, File, OpenOptions},
     io::{self, Write},
     path::{Path, PathBuf},
-    sync::{
-        Arc, Mutex, MutexGuard, OnceLock,
-        atomic::{AtomicBool, AtomicUsize},
-    },
+    sync::{Arc, Mutex, MutexGuard, OnceLock, atomic::AtomicUsize},
 };
 
 use crate::identity::{CurrentGuard, IdentifiedLanguage, Request};
@@ -494,23 +491,11 @@ impl Store {
         }
     }
 
-    #[cfg(test)]
     pub fn get(
         &self,
         request: &Request,
         source: &[u8],
         language: &IdentifiedLanguage,
-    ) -> Option<tree_sitter_squatter::Tree> {
-        self.get_with_cancel(request, source, language, None)
-            .map(|(tree, _)| tree)
-    }
-
-    pub fn get_with_cancel(
-        &self,
-        request: &Request,
-        source: &[u8],
-        language: &IdentifiedLanguage,
-        cancel: Option<&AtomicBool>,
     ) -> Option<(tree_sitter_squatter::Tree, bool)> {
         let tx = self.env.read_txn().ok()?;
         if self.paths.get(&tx, &request.source_key[..32]).ok()?? != request.path
@@ -542,8 +527,8 @@ impl Store {
                     tree_sitter_squatter::PresenceCache::copy_from_bytes(&tree, bytes).ok()
                 });
             complete &= loaded.is_some();
-            let cache = loaded
-                .or_else(|| tree_sitter_squatter::PresenceCache::build(&tree, cancel).ok())?;
+            let cache =
+                loaded.or_else(|| tree_sitter_squatter::PresenceCache::build(&tree).ok())?;
             tree.set_presence_cache(cache).ok()?;
         }
         if request.points {
@@ -558,7 +543,7 @@ impl Store {
             complete &= loaded.is_some();
             let points = loaded.or_else(|| {
                 let line_index = tree_sitter_squatter::LineIndex::new(source).ok()?;
-                tree_sitter_squatter::PointData::build(&tree, &line_index, cancel).ok()
+                tree_sitter_squatter::PointData::build(&tree, &line_index).ok()
             })?;
             tree.set_point_data(points).ok()?;
         }

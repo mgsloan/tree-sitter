@@ -1,13 +1,13 @@
 mod common;
 use common::{language, load};
 
-use std::{fs, path::Path, sync::atomic::AtomicBool};
+use std::{fs, path::Path};
 use tree_squatter_persistence::*;
 
 fn finish(work: &mut Maintenance) -> usize {
     let mut deleted = 0;
     for _ in 0..100 {
-        let progress = work.step(1, None).unwrap();
+        let progress = work.step(1).unwrap();
         assert!(progress.examined <= 1);
         deleted += progress.deleted;
         if progress.state == MaintenanceState::Complete {
@@ -39,11 +39,7 @@ fn bounded_cleanup_preserves_current_variants_and_old_readers() {
     .unwrap();
     load(&other);
     let mut work = current.maintenance().unwrap();
-    assert_eq!(work.step(0, None).unwrap().examined, 0);
-    assert!(matches!(
-        work.step(1, Some(&AtomicBool::new(true))),
-        Err(CacheError::Cancelled)
-    ));
+    assert_eq!(work.step(0).unwrap().examined, 0);
     assert_eq!(finish(&mut work), 4); // two old trees and their two source records
     assert!(load(&cache).cache_hit());
     assert!(load(&other).cache_hit());
@@ -84,10 +80,7 @@ fn stale_cleanup_stops_and_late_writer_cannot_restore_retired_records() {
     let mut stale = old.maintenance().unwrap();
     fs::write(&path, "2").unwrap();
     let new = load(&cache);
-    assert_eq!(
-        stale.step(1, None).unwrap().state,
-        MaintenanceState::Superseded
-    );
+    assert_eq!(stale.step(1).unwrap().state, MaintenanceState::Superseded);
     assert_eq!(finish(&mut new.maintenance().unwrap()), 2);
     assert_eq!(
         deferred.pending_write.unwrap().publish().unwrap(),
@@ -149,14 +142,10 @@ fn sweep_finds_deleted_sources_without_loading_them() {
     load(&cache);
     fs::remove_file(&path).unwrap();
     let mut sweep = cache.sweep_missing().unwrap();
-    assert!(matches!(
-        sweep.step(1, Some(&AtomicBool::new(true))),
-        Err(CacheError::Cancelled)
-    ));
     let mut deleted = 0;
     let mut complete = false;
     for _ in 0..20 {
-        let result = sweep.step(1, None).unwrap();
+        let result = sweep.step(1).unwrap();
         assert!(result.examined <= 1);
         deleted += result.deleted;
         if result.state == MaintenanceState::Complete {
@@ -190,10 +179,7 @@ fn recreation_cancels_missing_file_cleanup() {
         .unwrap()
         .unwrap();
     fs::write(&path, "0").unwrap();
-    assert_eq!(
-        work.step(1, None).unwrap().state,
-        MaintenanceState::Superseded
-    );
+    assert_eq!(work.step(1).unwrap().state, MaintenanceState::Superseded);
     assert!(load(&cache).cache_hit());
 }
 
@@ -225,18 +211,11 @@ fn sidecars_can_be_evicted_independently_of_core_and_readers() {
         let points = reader.tree().point_data().unwrap().as_bytes().to_vec();
 
         for kind in [SidecarKind::Presence, SidecarKind::Points] {
-            assert!(matches!(
-                reader.evict_sidecar(kind, Some(&AtomicBool::new(true))),
-                Err(CacheError::Cancelled)
-            ));
             assert_eq!(
-                reader.evict_sidecar(kind, None).unwrap(),
+                reader.evict_sidecar(kind).unwrap(),
                 EvictionOutcome::Evicted
             );
-            assert_eq!(
-                reader.evict_sidecar(kind, None).unwrap(),
-                EvictionOutcome::Absent
-            );
+            assert_eq!(reader.evict_sidecar(kind).unwrap(), EvictionOutcome::Absent);
 
             let without = cache
                 .load_with_options(

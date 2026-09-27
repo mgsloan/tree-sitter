@@ -3,7 +3,6 @@ use crate::{
     storage::{GROUP_SIZE, StableSlab, slab_format},
     types::PackedPoint,
 };
-use std::sync::atomic::{AtomicBool, Ordering};
 use tree_sitter::Point;
 
 const PRESENCE_FORMAT: u32 = slab_format(0xfe, 0);
@@ -15,7 +14,6 @@ const HEADER_BYTES: usize = 16;
 /// **Not in Tree-sitter**
 #[derive(Debug)]
 pub enum SideDataError {
-    Cancelled,
     InvalidTarget,
     Core(Error),
 }
@@ -40,14 +38,6 @@ impl std::fmt::Display for SideDataError {
     }
 }
 impl std::error::Error for SideDataError {}
-
-fn check_cancel(cancel: Option<&AtomicBool>) -> Result<(), SideDataError> {
-    if cancel.is_some_and(|flag| flag.load(Ordering::Relaxed)) {
-        Err(SideDataError::Cancelled)
-    } else {
-        Ok(())
-    }
-}
 
 enum Storage {
     Owned(Vec<u64>),
@@ -182,9 +172,8 @@ fn presence_length(tree: &Tree) -> Result<usize, SideDataError> {
 /// **Not in Tree-sitter**
 pub struct PresenceCache(Sidecar);
 impl PresenceCache {
-    /// Builds symbol membership from the tree. Returns a
-    /// cancellation error when the supplied flag is set.
-    pub fn build(tree: &Tree, cancel: Option<&AtomicBool>) -> Result<Self, SideDataError> {
+    /// Builds symbol membership from the tree.
+    pub fn build(tree: &Tree) -> Result<Self, SideDataError> {
         let symbols = tree.data().tables().kind_count + 2;
         let mut sidecar = Sidecar::new(
             PRESENCE_FORMAT,
@@ -195,7 +184,6 @@ impl PresenceCache {
         let words = (tree.group_count() as usize).div_ceil(64);
         let data = tree.data();
         for group in 0..tree.group_count() {
-            check_cancel(cancel)?;
             for slot in group * GROUP_SIZE..data.group_end(group) {
                 let symbol = data.symbol_index(slot).get() as usize;
                 let offset = HEADER_BYTES + (symbol * words + group as usize / 64) * 8;
@@ -230,7 +218,7 @@ impl PresenceCache {
             .validate(tree, PRESENCE_FORMAT, presence_length(tree)?)?;
         #[cfg(debug_assertions)]
         {
-            let expected = Self::build(tree, None)?;
+            let expected = Self::build(tree)?;
             if self.as_bytes() != expected.as_bytes() {
                 return Err(SideDataError::InvalidTarget);
             }
@@ -301,16 +289,10 @@ fn point_length(tree: &Tree) -> Result<usize, SideDataError> {
 pub struct PointData(Sidecar);
 impl PointData {
     /// Builds coordinates from the matching source line index.
-    /// Returns a cancellation error when the supplied flag is set.
-    pub fn build(
-        tree: &Tree,
-        line_index: &LineIndex,
-        cancel: Option<&AtomicBool>,
-    ) -> Result<Self, SideDataError> {
+    pub fn build(tree: &Tree, line_index: &LineIndex) -> Result<Self, SideDataError> {
         let mut result = Self::empty(tree)?;
         let root = tree.root_node();
         for group in 0..tree.group_count() {
-            check_cancel(cancel)?;
             for slot in group * GROUP_SIZE..tree.data().group_end(group) {
                 let node = root.at(crate::SlotIx(slot));
                 result.put(

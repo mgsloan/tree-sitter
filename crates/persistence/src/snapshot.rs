@@ -6,10 +6,7 @@ use crate::{
 };
 use std::{
     ptr::NonNull,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::{Arc, atomic::Ordering},
 };
 use tree_sitter_squatter::{BackedTree, StableSlab, Tree};
 
@@ -74,7 +71,6 @@ pub(crate) fn get(
     request: &Request,
     source: &[u8],
     language: &IdentifiedLanguage,
-    cancel: Option<&AtomicBool>,
 ) -> Option<(BackedTree, bool)> {
     let snapshot = Arc::new(Snapshot::open(store)?);
     if store
@@ -129,8 +125,7 @@ pub(crate) fn get(
                     })
             });
         complete &= loaded.is_some();
-        let cache =
-            loaded.or_else(|| tree_sitter_squatter::PresenceCache::build(&tree, cancel).ok())?;
+        let cache = loaded.or_else(|| tree_sitter_squatter::PresenceCache::build(&tree).ok())?;
         tree.set_presence_cache(cache).ok()?;
     }
     if request.points {
@@ -152,7 +147,7 @@ pub(crate) fn get(
         complete &= loaded.is_some();
         let points = loaded.or_else(|| {
             let line_index = tree_sitter_squatter::LineIndex::new(source).ok()?;
-            tree_sitter_squatter::PointData::build(&tree, &line_index, cancel).ok()
+            tree_sitter_squatter::PointData::build(&tree, &line_index).ok()
         })?;
         tree.set_point_data(points).ok()?;
     }

@@ -492,14 +492,14 @@ text; a rope-aware query text provider remains separate work.
 ```rust
 let mut pending_sweeps = Vec::new();
 if let Some(mut sweep) = cache.sweep_missing() {
-    let progress = sweep.step(64, None)?;
+    let progress = sweep.step(64)?;
     if matches!(progress.state, MaintenanceState::More | MaintenanceState::Busy) {
         pending_sweeps.push(sweep);
     }
 }
 let mut pending_cleanups = Vec::new();
 if let Some(mut cleanup) = cache.maintenance_missing(deleted_path)? {
-    let progress = cleanup.step(64, None)?;
+    let progress = cleanup.step(64)?;
     if matches!(progress.state, MaintenanceState::More | MaintenanceState::Busy) {
         pending_cleanups.push(cleanup);
     }
@@ -507,9 +507,8 @@ if let Some(mut cleanup) = cache.maintenance_missing(deleted_path)? {
 let reclaimed = cache.check_stale_readers()?;
 ```
 
-Retain queues and schedule further steps. Dropping work stops it. Existing
-maintenance cancellation still uses `Option<&AtomicBool>`; migrating those options
-and replacing live-file generation cleanup remain unspecified.
+Retain queues and schedule further steps. Dropping work stops it. Replacing
+live-file generation cleanup remains unspecified.
 
 ## 21. Verification without retaining source
 

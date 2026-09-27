@@ -430,7 +430,7 @@ impl Builder {
         };
         self.tree.finish_layout(capacity, self.optional)?;
         if options.symbol_presence {
-            let cache = PresenceCache::build(&self.tree, None)?;
+            let cache = PresenceCache::build(&self.tree)?;
             self.tree.set_presence_cache(cache)?;
         }
         if let Some(points) = self.points {

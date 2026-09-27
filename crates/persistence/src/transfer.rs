@@ -120,14 +120,14 @@ impl Persistence {
             return Err(invalid().into());
         }
         if request.presence {
-            let cache = tree_sitter_squatter::PresenceCache::build(&tree, None)
-                .map_err(io::Error::other)?;
+            let cache =
+                tree_sitter_squatter::PresenceCache::build(&tree).map_err(io::Error::other)?;
             tree.set_presence_cache(cache).map_err(io::Error::other)?;
         }
         if request.points {
             let index = tree_sitter_squatter::LineIndex::new(&source).map_err(io::Error::other)?;
-            let points = tree_sitter_squatter::PointData::build(&tree, &index, None)
-                .map_err(io::Error::other)?;
+            let points =
+                tree_sitter_squatter::PointData::build(&tree, &index).map_err(io::Error::other)?;
             tree.set_point_data(points).map_err(io::Error::other)?;
         }
         let store = self

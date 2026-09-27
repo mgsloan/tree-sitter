@@ -179,16 +179,9 @@ impl LoadedFile {
     }
     /// Delete one persisted sidecar for this tree, preserving the core and other sidecar.
     /// Existing readers retain their data; later loads or publishers can rebuild it.
-    pub fn evict_sidecar(
-        &self,
-        kind: SidecarKind,
-        cancel: Option<&AtomicBool>,
-    ) -> Result<EvictionOutcome, CacheError> {
-        if cancel.is_some_and(|flag| flag.load(Ordering::Relaxed)) {
-            return Err(CacheError::Cancelled);
-        }
+    pub fn evict_sidecar(&self, kind: SidecarKind) -> Result<EvictionOutcome, CacheError> {
         match &self.cleanup {
-            Some((store, request)) => store.evict_sidecar(request, kind, cancel),
+            Some((store, request)) => store.evict_sidecar(request, kind),
             None => Ok(EvictionOutcome::Absent),
         }
     }
@@ -626,12 +619,12 @@ impl PendingLoad {
             store.as_ref().and_then(|store| {
                 if self.read == ReadPolicy::PreferTransactionBacked
                     && let Some((tree, complete)) =
-                        snapshot::get(store, &self.request, &self.source, &self.language, cancel)
+                        snapshot::get(store, &self.request, &self.source, &self.language)
                 {
                     return Some((LoadedTree::Backed(Arc::new(tree)), complete));
                 }
                 store
-                    .get_with_cancel(&self.request, &self.source, &self.language, cancel)
+                    .get(&self.request, &self.source, &self.language)
                     .map(|(tree, complete)| (LoadedTree::Owned(Arc::new(tree)), complete))
             })
         };

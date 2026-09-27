@@ -219,7 +219,7 @@ fn indexed_points_follow_attachment_across_wide_trees() {
 
     for stored in [false, true, false] {
         if stored {
-            tree.set_point_data(PointData::build(&tree, &index, None).unwrap())
+            tree.set_point_data(PointData::build(&tree, &index).unwrap())
                 .unwrap();
         } else {
             tree.drop_point_data();

@@ -82,7 +82,7 @@ fn mapped_readers_survive_concurrent_publication_and_cleanup() {
         assert!(!current.cache_hit());
         let mut cleanup = current.maintenance().unwrap();
         loop {
-            if cleanup.step(8, None).unwrap().state == MaintenanceState::Complete {
+            if cleanup.step(8).unwrap().state == MaintenanceState::Complete {
                 break;
             }
         }

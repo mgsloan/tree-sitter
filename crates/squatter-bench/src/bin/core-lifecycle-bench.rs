@@ -110,7 +110,7 @@ impl Case<'_> {
             }),
             "source-points" => measure!(LineIndex::new(self.source).unwrap()),
             "point-build" => {
-                measure!(PointData::build(&self.tree, &self.line_index, None).unwrap())
+                measure!(PointData::build(&self.tree, &self.line_index).unwrap())
             }
             "point-access" => measure!({
                 for node in self.tree.root_node().preorder() {

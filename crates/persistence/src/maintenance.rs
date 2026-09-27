@@ -4,13 +4,7 @@ use crate::{
     store::{Database, Store, gate},
 };
 use heed::RoTxn;
-use std::{
-    path::PathBuf,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
-};
+use std::{path::PathBuf, sync::Arc};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SidecarKind {
@@ -30,16 +24,7 @@ impl Store {
         &self,
         request: &Request,
         kind: SidecarKind,
-        cancel: Option<&AtomicBool>,
     ) -> Result<EvictionOutcome, CacheError> {
-        let check = || {
-            if cancel.is_some_and(|flag| flag.load(Ordering::Relaxed)) {
-                Err(CacheError::Cancelled)
-            } else {
-                Ok(())
-            }
-        };
-        check()?;
         let Some(_guard) = gate(&self.writer)? else {
             return Ok(EvictionOutcome::Busy);
         };
@@ -49,7 +34,6 @@ impl Store {
         };
         let mut tx = self.env.write_txn()?;
         let deleted = database.delete(&mut tx, &request.tree_key)?;
-        check()?;
         tx.commit()?;
         Ok(if deleted {
             EvictionOutcome::Evicted
@@ -130,14 +114,7 @@ impl MissingSweep {
         }
     }
 
-    pub fn step(
-        &mut self,
-        budget: usize,
-        cancel: Option<&AtomicBool>,
-    ) -> Result<MaintenanceProgress, CacheError> {
-        if cancel.is_some_and(|flag| flag.load(Ordering::Relaxed)) {
-            return Err(CacheError::Cancelled);
-        }
+    pub fn step(&mut self, budget: usize) -> Result<MaintenanceProgress, CacheError> {
         let progress = |state, examined| MaintenanceProgress {
             state,
             examined,
@@ -150,7 +127,7 @@ impl MissingSweep {
             return Ok(progress(MaintenanceState::More, 0));
         }
         if let Some(pending) = &mut self.pending {
-            let mut result = pending.step(budget, cancel)?;
+            let mut result = pending.step(budget)?;
             if matches!(
                 result.state,
                 MaintenanceState::Complete | MaintenanceState::Superseded
@@ -246,29 +223,12 @@ impl Maintenance {
         }))
     }
 
-    pub fn step(
-        &mut self,
-        budget: usize,
-        cancel: Option<&AtomicBool>,
-    ) -> Result<MaintenanceProgress, CacheError> {
-        self.step_cancelled(budget, || {
-            cancel.is_some_and(|flag| flag.load(Ordering::Relaxed))
-        })
-    }
-
-    fn step_cancelled(
-        &mut self,
-        budget: usize,
-        cancelled: impl Fn() -> bool,
-    ) -> Result<MaintenanceProgress, CacheError> {
+    pub fn step(&mut self, budget: usize) -> Result<MaintenanceProgress, CacheError> {
         let progress = |state, examined, deleted| MaintenanceProgress {
             state,
             examined,
             deleted,
         };
-        if cancelled() {
-            return Err(CacheError::Cancelled);
-        }
         if self.phase == Phase::Done {
             return Ok(progress(MaintenanceState::Complete, 0, 0));
         }
@@ -297,16 +257,13 @@ impl Maintenance {
             self.phase = Phase::Done;
             return Ok(progress(MaintenanceState::Superseded, 0, 0));
         }
-        // Continuation advances only after commit: cancellation/failed commits
-        // retry the same candidates rather than silently skipping them.
+        // Continuation advances only after commit so failed batches retry the
+        // same candidates rather than silently skipping them.
         let mut phase = self.phase;
         let mut next = self.next.clone();
         let mut examined = 0;
         let mut deleted = 0;
         while examined < budget && phase != Phase::Done {
-            if cancelled() {
-                return Err(CacheError::Cancelled);
-            }
             match phase {
                 Phase::Trees | Phase::Sources => {
                     let db = if phase == Phase::Trees {
@@ -360,9 +317,6 @@ impl Maintenance {
                 Phase::Done => unreachable!(),
             }
         }
-        if cancelled() {
-            return Err(CacheError::Cancelled);
-        }
         tx.commit()?;
         self.phase = phase;
         self.next = next;
@@ -375,56 +329,5 @@ impl Maintenance {
             examined,
             deleted,
         ))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::{IdentifiedLanguage, LanguageIdentity, Options, Persistence};
-
-    #[test]
-    fn cancellation_rolls_back_batch_and_continuation() {
-        let root = tempfile::tempdir().unwrap();
-        let path = root.path().join("file.json");
-        let cache = Persistence::open(root.path(), Options::default()).unwrap();
-        let tree_sitter_language = unsafe {
-            tree_sitter::Language::from_raw(tree_sitter_json::LANGUAGE.into_raw()().cast())
-        };
-        let language = IdentifiedLanguage::new(
-            tree_sitter_squatter::Language::new(&tree_sitter_language).unwrap(),
-            LanguageIdentity::new(&tree_sitter_language, "json"),
-        );
-        let mut parser = tree_sitter::Parser::new();
-        std::fs::write(&path, "1").unwrap();
-        cache
-            .load(std::path::Path::new("file.json"), &language, &mut parser)
-            .unwrap();
-        std::fs::write(&path, "2").unwrap();
-        let newest = cache
-            .load(std::path::Path::new("file.json"), &language, &mut parser)
-            .unwrap();
-        let mut work = newest.maintenance().unwrap();
-        let checks = std::cell::Cell::new(0);
-        // Start and two tree candidates pass; cancel after an old tree has
-        // been deleted inside the uncommitted transaction.
-        assert!(matches!(
-            work.step_cancelled(100, || {
-                let previous = checks.get();
-                checks.set(previous + 1);
-                previous >= 3
-            }),
-            Err(CacheError::Cancelled)
-        ));
-        std::fs::write(&path, "1").unwrap();
-        assert!(
-            cache
-                .load(std::path::Path::new("file.json"), &language, &mut parser)
-                .unwrap()
-                .cache_hit()
-        );
-        let result = work.step(100, None).unwrap();
-        assert_eq!(result.state, MaintenanceState::Complete);
-        assert_eq!(result.deleted, 2);
     }
 }

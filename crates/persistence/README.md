@@ -90,7 +90,7 @@ Implemented:
   not a parser or transaction; `parse_now` explicitly bypasses contention.
 - Optional bounded generation cleanup via `LoadedFile::maintenance`, deleted-path
   discovery via `Persistence::sweep_missing`, and explicit stale-reader checks.
-  Cleanup revalidates its target and cancellation rolls back the active batch.
+  Cleanup revalidates its target before each batch.
   Missing-file cleanup retains a per-path retirement marker to reject deferred
   writers captured before cleanup, including across delete/recreate cycles.
 - One process-lifetime environment per directory inode on Unix (canonical path
