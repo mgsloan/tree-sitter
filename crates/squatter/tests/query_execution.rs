@@ -111,6 +111,102 @@ fn queries_match_with_and_without_plans() {
 }
 
 #[test]
+fn error_queries_survive_native_mutations() {
+    use tree_sitter::StreamingIterator;
+
+    for (language, source) in [
+        (tree_sitter_json::LANGUAGE, "[1, ?, 2]"),
+        (
+            tree_sitter_c_sharp::LANGUAGE,
+            "class C { int M() { ? return 1; } }",
+        ),
+    ] {
+        let language = unsafe { tree_sitter::Language::from_raw(language.into_raw()().cast()) };
+        let grammar = Language::new(&language).unwrap();
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&language).unwrap();
+        let native = parser.parse(source, None).unwrap();
+        let tree = Tree::pack(&grammar, &native).unwrap();
+        assert!(tree.root_node().has_error());
+
+        for pattern in [
+            "(ERROR) @error (_) @node",
+            "(ERROR) @error (_ (_) @child) @parent",
+        ] {
+            let mut query = Query::new(&grammar, pattern).unwrap();
+            let reference = tree_sitter::Query::new(&language, pattern).unwrap();
+            let error_capture = reference.capture_index_for_name("error").unwrap();
+            let mut reference_cursor = tree_sitter::QueryCursor::new();
+            let mut matches =
+                reference_cursor.matches(&reference, native.root_node(), source.as_bytes());
+            let mut expected = Vec::new();
+            while let Some(result) = matches.next() {
+                expected.push((
+                    result.pattern_index,
+                    result
+                        .captures()
+                        .iter()
+                        .map(|capture| {
+                            (
+                                capture.node.byte_range(),
+                                capture.node.kind_id(),
+                                capture.index,
+                            )
+                        })
+                        .collect::<Vec<_>>(),
+                ));
+            }
+            assert!(expected.iter().any(|(pattern, _)| *pattern == 0));
+
+            for mutation in 0..4 {
+                match mutation {
+                    1 => {
+                        query.disable_capture("error");
+                        for (_, captures) in &mut expected {
+                            captures.retain(|(_, _, index)| *index != error_capture);
+                        }
+                    }
+                    2 | 3 => {
+                        let pattern = 3 - mutation;
+                        query.disable_pattern(pattern);
+                        expected.retain(|(index, _)| *index != pattern);
+                    }
+                    _ => {}
+                }
+
+                for optimized in [false, true] {
+                    let mut cursor = QueryCursor::new();
+                    cursor.set_optimized(optimized);
+                    let mut execution = cursor.execute(&query, tree.root_node(), source.as_bytes());
+                    let mut actual = Vec::new();
+                    while let Some(result) = execution.next_match() {
+                        actual.push((
+                            result.pattern_index,
+                            result
+                                .captures
+                                .iter()
+                                .map(|capture| {
+                                    (
+                                        capture.node.byte_range(),
+                                        capture.node.kind_id().get(),
+                                        capture.index,
+                                    )
+                                })
+                                .collect::<Vec<_>>(),
+                        ));
+                    }
+                    assert_eq!(execution.error(), None);
+                    assert_eq!(
+                        actual, expected,
+                        "{pattern}, {source:?}, mutation={mutation}, optimized={optimized}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn malformed_queries_match_with_and_without_plans() {
     use std::collections::BTreeSet;
 

@@ -291,7 +291,9 @@ impl<'tree> Node<'tree> {
     /// *anonymous* nodes correspond to string literals in the grammar.
     #[inline]
     pub fn is_named(&self) -> bool {
-        self.data().tables().named(self.kind_id().get())
+        self.data()
+            .tables()
+            .named_index(self.data().symbol_index(self.slot().get()))
     }
 
     /// Check if this node is *extra*.
@@ -319,7 +321,8 @@ impl<'tree> Node<'tree> {
     /// Syntax errors represent parts of the code that could not be incorporated
     /// into a valid syntax tree.
     pub fn is_error(&self) -> bool {
-        self.kind_id() == KindId::ERROR
+        self.data().symbol_index(self.slot().get()).get() as u32
+            == self.data().tables().symbol_count
     }
 
     /// Check if this node represents a syntax error or contains any syntax

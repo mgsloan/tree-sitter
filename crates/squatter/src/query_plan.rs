@@ -91,12 +91,7 @@ impl Program {
             }
 
             if index >= compiled.view.wildcard_root_pattern_count as usize {
-                let symbol = compiled.steps()[entry.step_index as usize].symbol;
-                let symbol = if symbol == u16::MAX {
-                    compiled.view.symbol_count as usize
-                } else {
-                    symbol as usize
-                };
+                let symbol = compiled.steps()[entry.step_index as usize].symbol as usize;
                 let range = &mut result.pattern_map[symbol];
                 if range.length == 0 {
                     range.offset = index as u32;
@@ -147,12 +142,7 @@ impl Program {
             .enumerate()
             .skip(compiled.view.wildcard_root_pattern_count as usize)
         {
-            let symbol = compiled.steps()[entry.step_index as usize].symbol;
-            let symbol = if symbol == u16::MAX {
-                compiled.view.symbol_count as usize
-            } else {
-                symbol as usize
-            };
+            let symbol = compiled.steps()[entry.step_index as usize].symbol as usize;
             let range = &mut self.pattern_map[symbol];
             if range.length == 0 {
                 range.offset = index as u32;
@@ -241,7 +231,8 @@ fn presence_requirement(
         {
             break;
         }
-        if (step.symbol != 0 && step.symbol != u16::MAX) || step.field != 0 {
+        if (step.symbol != 0 && step.symbol as u32 != compiled.view.symbol_count) || step.field != 0
+        {
             required = Some(PresenceRequirement {
                 symbol: step.symbol,
                 field: step.field,
@@ -335,7 +326,8 @@ impl DirectPlan {
                     // Named anchors select one possible child at each step;
                     // these plans need neither branching nor longest-match dedup.
                     let named = if step.symbol != 0 {
-                        language.node_kind_is_named(step.symbol)
+                        step.symbol as u32 == compiled.view.symbol_count
+                            || language.node_kind_is_named(step.symbol)
                     } else {
                         step.has(IS_NAMED)
                     };
@@ -362,23 +354,19 @@ impl DirectPlan {
         plan.roots
             .resize(compiled.view.symbol_count as usize + 2, 0);
         let public = unsafe { compiled.view.public_symbols.as_slice() };
-        for index in 0..=compiled.view.symbol_count as usize {
-            let symbol = if index == compiled.view.symbol_count as usize {
-                u16::MAX
-            } else if public[index] == index as u16 {
-                index as u16
-            } else {
+        for symbol in 0..=compiled.view.symbol_count as usize {
+            if symbol < compiled.view.symbol_count as usize && public[symbol] != symbol as u16 {
                 continue;
-            };
+            }
             for entry in compiled.entries() {
                 let step = compiled.steps()[entry.step_index as usize];
                 if if step.symbol != 0 {
-                    step.symbol == symbol
+                    step.symbol == symbol as u16
                 } else {
-                    symbol != u16::MAX
-                        && (!step.has(IS_NAMED) || language.node_kind_is_named(symbol))
+                    symbol != compiled.view.symbol_count as usize
+                        && (!step.has(IS_NAMED) || language.node_kind_is_named(symbol as u16))
                 } {
-                    plan.roots[index] |= 1 << entry.pattern_index.get();
+                    plan.roots[symbol] |= 1 << entry.pattern_index.get();
                 }
             }
         }

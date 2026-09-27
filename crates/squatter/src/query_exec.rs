@@ -1,6 +1,6 @@
 use crate::{
-    FieldId, GrammarKindId, KindId, Node, Query, QueryCapture, QueryExecutionError, QueryMatch,
-    RawNode, SlotIx,
+    FieldId, GrammarKindId, Node, Query, QueryCapture, QueryExecutionError, QueryMatch, RawNode,
+    SlotIx,
     native::{Pattern, PatternEntry, Step, flags::*},
     storage::ColumnPointer,
     types::{CaptureId, GroupIx, MatchId, PackedPoint, PatternIndex, RemappedKindId},
@@ -1447,11 +1447,12 @@ impl<'query, 'tree> QueryExecution<'_, 'query, 'tree, '_> {
             }
             let group = (total - 1 - start) / GROUP_SIZE;
             let group_end = ((start / GROUP_SIZE + 1) * GROUP_SIZE).min(end);
-            if data.presence_cache.is_some()
-                && !targets.is_empty()
+            if !targets.is_empty()
                 && targets.len() <= 4
-                && !targets.iter().any(|symbol| {
-                    data.group_has_symbol(group, data.tables().decode_kind(RemappedKindId(*symbol)))
+                && data.presence_cache.as_ref().is_some_and(|cache| {
+                    !targets
+                        .iter()
+                        .any(|symbol| cache.has(group, *symbol as usize, data.groups()))
                 })
             {
                 start = self.normalize_position(group_end);
@@ -1579,19 +1580,9 @@ impl<'query, 'tree> QueryExecution<'_, 'query, 'tree, '_> {
                 let maximum = data.word(data.layout.span_max, group);
                 // The maximum covers this subtree without loading its span delta.
                 let groups = slot.saturating_sub(maximum) / group_size..group + 1;
-                let found = data
-                    .tables()
-                    .remap_kind(KindId::new(requirement.symbol))
-                    .is_some_and(|symbol| {
-                        presence
-                            .find_matching_group(
-                                groups,
-                                symbol.get() as usize,
-                                data.groups(),
-                                false,
-                            )
-                            .is_some()
-                    });
+                let found = presence
+                    .find_matching_group(groups, requirement.symbol as usize, data.groups(), false)
+                    .is_some();
                 if !found {
                     cache.rejections += 1;
                     self.cursor.presence[index] = cache;
@@ -1629,19 +1620,14 @@ impl<'query, 'tree> QueryExecution<'_, 'query, 'tree, '_> {
             let mut hits = {
                 let mut hits = u64::MAX;
                 if requirement.symbol != 0 {
-                    hits = data
-                        .tables()
-                        .remap_kind(KindId::new(requirement.symbol))
-                        .map_or(0, |symbol| {
-                            equal_column(
-                                data,
-                                data.layout.symbol,
-                                physical_group,
-                                symbol.get(),
-                                u16::MAX,
-                                data.layout.symbol_width,
-                            )
-                        });
+                    hits = equal_column(
+                        data,
+                        data.layout.symbol,
+                        physical_group,
+                        requirement.symbol,
+                        u16::MAX,
+                        data.layout.symbol_width,
+                    );
                 }
                 if requirement.field != 0 {
                     hits &= equal_column(
@@ -1786,7 +1772,7 @@ impl<'query, 'tree> QueryExecution<'_, 'query, 'tree, '_> {
 
             self.cursor.direct_position = self.normalize_position(position + 1);
             let node = self.position_node(position);
-            let symbol = node.kind_id().get();
+            let symbol = node.data().symbol_index(node.slot().get()).get();
             let mut roots = self.direct_roots(node);
             while roots != 0 {
                 let pattern = roots.trailing_zeros() as usize;
@@ -1831,7 +1817,8 @@ impl<'query, 'tree> QueryExecution<'_, 'query, 'tree, '_> {
                 let symbol_matches =
                     matches!(operation.relation, crate::query_plan::Relation::Root)
                         || operation.symbol == symbol
-                        || (operation.symbol == 0 && symbol != DONE);
+                        || (operation.symbol == 0
+                            && symbol as u32 != query.compiled.view.symbol_count);
                 let matches = symbol_matches
                     && (operation.field == 0 || FieldId::new(operation.field) == node.field_id())
                     && (!operation.last_named_child
@@ -2024,8 +2011,10 @@ impl<'query, 'tree> QueryExecution<'_, 'query, 'tree, '_> {
     ) -> bool {
         let query = self.query;
         let depth = self.cursor.parents.len() as u32;
-        let symbol = node.kind_id().get();
-        let named = node.is_named();
+        let symbol = node.data().symbol_index(node.slot().get());
+        let named = node.data().tables().named_index(symbol);
+        let symbol = symbol.get();
+        let is_error = symbol as u32 == query.compiled.view.symbol_count;
         let field = if query.program.needs_fields && depth != 0 {
             node.field_id().map_or(0, FieldId::get)
         } else {
@@ -2038,15 +2027,10 @@ impl<'query, 'tree> QueryExecution<'_, 'query, 'tree, '_> {
         } else {
             0
         };
-        let symbol_index = if symbol == DONE {
-            query.compiled.view.symbol_count as usize
-        } else {
-            symbol as usize
-        };
         let patterns = query
             .program
             .pattern_map
-            .get(symbol_index)
+            .get(symbol as usize)
             .copied()
             .unwrap_or(crate::native::Range {
                 offset: 0,
@@ -2062,7 +2046,7 @@ impl<'query, 'tree> QueryExecution<'_, 'query, 'tree, '_> {
             )
         };
         let mut wildcard = 0;
-        let wildcard_count = if symbol == DONE {
+        let wildcard_count = if is_error {
             0
         } else {
             query.compiled.view.wildcard_root_pattern_count as usize
@@ -2130,7 +2114,7 @@ impl<'query, 'tree> QueryExecution<'_, 'query, 'tree, '_> {
                 if step.has(IS_MISSING) {
                     node.is_missing()
                 } else {
-                    symbol != DONE && (!step.has(IS_NAMED) || named)
+                    !is_error && (!step.has(IS_NAMED) || named)
                 }
             } else {
                 symbol == step.symbol && (!step.has(IS_MISSING) || node.is_missing())

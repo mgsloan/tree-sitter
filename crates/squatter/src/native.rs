@@ -189,7 +189,12 @@ impl GrammarView {
 
     #[inline]
     pub fn named(&self, symbol: u16) -> bool {
-        unsafe { *self.symbol_flags.add(self.encode_id(symbol) as usize) & 1 != 0 }
+        self.named_index(RemappedKindId(self.encode_id(symbol) as u16))
+    }
+
+    #[inline]
+    pub fn named_index(&self, symbol: RemappedKindId) -> bool {
+        unsafe { *self.symbol_flags.add(symbol.get() as usize) & 1 != 0 }
     }
 }
 
@@ -468,6 +473,7 @@ impl Range {
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Step {
+    // stored kind ID; zero denotes a wildcard
     pub symbol: u16,
     pub supertype_symbol: u16,
     pub field: u16,
@@ -573,7 +579,8 @@ impl CompiledQuery {
             offset: 0,
             message: "query exceeds u32 size".into(),
         })?;
-        let language = language.tables().language;
+        let tables = language.tables();
+        let language = tables.language;
         let mut offset = 0;
         let mut kind = 0;
         let raw = unsafe {
@@ -601,10 +608,14 @@ impl CompiledQuery {
         unsafe {
             sq_native_query_view(raw.as_ptr(), view.as_mut_ptr());
         }
-        let result = Self {
+        let mut result = Self {
             raw,
             view: unsafe { view.assume_init() },
         };
+        // Native mutations only remove entries or captures; symbols stay encoded.
+        for step in result.steps_mut() {
+            step.symbol = tables.encode_id(step.symbol) as u16;
+        }
         #[cfg(debug_assertions)]
         result.validate();
         Ok(result)
@@ -681,6 +692,7 @@ impl CompiledQuery {
     fn validate(&self) {
         let steps = self.steps();
         for step in steps {
+            assert!((step.symbol as u32) < self.view.symbol_count + 2);
             assert_eq!(step.flags & !0x0fff, 0);
             assert!(
                 step.alternative_index == u16::MAX
