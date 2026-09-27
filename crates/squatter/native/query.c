@@ -2790,7 +2790,6 @@ TSQuery *ts_query_new(
   #endif
 
   array_delete(&self->string_buffer);
-  array_delete(&self->step_offsets);
 
   // Quantifier arrays can no longer grow, so their borrowed views are now stable.
   array_reserve(&self->quantifier_views, self->capture_quantifiers.size);
@@ -2939,5 +2938,57 @@ void ts_query_disable_pattern(
       if (index < self->wildcard_root_pattern_count) self->wildcard_root_pattern_count--;
       array_erase(&self->pattern_map, index);
     } else index++;
+  }
+}
+
+TSQuery *sq_native_query_copy(const TSQuery *self) {
+  TSQuery *copy = ts_malloc(sizeof(TSQuery));
+  *copy = (TSQuery) {
+    .captures = symbol_table_new(),
+    .predicate_values = symbol_table_new(),
+    .language = ts_language_copy(self->language),
+    .wildcard_root_pattern_count = self->wildcard_root_pattern_count,
+  };
+
+  array_assign(&copy->steps, &self->steps);
+  array_assign(&copy->pattern_map, &self->pattern_map);
+  array_assign(&copy->predicate_steps, &self->predicate_steps);
+  array_assign(&copy->patterns, &self->patterns);
+  array_assign(&copy->step_offsets, &self->step_offsets);
+  array_assign(&copy->negated_fields, &self->negated_fields);
+  array_assign(&copy->string_buffer, &self->string_buffer);
+  array_assign(&copy->repeat_symbols_with_rootless_patterns, &self->repeat_symbols_with_rootless_patterns);
+  array_assign(&copy->captures.characters, &self->captures.characters);
+  array_assign(&copy->captures.slices, &self->captures.slices);
+  array_assign(&copy->predicate_values.characters, &self->predicate_values.characters);
+  array_assign(&copy->predicate_values.slices, &self->predicate_values.slices);
+
+  array_assign(&copy->capture_quantifiers, &self->capture_quantifiers);
+  array_reserve(&copy->quantifier_views, copy->capture_quantifiers.size);
+  for (uint32_t index = 0; index < copy->capture_quantifiers.size; index++) {
+    CaptureQuantifiers *destination = array_get(&copy->capture_quantifiers, index);
+    const CaptureQuantifiers *source = array_get(&self->capture_quantifiers, index);
+    *destination = capture_quantifiers_new();
+    array_assign(destination, source);
+    array_push(&copy->quantifier_views, ((NativeView){destination->contents, destination->size}));
+  }
+
+  return copy;
+}
+
+bool sq_native_query_is_pattern_guaranteed_at_step(
+  const TSQuery *self,
+  uint32_t byte_offset
+) {
+  uint32_t step_index = UINT32_MAX;
+  for (unsigned index = 0; index < self->step_offsets.size; index++) {
+    StepOffset *step_offset = array_get(&self->step_offsets, index);
+    if (step_offset->byte_offset > byte_offset) break;
+    step_index = step_offset->step_index;
+  }
+  if (step_index < self->steps.size) {
+    return (array_get(&self->steps, step_index)->flags & SQ_STEP_ROOT_PATTERN_GUARANTEED) != 0;
+  } else {
+    return false;
   }
 }

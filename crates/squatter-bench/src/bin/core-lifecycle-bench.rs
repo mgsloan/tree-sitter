@@ -152,7 +152,7 @@ impl Case<'_> {
                         "query-drop" => queries.clear(),
                         "query-disable-pattern" => {
                             for query in &mut queries {
-                                query.disable_pattern(black_box(0));
+                                query.disable_pattern(black_box(tree_squatter::PatternIx(0)));
                             }
                         }
                         _ => {

@@ -23,6 +23,7 @@ pub(crate) struct DirectStep {
     pub last_named_child: bool,
 }
 
+#[derive(Clone)]
 pub(crate) struct DirectPlan {
     pub steps: Vec<DirectStep>,
     pub roots: Vec<u64>,
@@ -31,11 +32,12 @@ pub(crate) struct DirectPlan {
     pub local_patterns: u64,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct SymbolFilter {
     pub matches: Vec<(u16, u16)>,
 }
 
+#[derive(Clone)]
 pub(crate) struct Program {
     pub pattern_map: Vec<Range>,
     pub scan_symbols: Vec<u64>,

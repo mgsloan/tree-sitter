@@ -171,6 +171,8 @@ SQQuery *sq_native_query_new(
   uint32_t *,
   TSQueryError *
 );
+SQQuery *sq_native_query_copy(const SQQuery *);
+bool sq_native_query_is_pattern_guaranteed_at_step(const SQQuery *, uint32_t);
 void sq_native_query_delete(SQQuery *);
 
 #endif

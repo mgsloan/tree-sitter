@@ -232,7 +232,7 @@ fn check_queries(
             let mut expected_query = tree_sitter::Query::new(language, source_query)?;
             let mut actual_query = tree_squatter::Query::new(&grammar, source_query)?;
             if modification == 2 {
-                let name = actual_query.capture_names()[0].clone();
+                let name = actual_query.capture_names()[0].to_owned();
                 expected_query.disable_capture(&name);
                 actual_query.disable_capture(&name);
             }
@@ -255,14 +255,14 @@ fn check_queries(
                         break;
                     };
                     actual.push((
-                        result.pattern_index,
-                        index,
+                        result.pattern_index.0,
+                        index.map(|index| index.0 as usize),
                         result
-                            .captures
+                            .captures()
                             .iter()
                             .map(|capture| {
                                 describe_capture(
-                                    capture.index,
+                                    capture.index.0,
                                     capture.node.kind_id(),
                                     capture.node.byte_range(),
                                 )
@@ -294,21 +294,21 @@ fn check_cursor_reuse(
     for _ in 0..3 {
         let packed = Tree::pack(&grammar, tree)?;
         let query = Query::new(&grammar, "(_) @node")?;
-        let mut execution = cursor.execute(&query, packed.root_node(), b"");
+        let mut execution = cursor.execute(&query, packed.root_node(), b"".as_slice());
         assert!(execution.next_capture().is_some());
     }
     // This checkout's mainline disable_pattern leaves the wildcard-root count
     // stale and asserts. Verify the intended behavior directly for this case.
     let packed = Tree::pack(&grammar, tree)?;
     let mut query = Query::new(&grammar, "(_) @a (_) @b")?;
-    query.disable_pattern(0);
+    query.disable_pattern(tree_squatter::PatternIx(0));
     {
-        let mut execution = cursor.execute(&query, packed.root_node(), b"");
+        let mut execution = cursor.execute(&query, packed.root_node(), b"".as_slice());
         let mut count = 0;
         while let Some(result) = execution.next_match() {
-            assert_eq!(result.pattern_index, 1);
-            assert_eq!(result.captures.len(), 1);
-            assert_eq!(result.captures[0].index, 1);
+            assert_eq!(result.pattern_index.0, 1);
+            assert_eq!(result.captures().len(), 1);
+            assert_eq!(result.captures()[0].index.0, 1);
             count += 1;
         }
         assert_eq!(
@@ -321,22 +321,22 @@ fn check_cursor_reuse(
                 .count()
         );
     }
-    query.disable_pattern(1);
+    query.disable_pattern(tree_squatter::PatternIx(1));
     assert!(
         cursor
-            .execute(&query, packed.root_node(), b"")
+            .execute(&query, packed.root_node(), b"".as_slice())
             .next_match()
             .is_none()
     );
     let query = Query::new(&grammar, "(_ (_)+ @child) @parent")?;
     assert!(cursor.set_byte_range(1..12));
     {
-        let mut execution = cursor.execute(&query, packed.root_node(), b"");
+        let mut execution = cursor.execute(&query, packed.root_node(), b"".as_slice());
         assert!(execution.next_match().is_some());
         assert_eq!(execution.error(), None);
     }
     assert!(cursor.set_byte_range(0..0)); // Zero end restores the unbounded range.
-    let mut execution = cursor.execute(&query, packed.root_node(), b"");
+    let mut execution = cursor.execute(&query, packed.root_node(), b"".as_slice());
     assert!(execution.next_match().is_some());
     assert_eq!(execution.error(), None);
     Ok(())

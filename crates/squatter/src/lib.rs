@@ -1,6 +1,7 @@
 mod types;
 pub use types::{
-    ChildIx, FieldId, GrammarId, KindId, NamedChildIx, SlotIx, SquatterGrammarId, SquatterKindId,
+    CaptureIx, ChildIx, FieldId, GrammarId, KindId, MatchCaptureIx, MatchId, NamedChildIx,
+    PatternIx, SlotIx, SquatterGrammarId, SquatterKindId,
 };
 mod node;
 use node::RawNode;
@@ -23,7 +24,9 @@ mod query_exec;
 mod query_plan;
 pub use native::{Language, LanguageHash, language_hash};
 pub use query::{
-    Query, QueryCapture, QueryCursor, QueryError, QueryExecution, QueryExecutionError, QueryMatch,
+    CaptureQuantifier, Query, QueryCapture, QueryCursor, QueryError, QueryErrorKind,
+    QueryExecution, QueryExecutionError, QueryMatch, QueryPredicate, QueryPredicateArg,
+    QueryProperty,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

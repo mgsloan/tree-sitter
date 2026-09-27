@@ -90,9 +90,7 @@ integer_type!(
     /// A compact original grammar symbol in one prepared language, ignoring aliases.
     /// Zero is reserved; convert through [`crate::Language`].
     pub SquatterGrammarId(u16));
-integer_type!(pub(crate) CaptureId(u32));
 integer_type!(pub(crate) PatternIndex(u16));
-integer_type!(pub(crate) MatchId(u32));
 integer_type!(pub(crate) QueryStringId(u32));
 integer_type!(
     /// Row in the upper 32 bits and column in the lower 32 bits.
@@ -290,5 +288,49 @@ impl NamedChildIx {
     #[inline]
     pub const fn new(value: u32) -> Self {
         Self(value)
+    }
+}
+
+/// A query-global pattern index.
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[repr(transparent)]
+pub struct PatternIx(pub usize);
+
+impl PatternIx {
+    pub const fn get(self) -> usize {
+        self.0
+    }
+}
+
+/// A query-global capture-name index.
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[repr(transparent)]
+pub struct CaptureIx(pub u32);
+
+impl CaptureIx {
+    pub const fn get(self) -> u32 {
+        self.0
+    }
+}
+
+/// A match identity within one execution.
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[repr(transparent)]
+pub struct MatchId(pub u32);
+
+impl MatchId {
+    pub const fn get(self) -> u32 {
+        self.0
+    }
+}
+
+/// A position within a match’s capture slice.
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[repr(transparent)]
+pub struct MatchCaptureIx(pub u32);
+
+impl MatchCaptureIx {
+    pub const fn get(self) -> u32 {
+        self.0
     }
 }

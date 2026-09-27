@@ -1,9 +1,9 @@
 use crate::{
-    FieldId, GrammarId, Node, Query, QueryCapture, QueryExecutionError, QueryMatch, RawNode,
-    SlotIx,
+    FieldId, GrammarId, MatchCaptureIx, Node, PatternIx, Query, QueryCapture,
+    QueryExecutionError, QueryMatch, RawNode, SlotIx,
     native::{Pattern, PatternEntry, Step, flags::*},
     storage::ColumnPointer,
-    types::{CaptureId, GroupIx, MatchId, PackedPoint, PatternIndex, SquatterKindId},
+    types::{CaptureIx, GroupIx, MatchId, PackedPoint, PatternIndex, SquatterKindId},
 };
 use std::{
     cmp::Ordering,
@@ -46,7 +46,7 @@ const EXHAUSTED: u16 = 64;
 #[repr(C)]
 struct Capture {
     node: RawNode,
-    index: CaptureId,
+    index: CaptureIx,
 }
 
 impl PartialEq for Capture {
@@ -359,7 +359,7 @@ impl CapturePool {
             }
             let capture = Capture {
                 node: node.raw,
-                index: CaptureId(capture_id as u32),
+                index: CaptureIx(capture_id as u32),
             };
             storage.values.push(capture);
             list.length += 1;
@@ -859,11 +859,11 @@ impl<'query, 'tree> QueryExecution<'_, 'query, 'tree, '_> {
     /// Return a provisional match snapshot and the next capture's index.
     /// Snapshots may gain captures or lose longest-match filtering. Use
     /// `next_match` for completed matches; capture event order is unspecified.
-    pub fn next_capture(&mut self) -> Option<(QueryMatch<'_, 'tree>, usize)> {
+    pub fn next_capture(&mut self) -> Option<(QueryMatch<'_, 'tree>, MatchCaptureIx)> {
         self.next(true)
     }
 
-    fn next(&mut self, capture: bool) -> Option<(QueryMatch<'_, 'tree>, usize)> {
+    fn next(&mut self, capture: bool) -> Option<(QueryMatch<'_, 'tree>, MatchCaptureIx)> {
         if self.cursor.error.is_some() {
             return None;
         }
@@ -887,15 +887,15 @@ impl<'query, 'tree> QueryExecution<'_, 'query, 'tree, '_> {
                 }
             };
             let result = QueryMatch {
-                id: output.id.get(),
-                pattern_index: output.pattern.get() as usize,
+                id: output.id,
+                pattern_index: PatternIx(output.pattern.get() as usize),
                 captures,
             };
             if result.satisfies(self.query, self.source) {
-                return Some((result, output.index));
+                return Some((result, MatchCaptureIx(output.index as u32)));
             }
             if capture {
-                self.remove_match(output.id.get());
+                self.remove_match(output.id);
             }
         }
     }
@@ -1163,8 +1163,7 @@ impl<'query, 'tree> QueryExecution<'_, 'query, 'tree, '_> {
         }
     }
 
-    pub fn remove_match(&mut self, id: u32) {
-        let id = MatchId(id);
+    pub fn remove_match(&mut self, id: MatchId) {
         if self.cursor.finished_heap_size != 0 {
             self.heapify();
         }
@@ -2717,13 +2716,15 @@ mod scan_tests {
                                         execution.next_capture().map(|(result, index)| {
                                             (
                                                 result.pattern_index,
-                                                &result.captures[index..index + 1],
+                                                result.captures()
+                                                    [index.0 as usize..index.0 as usize + 1]
+                                                    .to_vec(),
                                             )
                                         })
                                     } else {
-                                        execution
-                                            .next_match()
-                                            .map(|result| (result.pattern_index, result.captures))
+                                        execution.next_match().map(|result| {
+                                            (result.pattern_index, result.captures().to_vec())
+                                        })
                                     };
                                     let Some((pattern, captures)) = result else {
                                         break;
@@ -2824,55 +2825,54 @@ mod scan_tests {
                     ] {
                         for points in [false, true] {
                             for captures in [false, true] {
-                                let collect =
-                                    |optimized| {
-                                        let mut cursor = QueryCursor::new();
-                                        cursor.set_optimized(optimized);
-                                        if points {
-                                            assert!(cursor.set_point_range(
-                                                point(range.start)..point(range.end)
-                                            ));
+                                let collect = |optimized| {
+                                    let mut cursor = QueryCursor::new();
+                                    cursor.set_optimized(optimized);
+                                    if points {
+                                        cursor
+                                            .set_point_range(point(range.start)..point(range.end));
+                                    } else {
+                                        assert!(cursor.set_byte_range(range.clone()));
+                                    }
+                                    let mut execution =
+                                        cursor.execute(&query, root, source.as_bytes());
+                                    assert_eq!(
+                                        execution.cursor.direct,
+                                        optimized && direct,
+                                        "{pattern}"
+                                    );
+                                    let mut results = Vec::new();
+                                    loop {
+                                        let result = if captures {
+                                            execution
+                                                .next_capture()
+                                                .map(|(result, index)| (result, Some(index)))
                                         } else {
-                                            assert!(cursor.set_byte_range(range.clone()));
-                                        }
-                                        let mut execution =
-                                            cursor.execute(&query, root, source.as_bytes());
-                                        assert_eq!(
-                                            execution.cursor.direct,
-                                            optimized && direct,
-                                            "{pattern}"
-                                        );
-                                        let mut results = Vec::new();
-                                        loop {
-                                            let result = if captures {
-                                                execution
-                                                    .next_capture()
-                                                    .map(|(result, index)| (result, Some(index)))
-                                            } else {
-                                                execution.next_match().map(|result| (result, None))
-                                            };
-                                            let Some((result, index)) = result else { break };
-                                            let captures = index.map_or(result.captures, |index| {
-                                                &result.captures[index..index + 1]
-                                            });
-                                            results.push((
-                                                result.pattern_index,
-                                                captures
-                                                    .iter()
-                                                    .map(|capture| {
-                                                        (capture.node.slot().get(), capture.index)
-                                                    })
-                                                    .collect::<Vec<_>>(),
-                                            ));
-                                            assert!(results.len() < 10_000);
-                                        }
-                                        assert_eq!(execution.error(), None);
-                                        results.sort();
-                                        if captures {
-                                            results.dedup();
-                                        }
-                                        results
-                                    };
+                                            execution.next_match().map(|result| (result, None))
+                                        };
+                                        let Some((result, index)) = result else { break };
+                                        let captures = index.map_or(result.captures(), |index| {
+                                            &result.captures()
+                                                [index.0 as usize..index.0 as usize + 1]
+                                        });
+                                        results.push((
+                                            result.pattern_index,
+                                            captures
+                                                .iter()
+                                                .map(|capture| {
+                                                    (capture.node.slot().get(), capture.index)
+                                                })
+                                                .collect::<Vec<_>>(),
+                                        ));
+                                        assert!(results.len() < 10_000);
+                                    }
+                                    assert_eq!(execution.error(), None);
+                                    results.sort();
+                                    if captures {
+                                        results.dedup();
+                                    }
+                                    results
+                                };
                                 assert_eq!(
                                     collect(true),
                                     collect(false),

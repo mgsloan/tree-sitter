@@ -656,7 +656,10 @@ impl Drop for CompiledQuery {
 impl CompiledQuery {
     pub fn new(language: &Language, source: &str) -> Result<Self, QueryError> {
         let length = u32::try_from(source.len()).map_err(|_| QueryError {
+            row: 0,
+            column: 0,
             offset: 0,
+            kind: tree_sitter::QueryErrorKind::Syntax,
             message: "query exceeds u32 size".into(),
         })?;
         let tables = language.tables();
@@ -671,17 +674,21 @@ impl CompiledQuery {
                 &mut kind,
             )
         };
-        let raw = NonNull::new(raw).ok_or_else(|| QueryError {
-            offset: offset as usize,
-            message: match kind {
-                2 => "unknown node type",
-                3 => "unknown field",
-                4 => "unknown capture",
-                5 => "invalid structure",
-                6 => "incompatible language",
-                _ => "invalid syntax",
+        let raw = NonNull::new(raw).ok_or_else(|| {
+            if kind == 6 {
+                QueryError {
+                    row: 0,
+                    column: 0,
+                    offset: 0,
+                    message: tree_sitter::LanguageError::Version(
+                        language.tree_sitter_language().abi_version(),
+                    )
+                    .to_string(),
+                    kind: tree_sitter::QueryErrorKind::Language,
+                }
+            } else {
+                QueryError::compile(source, offset as usize, kind)
             }
-            .into(),
         })?;
         let mut view = MaybeUninit::uninit();
         unsafe {
@@ -699,7 +706,10 @@ impl CompiledQuery {
                 step.symbol = tables
                     .remap_kind(KindId::new(step.symbol))
                     .ok_or_else(|| QueryError {
+                        row: 0,
+                        column: 0,
                         offset: 0,
+                        kind: tree_sitter::QueryErrorKind::Structure,
                         message: "query kind cannot occur in packed storage".into(),
                     })?
                     .get();
@@ -708,6 +718,25 @@ impl CompiledQuery {
         #[cfg(debug_assertions)]
         result.validate();
         Ok(result)
+    }
+
+    pub fn deep_clone(&self) -> Self {
+        let raw = NonNull::new(unsafe { sq_native_query_copy(self.raw.as_ptr()) }).unwrap();
+        let mut view = MaybeUninit::uninit();
+        unsafe {
+            sq_native_query_view(raw.as_ptr(), view.as_mut_ptr());
+        }
+        let mut view = unsafe { view.assume_init() };
+        view.symbol_count = self.view.symbol_count;
+        Self {
+            raw,
+            view,
+            language: self.language.clone(),
+        }
+    }
+
+    pub fn is_pattern_guaranteed_at_step(&self, offset: usize) -> bool {
+        unsafe { sq_native_query_is_pattern_guaranteed_at_step(self.raw.as_ptr(), offset as u32) }
     }
 
     pub fn steps(&self) -> &[Step] {
@@ -864,6 +893,11 @@ unsafe extern "C" {
         offset: *mut u32,
         kind: *mut u32,
     ) -> *mut QueryHandle;
+    fn sq_native_query_copy(query: *const QueryHandle) -> *mut QueryHandle;
+    fn sq_native_query_is_pattern_guaranteed_at_step(
+        query: *const QueryHandle,
+        offset: u32,
+    ) -> bool;
     fn sq_native_query_delete(query: *mut QueryHandle);
     fn sq_native_query_view(query: *const QueryHandle, view: *mut QueryView);
     fn sq_native_query_disable_pattern(query: *mut QueryHandle, pattern: u32);

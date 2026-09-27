@@ -120,6 +120,8 @@ fn compiler_metadata_and_mutation_match_tree_sitter() {
         "(_) @node",
         "(pair key: (string) @key value: (_) @value)",
         "(array [(number) (string)]+ @item)",
+        "((number) @first (number) @second)",
+        "((number)+ @numbers)",
         "((string) @text (#match? @text \"a\"))",
         "(array . (number)? @first . (number)* @rest .)",
         "(not_a_node) @capture",
@@ -140,6 +142,35 @@ fn compiler_metadata_and_mutation_match_tree_sitter() {
                     candidate.capture_names(),
                     "{source}"
                 );
+                for pattern in 0..reference.pattern_count() {
+                    let index = tree_squatter::PatternIx(pattern);
+                    assert_eq!(
+                        candidate.capture_quantifiers(index),
+                        reference.capture_quantifiers(pattern)
+                    );
+                    assert_eq!(
+                        candidate.start_byte_for_pattern(index),
+                        reference.start_byte_for_pattern(pattern)
+                    );
+                    assert_eq!(
+                        candidate.end_byte_for_pattern(index),
+                        reference.end_byte_for_pattern(pattern)
+                    );
+                    assert_eq!(
+                        candidate.is_pattern_rooted(index),
+                        reference.is_pattern_rooted(pattern)
+                    );
+                    assert_eq!(
+                        candidate.is_pattern_non_local(index),
+                        reference.is_pattern_non_local(pattern)
+                    );
+                }
+                for offset in 0..source.len() {
+                    assert_eq!(
+                        candidate.is_pattern_guaranteed_at_step(offset),
+                        reference.is_pattern_guaranteed_at_step(offset)
+                    );
+                }
                 if let Some(name) = reference
                     .capture_names()
                     .first()
@@ -150,7 +181,7 @@ fn compiler_metadata_and_mutation_match_tree_sitter() {
                 }
                 if reference.pattern_count() > 0 {
                     reference.disable_pattern(0);
-                    candidate.disable_pattern(0);
+                    candidate.disable_pattern(tree_squatter::PatternIx(0));
                 }
             }
             (Err(reference), Err(candidate)) => {

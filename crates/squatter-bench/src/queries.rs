@@ -125,7 +125,7 @@ impl Queries {
                             .capture_names()
                             .iter()
                             .copied()
-                            .eq(squat.capture_names().iter().map(String::as_str)),
+                            .eq(squat.capture_names().iter().copied()),
                         "capture names differ: {}",
                         source.name
                     );
@@ -253,26 +253,32 @@ impl Queries {
                     continue;
                 };
                 ensure!(
-                    result.pattern_index < pair.squat.pattern_count(),
+                    result.pattern_index.0 < pair.squat.pattern_count(),
                     "invalid pattern index"
                 );
                 if let Some(index) = capture {
                     result
-                        .captures
-                        .get(index)
+                        .captures()
+                        .get(index.0 as usize)
                         .context("invalid capture index")?;
                 }
                 ensure!(
                     result
-                        .captures
+                        .captures()
                         .iter()
-                        .all(|entry| (entry.index as usize) < pair.squat.capture_names().len()),
+                        .all(|entry| (entry.index.0 as usize) < pair.squat.capture_names().len()),
                     "invalid capture name index"
                 );
                 let nodes: Vec<_> = result
-                    .captures
+                    .captures()
                     .iter()
-                    .map(|entry| (entry.index, ids[&entry.node.slot()], entry.node.end_byte()))
+                    .map(|entry| {
+                        (
+                            entry.index.0,
+                            ids[&entry.node.slot()],
+                            entry.node.end_byte(),
+                        )
+                    })
                     .collect();
                 total_captures += nodes.len();
                 ensure!(
@@ -282,8 +288,8 @@ impl Queries {
                 );
                 output.push(Record {
                     query: query_index,
-                    pattern: result.pattern_index,
-                    capture,
+                    pattern: result.pattern_index.0,
+                    capture: capture.map(|index| index.0 as usize),
                     nodes,
                 });
             }
