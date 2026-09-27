@@ -234,9 +234,20 @@ impl Queries {
             let mut cursor = tree_squatter::QueryCursor::new();
             cursor.set_optimized(optimized);
             let timeout = Duration::from_secs(30);
-            cursor.set_timeout(Some(timeout));
             let started = Instant::now();
-            let mut execution = cursor.execute(&pair.squat, root, source);
+            let mut progress = |_: &tree_squatter::QueryCursorState| {
+                if started.elapsed() >= timeout {
+                    std::ops::ControlFlow::Break(())
+                } else {
+                    std::ops::ControlFlow::Continue(())
+                }
+            };
+            let mut execution = cursor.execute_with_options(
+                &pair.squat,
+                root,
+                source,
+                tree_squatter::QueryCursorOptions::new().progress_callback(&mut progress),
+            );
             loop {
                 let next = if captures {
                     execution

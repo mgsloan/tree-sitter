@@ -1,4 +1,5 @@
-use std::time::Duration;
+use std::ops::ControlFlow;
+use tree_squatter::QueryCursorOptions;
 use tree_squatter::{Language, Query, QueryCursor, Tree};
 
 macro_rules! matches {
@@ -471,8 +472,13 @@ fn cancellation_limits_ranges_and_reuse() {
     assert!(cursor.did_exceed_match_limit());
     assert!(!results.is_empty());
 
-    cursor.set_timeout(Some(Duration::ZERO));
-    let mut execution = cursor.execute(&query, tree.root_node(), source.as_bytes());
+    let mut stop = |_: &tree_squatter::QueryCursorState| ControlFlow::Break(());
+    let mut execution = cursor.execute_with_options(
+        &query,
+        tree.root_node(),
+        source.as_bytes(),
+        QueryCursorOptions::new().progress_callback(&mut stop),
+    );
     let mut completed_matches = 0;
     while execution.next_match().is_some() {
         completed_matches += 1;
@@ -481,7 +487,6 @@ fn cancellation_limits_ranges_and_reuse() {
     assert_eq!(execution.error(), None);
     drop(execution);
 
-    cursor.set_timeout(None);
     cursor.set_match_limit(u32::MAX);
     cursor.set_byte_range(1..10);
     let mut execution = cursor.execute(&query, tree.root_node(), source.as_bytes());
@@ -1019,21 +1024,48 @@ where
     cursor.set_optimized(optimized);
     let mut results = Vec::new();
     match mode {
-        0 => {
-            let mut execution = cursor.execute(query, tree.root_node(), provider);
+        0 | 1 => {
+            let mut execution = if mode == 0 {
+                cursor.execute(query, tree.root_node(), provider)
+            } else {
+                cursor.execute_with_options(
+                    query,
+                    tree.root_node(),
+                    provider,
+                    QueryCursorOptions::new(),
+                )
+            };
             while let Some(found) = execution.next_match() {
                 results.push(snapshot(&found, None));
             }
             assert_eq!(execution.error(), None);
         }
-        2 => {
-            let mut matches = cursor.matches(query, tree.root_node(), provider);
+        2 | 3 => {
+            let mut matches = if mode == 2 {
+                cursor.matches(query, tree.root_node(), provider)
+            } else {
+                cursor.matches_with_options(
+                    query,
+                    tree.root_node(),
+                    provider,
+                    QueryCursorOptions::new(),
+                )
+            };
             while let Some(found) = matches.next() {
                 results.push(snapshot(found, None));
             }
         }
-        4 => {
-            let mut captures = cursor.captures(query, tree.root_node(), provider);
+        4 | 5 => {
+            let mut captures = if mode == 4 {
+                cursor.captures(query, tree.root_node(), provider)
+            } else {
+                cursor.captures_with_options(
+                    query,
+                    tree.root_node(),
+                    provider,
+                    QueryCursorOptions::new(),
+                )
+            };
             while let Some((found, index)) = captures.next() {
                 results.push(snapshot(found, Some(*index)));
             }
@@ -1071,7 +1103,7 @@ fn chunked_predicates_and_streaming_entry_points() {
     ] {
         let query = Query::new(&grammar, pattern).unwrap();
         for optimized in [false, true] {
-            for mode in [0, 2, 4, 6] {
+            for mode in 0..7 {
                 let expected = provider_results(&query, &tree, source.as_bytes(), mode, optimized);
                 // Every byte boundary includes splits inside UTF-8 and regex matches.
                 for width in [1, 2, 5, source.len()] {
@@ -1116,7 +1148,7 @@ fn chunked_predicates_and_streaming_entry_points() {
         "not-eq? @text \"x\"",
     ] {
         let query = Query::new(&grammar, &format!("((string) @text (#{predicate}))")).unwrap();
-        for mode in [0, 2, 4, 6] {
+        for mode in 0..7 {
             let empty = |_: tree_squatter::Node<'_>| std::iter::empty::<Vec<u8>>();
             let empty_chunk = |_: tree_squatter::Node<'_>| std::iter::once(Vec::<u8>::new());
             let expected = provider_results(&query, &tree, empty_chunk, mode, true);
@@ -1317,6 +1349,139 @@ fn removal_keeps_current_captures_readable_and_nodes_independent() {
             provider_results(&query, &tree, source.as_bytes(), 4, optimized).len(),
             5
         );
+    }
+}
+
+#[test]
+fn progress_cancellation_resumes_every_entry_point() {
+    use std::cell::Cell;
+    use tree_squatter::{QueryCursorState, StreamingIterator};
+    let source = format!("[{}]", "[1,2,3,4],".repeat(600).trim_end_matches(','));
+    let (grammar, mut tree) = json_query_tree(&source);
+    for side_data in [true, false] {
+        if !side_data {
+            tree.drop_point_data();
+            tree.drop_presence_cache();
+        }
+        for pattern in [
+            "(number) @number",
+            "(array . (number) @first . (number) @second . (number) @third . (number) @last .)",
+            "(array (number)* @left (number)* @right) @array",
+            "((number) @left . (number) @right)",
+            "(string) @absent",
+            "((number) @number (#eq? @number \"absent\"))",
+        ] {
+            let query = Query::new(&grammar, pattern).unwrap();
+            for optimized in [false, true] {
+                for mode in [0, 2, 4, 6] {
+                    let expected =
+                        provider_results(&query, &tree, source.as_bytes(), mode, optimized);
+                    let calls = Cell::new(0);
+                    let requested = Cell::new(false);
+                    let mut positions = Vec::new();
+                    let mut progress = |state: &QueryCursorState| {
+                        positions.push(state.current_byte_offset());
+                        calls.set(calls.get() + 1);
+                        // Repeated stops also cover searches that never produce a result.
+                        if calls.get() <= 4 {
+                            requested.set(true);
+                            ControlFlow::Break(())
+                        } else {
+                            ControlFlow::Continue(())
+                        }
+                    };
+                    let mut options = QueryCursorOptions::new().progress_callback(&mut progress);
+                    let mut cursor = QueryCursor::new();
+                    cursor.set_optimized(optimized);
+                    let mut actual = Vec::new();
+                    let mut stops = 0;
+                    macro_rules! collect {
+                        ($stream:ident, $next:ident, $append:expr) => {
+                            loop {
+                                if let Some(found) = $stream.$next() {
+                                    actual.push(($append)(found));
+                                } else if requested.replace(false) {
+                                    stops += 1;
+                                } else {
+                                    break;
+                                }
+                            }
+                        };
+                    }
+                    match mode {
+                        0 | 6 => {
+                            let mut execution = cursor.execute_with_options(
+                                &query,
+                                tree.root_node(),
+                                source.as_bytes(),
+                                options.reborrow(),
+                            );
+                            if mode == 0 {
+                                collect!(execution, next_match, |found| snapshot(&found, None));
+                            } else {
+                                collect!(execution, next_capture, |(found, index)| snapshot(
+                                    &found,
+                                    Some(index)
+                                ));
+                            }
+                            assert_eq!(execution.error(), None);
+                        }
+                        2 => {
+                            let mut matches = cursor.matches_with_options(
+                                &query,
+                                tree.root_node(),
+                                source.as_bytes(),
+                                options.reborrow(),
+                            );
+                            collect!(matches, next, |found| snapshot(found, None));
+                        }
+                        4 => {
+                            let mut captures = cursor.captures_with_options(
+                                &query,
+                                tree.root_node(),
+                                source.as_bytes(),
+                                options.reborrow(),
+                            );
+                            collect!(captures, next, |(found, index): &(
+                                _,
+                                tree_squatter::MatchCaptureIx
+                            )| snapshot(
+                                found,
+                                Some(*index)
+                            ));
+                        }
+                        _ => unreachable!(),
+                    }
+                    assert_eq!(
+                        actual, expected,
+                        "{pattern}, mode={mode}, optimized={optimized}, points={side_data}"
+                    );
+                    // A fresh execution starts from the root with reusable options.
+                    calls.set(calls.get().max(4));
+                    let mut fresh = cursor.matches_with_options(
+                        &query,
+                        tree.root_node(),
+                        source.as_bytes(),
+                        options.reborrow(),
+                    );
+                    let mut fresh_results = Vec::new();
+                    while let Some(found) = fresh.next() {
+                        fresh_results.push(snapshot(found, None));
+                    }
+                    assert_eq!(
+                        fresh_results,
+                        provider_results(&query, &tree, source.as_bytes(), 0, optimized)
+                    );
+                    drop(fresh);
+                    drop(options);
+                    assert!(calls.get() > 0);
+                    assert!(stops > 0);
+                    assert!(positions.iter().all(|&position| position <= source.len()));
+                    // Optimized searches must report their local progress, including no-hit scans.
+                    assert!(positions.iter().any(|&position| position > 0));
+                }
+            }
+        }
     }
 }
 

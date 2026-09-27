@@ -29,7 +29,7 @@
 pub use crate::query_exec::{QueryCaptures, QueryCursor, QueryExecution, QueryMatches};
 use crate::{CaptureIx, Language, MatchId, Node, PatternIx, types::QueryStringId};
 use regex::bytes::Regex;
-use std::cell::Cell;
+use std::{cell::Cell, ops::ControlFlow};
 pub use tree_sitter::{CaptureQuantifier, QueryErrorKind, StreamingIterator};
 
 #[derive(Debug)]
@@ -418,7 +418,7 @@ pub struct QueryCapture<'tree> {
 ///
 /// ```compile_fail
 /// use tree_squatter::QueryExecution;
-/// fn invalid(execution: &mut QueryExecution<'_, '_, '_, &[u8], &[u8]>) {
+/// fn invalid(execution: &mut QueryExecution<'_, '_, '_, '_, &[u8], &[u8]>) {
 ///     let first = execution.next_match().unwrap();
 ///     execution.next_match();
 ///     println!("{}", first.captures().len()); // Still borrows the cursor.
@@ -610,6 +610,48 @@ fn capture_text<Chunk: AsRef<[u8]>>(
         buffer.extend_from_slice(chunk.as_ref());
     }
     CaptureText::Buffer(buffer)
+}
+
+/// Progress of a query search. The offset is a source position, not a monotonic
+/// work counter. It uses the optimized scan's local position when scanning.
+pub struct QueryCursorState {
+    pub(crate) current_byte_offset: usize,
+}
+impl QueryCursorState {
+    pub const fn current_byte_offset(&self) -> usize {
+        self.current_byte_offset
+    }
+}
+
+/// Per-execution progress callback. `Break(())` pauses execution; another
+/// advancement resumes with the same callback and live matches. Ready results
+/// may be returned before the pause. There is no cancellation-status accessor;
+/// the callback can record whether it requested a stop. Capture a deadline or
+/// atomic flag to implement timeouts or external cancellation.
+#[derive(Default)]
+pub struct QueryCursorOptions<'options> {
+    pub progress_callback: Option<&'options mut dyn FnMut(&QueryCursorState) -> ControlFlow<()>>,
+}
+impl<'options> QueryCursorOptions<'options> {
+    pub fn new() -> Self {
+        Self::default()
+    }
+    pub fn progress_callback<Callback>(mut self, callback: &'options mut Callback) -> Self
+    where
+        Callback: FnMut(&QueryCursorState) -> ControlFlow<()>,
+    {
+        self.progress_callback = Some(callback);
+        self
+    }
+    /// Borrow these options for sequential reuse after the previous execution drops.
+    pub fn reborrow(&mut self) -> QueryCursorOptions<'_> {
+        QueryCursorOptions {
+            progress_callback: self
+                .progress_callback
+                .as_mut()
+                .map(|callback| &mut **callback as _),
+        }
+    }
 }
 
 impl QueryError {

@@ -290,7 +290,6 @@ fn check_cursor_reuse(
     use tree_squatter::{Query, QueryCursor};
     let grammar = tree_squatter::Language::new(language)?;
     let mut cursor = QueryCursor::new();
-    cursor.set_timeout(Some(std::time::Duration::from_secs(1)));
     for _ in 0..3 {
         let packed = Tree::pack(&grammar, tree)?;
         let query = Query::new(&grammar, "(_) @node")?;

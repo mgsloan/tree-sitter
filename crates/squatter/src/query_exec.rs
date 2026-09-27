@@ -1,17 +1,12 @@
 use crate::{
     FieldId, GrammarId, MatchCaptureIx, Node, PatternIx, Query, QueryCapture,
-    QueryExecutionError, QueryMatch, RawNode, SlotIx, StreamingIterator, TextProvider,
+    QueryCursorOptions, QueryCursorState, QueryExecutionError, QueryMatch, RawNode, SlotIx,
+    StreamingIterator, TextProvider,
     native::{Pattern, PatternEntry, Step, flags::*},
     storage::ColumnPointer,
     types::{CaptureIx, GroupIx, MatchId, PackedPoint, PatternIndex, SquatterKindId},
 };
-use std::{
-    cell::Cell,
-    cmp::Ordering,
-    marker::PhantomData,
-    rc::Rc,
-    time::{Duration, Instant},
-};
+use std::{cell::Cell, cmp::Ordering, marker::PhantomData, rc::Rc};
 use tree_sitter::Point;
 
 #[cfg(target_arch = "x86_64")]
@@ -596,13 +591,12 @@ impl ComparisonBlock {
 }
 
 /// Reusable query settings and execution storage. Each execution exclusively
-/// borrows the cursor; dropping it releases the query, tree, provider.
+/// borrows the cursor; dropping it releases the query, tree, provider, and callback.
 /// Finite match limits bound in-progress storage. Discovery and eviction order
 /// can retain a different valid subset of results than Tree-sitter.
 pub struct QueryCursor {
     // Shared indirection keeps iterator-held references valid across range setters.
     removal: Rc<Cell<Option<MatchId>>>,
-    timeout: Option<Duration>,
     optimized: bool,
     range: QueryRange,
     max_start_depth: u32,
@@ -653,7 +647,6 @@ impl QueryCursor {
     pub fn new() -> Self {
         Self {
             removal: Rc::new(Cell::new(None)),
-            timeout: None,
             optimized: true,
             range: QueryRange::default(),
             max_start_depth: NONE,
@@ -693,10 +686,6 @@ impl QueryCursor {
     /// Enable execution plans and root seeking when available.
     pub fn set_optimized(&mut self, enabled: bool) {
         self.optimized = enabled;
-    }
-
-    pub fn set_timeout(&mut self, timeout: Option<Duration>) {
-        self.timeout = timeout;
     }
 
     /// Set the maximum in-progress capture-list capacity.
@@ -758,7 +747,22 @@ impl QueryCursor {
         query: &'query Query,
         root: Node<'tree>,
         text_provider: Provider,
-    ) -> QueryExecution<'cursor, 'query, 'tree, Provider, Chunk>
+    ) -> QueryExecution<'cursor, 'query, 'tree, 'static, Provider, Chunk>
+    where
+        Provider: TextProvider<Chunk>,
+        Chunk: AsRef<[u8]>,
+    {
+        self.execute_with_options(query, root, text_provider, QueryCursorOptions::new())
+    }
+
+    /// Start a fresh execution with a resumable progress callback.
+    pub fn execute_with_options<'cursor, 'query, 'tree, 'options, Provider, Chunk>(
+        &'cursor mut self,
+        query: &'query Query,
+        root: Node<'tree>,
+        text_provider: Provider,
+        options: QueryCursorOptions<'options>,
+    ) -> QueryExecution<'cursor, 'query, 'tree, 'options, Provider, Chunk>
     where
         Provider: TextProvider<Chunk>,
         Chunk: AsRef<[u8]>,
@@ -826,7 +830,6 @@ impl QueryCursor {
                     }
                 })
         });
-        let started = self.timeout.map(|_| Instant::now());
         let unrestricted = self.range.unrestricted();
         QueryExecution {
             cursor: self,
@@ -840,16 +843,50 @@ impl QueryCursor {
             total_slots: root.data().groups() * crate::storage::GROUP_SIZE,
             root,
             text_provider,
-            started,
+            options,
             text_buffers: Default::default(),
             chunk: PhantomData,
+            stopped: false,
+            scan_resume: None,
         }
     }
 }
 
-/// An execution owns its text provider. Results borrow the current advancement;
-/// copied nodes retain only the tree lifetime.
-pub struct QueryExecution<'cursor, 'query, 'tree, Provider, Chunk>
+/// An execution owns its text provider and callback borrow. Results borrow the
+/// current advancement; copied nodes retain only the tree lifetime. A `None`
+/// caused by a progress callback is resumable, and does not signal exhaustion.
+///
+/// A live result prevents cursor reuse:
+/// ```compile_fail
+/// # use tree_squatter::{Query, QueryCursor, Node};
+/// # fn example(cursor: &mut QueryCursor, query: &Query, root: Node<'_>, text: &[u8]) {
+/// let mut execution = cursor.execute(query, root, text);
+/// let found = execution.next_match().unwrap();
+/// cursor.execute(query, root, text);
+/// println!("{:?}", found.captures());
+/// # }
+/// ```
+/// Provider and callback borrows last until the execution is dropped:
+/// ```compile_fail
+/// # use tree_squatter::{Query, QueryCursor, Node};
+/// # fn example(cursor: &mut QueryCursor, query: &Query, root: Node<'_>) {
+/// let text = vec![b' '; root.end_byte()];
+/// let mut execution = cursor.execute(query, root, text.as_slice());
+/// drop(text);
+/// execution.next_match();
+/// # }
+/// ```
+/// ```compile_fail
+/// # use tree_squatter::{Query, QueryCursor, QueryCursorOptions, QueryCursorState, Node};
+/// # fn example(cursor: &mut QueryCursor, query: &Query, root: Node<'_>, text: &[u8]) {
+/// let mut callback = |_: &QueryCursorState| std::ops::ControlFlow::Continue(());
+/// let mut options = QueryCursorOptions::new().progress_callback(&mut callback);
+/// let mut execution = cursor.execute_with_options(query, root, text, options.reborrow());
+/// options.reborrow();
+/// execution.next_match();
+/// # }
+/// ```
+pub struct QueryExecution<'cursor, 'query, 'tree, 'options, Provider, Chunk>
 where
     Provider: TextProvider<Chunk>,
     Chunk: AsRef<[u8]>,
@@ -866,13 +903,15 @@ where
     total_slots: u32,
     root: Node<'tree>,
     text_provider: Provider,
-    started: Option<Instant>,
+    options: QueryCursorOptions<'options>,
     text_buffers: [Vec<u8>; 2],
     chunk: PhantomData<Chunk>,
+    stopped: bool,
+    scan_resume: Option<u32>,
 }
 
 impl<Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>> Drop
-    for QueryExecution<'_, '_, '_, Provider, Chunk>
+    for QueryExecution<'_, '_, '_, '_, Provider, Chunk>
 {
     fn drop(&mut self) {
         // Retain allocations, but leave no live logical state referring to an
@@ -885,14 +924,15 @@ impl<Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>> Drop
 }
 
 impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
-    QueryExecution<'_, 'query, 'tree, Provider, Chunk>
+    QueryExecution<'_, 'query, 'tree, '_, Provider, Chunk>
 {
-    /// Report a query/node language mismatch.
+    /// Report a query/node language mismatch. Cancellation is not an error.
     pub fn error(&self) -> Option<QueryExecutionError> {
         self.cursor.error
     }
 
-    /// Advance to the next completed match.
+    /// Advance to the next completed match. After callback cancellation returns
+    /// `None`, calling again resumes the same execution.
     pub fn next_match(&mut self) -> Option<QueryMatch<'_, 'tree>> {
         self.next(false).map(|(result, _)| result)
     }
@@ -909,6 +949,10 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
             return None;
         }
 
+        if self.stopped {
+            self.stopped = false;
+            return None;
+        }
         if let Some(id) = self.cursor.removal.take() {
             self.remove_match(id);
         }
@@ -919,6 +963,7 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
                 self.next_match_output()
             };
             let Some(output) = output else {
+                self.stopped = false;
                 return None;
             };
             // Both records have the same C layout. Nodes inherit the execution's
@@ -965,18 +1010,25 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
     }
 
     fn poll(&mut self) -> bool {
+        self.poll_at(self.cursor.position)
+    }
+
+    fn poll_at(&mut self, slot: SlotIx) -> bool {
+        if self.stopped {
+            return true;
+        }
         self.cursor.operations += 1;
         if self.cursor.operations < 100 {
             return false;
         }
         self.cursor.operations = 0;
-        if let (Some(started), Some(timeout)) = (self.started, self.cursor.timeout) {
-            if started.elapsed() >= timeout {
-                self.cursor.halted = true;
-                return true;
-            }
+        if let Some(callback) = &mut self.options.progress_callback {
+            let state = QueryCursorState {
+                current_byte_offset: self.root.at(slot).start_byte(),
+            };
+            self.stopped = callback(&state).is_break();
         }
-        false
+        self.stopped
     }
 
     fn step(&self, index: u16) -> &'query Step {
@@ -987,16 +1039,18 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
 }
 
 /// Streaming matches from a query execution. Advancing ends the current result
-/// borrow.
-pub struct QueryMatches<'cursor, 'query, 'tree, Provider, Chunk>
+/// borrow. Callback cancellation returns `None`; advancing again resumes.
+pub struct QueryMatches<'cursor, 'query, 'tree, 'options, Provider, Chunk>
 where
     Provider: TextProvider<Chunk>,
     Chunk: AsRef<[u8]>,
 {
-    execution: QueryExecution<'cursor, 'query, 'tree, Provider, Chunk>,
+    execution: QueryExecution<'cursor, 'query, 'tree, 'options, Provider, Chunk>,
     current: Option<QueryMatch<'cursor, 'tree>>,
 }
-impl<Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>> QueryMatches<'_, '_, '_, Provider, Chunk> {
+impl<Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
+    QueryMatches<'_, '_, '_, '_, Provider, Chunk>
+{
     /// Update the cursor's persistent byte range for subsequent advancement.
     pub fn set_byte_range(&mut self, range: std::ops::Range<usize>) {
         self.execution.cursor.set_byte_range(range);
@@ -1011,7 +1065,7 @@ impl<Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>> QueryMatches<'_, '_, '_,
     }
 }
 impl<'cursor, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>> StreamingIterator
-    for QueryMatches<'cursor, '_, 'tree, Provider, Chunk>
+    for QueryMatches<'cursor, '_, 'tree, '_, Provider, Chunk>
 {
     type Item = QueryMatch<'cursor, 'tree>;
     fn advance(&mut self) {
@@ -1035,20 +1089,34 @@ impl QueryCursor {
         query: &'query Query,
         root: Node<'tree>,
         text_provider: Provider,
-    ) -> QueryMatches<'cursor, 'query, 'tree, Provider, Chunk>
+    ) -> QueryMatches<'cursor, 'query, 'tree, 'static, Provider, Chunk>
+    where
+        Provider: TextProvider<Chunk>,
+        Chunk: AsRef<[u8]>,
+    {
+        self.matches_with_options(query, root, text_provider, QueryCursorOptions::new())
+    }
+    /// Start a fresh stream with a resumable progress callback.
+    pub fn matches_with_options<'cursor, 'query, 'tree, 'options, Provider, Chunk>(
+        &'cursor mut self,
+        query: &'query Query,
+        root: Node<'tree>,
+        text_provider: Provider,
+        options: QueryCursorOptions<'options>,
+    ) -> QueryMatches<'cursor, 'query, 'tree, 'options, Provider, Chunk>
     where
         Provider: TextProvider<Chunk>,
         Chunk: AsRef<[u8]>,
     {
         QueryMatches {
-            execution: self.execute(query, root, text_provider),
+            execution: self.execute_with_options(query, root, text_provider, options),
             current: None,
         }
     }
 }
 
 /// Streaming captures from a query execution. Advancing ends the current result
-/// borrow.
+/// borrow. Callback cancellation returns `None`; advancing again resumes.
 /// Capture events are provisional snapshots: order and multiplicity can differ
 /// from Tree-sitter, and snapshots can grow or lose longest-match filtering.
 /// Completed-match captures remain covered. Use `matches` for completed results.
@@ -1063,15 +1131,17 @@ impl QueryCursor {
 /// println!("{borrowed:?}");
 /// # }
 /// ```
-pub struct QueryCaptures<'cursor, 'query, 'tree, Provider, Chunk>
+pub struct QueryCaptures<'cursor, 'query, 'tree, 'options, Provider, Chunk>
 where
     Provider: TextProvider<Chunk>,
     Chunk: AsRef<[u8]>,
 {
-    execution: QueryExecution<'cursor, 'query, 'tree, Provider, Chunk>,
+    execution: QueryExecution<'cursor, 'query, 'tree, 'options, Provider, Chunk>,
     current: Option<(QueryMatch<'cursor, 'tree>, MatchCaptureIx)>,
 }
-impl<Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>> QueryCaptures<'_, '_, '_, Provider, Chunk> {
+impl<Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
+    QueryCaptures<'_, '_, '_, '_, Provider, Chunk>
+{
     /// Update the cursor's persistent byte range for subsequent advancement.
     pub fn set_byte_range(&mut self, range: std::ops::Range<usize>) {
         self.execution.cursor.set_byte_range(range);
@@ -1086,7 +1156,7 @@ impl<Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>> QueryCaptures<'_, '_, '_
     }
 }
 impl<'cursor, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>> StreamingIterator
-    for QueryCaptures<'cursor, '_, 'tree, Provider, Chunk>
+    for QueryCaptures<'cursor, '_, 'tree, '_, Provider, Chunk>
 {
     type Item = (QueryMatch<'cursor, 'tree>, MatchCaptureIx);
     fn advance(&mut self) {
@@ -1110,13 +1180,27 @@ impl QueryCursor {
         query: &'query Query,
         root: Node<'tree>,
         text_provider: Provider,
-    ) -> QueryCaptures<'cursor, 'query, 'tree, Provider, Chunk>
+    ) -> QueryCaptures<'cursor, 'query, 'tree, 'static, Provider, Chunk>
+    where
+        Provider: TextProvider<Chunk>,
+        Chunk: AsRef<[u8]>,
+    {
+        self.captures_with_options(query, root, text_provider, QueryCursorOptions::new())
+    }
+    /// Start a fresh stream with a resumable progress callback.
+    pub fn captures_with_options<'cursor, 'query, 'tree, 'options, Provider, Chunk>(
+        &'cursor mut self,
+        query: &'query Query,
+        root: Node<'tree>,
+        text_provider: Provider,
+        options: QueryCursorOptions<'options>,
+    ) -> QueryCaptures<'cursor, 'query, 'tree, 'options, Provider, Chunk>
     where
         Provider: TextProvider<Chunk>,
         Chunk: AsRef<[u8]>,
     {
         QueryCaptures {
-            execution: self.execute(query, root, text_provider),
+            execution: self.execute_with_options(query, root, text_provider, options),
             current: None,
         }
     }
@@ -1182,7 +1266,7 @@ impl QueryCursor {
 }
 
 impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
-    QueryExecution<'_, 'query, 'tree, Provider, Chunk>
+    QueryExecution<'_, 'query, 'tree, '_, Provider, Chunk>
 {
     fn update_key(&self, state: &mut State) {
         let captures = self.cursor.pool.get(state.captures);
@@ -1352,7 +1436,7 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
                     self.cursor.dirty_patterns |= 1 << (state.pattern.get() % 64);
                 }
             }
-            if !self.advance(true) && self.cursor.finished.is_empty() {
+            if !self.advance(true) && (self.stopped || self.cursor.finished.is_empty()) {
                 return None;
             }
         }
@@ -1586,8 +1670,8 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
         let groups = GroupRef::new(self.root);
 
         while start < end {
-            if self.poll() {
-                return end;
+            if self.poll_at(SlotIx::new(total - 1 - start)) {
+                return start;
             }
             let index = (total - 1 - start) / GROUP_SIZE;
             let group_end = ((start / GROUP_SIZE + 1) * GROUP_SIZE).min(end);
@@ -1630,8 +1714,8 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
         };
 
         while start < end {
-            if self.poll() {
-                return end;
+            if self.poll_at(SlotIx::new(total - 1 - start)) {
+                return start;
             }
             let group = (total - 1 - start) / GROUP_SIZE;
             let group_end = ((start / GROUP_SIZE + 1) * GROUP_SIZE).min(end);
@@ -1687,9 +1771,13 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
     fn scan_seek(&mut self) -> bool {
         let current_position = self.total_slots() - 1 - self.cursor.position.get();
         let end = self.node_end(self.root);
-        let mut start = current_position;
+        let mut start = self.scan_resume.take().unwrap_or(current_position);
         let target = 'search: loop {
             let target = self.find_symbols(start, end);
+            if self.stopped {
+                self.scan_resume = Some(target);
+                return false;
+            }
             if self.cursor.halted {
                 return false;
             }
@@ -1920,11 +2008,16 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
                 .unwrap_or(root_end);
             let mut position = self.normalize_position(self.cursor.direct_position);
             while position < next {
-                if self.poll() {
+                if self.poll_at(SlotIx::new(self.total_slots - 1 - position)) {
+                    self.cursor.direct_position = position;
                     return false;
                 }
                 if !query.program.scan_filter.matches.is_empty() {
                     position = self.find_symbols(position, next);
+                    if self.stopped {
+                        self.cursor.direct_position = position;
+                        return false;
+                    }
                     if position == next {
                         break;
                     }
@@ -1954,7 +2047,8 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
                 self.cursor.halted = true;
                 return false;
             }
-            if self.poll() {
+            if self.poll_at(SlotIx::new(self.total_slots - 1 - position)) {
+                self.cursor.direct_position = position;
                 return false;
             }
 
@@ -1985,6 +2079,7 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
             let mut did_match = false;
             let mut index = 0;
             while index < self.cursor.states.len() {
+                self.poll_at(node.slot());
                 let mut state = self.cursor.states[index];
                 let current = self.cursor.direct_states[state.order as usize];
                 if state.has(DEAD) {
@@ -2048,6 +2143,9 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
             if did_match {
                 return true;
             }
+            if self.stopped {
+                return false;
+            }
         }
     }
 
@@ -2096,6 +2194,9 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
     }
 
     fn advance(&mut self, stop_on_definite: bool) -> bool {
+        if self.stopped {
+            return false;
+        }
         self.cursor.first_capture_valid = false;
         if self.cursor.direct {
             return self.advance_direct(stop_on_definite);
@@ -2282,7 +2383,10 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
         let mut did_match = false;
         let mut index = first_updated;
         let mut pending_index = 0;
+        // A stop requested inside state work takes effect after this node's
+        // transition, so resumption cannot replay a partly applied transition.
         while index < self.cursor.states.len() || pending_index < self.cursor.pending.len() {
+            self.poll();
             if index == self.cursor.states.len() {
                 self.cursor.states.push(self.cursor.pending[pending_index]);
                 pending_index += 1;
@@ -2420,6 +2524,7 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
             let mut branch = index;
             let mut branch_end = index + 1;
             while branch < branch_end {
+                self.poll();
                 let mut child = self.cursor.states[branch];
                 let step = self.step(child.step);
                 if step.alternative_index == DONE {
@@ -2680,6 +2785,7 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
         let mut unique_start = false;
         let mut did_match = false;
         for index in 0..self.cursor.states.len() {
+            self.poll();
             let mut state = self.cursor.states[index];
             if state.has(REMOVED) || dirty & (1 << (state.pattern.get() % 64)) == 0 {
                 continue;
@@ -2705,6 +2811,7 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
             let mut candidates = 0;
             let mut other_index = index + 1;
             while other_index < self.cursor.states.len() {
+                self.poll();
                 let mut other = self.cursor.states[other_index];
                 if other.has(REMOVED) {
                     other_index += 1;

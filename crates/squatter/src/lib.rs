@@ -24,9 +24,10 @@ mod query_exec;
 mod query_plan;
 pub use native::{Language, LanguageHash, language_hash};
 pub use query::{
-    CaptureQuantifier, Query, QueryCapture, QueryCaptures, QueryCursor, QueryError, QueryErrorKind,
-    QueryExecution, QueryExecutionError, QueryMatch, QueryMatches, QueryPredicate,
-    QueryPredicateArg, QueryProperty, StreamingIterator, TextProvider,
+    CaptureQuantifier, Query, QueryCapture, QueryCaptures, QueryCursor, QueryCursorOptions,
+    QueryCursorState, QueryError, QueryErrorKind, QueryExecution, QueryExecutionError, QueryMatch,
+    QueryMatches, QueryPredicate, QueryPredicateArg, QueryProperty, StreamingIterator,
+    TextProvider,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
