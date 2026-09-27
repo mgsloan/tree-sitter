@@ -1,30 +1,24 @@
+- [ ] Proper parser APIs
+
+- [ ] Move away from AtomicBool cancellation and to cancellation / progress callback
+
+- [ ] Fuzz tests to help ensure that untrusted bytes don't cause wrong memory access etc.  To make this efficient the solution may be validation
+
+- [ ] What to do about Forest::clone() / Tree::clone()
+
+- [ ] Benchmark whether presence cache rare list actually helps
+
+- [ ] How does growing during parsing estimate how much more space?
+
+## Organization
+
 - [ ] Review and polish design.md
 
 - [ ] Separate viz branch for visualizer
 
 - [ ] Put persistence and cache on a separate branch
 
-- [ ] 'next_group' presence cache function ugly name
-
-- [ ] Proper parser APIs
-
-- [ ] Don't disable query optimizations in the presence of errors
-
-- [ ] Move away from AtomicBool cancellation and to cancellation / progress callback
-
-- [ ] Less unsafe
-
 - [ ] Split traits into a separate compat crate
-
-- [ ] Fuzz tests to help ensure that untrusted bytes don't cause wrong memory access etc.  To make this efficient the solution may be validation
-
-- [ ] Implement descendant_index() and goto_descendant() with DescendantIx.  Optimize with index?
-
-- [ ] Fix UnsupportedRange for querying a range on certain queries
-
-- [ ] containing ranges for QueryCursor
-
-- [ ] What to do about Forest::clone() / Tree::clone()
 
 ## Injections
 
@@ -45,7 +39,7 @@
 
 
 
-# Post MVP
+# Post initial release
 
 ## Cleanup
 
@@ -55,6 +49,20 @@
 - [ ] API for construction of PointData
 
 - [ ] Open Tree-sitter bug about documentation saying captures occur in source order.
+
+- [ ] Try having a Vec per column - may allow growing to use realloc - to skip copies when it can grow inplace.
+
+      * Can still read columns from a single allocation, and pack them together on serialization
+
+      * Could make sidecars a more homogenous thing - they are just columns stored in a separate allocation
+
+## Parity
+
+- [ ] Implement descendant_index() and goto_descendant() with DescendantIx.  Optimize with index?
+
+- [ ] Implement to_sexp ? Issue is it shows some info tree-squatter doesn't have
+
+- [ ] containing ranges for QueryCursor
 
 ## Tree-feller
 
@@ -109,6 +117,10 @@
 Parse only the needed info.
 
 ## Performance tuning
+
+- [ ] try two columns for symbol_id. If symbol count is < 512 (almost all), can get away with one
+  read for the lowest symbols. Motivation is to be able to use memchr. Can also only have one column
+  if need be
 
 - [ ] try eliminating / reducing the conversion arena by storing post-order? Or modifying tree-feller?
 
