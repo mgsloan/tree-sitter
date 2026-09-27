@@ -44,7 +44,9 @@ pub(crate) fn id_width_flags<'language>(
     }
 }
 
-/// **Tree-squatter only:** Identifies the packed slab format for persistence compatibility.
+/// Identifies the packed slab format for persistence compatibility.
+///
+/// **Not in Tree-sitter**
 pub fn representation_id() -> u64 {
     TREE_FORMAT as u64
 }
@@ -487,7 +489,7 @@ fn allocation(length: u32, owned: bool) -> Result<Allocation, Error> {
 
 /// A tree that represents the syntactic structure of a source code file.
 ///
-/// **Tree-squatter only:** Owns an immutable packed snapshot with separately attachable
+/// **Not in Tree-sitter**. Owns an immutable packed snapshot with separately attachable
 /// side data. Loading slab bytes does not restore point data or presence caches. Use
 /// explicit copying or detachment; `Clone`, offset views, and incremental change tracking
 /// are not provided.
@@ -566,57 +568,75 @@ impl Tree {
         Ok(tree)
     }
 
-    /// **Tree-squatter only:** Borrows the packed slab, excluding separately attached side
+    /// Borrows the packed slab, excluding separately attached side
     /// data.
+    ///
+    /// **Not in Tree-sitter**
     pub fn as_bytes(&self) -> &[u8] {
         self.data().slice()
     }
 
-    /// **Tree-squatter only:** Returns the number of physical groups in use.
+    /// Returns the number of physical groups in use.
+    ///
+    /// **Not in Tree-sitter**
     pub fn group_count(&self) -> u32 {
         self.data().groups()
     }
 
-    /// **Tree-squatter only:** Returns the allocated number of physical groups.
+    /// Returns the allocated number of physical groups.
+    ///
+    /// **Not in Tree-sitter**
     pub fn group_capacity(&self) -> u32 {
         self.data().capacity()
     }
 
-    /// **Tree-squatter only:** Returns the physical slot count, including waste. This
+    /// Returns the physical slot count, including waste. This
     /// bounds node and child counts within `u32`.
+    ///
+    /// **Not in Tree-sitter**
     pub fn slot_count(&self) -> u32 {
         self.group_count() * GROUP_SIZE
     }
 
-    /// **Tree-squatter only:** Reports whether point data is attached.
+    /// Reports whether point data is attached.
     ///
-    /// **Tree-squatter behavior change:** Without point data, positions use row zero and
+    /// **Not in Tree-sitter**
+    ///
+    /// **Different behavior than Tree-sitter:** Without point data, positions use row zero and
     /// the byte offset as column. Check `has_points()` before relying on line/column
     /// coordinates.
     pub fn has_points(&self) -> bool {
         self.data().has_points()
     }
 
-    /// **Tree-squatter only:** Serializes the prepared grammar for separate persistence.
+    /// Serializes the prepared grammar for separate persistence.
+    ///
+    /// **Not in Tree-sitter**
     pub fn language_cache(&self) -> Result<Vec<u8>, Error> {
         self.data().language.cache()
     }
 
-    /// **Tree-squatter only:** Copies and validates a packed slab for this grammar. Point
+    /// Copies and validates a packed slab for this grammar. Point
     /// data and presence caches must be attached separately.
+    ///
+    /// **Not in Tree-sitter**
     pub fn from_bytes(language: &Language, bytes: &[u8]) -> Result<Self, Error> {
         Self::load(language, bytes, false, true)
     }
 
-    /// **Tree-squatter only:** Copies a packed slab after checking the structural
+    /// Copies a packed slab after checking the structural
     /// invariants needed for safe access. Side data is not restored.
+    ///
+    /// **Not in Tree-sitter**
     pub fn from_bytes_safety_checked(language: &Language, bytes: &[u8]) -> Result<Self, Error> {
         Self::load(language, bytes, false, false)
     }
 
-    /// **Tree-squatter only:** Validates and borrows immutable, eight-byte-aligned slab
+    /// Validates and borrows immutable, eight-byte-aligned slab
     /// bytes without copying. The returned view cannot outlive those bytes. Side data is
     /// not restored.
+    ///
+    /// **Not in Tree-sitter**
     pub fn from_bytes_borrowed<'bytes>(
         language: &Language,
         bytes: &'bytes [u8],
@@ -627,8 +647,10 @@ impl Tree {
         })
     }
 
-    /// **Tree-squatter only:** Validates and retains an immutable, eight-byte-aligned slab
+    /// Validates and retains an immutable, eight-byte-aligned slab
     /// owner without copying its bytes. Side data is not restored.
+    ///
+    /// **Not in Tree-sitter**
     pub fn from_owned_slab(
         language: &Language,
         owner: impl StableSlab,
@@ -640,16 +662,20 @@ impl Tree {
         })
     }
 
-    /// **Tree-squatter only:** Returns the byte length needed for a compact slab copy,
+    /// Returns the byte length needed for a compact slab copy,
     /// excluding side data.
+    ///
+    /// **Not in Tree-sitter**
     pub fn compact_size(&self) -> usize {
         let data = self.data();
         Layout::new(data.groups(), data.flags()).unwrap().end.get() as usize
     }
 
-    /// **Tree-squatter only:** Copies a compact slab into a destination of exactly
+    /// Copies a compact slab into a destination of exactly
     /// `compact_size()` bytes. Side data is excluded. Loading the result without copying
     /// requires eight-byte alignment.
+    ///
+    /// **Not in Tree-sitter**
     pub fn copy_compact_into<'bytes>(
         &self,
         destination: &'bytes mut [MaybeUninit<u8>],
@@ -788,7 +814,7 @@ impl Tree {
     /// Compact this tree's columns without copying its attached side data.
     /// Small unused allocation tails may be retained.
     ///
-    /// **Tree-squatter only:** Retains attached side data while changing the slab
+    /// **Not in Tree-sitter**. Retains attached side data while changing the slab
     /// allocation. Release borrowed views before mutation.
     pub fn repack_in_place(&mut self) -> Result<(), Error> {
         let data = self.data();
@@ -797,7 +823,7 @@ impl Tree {
 
     /// Return a compact copy, preserving this tree and copying its attached side data.
     ///
-    /// **Tree-squatter only:** Explicitly copies the slab and attached side data into a
+    /// **Not in Tree-sitter**. Explicitly copies the slab and attached side data into a
     /// compact owned tree.
     pub fn repack(&self) -> Result<Self, Error> {
         let layout = Layout::new(self.group_count(), self.data().flags())?;
@@ -836,9 +862,11 @@ impl std::fmt::Debug for Tree {
     }
 }
 
-/// **Tree-squatter only:** Borrows immutable, eight-byte-aligned slab bytes for its
+/// Borrows immutable, eight-byte-aligned slab bytes for its
 /// lifetime. Release this view and its nodes before mutating or releasing the backing
 /// storage.
+///
+/// **Not in Tree-sitter**
 pub struct BorrowedTree<'bytes> {
     tree: Tree,
     bytes: PhantomData<&'bytes [u8]>,
@@ -857,7 +885,7 @@ impl Deref for BorrowedTree<'_> {
 /// All returned bytes must stay alive and immutable, including across owner moves
 /// and concurrent access. No other party may resize, mutate, or unmap the storage.
 ///
-/// **Tree-squatter only:** Provides retained backing storage for packed trees and side
+/// **Not in Tree-sitter**. Provides retained backing storage for packed trees and side
 /// data.
 pub unsafe trait StableSlab: Send + Sync + 'static {
     fn bytes(&self) -> &[u8];
@@ -873,7 +901,7 @@ pub unsafe trait StableSlab: Send + Sync + 'static {
 /// # }
 /// ```
 ///
-/// **Tree-squatter only:** Keeps the stable slab owner alive. Loading retains the bytes
+/// **Not in Tree-sitter**. Keeps the stable slab owner alive. Loading retains the bytes
 /// without copying; side data remains separate.
 pub struct BackedTree {
     // The descriptor must be destroyed before its backing storage.
@@ -889,32 +917,42 @@ impl Deref for BackedTree {
 }
 
 impl BackedTree {
-    /// **Tree-squatter only:** Validates and attaches separately loaded symbol-presence
+    /// Validates and attaches separately loaded symbol-presence
     /// data. Release borrowed tree views before replacing side data.
+    ///
+    /// **Not in Tree-sitter**
     pub fn set_presence_cache(&mut self, cache: PresenceCache) -> Result<(), SideDataError> {
         self.tree.set_presence_cache(cache)
     }
 
-    /// **Tree-squatter only:** Validates and attaches separately loaded point data. Release
+    /// Validates and attaches separately loaded point data. Release
     /// borrowed tree views before replacing side data.
+    ///
+    /// **Not in Tree-sitter**
     pub fn set_point_data(&mut self, points: PointData) -> Result<(), SideDataError> {
         self.tree.set_point_data(points)
     }
 
-    /// **Tree-squatter only:** Drops the optional cache. Scan results stay the same; scan
+    /// Drops the optional cache. Scan results stay the same; scan
     /// cost can change.
+    ///
+    /// **Not in Tree-sitter**
     pub fn drop_presence_cache(&mut self) {
         self.tree.drop_presence_cache();
     }
 
-    /// **Tree-squatter only:** Drops point data. Point-dependent APIs then use row zero and
+    /// Drops point data. Point-dependent APIs then use row zero and
     /// byte offsets as columns.
+    ///
+    /// **Not in Tree-sitter**
     pub fn drop_point_data(&mut self) {
         self.tree.drop_point_data();
     }
 
-    /// **Tree-squatter only:** Copies the retained slab and attached side data into an
+    /// Copies the retained slab and attached side data into an
     /// independent owned tree.
+    ///
+    /// **Not in Tree-sitter**
     pub fn detach(&self) -> Result<Tree, Error> {
         let mut tree = Tree::from_bytes_safety_checked(&self.data().language, self.as_bytes())?;
         if let Some(cache) = self.presence_cache() {
@@ -928,8 +966,10 @@ impl BackedTree {
 }
 
 impl Tree {
-    /// **Tree-squatter only:** Tests a physical group for a displayed kind. Without a
+    /// Tests a physical group for a displayed kind. Without a
     /// presence cache this scans the group, with identical results.
+    ///
+    /// **Not in Tree-sitter**
     pub fn group_has_symbol(&self, group: u32, symbol: KindId) -> bool {
         self.data().group_has_symbol(group, symbol)
     }

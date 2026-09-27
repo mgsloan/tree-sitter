@@ -21,7 +21,7 @@ pub(crate) struct RawNode {
 
 /// A single node within a syntax [`Tree`].
 ///
-/// **Tree-squatter API difference:** Shared methods borrow the handle. Equality and hashing
+/// **Different than Tree-sitter:** Shared methods borrow the handle. Equality and hashing
 /// include both tree descriptor and slot, so nodes from simultaneously live trees can be
 /// used together as keys. An ID alone does not retain the tree.
 #[derive(Clone, Copy)]
@@ -68,7 +68,7 @@ impl Tree {
 
     /// Get the language that was used to parse the syntax tree.
     ///
-    /// **Tree-squatter API difference:** Borrows the prepared grammar wrapper.
+    /// **Different than Tree-sitter:** Borrows the prepared grammar wrapper.
     pub fn language(&self) -> &crate::Language {
         &self.data().language
     }
@@ -84,8 +84,10 @@ impl Tree {
         }
     }
 
-    /// **Tree-squatter only:** Returns a node at a live physical slot; returns `None` for
+    /// Returns a node at a live physical slot; returns `None` for
     /// waste or out-of-range slots.
+    ///
+    /// **Not in Tree-sitter**
     pub fn node_at_slot(&self, slot: SlotIx) -> Option<Node<'_>> {
         (slot.get() < self.slot_count() && slot.get() < self.data().group_end(slot.group().get()))
             .then(|| self.root_node().at(slot))
@@ -114,7 +116,7 @@ impl<'tree> Node<'tree> {
 
     /// Physical slot in reverse preorder; decreasing slots advance preorder.
     ///
-    /// **Tree-squatter only:** Returns a physical slot scoped to this immutable tree
+    /// **Not in Tree-sitter**. Returns a physical slot scoped to this immutable tree
     /// snapshot. Slots from different trees are unrelated; repacking may change slots. Use
     /// `NodeLike::id` through [`crate::traits::NodeLike`] for generic identity.
     #[inline]
@@ -124,7 +126,7 @@ impl<'tree> Node<'tree> {
 
     /// Get the [`crate::Language`] that was used to parse this node's syntax tree.
     ///
-    /// **Tree-squatter API difference:** Borrows the prepared grammar wrapper.
+    /// **Different than Tree-sitter:** Borrows the prepared grammar wrapper.
     pub fn language(&self) -> &'tree crate::Language {
         &self.data().language
     }
@@ -132,7 +134,7 @@ impl<'tree> Node<'tree> {
     /// Get the range of source code that this node represents, both in terms of
     /// raw bytes and of row/column coordinates.
     ///
-    /// **Tree-squatter behavior change:** Without point data, positions use row zero and
+    /// **Different behavior than Tree-sitter:** Without point data, positions use row zero and
     /// the byte offset as column. Check `has_points()` before relying on line/column
     /// coordinates.
     pub fn range(&self) -> tree_sitter::Range {
@@ -166,7 +168,7 @@ impl<'tree> Node<'tree> {
 
     /// This node and its descendants, parents before children, left to right.
     ///
-    /// **Tree-squatter only:** Builds a subtree scan; filters and group traversal remain
+    /// **Not in Tree-sitter**. Builds a subtree scan; filters and group traversal remain
     /// available.
     pub fn preorder(self) -> Scan<'tree, Preorder<'tree>> {
         Preorder::scan(self)
@@ -174,21 +176,21 @@ impl<'tree> Node<'tree> {
 
     /// This node and its descendants, children left to right before their parent.
     ///
-    /// **Tree-squatter only:** Builds a subtree scan in postorder.
+    /// **Not in Tree-sitter**. Builds a subtree scan in postorder.
     pub fn postorder(self) -> Scan<'tree, Postorder<'tree>> {
         Postorder::scan(self)
     }
 
     /// Choose the cheaper traversal. Order is unspecified across representations.
     ///
-    /// **Tree-squatter only:** Alias for [`Self::preorder`].
+    /// **Not in Tree-sitter**. Alias for [`Self::preorder`].
     pub fn all(self) -> Scan<'tree, Preorder<'tree>> {
         self.preorder()
     }
 
     /// Scan this subtree in preorder, matching public kind IDs.
     ///
-    /// **Tree-squatter only:** Scans this subtree in preorder for the selected public kind
+    /// **Not in Tree-sitter**. Scans this subtree in preorder for the selected public kind
     /// IDs. Missing presence caches affect cost, not results.
     pub fn descendants_matching_kinds<K: scan::IdSelection>(
         self,
@@ -199,7 +201,7 @@ impl<'tree> Node<'tree> {
 
     /// Get this node's type as a numerical id.
     ///
-    /// **Tree-squatter API difference:** Returns `KindId` instead of `u16`.
+    /// **Different than Tree-sitter:** Returns `KindId` instead of `u16`.
     pub fn kind_id(&self) -> KindId {
         self.data()
             .tables()
@@ -209,7 +211,7 @@ impl<'tree> Node<'tree> {
     /// Get the node's type as a numerical id as it appears in the grammar
     /// ignoring aliases.
     ///
-    /// **Tree-squatter API difference:** Returns `GrammarKindId` instead of `u16`.
+    /// **Different than Tree-sitter:** Returns `GrammarKindId` instead of `u16`.
     pub fn grammar_id(&self) -> GrammarKindId {
         self.data()
             .tables()
@@ -245,22 +247,24 @@ impl<'tree> Node<'tree> {
 
     /// Get this node's start position in terms of rows and columns.
     ///
-    /// **Tree-squatter behavior change:** Without point data, positions use row zero and
+    /// **Different behavior than Tree-sitter:** Without point data, positions use row zero and
     /// the byte offset as column. Check `has_points()` before relying on line/column
     /// coordinates.
     pub fn start_position(&self) -> Point {
         self.packed_start_point().point()
     }
 
-    /// **Tree-squatter only:** Reports whether point data is attached. Without it, point
+    /// Reports whether point data is attached. Without it, point
     /// accessors, ranges, point lookups, and point scans use `(0, byte_offset)`.
+    ///
+    /// **Not in Tree-sitter**
     pub fn has_points(self) -> bool {
         self.data().has_points()
     }
 
     /// Get this node's end position in terms of rows and columns.
     ///
-    /// **Tree-squatter behavior change:** Without point data, positions use row zero and
+    /// **Different behavior than Tree-sitter:** Without point data, positions use row zero and
     /// the byte offset as column. Check `has_points()` before relying on line/column
     /// coordinates.
     pub fn end_position(&self) -> Point {
@@ -329,8 +333,10 @@ impl<'tree> Node<'tree> {
             && self.data().bit(self.data().layout.error, self.slot().get())
     }
 
-    /// **Tree-squatter only:** Reads the stored field of this node in constant time. Unlike
+    /// Reads the stored field of this node in constant time. Unlike
     /// cursor field access, this is independent of the traversal root.
+    ///
+    /// **Not in Tree-sitter**
     pub fn field_id(self) -> Option<FieldId> {
         FieldId::new(
             self.data()
@@ -338,13 +344,17 @@ impl<'tree> Node<'tree> {
         )
     }
 
-    /// **Tree-squatter only:** Resolves the stored field through the grammar. It scans and
+    /// Resolves the stored field through the grammar. It scans and
     /// validates the field-name string.
+    ///
+    /// **Not in Tree-sitter**
     pub fn field_name(self) -> Option<&'tree str> {
         self.data().tables().field_name(self.field_id()?.get())
     }
 
-    /// **Tree-squatter only:** Tests membership using an original grammar symbol ID.
+    /// Tests membership using an original grammar symbol ID.
+    ///
+    /// **Not in Tree-sitter**
     pub fn has_supertype(self, symbol: GrammarKindId) -> bool {
         let data = self.data();
         let tables = data.tables();
@@ -367,7 +377,7 @@ impl<'tree> Node<'tree> {
 
     /// Get the node's number of descendants, including one for the node itself.
     ///
-    /// **Tree-squatter performance difference:** Scans packed groups in this subtree.
+    /// **Different performance than Tree-sitter:** Scans packed groups in this subtree.
     pub fn descendant_count(&self) -> usize {
         let first = self.first_slot();
         let waste: u32 = (first / GROUP_SIZE..self.slot().group().get())
@@ -376,8 +386,10 @@ impl<'tree> Node<'tree> {
         (self.slot().get() - first + 1 - waste) as usize
     }
 
-    /// **Tree-squatter only:** Returns the next node in tree-wide preorder, which may leave
+    /// Returns the next node in tree-wide preorder, which may leave
     /// this subtree.
+    ///
+    /// **Not in Tree-sitter**
     #[inline]
     pub fn next_preorder(self) -> Option<Self> {
         self.data()
@@ -385,8 +397,10 @@ impl<'tree> Node<'tree> {
             .map(|slot| self.at(SlotIx::new(slot)))
     }
 
-    /// **Tree-squatter only:** Returns the previous node in tree-wide preorder, which may
+    /// Returns the previous node in tree-wide preorder, which may
     /// leave this subtree.
+    ///
+    /// **Not in Tree-sitter**
     pub fn prev_preorder(self) -> Option<Self> {
         let slot = self.previous_preorder_slot();
         (slot < self.data().groups() * GROUP_SIZE).then(|| self.at(SlotIx::new(slot)))
@@ -419,7 +433,7 @@ impl<'tree> Node<'tree> {
     /// Prefer [`child_with_descendant`](Node::child_with_descendant)
     /// for iterating over this node's ancestors.
     ///
-    /// **Tree-squatter performance difference:** Can scan subsequent packed groups. A
+    /// **Different performance than Tree-sitter:** Can scan subsequent packed groups. A
     /// cursor retains ancestry for repeated navigation.
     pub fn parent(&self) -> Option<Self> {
         let data = self.data();
@@ -462,7 +476,7 @@ impl<'tree> Node<'tree> {
     /// If you're walking the tree recursively, you may want to use the
     /// [`TreeCursor`] APIs directly instead.
     ///
-    /// **Tree-squatter API difference:** Returns a plain iterator with `size_hint() == (0,
+    /// **Different than Tree-sitter:** Returns a plain iterator with `size_hint() == (0,
     /// None)`. No initial counting pass is needed. Iteration resets and moves the supplied
     /// cursor; dropping the iterator leaves the cursor at its current position.
     pub fn children<'cursor>(
@@ -485,7 +499,7 @@ impl<'tree> Node<'tree> {
     ///
     /// See also [`Node::children`].
     ///
-    /// **Tree-squatter API difference:** Returns a plain iterator with `size_hint() == (0,
+    /// **Different than Tree-sitter:** Returns a plain iterator with `size_hint() == (0,
     /// None)`. No initial counting pass is needed. Iteration resets and moves the supplied
     /// cursor; dropping the iterator leaves the cursor at its current position.
     pub fn named_children<'cursor>(
@@ -518,11 +532,11 @@ impl<'tree> Node<'tree> {
     ///
     /// See also [`Node::children_by_field_name`].
     ///
-    /// **Tree-squatter API difference:** Returns a plain iterator with `size_hint() == (0,
+    /// **Different than Tree-sitter:** Returns a plain iterator with `size_hint() == (0,
     /// None)`. No initial counting pass is needed. Iteration resets and moves the supplied
     /// cursor; dropping the iterator leaves the cursor at its current position.
     ///
-    /// **Tree-squatter API difference:** Takes the nonzero `FieldId` wrapper.
+    /// **Different than Tree-sitter:** Takes the nonzero `FieldId` wrapper.
     pub fn children_by_field_id<'cursor>(
         &self,
         field: FieldId,
@@ -536,7 +550,7 @@ impl<'tree> Node<'tree> {
     ///
     /// See also [`Node::children`].
     ///
-    /// **Tree-squatter API difference:** Returns a plain iterator with `size_hint() == (0,
+    /// **Different than Tree-sitter:** Returns a plain iterator with `size_hint() == (0,
     /// None)`. No initial counting pass is needed. Iteration resets and moves the supplied
     /// cursor; dropping the iterator leaves the cursor at its current position.
     /// An unknown field name yields no children and leaves the cursor unchanged.
@@ -564,12 +578,16 @@ impl<'tree> Node<'tree> {
         })
     }
 
-    /// **Tree-squatter only:** Tests for a structural child without counting children.
+    /// Tests for a structural child without counting children.
+    ///
+    /// **Not in Tree-sitter**
     pub fn has_children(self) -> bool {
         self.first_child().is_some()
     }
 
-    /// **Tree-squatter only:** Scans children until finding a named child.
+    /// Scans children until finding a named child.
+    ///
+    /// **Not in Tree-sitter**
     pub fn has_named_children(self) -> bool {
         self.structural_children()
             .filter(|node| node.is_named())
@@ -579,10 +597,10 @@ impl<'tree> Node<'tree> {
 
     /// Get this node's number of children.
     ///
-    /// **Tree-squatter API difference:** Returns `ChildIx`, an exclusive upper bound,
+    /// **Different than Tree-sitter:** Returns `ChildIx`, an exclusive upper bound,
     /// including zero for a leaf. Use `.get()` for the primitive count.
     ///
-    /// **Tree-squatter performance difference:** Scans children.
+    /// **Different performance than Tree-sitter:** Scans children.
     pub fn child_count(&self) -> ChildIx {
         ChildIx::new(self.structural_children().count() as u32)
     }
@@ -591,11 +609,11 @@ impl<'tree> Node<'tree> {
     ///
     /// See also [`Node::is_named`].
     ///
-    /// **Tree-squatter API difference:** Returns `NamedChildIx`, an exclusive upper bound,
+    /// **Different than Tree-sitter:** Returns `NamedChildIx`, an exclusive upper bound,
     /// including zero when there are no named children. Use `.get()` for the primitive
     /// count.
     ///
-    /// **Tree-squatter performance difference:** Scans all children.
+    /// **Different performance than Tree-sitter:** Scans all children.
     pub fn named_child_count(&self) -> NamedChildIx {
         NamedChildIx::new(
             self.structural_children()
@@ -611,9 +629,9 @@ impl<'tree> Node<'tree> {
     /// you might be iterating over a long list of children, you should use
     /// [`Node::children`] instead.
     ///
-    /// **Tree-squatter API difference:** Takes `ChildIx` instead of `u32`.
+    /// **Different than Tree-sitter:** Takes `ChildIx` instead of `u32`.
     ///
-    /// **Tree-squatter performance difference:** Visits up to index + 1 children. Repeated
+    /// **Different performance than Tree-sitter:** Visits up to index + 1 children. Repeated
     /// indexed lookup across a wide node can be quadratic; prefer one traversal.
     pub fn child(&self, index: ChildIx) -> Option<Self> {
         self.structural_children().nth(index.get() as usize)
@@ -626,9 +644,9 @@ impl<'tree> Node<'tree> {
     /// you might be iterating over a long list of children, you should use
     /// [`Node::named_children`] instead.
     ///
-    /// **Tree-squatter API difference:** Takes `NamedChildIx` instead of `u32`.
+    /// **Different than Tree-sitter:** Takes `NamedChildIx` instead of `u32`.
     ///
-    /// **Tree-squatter performance difference:** Scans preceding children, including
+    /// **Different performance than Tree-sitter:** Scans preceding children, including
     /// unnamed children. Prefer one traversal for several children.
     pub fn named_child(&self, index: NamedChildIx) -> Option<Self> {
         self.structural_children()
@@ -641,11 +659,11 @@ impl<'tree> Node<'tree> {
     /// See also [`child_by_field_name`](Node::child_by_field_name). You can
     /// convert a field name to an id using [`crate::Language::field_id_for_name`].
     ///
-    /// **Tree-squatter API difference:** Takes a nonzero `FieldId`.
+    /// **Different than Tree-sitter:** Takes a nonzero `FieldId`.
     ///
-    /// **Tree-squatter performance difference:** Scans children.
+    /// **Different performance than Tree-sitter:** Scans children.
     ///
-    /// **Tree-squatter behavior change:** Fields stored on visible children can differ
+    /// **Different behavior than Tree-sitter:** Fields stored on visible children can differ
     /// from tree-sitter lookup across alias-visible boundaries. Child enumeration uses
     /// stored fields.
     pub fn child_by_field_id(&self, field: FieldId) -> Option<Self> {
@@ -738,7 +756,7 @@ impl<'tree> Node<'tree> {
 
     /// Read the constant-time attributes. Counts are separate operations.
     ///
-    /// **Tree-squatter only:** Bundles constant-time node attributes; child and descendant
+    /// **Not in Tree-sitter**. Bundles constant-time node attributes; child and descendant
     /// counts are separate.
     pub fn attributes(self) -> traits::Attributes<'tree> {
         traits::Attributes {
@@ -764,7 +782,7 @@ impl<'tree> Node<'tree> {
     /// Note that the given node is considered the root of the cursor,
     /// and the cursor cannot walk outside this node.
     ///
-    /// **Tree-squatter performance difference:** Creates an empty ancestor stack. Reuse the
+    /// **Different performance than Tree-sitter:** Creates an empty ancestor stack. Reuse the
     /// cursor to retain its allocation.
     pub fn walk(&self) -> TreeCursor<'tree> {
         TreeCursor {
@@ -785,7 +803,7 @@ impl<'tree> Node<'tree> {
 
     /// Get the smallest node within this node that spans the given point range.
     ///
-    /// **Tree-squatter behavior change:** Without point data, positions use row zero and
+    /// **Different behavior than Tree-sitter:** Without point data, positions use row zero and
     /// the byte offset as column. Check `has_points()` before relying on line/column
     /// coordinates.
     pub fn descendant_for_point_range(&self, start: Point, end: Point) -> Option<Self> {
@@ -798,7 +816,7 @@ impl<'tree> Node<'tree> {
 
     /// Get the smallest named node within this node that spans the given point range.
     ///
-    /// **Tree-squatter behavior change:** Without point data, positions use row zero and
+    /// **Different behavior than Tree-sitter:** Without point data, positions use row zero and
     /// the byte offset as column. Check `has_points()` before relying on line/column
     /// coordinates.
     pub fn named_descendant_for_point_range(&self, start: Point, end: Point) -> Option<Self> {
@@ -1004,7 +1022,7 @@ impl std::iter::FusedIterator for Children<'_> {}
 
 /// A stateful object for walking a syntax [`Tree`] efficiently.
 ///
-/// **Tree-squatter performance difference:** Cloning copies cursor state and the ancestor
+/// **Different performance than Tree-sitter:** Cloning copies cursor state and the ancestor
 /// stack without copying the tree.
 #[derive(Clone)]
 pub struct TreeCursor<'tree> {
@@ -1017,7 +1035,7 @@ impl<'tree> TreeCursor<'tree> {
     ///
     /// See also [`field_name`](TreeCursor::field_name).
     ///
-    /// **Tree-squatter API difference:** Returns `Option<FieldId>`. The traversal root has
+    /// **Different than Tree-sitter:** Returns `Option<FieldId>`. The traversal root has
     /// no field.
     pub fn field_id(&self) -> Option<FieldId> {
         if self.parents.is_empty() {
@@ -1041,7 +1059,7 @@ impl<'tree> TreeCursor<'tree> {
     /// Unlike [`reset`](TreeCursor::reset), this will not lose parent
     /// information and allows reusing already created cursors.
     ///
-    /// **Tree-squatter performance difference:** Copies the ancestor stack, reusing
+    /// **Different performance than Tree-sitter:** Copies the ancestor stack, reusing
     /// destination capacity where possible. The two cursors move independently and borrow
     /// their trees.
     pub fn reset_to(&mut self, cursor: &Self) {
@@ -1049,7 +1067,9 @@ impl<'tree> TreeCursor<'tree> {
         self.parents.clone_from(&cursor.parents);
     }
 
-    /// **Tree-squatter only:** Reads the current node’s bundled attributes.
+    /// Reads the current node’s bundled attributes.
+    ///
+    /// **Not in Tree-sitter**
     pub fn attributes(&mut self) -> traits::Attributes<'tree> {
         self.node.attributes()
     }
@@ -1169,9 +1189,9 @@ impl<'tree> TreeCursor<'tree> {
     /// This returns the index of the child node if one was found, and returns
     /// `None` if no such child was found.
     ///
-    /// **Tree-squatter API difference:** Returns `ChildIx`.
+    /// **Different than Tree-sitter:** Returns `ChildIx`.
     ///
-    /// **Tree-squatter performance difference:** Scans children.
+    /// **Different performance than Tree-sitter:** Scans children.
     pub fn goto_first_child_for_byte(&mut self, byte: usize) -> Option<ChildIx> {
         let byte = byte as u32 as usize;
         self.goto_child_matching(|node| {
@@ -1185,13 +1205,13 @@ impl<'tree> TreeCursor<'tree> {
     /// This returns the index of the child node if one was found, and returns
     /// `None` if no such child was found.
     ///
-    /// **Tree-squatter API difference:** Returns `ChildIx`.
+    /// **Different than Tree-sitter:** Returns `ChildIx`.
     ///
-    /// **Tree-squatter behavior change:** Without point data, positions use row zero and
+    /// **Different behavior than Tree-sitter:** Without point data, positions use row zero and
     /// the byte offset as column. Check `has_points()` before relying on line/column
     /// coordinates.
     ///
-    /// **Tree-squatter performance difference:** Scans children.
+    /// **Different performance than Tree-sitter:** Scans children.
     pub fn goto_first_child_for_point(&mut self, point: Point) -> Option<ChildIx> {
         let point = PackedPoint::from_point_cast(point).point();
         self.goto_child_matching(|node| node.end_byte() > 0 && node.end_position() > point)

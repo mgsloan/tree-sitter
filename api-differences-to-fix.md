@@ -681,37 +681,49 @@ for deferred work.
    than weaving tree-squatter commentary into upstream prose. Keep this commit
    separate from both API implementation and the documentation copy.
 
-Use these labels consistently in Rust documentation:
+Start each doc comment with a plain description of the API. Put comparison labels
+in separate paragraphs after the opening paragraph so they do not appear in
+rustdoc contents summaries. Use these labels consistently:
 
-- **Tree-squatter behavior change:** for an observable result or contract
+- **Different behavior than Tree-sitter:** for an observable result or contract
   difference, including the behavior when point data is absent.
-- **Tree-squatter only:** for an additional API or capability with no tree-sitter
+- **Not in Tree-sitter** for an additional API or capability with no tree-sitter
   counterpart.
-- **Tree-squatter API difference:** for an intentional signature/type difference,
+- **Different than Tree-sitter:** for an intentional signature/type difference,
   such as `ChildIx` or the grammar wrapper.
-- **Tree-squatter performance difference:** for a different complexity or cost,
+- **Different performance than Tree-sitter:** for a different complexity or cost,
   such as scanning to count children. Do not imply a measured slowdown without
   measurements.
 
-For example, these are separate additions to the corresponding API docs:
+For example:
 
 ```rust
-/// **Tree-squatter API difference:** Takes `ChildIx` instead of `u32`.
-
-/// **Tree-squatter performance difference:** Scans preceding children. Prefer
+/// Get the node's child at the given index.
+///
+/// **Different than Tree-sitter:** Takes `ChildIx` instead of `u32`.
+///
+/// **Different performance than Tree-sitter:** Scans preceding children. Prefer
 /// child iteration when visiting several children.
+```
 
-/// **Tree-squatter behavior change:** Without point data, returns row zero with
-/// the byte offset as the column. Check `has_points()` before using line/column
-/// coordinates.
+```rust
+/// Get this node's start position in terms of rows and columns.
+///
+/// **Different behavior than Tree-sitter:** Without point data, returns row zero
+/// with the byte offset as the column. Check `has_points()` before using
+/// line/column coordinates.
+```
 
-/// **Tree-squatter only:** Returns this node's physical slot in the packed tree.
+```rust
+/// Returns this node's physical slot in the packed tree.
+///
+/// **Not in Tree-sitter**
 ```
 
 An appended note must not contradict the copied text. For example, replace an
 inaccurate logarithmic-cost claim with the actual scanning cost; preserve the
 rest of that method's documentation. Additional APIs need original documentation
-and the `tree-squatter only` label, not an artificial upstream counterpart.
+and the **Not in Tree-sitter** label, not an artificial upstream counterpart.
 
 ## Verification
 

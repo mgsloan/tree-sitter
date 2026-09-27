@@ -1,4 +1,6 @@
-//! **Tree-squatter only:** Group scans over stored columns. No decoded column arrays are retained.
+//! Group scans over stored columns. No decoded column arrays are retained.
+//!
+//! **Not in Tree-sitter**
 //!
 //! ```
 //! # fn example(root: tree_squatter::Node<'_>, kinds: &tree_squatter::KindSet) {
@@ -13,10 +15,10 @@
 //! `within_*` and `containing_*`, using inclusive endpoint containment.
 //! Overlap includes zero-width nodes at positions inside the half-open range.
 //!
-//! **Tree-squatter behavior change:** Point ranges use row/column order; trees without
+//! **Different behavior than Tree-sitter:** Point ranges use row/column order; trees without
 //! point data use `(0, byte_offset)`.
 //!
-//! **Tree-squatter only:** Scan coordinates retain their wider-range behavior; they
+//! **Not in Tree-sitter**. Scan coordinates retain their wider-range behavior; they
 //! do not use the narrowing casts of shared node/cursor lookup methods. Presence
 //! caches can change scan cost, never results.
 //!
@@ -269,19 +271,27 @@ impl SymbolIndex {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct Mask(u64);
 impl Mask {
-    /// **Tree-squatter only:** Returns the physical-slot mask bits.
+    /// Returns the physical-slot mask bits.
+    ///
+    /// **Not in Tree-sitter**
     pub fn bits(self) -> u64 {
         self.0
     }
-    /// **Tree-squatter only:** Reports whether the mask contains no slots.
+    /// Reports whether the mask contains no slots.
+    ///
+    /// **Not in Tree-sitter**
     pub fn is_empty(self) -> bool {
         self.0 == 0
     }
-    /// **Tree-squatter only:** Counts selected slots.
+    /// Counts selected slots.
+    ///
+    /// **Not in Tree-sitter**
     pub fn count_ones(self) -> u32 {
         self.0.count_ones()
     }
-    /// **Tree-squatter only:** Intersects two masks for the same physical group.
+    /// Intersects two masks for the same physical group.
+    ///
+    /// **Not in Tree-sitter**
     pub fn intersection(self, other: Self) -> Self {
         Self(self.0 & other.0)
     }
@@ -293,7 +303,9 @@ impl Mask {
         }
         remaining == 0
     }
-    /// **Tree-squatter only:** Tests a group-relative slot.
+    /// Tests a group-relative slot.
+    ///
+    /// **Not in Tree-sitter**
     pub fn contains(self, slot: u32) -> bool {
         slot < 64 && self.0 & (1u64 << slot) != 0
     }
@@ -426,22 +438,28 @@ impl<'tree> GroupRef<'tree> {
         }
     }
 
-    /// **Tree-squatter only:** Returns the physical group index.
+    /// Returns the physical group index.
+    ///
+    /// **Not in Tree-sitter**
     pub fn index(self) -> u32 {
         self.index.get()
     }
-    /// **Tree-squatter only:** Returns the group’s first absolute physical slot.
+    /// Returns the group’s first absolute physical slot.
+    ///
+    /// **Not in Tree-sitter**
     pub fn first_slot(self) -> SlotIx {
         self.index.first_slot()
     }
-    /// **Tree-squatter only:** Selects live slots, excluding group waste.
+    /// Selects live slots, excluding group waste.
+    ///
+    /// **Not in Tree-sitter**
     #[inline]
     pub fn valid_mask(self) -> Mask {
         Mask::lower(self.used())
     }
     /// Resolve a group-relative physical slot; waste and out-of-group slots fail.
     ///
-    /// **Tree-squatter only:** Returns a node at a live group-relative slot.
+    /// **Not in Tree-sitter**. Returns a node at a live group-relative slot.
     pub fn node(self, slot: u32) -> Option<Node<'tree>> {
         (slot < self.used()).then(|| self.columns.root.at(self.index.slot(GroupSlotIx(slot))))
     }
@@ -551,15 +569,21 @@ pub struct GroupMatches<'tree> {
     descending: bool,
 }
 impl<'tree> GroupMatches<'tree> {
-    /// **Tree-squatter only:** Returns the underlying physical group.
+    /// Returns the underlying physical group.
+    ///
+    /// **Not in Tree-sitter**
     pub fn group(self) -> GroupRef<'tree> {
         self.group
     }
-    /// **Tree-squatter only:** Returns this fragment’s selected-slot mask.
+    /// Returns this fragment’s selected-slot mask.
+    ///
+    /// **Not in Tree-sitter**
     pub fn matches(self) -> Mask {
         self.matches
     }
-    /// **Tree-squatter only:** Enumerates selected nodes in traversal order.
+    /// Enumerates selected nodes in traversal order.
+    ///
+    /// **Not in Tree-sitter**
     #[inline]
     pub fn nodes(self) -> GroupNodes<'tree> {
         GroupNodes {
@@ -777,7 +801,9 @@ impl<'tree, S> Scan<'tree, S> {
     }
 }
 impl<'tree, S: GroupScan<'tree>> Scan<'tree, S> {
-    /// **Tree-squatter only:** Enumerates selected nodes in traversal order.
+    /// Enumerates selected nodes in traversal order.
+    ///
+    /// **Not in Tree-sitter**
     pub fn nodes(self) -> Nodes<'tree, S> {
         Nodes {
             base: 0,
@@ -786,27 +812,29 @@ impl<'tree, S: GroupScan<'tree>> Scan<'tree, S> {
             lifetime: PhantomData,
         }
     }
-    /// **Tree-squatter only:** Enumerates selected group fragments in traversal order.
+    /// Enumerates selected group fragments in traversal order.
+    ///
+    /// **Not in Tree-sitter**
     pub fn groups(self) -> Groups<'tree, S> {
         Groups(self.source, PhantomData)
     }
     /// Count matching nodes without constructing handles.
     ///
-    /// **Tree-squatter only:** Counts selected nodes without constructing each node handle.
+    /// **Not in Tree-sitter**. Counts selected nodes without constructing each node handle.
     pub fn count(self) -> usize {
         self.source.count()
     }
     /// Reverse this scan before calling `nodes()` or `groups()`.
     /// The resulting type retains only the selected traversal's state.
     ///
-    /// **Tree-squatter only:** Reverses this scan’s traversal order.
+    /// **Not in Tree-sitter**. Reverses this scan’s traversal order.
     pub fn rev(self) -> Scan<'tree, S::Reversed> {
         Scan::new(self.source.reverse())
     }
     /// Match public kind IDs. Arrays preserve their length for kernel specialization;
     /// borrowed `KindSet`s support dynamically sized sets.
     ///
-    /// **Tree-squatter only:** Keeps nodes with any selected displayed kind ID.
+    /// **Not in Tree-sitter**. Keeps nodes with any selected displayed kind ID.
     #[inline(always)]
     pub fn filter_kind_ids<K: IdSelection>(
         self,
@@ -817,7 +845,7 @@ impl<'tree, S: GroupScan<'tree>> Scan<'tree, S> {
     }
     /// `None` matches nodes with no field, including the tree root.
     ///
-    /// **Tree-squatter only:** Keeps nodes with the selected field; `None` selects absent
+    /// **Not in Tree-sitter**. Keeps nodes with the selected field; `None` selects absent
     /// fields.
     pub fn filter_field_id(
         self,
@@ -828,14 +856,16 @@ impl<'tree, S: GroupScan<'tree>> Scan<'tree, S> {
     /// Match any selected field ID. `None` includes nodes with no field; an empty
     /// selection matches nothing. Arrays specialize the kernel for their length.
     ///
-    /// **Tree-squatter only:** Keeps nodes with any selected field.
+    /// **Not in Tree-sitter**. Keeps nodes with any selected field.
     pub fn filter_field_ids<F: FieldSelection>(
         self,
         fields: F,
     ) -> Scan<'tree, Filtered<S, F::FieldPredicate>> {
         self.filtered(fields.into_field_predicate())
     }
-    /// **Tree-squatter only:** Keeps nodes belonging to the original grammar supertype.
+    /// Keeps nodes belonging to the original grammar supertype.
+    ///
+    /// **Not in Tree-sitter**
     pub fn filter_supertype_id(
         self,
         supertype: GrammarKindId,
@@ -845,11 +875,15 @@ impl<'tree, S: GroupScan<'tree>> Scan<'tree, S> {
             index: None,
         })
     }
-    /// **Tree-squatter only:** Keeps nodes whose extra flag matches the supplied value.
+    /// Keeps nodes whose extra flag matches the supplied value.
+    ///
+    /// **Not in Tree-sitter**
     pub fn filter_extra(self, value: bool) -> Scan<'tree, Filtered<S, Extra>> {
         self.filtered(Extra(value))
     }
-    /// **Tree-squatter only:** Keeps nodes whose missing flag matches the supplied value.
+    /// Keeps nodes whose missing flag matches the supplied value.
+    ///
+    /// **Not in Tree-sitter**
     pub fn filter_missing(self, value: bool) -> Scan<'tree, Filtered<S, Missing>> {
         self.filtered(Missing(value))
     }

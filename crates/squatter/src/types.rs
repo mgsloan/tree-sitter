@@ -17,7 +17,9 @@ macro_rules! integer_type {
 }
 
 integer_type!(
-    /// **Tree-squatter API difference:** A displayed node kind, including aliases, in a particular grammar.
+    /// A displayed node kind, including aliases, in a particular grammar.
+    ///
+    /// **Different than Tree-sitter:** Wraps the native `u16` kind ID.
     ///
     /// ```compile_fail
     /// # fn example(root: tree_squatter::Node<'_>) {
@@ -25,12 +27,20 @@ integer_type!(
     /// # }
     /// ```
     pub KindId(u16));
-integer_type!(/// **Tree-squatter API difference:** A node kind in the original grammar, ignoring aliases.
+integer_type!(
+    /// A node kind in the original grammar, ignoring aliases.
+    ///
+    /// **Different than Tree-sitter:** Wraps the native `u16` grammar symbol ID in a distinct type.
     pub GrammarKindId(u16));
-integer_type!(/// **Tree-squatter only:** An absolute physical slot in a particular tree's reverse-preorder storage.
+integer_type!(
+    /// An absolute physical slot in a particular tree's reverse-preorder storage.
+    ///
+    /// **Not in Tree-sitter**
     pub SlotIx(u32));
 
-/// **Tree-squatter API difference:** A nonzero field identifier in a particular grammar. Absence is `None`.
+/// A nonzero field identifier in a particular grammar. Absence is `None`.
+///
+/// **Different than Tree-sitter:** Wraps `NonZeroU16` in a grammar-specific identifier type.
 ///
 /// ```compile_fail
 /// # fn example(root: tree_squatter::Node<'_>) {
@@ -217,9 +227,12 @@ impl SlotIx {
     }
 }
 
-integer_type!(/// **Tree-squatter API difference:** A position or exclusive count among all children.
+integer_type!(
+    /// A position or exclusive count among all children.
     /// Counts are exclusive upper bounds, not existing positions. This is distinct
     /// from named-child indices and physical slots.
+    ///
+    /// **Different than Tree-sitter:** Uses a `u32` newtype instead of a primitive child index or count.
     ///
     /// ```compile_fail
     /// # fn example(node: tree_squatter::Node<'_>) {
@@ -235,9 +248,12 @@ impl ChildIx {
     }
 }
 
-integer_type!(/// **Tree-squatter API difference:** A position or exclusive count among named children.
+integer_type!(
+    /// A position or exclusive count among named children.
     /// Counts are exclusive upper bounds, not existing positions. This is distinct
     /// from all-child indices and physical slots.
+    ///
+    /// **Different than Tree-sitter:** Uses a distinct `u32` newtype instead of primitive named-child indices and `usize` counts.
     ///
     /// ```compile_fail
     /// # fn example(node: tree_squatter::Node<'_>) {
