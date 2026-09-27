@@ -7,7 +7,7 @@ same operation. Differences should be limited to:
 - Behavior needed for those capabilities, such as operating without a point cache.
 - Necessary representation changes, such as a wrapper around `Language`.
 - Newtype wrappers around primitive values, including the planned `ChildIx(u32)`,
-  `NamedChildIx(u32)` and `DescendantIx(u32)`.
+  and `NamedChildIx(u32)`.
 
 This proposal follows [the API comparison](api-comparison.md) and the current
 Rust implementations. Each group shows current tree-sitter, current tree-squatter,
@@ -67,6 +67,18 @@ that decision.
 
 ```rust
 impl Language {
+    pub fn is_parseable(&self) -> bool;
+    pub fn name(&self) -> Option<&str>;
+    pub fn abi_version(&self) -> usize;
+    pub fn metadata(&self) -> Option<LanguageMetadata>;
+    pub fn node_kind_count(&self) -> usize;
+    pub fn parse_state_count(&self) -> usize;
+    pub fn field_count(&self) -> usize;
+    pub fn supertypes(&self) -> &[u16];
+    pub fn subtypes_for_supertype(&self, supertype: u16) -> &[u16];
+    pub fn node_kind_is_named(&self, id: u16) -> bool;
+    pub fn node_kind_is_visible(&self, id: u16) -> bool;
+    pub fn node_kind_is_supertype(&self, id: u16) -> bool;
     pub fn id_for_node_kind(&self, kind: &str, named: bool) -> u16;
     pub fn node_kind_for_id(&self, id: u16) -> Option<&str>;
     pub fn field_id_for_name(&self, name: impl AsRef<[u8]>) -> Option<NonZeroU16>;
@@ -93,6 +105,20 @@ impl Language {
 impl Language {
     pub fn new(language: &tree_sitter::Language) -> Result<Self, Error>;
     pub fn tree_sitter_language(&self) -> tree_sitter::Language;
+
+    pub fn is_parseable(&self) -> bool;
+    pub fn name(&self) -> Option<&str>;
+    pub fn abi_version(&self) -> usize;
+    pub fn metadata(&self) -> Option<tree_sitter::LanguageMetadata>;
+    pub fn node_kind_count(&self) -> usize;
+    pub fn parse_state_count(&self) -> usize;
+    pub fn field_count(&self) -> usize;
+    pub fn supertypes(&self) -> &[GrammarKindId];
+    pub fn subtypes_for_supertype(&self, supertype: GrammarKindId) -> &[GrammarKindId];
+    pub fn node_kind_is_named(&self, id: KindId) -> bool;
+    pub fn node_kind_is_visible(&self, id: KindId) -> bool;
+    pub fn node_kind_is_supertype(&self, id: KindId) -> bool;
+
     pub fn id_for_node_kind(&self, kind: &str, named: bool) -> KindId;
     pub fn node_kind_for_id(&self, id: KindId) -> Option<&str>;
     pub fn field_id_for_name(&self, name: impl AsRef<[u8]>) -> Option<FieldId>;
@@ -110,8 +136,34 @@ impl Language {
   `KindId::new(0)` on unsuccessful `id_for_node_kind` lookup.
 - Keep checked lookup and underlying grammar-kind lookup as additions.
 - Accept byte-like field names, as tree-sitter does.
-- Forward other language metadata through the wrapper; retain grammar caching
-  and hashing as additions.
+- Forward the metadata methods enumerated above through the wrapper. Preserve
+  optional results for older grammars. `LanguageMetadata` contains the generated
+  grammar's `major_version`, `minor_version`, and `patch_version` (`u8` each);
+  reuse tree-sitter's metadata type.
+- `is_parseable` reports the underlying Tree-sitter language's capability, not
+  eligibility for the restricted TreeFeller backend.
+- Supertype/subtype lists contain grammar symbol IDs, so expose `GrammarKindId`
+  rather than packed slots or child indices. Preserve borrowed slice lifetimes
+  without allocating on every call. The representation adapter must preserve
+  the upstream symbol values, including hidden symbols.
+- Retain grammar caching and hashing as additions.
+
+Tree-sitter also exposes these language operations, which belong to the separate
+[parser design](parser-api-design.md)'s parse-state/lookahead work rather than
+metadata forwarding in this pass:
+
+```rust
+impl Language {
+    pub fn next_state(&self, state: u16, id: u16) -> u16;
+    pub fn lookahead_iterator(&self, state: u16) -> Option<LookaheadIterator>;
+}
+```
+
+This inventory covers the public inspection methods in this checkout's
+`Language` implementation; constructors, ownership/raw-pointer operations, and
+backend-specific Wasm APIs are separate. With the `wasm` feature, tree-sitter
+also exposes `Language::is_wasm(&self) -> bool`; keep that with the separate
+Wasm integration work rather than promising it on the prepared wrapper here.
 
 ## Node receivers, identity, and child lookup
 
@@ -150,7 +202,6 @@ impl<'tree> Node<'tree> {
 ```rust
 pub struct ChildIx(u32);
 pub struct NamedChildIx(u32);
-pub struct DescendantIx(u32);
 // each index type provides new(u32) and get() -> u32
 impl ChildIx {
     pub const fn new(value: u32) -> Self;
@@ -179,8 +230,6 @@ impl<'tree> Node<'tree> {
 - Use `ChildIx(u32)` for indices among all children and `NamedChildIx(u32)`
   for indices among named children. The same integer can select different nodes
   in these two domains; do not implicitly convert between them.
-- Use `DescendantIx(u32)` for preorder descendant indices relative to a traversal
-  root, with zero identifying that root. Keep it distinct from physical slots.
 - These newtypes are intentional differences from tree-sitter's primitive indices.
   Their widths follow enforced representation limits, not a bound inferred from
   source byte length.
@@ -189,7 +238,7 @@ impl<'tree> Node<'tree> {
   respective index domains, not valid child positions themselves. An empty
   sequence returns the corresponding wrapper around zero.
 - Use `.get()` when a primitive count is needed. These wrappers do not imply that
-  a position exists, and remain distinct from descendant indices and physical slots.
+  a position exists, and remain distinct from physical slots.
 - Keep `slot()` as the inherent identity/addressing operation. Do not add an
   inherent `Node::id()` or a `NodeId` type; shared identity goes through
   `NodeLike::id()`.
@@ -296,8 +345,6 @@ let field_name = child.field_name();
 impl<'tree> TreeCursor<'tree> {
     pub fn field_id(&self) -> Option<NonZeroU16>;
     pub fn field_name(&self) -> Option<&'tree str>;
-    pub fn descendant_index(&self) -> usize;
-    pub fn goto_descendant(&mut self, index: usize);
     pub fn reset_to(&mut self, cursor: &Self);
     pub fn goto_first_child_for_byte(&mut self, byte: usize) -> Option<usize>;
     pub fn goto_first_child_for_point(&mut self, point: Point) -> Option<usize>;
@@ -318,7 +365,7 @@ impl<'tree> Cursor<'tree> {
 }
 
 // field_id is available through CursorLike or cursor.node().field_id()
-// no inherent field_name, descendant_index, goto_descendant, reset_to, or Clone
+// no inherent field_name, reset_to, or Clone
 ```
 
 **Proposed tree-squatter**
@@ -327,8 +374,6 @@ impl<'tree> Cursor<'tree> {
 impl<'tree> TreeCursor<'tree> {
     pub fn field_id(&self) -> Option<FieldId>;
     pub fn field_name(&self) -> Option<&'tree str>;
-    pub fn descendant_index(&self) -> DescendantIx;
-    pub fn goto_descendant(&mut self, index: DescendantIx);
     pub fn reset_to(&mut self, cursor: &Self);
     pub fn goto_first_child_for_byte(&mut self, byte: usize) -> Option<ChildIx>;
     pub fn goto_first_child_for_point(&mut self, point: Point) -> Option<ChildIx>;
@@ -338,9 +383,6 @@ impl Clone for TreeCursor<'_> { /* independent cursor state */ }
 ```
 
 - Expose shared field access as inherent methods, without requiring a trait import.
-- Add descendant navigation using `DescendantIx`, relative to the cursor's
-  traversal root. A physical slot is not a descendant index. Resetting the cursor
-  to a different root changes the index's interpretation.
 - Return `ChildIx` from child-positioning methods, consistently with child lookup.
 - Include `Clone` and `reset_to` in this API pass. Copy the current node and
   ancestor stack so traversal state is independent; `reset_to` should reuse the
@@ -403,7 +445,8 @@ impl<'tree> Node<'tree> {
 impl Clone for Tree { /* preserve tree contents and optional side data */ }
 ```
 
-- Add navigation and formatting conveniences with tree-sitter semantics.
+- Include `Tree::walk`, tree/node `language`, `Node::range`, `Node::utf16_text`,
+  and `Node::to_sexp` in this API pass, with tree-sitter semantics.
 - Return the necessary grammar wrapper from language accessors. The proposed
   borrow exposes metadata without requiring an owned language clone.
 - Exclude `root_node_with_offset` and offset views. Nodes report coordinates
