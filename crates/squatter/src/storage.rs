@@ -758,6 +758,17 @@ impl Tree {
         capacity: u32,
         optional_columns: u32,
     ) -> Result<(), Error> {
+        self.finish_layout_with_progress(capacity, optional_columns, &mut Default::default())
+    }
+
+    // Cancellation can leave moved columns behind; the caller must discard the tree.
+    pub(crate) fn finish_layout_with_progress(
+        &mut self,
+        capacity: u32,
+        optional_columns: u32,
+        progress: &mut crate::packing::Progress<'_>,
+    ) -> Result<(), Error> {
+        progress.poll()?;
         let data = self.data();
         assert!(data.owned);
         assert!(capacity >= data.groups());
@@ -779,8 +790,20 @@ impl Tree {
         {
             let destination = destination.pointer(data.bytes);
             if source.as_ptr() != destination && length != 0 {
-                unsafe {
-                    ptr::copy(source.as_ptr(), destination, length);
+                let chunk_size = if progress.enabled() {
+                    64 * 1024
+                } else {
+                    length
+                };
+                for offset in (0..length).step_by(chunk_size) {
+                    progress.poll()?;
+                    unsafe {
+                        ptr::copy(
+                            source.as_ptr().add(offset),
+                            destination.add(offset),
+                            chunk_size.min(length - offset),
+                        );
+                    }
                 }
             }
         }

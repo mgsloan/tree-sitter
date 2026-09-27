@@ -987,6 +987,10 @@ impl NativeParser {
         })
     }
 
+    pub fn language(&self) -> &Language {
+        &self.language
+    }
+
     pub fn parse(&mut self, source: &[u8]) -> Result<Reductions<'_>, crate::ParseError> {
         let length = u32::try_from(source.len()).map_err(|_| crate::ParseError {
             code: Error::Overflow,

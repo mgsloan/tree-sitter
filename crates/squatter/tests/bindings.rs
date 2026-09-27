@@ -439,13 +439,13 @@ fn owned_and_borrowed_storage() -> Result<(), Box<dyn Error>> {
 
 #[test]
 fn direct_parser_matches_mainline_packing() -> Result<(), Box<dyn Error>> {
-    use tree_squatter::{Language, Parser};
+    use tree_squatter::{Language, TreeFellerParser};
 
     let language = c_language();
     let grammar = Language::new(&language)?;
     let mut mainline = tree_sitter::Parser::new();
     mainline.set_language(&language)?;
-    let mut direct_parser = Parser::new(&grammar)?;
+    let mut direct_parser = TreeFellerParser::new(&grammar)?;
     let mut sources = vec![
         String::new(),
         "/* comment only */\n".into(),
@@ -500,11 +500,11 @@ fn direct_parser_matches_mainline_packing() -> Result<(), Box<dyn Error>> {
 
 #[test]
 fn direct_parser_reuses_after_failure_and_owns_grammar() -> Result<(), Box<dyn Error>> {
-    use tree_squatter::{Error as SquatError, Language, Parser};
+    use tree_squatter::{Error as SquatError, Language, TreeFellerParser};
 
     let mut parser = {
         let grammar = Language::new(&c_language())?;
-        Parser::new(&grammar)?
+        TreeFellerParser::new(&grammar)?
     };
     let first = parser.parse("int before;")?;
     let failure = parser.parse("int x;\n@").unwrap_err();
@@ -546,7 +546,7 @@ fn direct_parser_rejects_unsupported_grammar() -> Result<(), Box<dyn Error>> {
     // API but must never silently fall back to a mainline parser.
     let language = json_language();
     let grammar = Language::new(&language)?;
-    let failure = tree_squatter::Parser::new(&grammar)
+    let failure = tree_squatter::TreeFellerParser::new(&grammar)
         .err()
         .ok_or("accepted ABI 14")?;
     assert_eq!(failure.code, SquatError::Language);

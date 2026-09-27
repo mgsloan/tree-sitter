@@ -401,14 +401,14 @@ struct ParseContext {
     mainline: tree_sitter::Parser,
     packing_parser: tree_sitter::Parser,
     pack: PackContext,
-    feller: Option<Result<tree_squatter::Parser, tree_squatter::ParseError>>,
+    feller: Option<Result<tree_squatter::TreeFellerParser, tree_squatter::ParseError>>,
 }
 
 impl ParseContext {
     fn new(tree_sitter_language: &tree_sitter::Language, direct: bool) -> Result<Self> {
         let language = tree_squatter::Language::new(tree_sitter_language)?;
         let feller = if direct {
-            let parser = tree_squatter::Parser::new(&language);
+            let parser = tree_squatter::TreeFellerParser::new(&language);
             if let Err(error) = &parser {
                 ensure!(error.code == tree_squatter::Error::Language, "{error}");
             }

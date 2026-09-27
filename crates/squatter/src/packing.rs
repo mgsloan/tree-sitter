@@ -8,6 +8,59 @@ use crate::{
 
 mod traversal;
 
+#[derive(Default)]
+pub(crate) struct Progress<'a> {
+    callback: Option<&'a mut dyn FnMut(u32) -> std::ops::ControlFlow<()>>,
+    byte: u32,
+    operations: u32,
+}
+
+impl<'a> Progress<'a> {
+    pub fn new(callback: &'a mut dyn FnMut(u32) -> std::ops::ControlFlow<()>) -> Self {
+        Self {
+            callback: Some(callback),
+            ..Self::default()
+        }
+    }
+
+    pub fn enabled(&self) -> bool {
+        self.callback.is_some()
+    }
+
+    pub fn visit(&mut self, byte: u32) -> Result<(), Error> {
+        if self.enabled() {
+            self.byte = byte;
+            self.tick()?;
+        }
+        Ok(())
+    }
+
+    pub fn tick(&mut self) -> Result<(), Error> {
+        if self.enabled() {
+            self.operations += 1;
+            if self.operations == 256 {
+                self.operations = 0;
+                self.poll()?;
+            }
+        }
+        Ok(())
+    }
+
+    pub fn start(&mut self, byte: u32) -> Result<(), Error> {
+        self.byte = byte;
+        self.poll()
+    }
+
+    pub fn poll(&mut self) -> Result<(), Error> {
+        if let Some(callback) = &mut self.callback {
+            if callback(self.byte).is_break() {
+                return Err(Error::Canceled);
+            }
+        }
+        Ok(())
+    }
+}
+
 /// Controls slab capacity, compaction, and optional presence/point
 /// data when packing.
 ///
@@ -49,6 +102,7 @@ struct InputNode {
 /// not retain input trees after packing.
 ///
 /// **Not in Tree-sitter**
+#[derive(Default)]
 pub struct PackContext {
     traversal: traversal::Traversal,
 }
@@ -56,9 +110,7 @@ pub struct PackContext {
 impl PackContext {
     /// Creates empty reusable packing scratch.
     pub fn new() -> Result<Self, Error> {
-        Ok(Self {
-            traversal: traversal::Traversal::default(),
-        })
+        Ok(Self::default())
     }
 
     /// Packs a tree with default options while reusing scratch.
@@ -74,10 +126,27 @@ impl PackContext {
         tree: &tree_sitter::Tree,
         options: PackOptions,
     ) -> Result<Tree, Error> {
+        self.pack_with_progress(language, tree, options, &mut Progress::default())
+    }
+
+    pub(crate) fn pack_with_progress(
+        &mut self,
+        language: &Language,
+        tree: &tree_sitter::Tree,
+        options: PackOptions,
+        progress: &mut Progress<'_>,
+    ) -> Result<Tree, Error> {
         let root = traversal::Root::new(tree, language.tables())?;
+        progress.start(tree.root_node().start_byte() as u32)?;
         let mut builder = Builder::for_input(language, root.expected_nodes, options)?;
-        traversal::pack(&mut builder, language.tables(), &mut self.traversal, root)?;
-        builder.finish(options)
+        traversal::pack(
+            &mut builder,
+            language.tables(),
+            &mut self.traversal,
+            root,
+            progress,
+        )?;
+        builder.finish(options, progress)
     }
 
     pub(crate) fn pack_reductions(
@@ -99,7 +168,7 @@ impl PackContext {
             nodes,
             root,
         )?;
-        builder.finish(options)
+        builder.finish(options, &mut Progress::default())
     }
 
     /// Releases retained traversal scratch.
@@ -462,7 +531,8 @@ impl Builder {
         self.error = 0;
     }
 
-    fn finish(mut self, options: PackOptions) -> Result<Tree, Error> {
+    fn finish(mut self, options: PackOptions, progress: &mut Progress<'_>) -> Result<Tree, Error> {
+        progress.poll()?;
         self.close();
         let groups = self.tree.group_count();
         let capacity = if options.repack {
@@ -470,14 +540,16 @@ impl Builder {
         } else {
             self.tree.group_capacity()
         };
-        self.tree.finish_layout(capacity, self.optional)?;
+        self.tree
+            .finish_layout_with_progress(capacity, self.optional, progress)?;
         if options.symbol_presence {
-            let cache = PresenceCache::build(&self.tree)?;
+            let cache = PresenceCache::build_with_progress(&self.tree, progress)?;
             self.tree.set_presence_cache(cache)?;
         }
         if let Some(points) = self.points {
-            self.tree.set_point_data(points)?;
+            self.tree.set_point_data_with_progress(points, progress)?;
         }
+        progress.poll()?;
         Ok(self.tree)
     }
 }

@@ -17,6 +17,42 @@ use crate::{
 use std::ops::Range;
 use tree_sitter::Point;
 
+/// Parses a fresh UTF-8 document without incremental reuse.
+/// Tree-sitter's inherent methods shadow these methods; use qualified calls there.
+pub trait Parse {
+    type Tree: TreeLike;
+    type Error;
+    type Options<'a>: Default + From<crate::ParseOptions<'a>>;
+
+    fn parse_with_options(
+        &mut self,
+        source: impl AsRef<[u8]>,
+        options: Self::Options<'_>,
+    ) -> Result<Self::Tree, Self::Error>;
+
+    fn parse(&mut self, source: impl AsRef<[u8]>) -> Result<Self::Tree, Self::Error> {
+        self.parse_with_options(source, Default::default())
+    }
+}
+
+/// Parses fresh UTF-8 input in chunks. An empty chunk ends input.
+pub trait ParseWithCallback: Parse {
+    fn parse_with_callback<T: AsRef<[u8]>, F: FnMut(usize, Point) -> T>(
+        &mut self,
+        callback: &mut F,
+        options: Self::Options<'_>,
+    ) -> Result<Self::Tree, Self::Error>;
+}
+
+/// Progress within parsing or conversion, valid only during the callback.
+pub trait ParseStateLike {
+    fn current_byte_offset(&self) -> usize;
+    fn has_error(&self) -> bool;
+    fn is_converting(&self) -> bool;
+    /// Describes the phase's traversal direction, not monotonicity or completion.
+    fn current_byte_offset_descends(&self) -> bool;
+}
+
 /// Constant-time attributes supported by both representations on freshly parsed trees.
 /// Child and descendant counts are separate node operations.
 ///

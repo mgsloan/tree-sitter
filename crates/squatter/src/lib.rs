@@ -16,7 +16,9 @@ mod simd;
 mod storage;
 pub mod traits;
 pub use packing::{PackContext, PackOptions};
-pub use parser::{ParseError, Parser};
+pub use parser::{
+    PackedParseOptions, ParseError, ParseOptions, ParseState, Parser, ParserError, TreeFellerParser,
+};
 pub use side_data::{PointsData, PresenceCache, SideDataError};
 pub use storage::{BackedTree, BorrowedTree, StableSlab, Tree, representation_id};
 pub mod query;
@@ -40,6 +42,7 @@ pub enum Error {
     InvalidSlab = 5,
     Language = 6,
     Parse = 7,
+    Canceled = 8,
 }
 
 impl std::fmt::Display for Error {
@@ -52,6 +55,7 @@ impl std::fmt::Display for Error {
             Self::InvalidSlab => "invalid or incompatible slab",
             Self::Language => "unsupported language",
             Self::Parse => "parse failed",
+            Self::Canceled => "parse canceled",
         })
     }
 }
@@ -66,6 +70,7 @@ impl Error {
             5 => Error::InvalidSlab,
             6 => Error::Language,
             7 => Error::Parse,
+            8 => Error::Canceled,
             _ => Error::InvalidArgument,
         }
     }
