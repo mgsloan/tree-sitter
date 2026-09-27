@@ -778,7 +778,6 @@ impl QueryCursor {
             && query.program.direct.is_some()
             && !root.has_error()
             && self.max_start_depth == NONE
-            && self.range.unrestricted()
             && !self.halted;
         self.direct_position =
             root.data().groups() * crate::storage::GROUP_SIZE - 1 - root.slot().get();
@@ -874,11 +873,6 @@ impl<'query, 'tree> QueryExecution<'_, 'query, 'tree, '_> {
 
     fn next(&mut self, capture: bool) -> Option<(QueryMatch<'_, 'tree>, usize)> {
         if self.cursor.error.is_some() {
-            return None;
-        }
-        if !self.unrestricted && !self.query.program.supports_ranges {
-            self.cursor.error = Some(QueryExecutionError::UnsupportedRange);
-            self.cursor.halted = true;
             return None;
         }
 
@@ -1505,14 +1499,43 @@ impl<'query, 'tree> QueryExecution<'_, 'query, 'tree, '_> {
     fn scan_seek(&mut self) -> bool {
         let current_position = self.total_slots() - 1 - self.cursor.position.get();
         let end = self.node_end(self.root);
-        let target = self.find_symbols(current_position, end);
-        if self.cursor.halted {
-            return false;
-        }
-        if target == end {
-            self.cursor.halted = true;
-            return false;
-        }
+        let mut start = current_position;
+        let target = 'search: loop {
+            let target = self.find_symbols(start, end);
+            if self.cursor.halted {
+                return false;
+            }
+            if target == end {
+                self.cursor.halted = true;
+                return false;
+            }
+
+            // With no partial states, skipped enter/exit events cannot affect a
+            // match. Restore only the ancestor path needed by the next root.
+            while self.total_slots() - 1 - self.cursor.position.get() != target {
+                let node = self.current();
+                if target < self.node_end(node) {
+                    // A symbol hit must not re-enter a subtree that ordinary
+                    // traversal would skip because of the query range.
+                    if !self.unrestricted
+                        && (!self.cursor.range.intersects(node)
+                            || self
+                                .parent()
+                                .is_some_and(|parent| !self.cursor.range.intersects(parent)))
+                    {
+                        start = self.node_end(node);
+                        continue 'search;
+                    }
+                    if self.goto_first_child() {
+                        continue;
+                    }
+                }
+                while !self.goto_next_sibling() {
+                    assert!(self.goto_parent());
+                }
+            }
+            break target;
+        };
 
         self.cursor.scan_sparse_samples += (target - current_position >= 2) as u32;
         self.cursor.scan_samples += 1;
@@ -1524,16 +1547,6 @@ impl<'query, 'tree> QueryExecution<'_, 'query, 'tree, '_> {
             self.cursor.scan_sparse_samples = 0;
         }
 
-        // With no partial states, skipped enter/exit events cannot affect a
-        // match. Restore only the ancestor path needed by the next root.
-        while self.total_slots() - 1 - self.cursor.position.get() != target {
-            if target < self.node_end(self.current()) && self.goto_first_child() {
-                continue;
-            }
-            while !self.goto_next_sibling() {
-                assert!(self.goto_parent());
-            }
-        }
         true
     }
 
@@ -1694,6 +1707,28 @@ impl<'query, 'tree> QueryExecution<'_, 'query, 'tree, '_> {
         end
     }
 
+    fn direct_roots(&self, node: Node<'tree>) -> u64 {
+        let plan = self.query.program.direct.as_ref().unwrap();
+        let roots = plan.roots[node.data().symbol_index(node.slot().get()).get() as usize];
+        if roots == 0 || self.unrestricted {
+            return roots;
+        }
+        if !self.cursor.range.intersects(node) {
+            return 0;
+        }
+
+        // An empty node can overlap the range start while its enclosing
+        // nonempty subtree ends there and would never be entered.
+        let mut ancestor = node;
+        while ancestor.start_byte() == ancestor.end_byte() && ancestor != self.root {
+            ancestor = ancestor.parent().unwrap();
+            if !self.cursor.range.intersects(ancestor) {
+                return 0;
+            }
+        }
+        roots
+    }
+
     fn advance_direct(&mut self, stop_on_definite: bool) -> bool {
         if self.cursor.halted {
             return false;
@@ -1722,7 +1757,7 @@ impl<'query, 'tree> QueryExecution<'_, 'query, 'tree, '_> {
                     }
                 }
                 let node = self.position_node(position);
-                if plan.roots[node.data().symbol_index(node.slot().get()).get() as usize] != 0 {
+                if self.direct_roots(node) != 0 {
                     break;
                 }
                 position = self.normalize_position(position + 1);
@@ -1753,7 +1788,7 @@ impl<'query, 'tree> QueryExecution<'_, 'query, 'tree, '_> {
             self.cursor.direct_position = self.normalize_position(position + 1);
             let node = self.position_node(position);
             let symbol = node.kind_id().get();
-            let mut roots = plan.roots[node.data().symbol_index(node.slot().get()).get() as usize];
+            let mut roots = self.direct_roots(node);
             while roots != 0 {
                 let pattern = roots.trailing_zeros() as usize;
                 roots &= roots - 1;
@@ -1914,7 +1949,6 @@ impl<'query, 'tree> QueryExecution<'_, 'query, 'tree, '_> {
                 && self.cursor.optimized
                 && !self.query.program.scan_symbols.is_empty()
                 && self.cursor.max_start_depth == NONE
-                && self.unrestricted
                 && !self.scan_seek()
             {
                 return false;
@@ -2668,6 +2702,137 @@ fn equal_column(
 mod scan_tests {
     use super::*;
     use crate::{Language, PackOptions, Tree};
+
+    #[test]
+    fn bounded_plans_match_general_execution() {
+        let language = unsafe {
+            tree_sitter::Language::from_raw(tree_sitter_json::LANGUAGE.into_raw()().cast())
+        };
+        let grammar = Language::new(&language).unwrap();
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&language).unwrap();
+        let separator = format!(",\n{}", " ".repeat(300));
+        let source = format!(
+            "[{}]",
+            ["[1,2,3],{\"a\":[4,5,6]},true,null,false,\"text\""; 4].join(&separator)
+        );
+        let native = parser.parse(&source, None).unwrap();
+        assert!(!native.root_node().has_error());
+        let point = |offset: usize| {
+            let prefix = &source[..offset.min(source.len())];
+            Point::new(
+                prefix.bytes().filter(|byte| *byte == b'\n').count(),
+                prefix.rsplit('\n').next().unwrap().len() + offset.saturating_sub(source.len()),
+            )
+        };
+
+        for symbol_presence in [false, true] {
+            let tree = Tree::pack_with_options(
+                &grammar,
+                &native,
+                PackOptions {
+                    symbol_presence,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            assert!((0..tree.group_count()).any(|group| tree.data().waste(group) != 0));
+            let selected = tree
+                .root_node()
+                .preorder()
+                .nodes()
+                .filter(|node| node.kind() == "array")
+                .nth(3)
+                .unwrap();
+            let start = selected.start_byte();
+            let end = selected.end_byte();
+            for (pattern, direct) in [
+                ("(number) @value", true),
+                ("[(number) (string) (true) (null)] @value", true),
+                ("[(number) (string) (true) (null) (false)] @value", true),
+                (
+                    "(array . (number) @first . (number) @second . (number) @third .) @array",
+                    true,
+                ),
+                ("(array (number)+ @values) @array", false),
+                ("((number) @first (number) @second)", false),
+                ("(number)+ @values", false),
+            ] {
+                let query = Query::new(&grammar, pattern).unwrap();
+                assert!(!query.program.scan_symbols.is_empty());
+                for root in [tree.root_node(), selected] {
+                    for range in [
+                        0..0,
+                        0..1,
+                        start..end,
+                        start + 2..start + 3,
+                        start + 3..start + 3,
+                        end..end + 1,
+                        source.len()..source.len() + 1,
+                    ] {
+                        for points in [false, true] {
+                            for captures in [false, true] {
+                                let collect =
+                                    |optimized| {
+                                        let mut cursor = QueryCursor::new();
+                                        cursor.set_optimized(optimized);
+                                        if points {
+                                            assert!(cursor.set_point_range(
+                                                point(range.start)..point(range.end)
+                                            ));
+                                        } else {
+                                            assert!(cursor.set_byte_range(range.clone()));
+                                        }
+                                        let mut execution =
+                                            cursor.execute(&query, root, source.as_bytes());
+                                        assert_eq!(
+                                            execution.cursor.direct,
+                                            optimized && direct,
+                                            "{pattern}"
+                                        );
+                                        let mut results = Vec::new();
+                                        loop {
+                                            let result = if captures {
+                                                execution
+                                                    .next_capture()
+                                                    .map(|(result, index)| (result, Some(index)))
+                                            } else {
+                                                execution.next_match().map(|result| (result, None))
+                                            };
+                                            let Some((result, index)) = result else { break };
+                                            let captures = index.map_or(result.captures, |index| {
+                                                &result.captures[index..index + 1]
+                                            });
+                                            results.push((
+                                                result.pattern_index,
+                                                captures
+                                                    .iter()
+                                                    .map(|capture| {
+                                                        (capture.node.slot().get(), capture.index)
+                                                    })
+                                                    .collect::<Vec<_>>(),
+                                            ));
+                                            assert!(results.len() < 10_000);
+                                        }
+                                        assert_eq!(execution.error(), None);
+                                        results.sort();
+                                        if captures {
+                                            results.dedup();
+                                        }
+                                        results
+                                    };
+                                assert_eq!(
+                                    collect(true),
+                                    collect(false),
+                                    "{pattern}, {range:?}, points={points}, captures={captures}, root={root:?}"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     #[test]
     fn root_search_respects_ranges_and_group_waste() {

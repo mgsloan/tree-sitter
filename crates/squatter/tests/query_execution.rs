@@ -150,7 +150,7 @@ fn presence_scans_across_groups() {
 }
 
 #[test]
-fn disabling_non_rooted_pattern_enables_ranges() {
+fn disabling_non_rooted_pattern_preserves_ranges() {
     let language =
         unsafe { tree_sitter::Language::from_raw(tree_sitter_c::LANGUAGE.into_raw()().cast()) };
     let grammar = Language::new(&language).unwrap();
@@ -167,22 +167,29 @@ fn disabling_non_rooted_pattern_enables_ranges() {
         .nodes()
         .find(|node| node.kind() == "identifier")
         .unwrap();
+    let number = tree
+        .root_node()
+        .preorder()
+        .nodes()
+        .find(|node| node.kind() == "number_literal")
+        .unwrap();
     for optimized in [false, true] {
         let mut query = Query::new(&grammar, pattern).unwrap();
         let mut cursor = QueryCursor::new();
         cursor.set_optimized(optimized);
         assert!(cursor.set_byte_range(4..9));
 
-        let mut execution = cursor.execute(&query, tree.root_node(), source.as_bytes());
-        assert!(execution.next_match().is_none());
         assert_eq!(
-            execution.error(),
-            Some(tree_squatter::QueryExecutionError::UnsupportedRange)
+            matches!(&mut cursor, &query, tree, source),
+            vec![
+                (
+                    0,
+                    vec![(identifier.slot().get(), 0), (number.slot().get(), 1)]
+                ),
+                (1, vec![(identifier.slot().get(), 2)]),
+            ],
         );
-        drop(execution);
 
-        // Removing the only non-rooted entry changes range eligibility, even
-        // though its compiled steps and the other plans remain in storage.
         for _ in 0..2 {
             query.disable_pattern(0);
             assert_eq!(
@@ -224,10 +231,7 @@ fn cancellation_limits_ranges_and_reuse() {
     assert!(cursor.set_byte_range(1..10));
     let mut execution = cursor.execute(&query, tree.root_node(), source.as_bytes());
     assert!(execution.next_match().is_none());
-    assert_eq!(
-        execution.error(),
-        Some(tree_squatter::QueryExecutionError::UnsupportedRange)
-    );
+    assert_eq!(execution.error(), None);
     drop(execution);
 
     let query = Query::new(&grammar, "(identifier) @name").unwrap();
@@ -317,6 +321,8 @@ fn query_edge_cases_match_tree_sitter() {
         let mut patterns = vec![
             "(_) @node".to_owned(),
             "(_) @one (_) @two".to_owned(),
+            "((_) @first (_) @second)".to_owned(),
+            "((_) @first . (_) @second)".to_owned(),
             "[(ERROR) (_)] @node".to_owned(),
             "(MISSING) @missing".to_owned(),
             "(_ (_) @child) @parent".to_owned(),
@@ -329,6 +335,11 @@ fn query_edge_cases_match_tree_sitter() {
             "(_ (_)? @child . (_) @last)".to_owned(),
             "(object (pair key: (string) @key value: (string) @value)) @object".to_owned(),
             "[(_) (_)] @alternative".to_owned(),
+            "[(number) (true)] @value".to_owned(),
+            "(array [(number) (true)]* @values)".to_owned(),
+            "(array (number)? @first (number)* @rest)".to_owned(),
+            "(array . (number) @first . (number) @second . (number) @third .) @array".to_owned(),
+            "((number) @first (number) @second)".to_owned(),
             "(not_a_real_symbol) @invalid".to_owned(),
             "(_".to_owned(),
             "(_) @".to_owned(),
@@ -361,6 +372,7 @@ fn query_edge_cases_match_tree_sitter() {
             "{\"x\": [1,",
             "int f(int x) { return x + 1; }",
             "// comment\n x = 1\n",
+            "[\n  1, 2,\n  3, true,\n  [4, 5]\n]\n",
         ] {
             let native = parser.parse(source, None).unwrap();
             let tree = Tree::pack(&grammar, &native).unwrap();
@@ -376,7 +388,7 @@ fn query_edge_cases_match_tree_sitter() {
                     _ => panic!("compilation differs: {pattern}"),
                 };
                 for optimized in [false, true] {
-                    for mode in 0..4 {
+                    for mode in 0..8 {
                         let mut reference = tree_sitter::QueryCursor::new();
                         let mut cursor = QueryCursor::new();
                         cursor.set_optimized(optimized);
@@ -392,6 +404,24 @@ fn query_edge_cases_match_tree_sitter() {
                             3 => {
                                 reference.set_point_range(Point::new(0, 1)..Point::new(1, 0));
                                 assert!(cursor.set_point_range(Point::new(0, 1)..Point::new(1, 0)));
+                            }
+                            4 => {
+                                reference.set_byte_range(4..4);
+                                assert!(cursor.set_byte_range(4..4));
+                            }
+                            5 => {
+                                reference.set_point_range(Point::new(1, 2)..Point::new(1, 3));
+                                assert!(cursor.set_point_range(Point::new(1, 2)..Point::new(1, 3)));
+                            }
+                            6 => {
+                                reference.set_byte_range(1..12);
+                                assert!(cursor.set_byte_range(1..12));
+                                reference.set_point_range(Point::new(1, 0)..Point::new(2, 0));
+                                assert!(cursor.set_point_range(Point::new(1, 0)..Point::new(2, 0)));
+                            }
+                            7 => {
+                                reference.set_byte_range(100..101);
+                                assert!(cursor.set_byte_range(100..101));
                             }
                             _ => {}
                         }
@@ -436,13 +466,11 @@ fn query_edge_cases_match_tree_sitter() {
                             ));
                             assert!(actual_matches.len() < 100_000);
                         }
-                        if execution.error()
-                            == Some(tree_squatter::QueryExecutionError::UnsupportedRange)
-                        {
-                            assert!(mode >= 2 && actual_matches.is_empty());
-                            continue;
-                        }
-                        assert!(execution.error().is_none());
+                        assert_eq!(
+                            execution.error(),
+                            None,
+                            "{pattern}, {source:?}, mode={mode}, optimized={optimized}"
+                        );
                         expected_matches.sort();
                         actual_matches.sort();
                         assert_eq!(
@@ -450,6 +478,26 @@ fn query_edge_cases_match_tree_sitter() {
                             "{pattern}, {source:?}, mode={mode}, optimized={optimized}"
                         );
                         drop(execution);
+                        let mut expected_captures = BTreeSet::new();
+                        if mode >= 2 {
+                            let mut execution = reference.captures(
+                                &expected,
+                                native.root_node(),
+                                source.as_bytes(),
+                            );
+                            while let Some((result, index)) = execution.next() {
+                                let capture = result.captures()[*index];
+                                expected_captures.insert((
+                                    result.pattern_index,
+                                    (
+                                        capture.node.start_byte(),
+                                        capture.node.end_byte(),
+                                        capture.node.kind_id(),
+                                        capture.index,
+                                    ),
+                                ));
+                            }
+                        }
                         let mut execution =
                             cursor.execute(&actual, tree.root_node(), source.as_bytes());
                         let mut captured = BTreeSet::new();
@@ -469,7 +517,12 @@ fn query_edge_cases_match_tree_sitter() {
                             assert!(events < 100_000);
                         }
                         assert!(execution.error().is_none());
-                        if mode < 2 {
+                        if mode >= 2 {
+                            assert_eq!(
+                                expected_captures, captured,
+                                "{pattern}, {source:?}, mode={mode}, optimized={optimized}"
+                            );
+                        } else {
                             for (pattern, captures) in expected_matches {
                                 for capture in captures {
                                     if capture.1 > 0 {
@@ -489,21 +542,142 @@ fn query_edge_cases_match_tree_sitter() {
 }
 
 #[test]
-fn disabled_rootless_and_branching_range_eligibility() {
+fn quantified_roots_with_ranges_match_tree_sitter() {
+    use tree_sitter::{Point, StreamingIterator};
+
+    let language =
+        unsafe { tree_sitter::Language::from_raw(tree_sitter_json::LANGUAGE.into_raw()().cast()) };
+    let grammar = Language::new(&language).unwrap();
+    let mut parser = tree_sitter::Parser::new();
+    parser.set_language(&language).unwrap();
+    let source = "[1,2,3]";
+    let native = parser.parse(source, None).unwrap();
+    let tree = Tree::pack(&grammar, &native).unwrap();
+
+    for pattern in [
+        "(_)? @node",
+        "(_)* @node",
+        "(_)+ @node",
+        "(number)? @node",
+        "(number)* @node",
+        "(number)+ @node",
+        "((number)? @before (number) @after)",
+    ] {
+        let query = Query::new(&grammar, pattern).unwrap();
+        let expected = tree_sitter::Query::new(&language, pattern).unwrap();
+        for range in [0..0, 0..1, 1..2, 2..2, 3..4, 5..7, 7..8, 8..9] {
+            for points in [false, true] {
+                let mut reference = tree_sitter::QueryCursor::new();
+                for optimized in [false, true] {
+                    let mut cursor = QueryCursor::new();
+                    cursor.set_optimized(optimized);
+                    if points {
+                        let range = Point::new(0, range.start)..Point::new(0, range.end);
+                        reference.set_point_range(range.clone());
+                        assert!(cursor.set_point_range(range));
+                    } else {
+                        reference.set_byte_range(range.clone());
+                        assert!(cursor.set_byte_range(range.clone()));
+                    }
+
+                    let mut execution =
+                        reference.matches(&expected, native.root_node(), source.as_bytes());
+                    let mut expected_matches = Vec::new();
+                    while let Some(result) = execution.next() {
+                        // Hidden repetition nodes affect the number of empty matches.
+                        if !result.captures().is_empty() {
+                            expected_matches.push(
+                                result
+                                    .captures()
+                                    .iter()
+                                    .map(|capture| {
+                                        (
+                                            capture.node.start_byte(),
+                                            capture.node.end_byte(),
+                                            capture.node.kind_id(),
+                                            capture.index,
+                                        )
+                                    })
+                                    .collect::<Vec<_>>(),
+                            );
+                        }
+                    }
+                    let mut execution = cursor.execute(&query, tree.root_node(), source.as_bytes());
+                    let mut actual_matches = Vec::new();
+                    while let Some(result) = execution.next_match() {
+                        if !result.captures.is_empty() {
+                            actual_matches.push(
+                                result
+                                    .captures
+                                    .iter()
+                                    .map(|capture| {
+                                        (
+                                            capture.node.start_byte(),
+                                            capture.node.end_byte(),
+                                            capture.node.kind_id().get(),
+                                            capture.index,
+                                        )
+                                    })
+                                    .collect::<Vec<_>>(),
+                            );
+                        }
+                    }
+                    assert_eq!(execution.error(), None);
+                    expected_matches.sort();
+                    actual_matches.sort();
+                    assert_eq!(
+                        expected_matches, actual_matches,
+                        "{pattern}, {range:?}, points={points}, optimized={optimized}"
+                    );
+                    drop(execution);
+
+                    let mut execution =
+                        reference.captures(&expected, native.root_node(), source.as_bytes());
+                    let mut expected_captures = std::collections::BTreeSet::new();
+                    while let Some((result, index)) = execution.next() {
+                        let capture = result.captures()[*index];
+                        expected_captures.insert((
+                            capture.node.start_byte(),
+                            capture.node.end_byte(),
+                            capture.node.kind_id(),
+                            capture.index,
+                        ));
+                    }
+                    let mut execution = cursor.execute(&query, tree.root_node(), source.as_bytes());
+                    let mut actual_captures = std::collections::BTreeSet::new();
+                    while let Some((result, index)) = execution.next_capture() {
+                        let capture = result.captures[index];
+                        actual_captures.insert((
+                            capture.node.start_byte(),
+                            capture.node.end_byte(),
+                            capture.node.kind_id().get(),
+                            capture.index,
+                        ));
+                    }
+                    assert_eq!(execution.error(), None);
+                    assert_eq!(
+                        expected_captures, actual_captures,
+                        "{pattern}, {range:?}, points={points}, optimized={optimized}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn disabled_rootless_and_branching_patterns_with_ranges() {
     let language =
         unsafe { tree_sitter::Language::from_raw(tree_sitter_json::LANGUAGE.into_raw()().cast()) };
     let grammar = Language::new(&language).unwrap();
     let mut parser = tree_sitter::Parser::new();
     parser.set_language(&language).unwrap();
     let tree = Tree::parse(&grammar, &mut parser, "[1,2,3]").unwrap();
-    for (index, pattern) in [
+    for pattern in [
         "(_) @first\n(_) @node",
         "((_) @first (_) @second)\n(_) @node",
         "[(_) (_)] @first\n(_) @node",
-    ]
-    .into_iter()
-    .enumerate()
-    {
+    ] {
         let mut query = Query::new(&grammar, pattern).unwrap();
         for disabled in [false, true] {
             if disabled {
@@ -524,21 +698,20 @@ fn disabled_rootless_and_branching_range_eligibility() {
                     }
                     for captures in [false, true] {
                         let mut execution = cursor.execute(&query, tree.root_node(), b"[1,2,3]");
-                        let found = if captures {
-                            execution.next_capture().is_some()
-                        } else {
-                            execution.next_match().is_some()
-                        };
-                        let supported = index == 0 || (index == 1 && disabled);
-                        assert!(supported || !found);
-                        assert_eq!(
-                            execution.error(),
-                            if supported {
-                                None
+                        let mut found = false;
+                        loop {
+                            let result = if captures {
+                                execution.next_capture().map(|(result, _)| result)
                             } else {
-                                Some(tree_squatter::QueryExecutionError::UnsupportedRange)
-                            }
-                        );
+                                execution.next_match()
+                            };
+                            let Some(result) = result else { break };
+                            assert!(!disabled || result.pattern_index != 0);
+                            assert!(result.captures.iter().all(|capture| capture.index != 0));
+                            found = true;
+                        }
+                        assert!(found);
+                        assert_eq!(execution.error(), None);
                     }
                 }
             }

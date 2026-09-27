@@ -45,7 +45,6 @@ pub(crate) struct Program {
     pub needs_fields: bool,
     pub needs_supertypes: bool,
     pub repeated_captures: bool,
-    pub supports_ranges: bool,
 }
 
 impl Program {
@@ -83,11 +82,6 @@ impl Program {
                         .iter()
                         .any(|quantifier| *quantifier >= 3)
                 }),
-            supports_ranges: compiled
-                .steps()
-                .iter()
-                .all(|step| step.alternative_index == u16::MAX)
-                && compiled.entries().iter().all(|entry| entry.flags & 1 != 0),
         };
 
         for index in 0..compiled.entries().len() {
@@ -164,12 +158,6 @@ impl Program {
                 range.offset = index as u32;
             }
             range.length += 1;
-        }
-        if !self.supports_ranges && compiled.entries().iter().all(|entry| entry.flags & 1 != 0) {
-            self.supports_ranges = compiled
-                .steps()
-                .iter()
-                .all(|step| step.alternative_index == u16::MAX);
         }
     }
 

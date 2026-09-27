@@ -287,7 +287,7 @@ fn check_cursor_reuse(
     language: &tree_sitter::Language,
     tree: &tree_sitter::Tree,
 ) -> Result<(), Box<dyn Error>> {
-    use tree_squatter::{Query, QueryCursor, QueryExecutionError};
+    use tree_squatter::{Query, QueryCursor};
     let grammar = tree_squatter::Language::new(language)?;
     let mut cursor = QueryCursor::new();
     cursor.set_timeout(Some(std::time::Duration::from_secs(1)));
@@ -332,11 +332,8 @@ fn check_cursor_reuse(
     assert!(cursor.set_byte_range(1..12));
     {
         let mut execution = cursor.execute(&query, packed.root_node(), b"");
-        assert!(execution.next_match().is_none());
-        assert_eq!(
-            execution.error(),
-            Some(QueryExecutionError::UnsupportedRange)
-        );
+        assert!(execution.next_match().is_some());
+        assert_eq!(execution.error(), None);
     }
     assert!(cursor.set_byte_range(0..0)); // Zero end restores the unbounded range.
     let mut execution = cursor.execute(&query, packed.root_node(), b"");

@@ -14,6 +14,7 @@ pub struct QueryError {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum QueryExecutionError {
+    /// Retained for compatibility; range execution no longer emits this error.
     UnsupportedRange,
     InvalidExecution,
 }
@@ -21,7 +22,7 @@ pub enum QueryExecutionError {
 impl std::fmt::Display for QueryExecutionError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
-            Self::UnsupportedRange => "bounded ranges require rooted, non-branching patterns",
+            Self::UnsupportedRange => "unsupported query range",
             Self::InvalidExecution => "query and node must use the same language",
         })
     }
