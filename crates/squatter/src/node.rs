@@ -56,6 +56,14 @@ impl std::fmt::Debug for Node<'_> {
 }
 
 impl Tree {
+    pub fn walk(&self) -> TreeCursor<'_> {
+        self.root_node().walk()
+    }
+
+    pub fn language(&self) -> &crate::Language {
+        &self.data().language
+    }
+
     pub fn root_node(&self) -> Node<'_> {
         Node {
             raw: RawNode {
@@ -96,6 +104,23 @@ impl<'tree> Node<'tree> {
     #[inline]
     pub fn slot(self) -> SlotIx {
         self.raw.slot
+    }
+
+    pub fn language(&self) -> &'tree crate::Language {
+        &self.data().language
+    }
+
+    pub fn range(&self) -> tree_sitter::Range {
+        tree_sitter::Range {
+            start_byte: self.start_byte(),
+            end_byte: self.end_byte(),
+            start_point: self.start_position(),
+            end_point: self.end_position(),
+        }
+    }
+
+    pub fn utf16_text<'source>(&self, source: &'source [u16]) -> &'source [u16] {
+        &source[self.start_byte() / 2..self.end_byte() / 2]
     }
 
     pub fn byte_range(&self) -> Range<usize> {

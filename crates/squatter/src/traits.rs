@@ -42,6 +42,9 @@ pub trait TreeLike {
     where
         Self: 'tree;
     fn root_node(&self) -> Self::Node<'_>;
+    fn walk(&self) -> <Self::Node<'_> as NodeLike<'_>>::Cursor {
+        self.root_node().walk()
+    }
 }
 
 pub trait NodeLike<'tree>: Copy + Eq {
@@ -55,6 +58,12 @@ pub trait NodeLike<'tree>: Copy + Eq {
     fn grammar_id(&self) -> GrammarKindId;
     fn kind(&self) -> &'tree str;
     fn grammar_name(&self) -> &'tree str;
+    fn range(&self) -> tree_sitter::Range;
+    fn utf8_text<'source>(
+        &self,
+        source: &'source [u8],
+    ) -> Result<&'source str, std::str::Utf8Error>;
+    fn utf16_text<'source>(&self, source: &'source [u16]) -> &'source [u16];
     fn byte_range(&self) -> Range<usize>;
     fn start_byte(&self) -> usize;
     fn end_byte(&self) -> usize;
@@ -209,6 +218,18 @@ macro_rules! node_attributes {
         }
         fn grammar_name(&self) -> &'tree str {
             <$node>::grammar_name(self)
+        }
+        fn range(&self) -> tree_sitter::Range {
+            <$node>::range(self)
+        }
+        fn utf8_text<'source>(
+            &self,
+            source: &'source [u8],
+        ) -> Result<&'source str, std::str::Utf8Error> {
+            <$node>::utf8_text(self, source)
+        }
+        fn utf16_text<'source>(&self, source: &'source [u16]) -> &'source [u16] {
+            <$node>::utf16_text(self, source)
         }
         fn byte_range(&self) -> Range<usize> {
             <$node>::byte_range(self)

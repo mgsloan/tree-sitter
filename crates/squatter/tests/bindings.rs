@@ -656,3 +656,52 @@ fn language_inspection_matches_native() {
         assert_eq!(language.field_id_for_name([255]), None);
     }
 }
+
+#[test]
+fn tree_views_and_text_access() {
+    let language = json_language();
+    let grammar = tree_squatter::Language::new(&language).unwrap();
+    let source: Vec<u16> = "[\n\"😀\", 42]".encode_utf16().collect();
+    let mut parser = tree_sitter::Parser::new();
+    parser.set_language(&language).unwrap();
+    let native = parser.parse_utf16_le(&source, None).unwrap();
+    for points in [false, true] {
+        let tree = Tree::pack_with_options(
+            &grammar,
+            &native,
+            PackOptions {
+                points,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(tree.language().abi_version(), language.abi_version());
+        assert!(std::ptr::eq(tree.root_node().language(), tree.language()));
+        assert_eq!(tree.walk().node(), tree.root_node());
+        for (node, expected) in tree
+            .root_node()
+            .preorder()
+            .nodes()
+            .zip(NodeLike::preorder(native.root_node()))
+        {
+            assert_eq!(node.utf16_text(&source), expected.utf16_text(&source));
+            assert_eq!(
+                NodeLike::utf16_text(&node, &source),
+                expected.utf16_text(&source)
+            );
+            let range = node.range();
+            assert_eq!(range.start_byte, expected.start_byte());
+            assert_eq!(range.end_byte, expected.end_byte());
+            assert_eq!(NodeLike::range(&node), range);
+            if points {
+                assert_eq!(range, expected.range());
+            } else {
+                assert_eq!(
+                    range.start_point,
+                    tree_sitter::Point::new(0, range.start_byte)
+                );
+                assert_eq!(range.end_point, tree_sitter::Point::new(0, range.end_byte));
+            }
+        }
+    }
+}
