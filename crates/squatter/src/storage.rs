@@ -2,7 +2,7 @@ use crate::{
     Error, KindId, Language,
     native::GrammarView,
     side_data::{PointData, PresenceCache, SideDataError},
-    types::{RemappedGrammarKindId, RemappedKindId, SlabOffset},
+    types::{SlabOffset, SquatterGrammarId, SquatterKindId},
 };
 use std::{
     alloc::{Layout as Allocation, alloc, alloc_zeroed, dealloc, handle_alloc_error, realloc},
@@ -28,20 +28,23 @@ pub(crate) const ERRORS: u32 = 1 << 2;
 pub(crate) const MISSING: u32 = 1 << 1;
 pub(crate) const SEPARATE_GRAMMAR: u32 = 1;
 pub(crate) const BYTE_IDS: u32 = 1 << 4;
+pub(crate) const BYTE_GRAMMAR_IDS: u32 = 1 << 5;
 pub(crate) const OPTIONAL: u32 = EXTRAS | ERRORS | MISSING | SEPARATE_GRAMMAR;
 
 // Reserve room for both remapped error IDs in every grammar sharing the slab.
 pub(crate) fn id_width_flags<'language>(
     languages: impl IntoIterator<Item = &'language Language>,
 ) -> u32 {
-    if languages
-        .into_iter()
-        .all(|language| language.tables().symbol_count <= 254)
-    {
-        BYTE_IDS
-    } else {
-        0
+    let mut flags = BYTE_IDS | BYTE_GRAMMAR_IDS;
+    for language in languages {
+        if language.tables().kind_count > 254 {
+            flags &= !BYTE_IDS;
+        }
+        if language.tables().compact_grammar_count > 254 {
+            flags &= !BYTE_GRAMMAR_IDS;
+        }
     }
+    flags
 }
 
 /// Identifies the packed slab format for persistence compatibility.
@@ -54,6 +57,7 @@ pub fn representation_id() -> u64 {
 #[derive(Clone, Copy, Default, Debug)]
 pub(crate) struct Layout<Column> {
     pub symbol_width: u32,
+    pub grammar_width: u32,
     pub waste: Column,
     pub start_byte_base: Column,
     pub start_byte_delta: Column,
@@ -88,6 +92,7 @@ impl Layout<SlabOffset> {
 
     pub fn new(capacity: u32, flags: u32) -> Result<Self, Error> {
         let symbol_width = if flags & BYTE_IDS != 0 { 1 } else { 2 };
+        let grammar_width = if flags & BYTE_GRAMMAR_IDS != 0 { 1 } else { 2 };
         let slots = capacity
             .checked_mul(GROUP_SIZE)
             .filter(|_| capacity != 0)
@@ -100,6 +105,7 @@ impl Layout<SlabOffset> {
         };
         let mut result = Self {
             symbol_width,
+            grammar_width,
             waste: column(aligned_bytes(capacity, 2)),
             start_byte_base: column(aligned_bytes(capacity, 4)),
             start_byte_delta: column(aligned_bytes(slots, 1)),
@@ -112,7 +118,7 @@ impl Layout<SlabOffset> {
             supertype: column(aligned_bytes(slots, 2)),
             last: column(bit_bytes(slots)),
             grammar: column(if flags & SEPARATE_GRAMMAR != 0 {
-                aligned_bytes(slots, symbol_width)
+                aligned_bytes(slots, grammar_width)
             } else {
                 0
             }),
@@ -140,6 +146,7 @@ impl Layout<SlabOffset> {
     fn resolve(self, bytes: NonNull<u8>) -> Layout<ColumnPointer> {
         Layout {
             symbol_width: self.symbol_width,
+            grammar_width: self.grammar_width,
             waste: ColumnPointer(self.waste.pointer(bytes)),
             start_byte_base: ColumnPointer(self.start_byte_base.pointer(bytes)),
             start_byte_delta: ColumnPointer(self.start_byte_delta.pointer(bytes)),
@@ -184,7 +191,7 @@ impl<Column: Copy> Layout<Column> {
             (
                 self.grammar,
                 if flags & SEPARATE_GRAMMAR != 0 {
-                    aligned_bytes(slots, self.symbol_width) as usize
+                    aligned_bytes(slots, self.grammar_width) as usize
                 } else {
                     0
                 },
@@ -391,23 +398,22 @@ impl TreeData {
     }
 
     #[inline]
-    pub fn symbol_index(&self, slot: u32) -> RemappedKindId {
-        RemappedKindId(self.symbol_id(self.layout.symbol, slot))
+    pub fn symbol_index(&self, slot: u32) -> SquatterKindId {
+        SquatterKindId(self.symbol_id(self.layout.symbol, slot, self.layout.symbol_width))
     }
 
     #[inline]
-    pub fn grammar_index(&self, slot: u32) -> RemappedGrammarKindId {
-        let column = if self.flags() & SEPARATE_GRAMMAR != 0 {
-            self.layout.grammar
+    pub fn grammar_index(&self, slot: u32) -> SquatterGrammarId {
+        if self.flags() & SEPARATE_GRAMMAR != 0 {
+            SquatterGrammarId(self.symbol_id(self.layout.grammar, slot, self.layout.grammar_width))
         } else {
-            self.layout.symbol
-        };
-        RemappedGrammarKindId(self.symbol_id(column, slot))
+            self.tables().default_grammar(self.symbol_index(slot))
+        }
     }
 
     #[inline]
-    fn symbol_id(&self, column: ColumnPointer, slot: u32) -> u16 {
-        if self.layout.symbol_width == 1 {
+    fn symbol_id(&self, column: ColumnPointer, slot: u32, width: u32) -> u16 {
+        if width == 1 {
             u16::from(self.byte(column, slot))
         } else {
             self.short(column, slot)
@@ -993,8 +999,9 @@ impl Tree {
         let flags = header(0);
         let groups = header(1);
         let capacity = header(2);
-        if flags & !(OPTIONAL | BYTE_IDS) != TREE_FORMAT
-            || (flags & BYTE_IDS != 0 && language.tables().symbol_count > 254)
+        if flags & !(OPTIONAL | BYTE_IDS | BYTE_GRAMMAR_IDS) != TREE_FORMAT
+            || (flags & BYTE_IDS != 0 && language.tables().kind_count > 254)
+            || (flags & BYTE_GRAMMAR_IDS != 0 && language.tables().compact_grammar_count > 254)
             || groups == 0
             || groups > capacity
             || (flags & MISSING != 0 && flags & ERRORS == 0)
@@ -1025,7 +1032,7 @@ impl Tree {
     fn validate_nodes(&self) -> Result<(), Error> {
         let data = self.data();
         let tables = data.tables();
-        let symbols = tables.symbol_count + 2;
+        let symbols = tables.kind_count + 2;
         for group in 0..data.groups() {
             if data.waste(group) >= GROUP_SIZE {
                 return Err(Error::InvalidSlab);
@@ -1064,14 +1071,11 @@ impl Tree {
                     return Err(Error::InvalidSlab);
                 }
                 let symbol = u32::from(data.symbol_index(slot).get());
-                if symbol >= symbols
-                    || field > tables.field_count
-                    || (symbol < tables.symbol_count
-                        && unsafe { *tables.public_symbols.add(symbol as usize) } as u32 != symbol)
-                {
+                if symbol == 0 || symbol >= symbols || field > tables.field_count {
                     return Err(Error::InvalidSlab);
                 }
-                if u32::from(data.grammar_index(slot).get()) >= symbols {
+                let grammar = u32::from(data.grammar_index(slot).get());
+                if grammar == 0 || grammar >= tables.compact_grammar_count + 2 {
                     return Err(Error::InvalidSlab);
                 }
                 let supertype = data.short(data.layout.supertype, slot) as u32;
@@ -1110,7 +1114,7 @@ mod tests {
         };
         let language = Language::new(&language).unwrap();
         for optional in 0..=OPTIONAL {
-            for width in [0, BYTE_IDS] {
+            for width in [0, BYTE_IDS, BYTE_GRAMMAR_IDS, BYTE_IDS | BYTE_GRAMMAR_IDS] {
                 let flags = TREE_FORMAT | optional | width;
                 let layout = Layout::new(5, flags).unwrap();
                 let mut tree =

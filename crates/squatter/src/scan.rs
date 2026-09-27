@@ -32,11 +32,11 @@
 //! # }
 //! ```
 use crate::{
-    FieldId, FieldSet, GrammarKindId, KindId, KindSet, Node, PointData, SlotIx,
+    FieldId, FieldSet, GrammarId, KindId, KindSet, Node, PointData, SlotIx,
     native::GrammarView,
     simd::{self, WordMask, load_words},
     storage::{ColumnPointer, GROUP_SIZE, Layout, TreeData},
-    types::{GroupIx, GroupSlotIx, PackedPoint, RemappedKindId},
+    types::{GroupIx, GroupSlotIx, PackedPoint, SquatterKindId},
 };
 use std::{
     iter::FusedIterator,
@@ -50,14 +50,14 @@ use fearless_simd::{dispatch, i8x16, i8x32, i16x16, i16x32, prelude::*, u8x32, u
 // Keep loads, target loops, and mask extraction in the same SIMD context.
 // Fixed lane counts match storage groups; each backend chooses the registers.
 #[inline]
-pub(crate) fn equal_byte_ids(bytes: &[u8], targets: &[RemappedKindId]) -> u64 {
+pub(crate) fn equal_byte_ids(bytes: &[u8], targets: &[SquatterKindId]) -> u64 {
     debug_assert_eq!(bytes.len(), GROUP_SIZE as usize);
     debug_assert!(targets.iter().all(|target| target.get() <= u8::MAX as u16));
     dispatch!(simd::level(), simd => byte_id_mask(simd, bytes, targets))
 }
 
 #[inline(always)]
-fn byte_id_mask<S: Simd>(simd: S, bytes: &[u8], targets: &[RemappedKindId]) -> u64 {
+fn byte_id_mask<S: Simd>(simd: S, bytes: &[u8], targets: &[SquatterKindId]) -> u64 {
     let values = u8x32::from_slice(simd, bytes);
     let mut matches = <u8x32<S> as SimdBase<S>>::Mask::splat(simd, false);
     for target in targets {
@@ -174,7 +174,7 @@ impl<'tree> Columns<'tree> {
     }
 
     #[inline]
-    fn encode_kind(self, kind: KindId) -> Option<RemappedKindId> {
+    fn encode_kind(self, kind: KindId) -> Option<SquatterKindId> {
         self.tables().remap_kind(kind)
     }
 
@@ -232,7 +232,7 @@ struct SymbolIndex {
     enabled: bool,
 }
 impl SymbolIndex {
-    fn new(group: &GroupRef<'_>, mut targets: impl Iterator<Item = RemappedKindId>) -> Self {
+    fn new(group: &GroupRef<'_>, mut targets: impl Iterator<Item = SquatterKindId>) -> Self {
         Self {
             enabled: group.columns.tree().presence_cache.is_some() && targets.next().is_some(),
         }
@@ -243,7 +243,7 @@ impl SymbolIndex {
     fn find_matching_group(
         self,
         group: &GroupRef<'_>,
-        targets: impl Iterator<Item = RemappedKindId>,
+        targets: impl Iterator<Item = SquatterKindId>,
         groups: Range<u32>,
         reverse: bool,
     ) -> Option<u32> {
@@ -461,7 +461,7 @@ impl<'tree> GroupRef<'tree> {
     }
 
     #[inline(always)]
-    pub(crate) fn equal_kind_ids(&self, targets: &[RemappedKindId], candidates: Mask) -> Mask {
+    pub(crate) fn equal_kind_ids(&self, targets: &[SquatterKindId], candidates: Mask) -> Mask {
         if self.columns.layout().symbol_width == 1 {
             if candidates.0.is_power_of_two() {
                 return candidates.retain(|slot| {
@@ -495,7 +495,7 @@ impl<'tree> GroupRef<'tree> {
         let bytes = self
             .columns
             .slice(column, start, self.columns.group_size() as usize * 2);
-        let targets = [RemappedKindId(target)];
+        let targets = [SquatterKindId(target)];
         let matches = dispatch!(simd::level(), simd => id_mask(simd, bytes, &targets));
         candidates.intersection(Mask(matches))
     }
@@ -817,6 +817,32 @@ impl<'tree, S: GroupScan<'tree>> Scan<'tree, S> {
         let predicate = kinds.into_kind_predicate(self.source.group());
         self.filtered(predicate)
     }
+
+    /// Match compact IDs from this tree's language without converting native IDs.
+    /// Arrays preserve their length for kernel specialization. Invalid IDs match nothing.
+    #[inline(always)]
+    pub fn filter_squatter_kind_ids<const N: usize>(
+        self,
+        kinds: [SquatterKindId; N],
+    ) -> Scan<'tree, Filtered<S, ArrayKindIds<N>>> {
+        let count = self.source.group().columns.tables().kind_count + 2;
+        let valid = |kind: SquatterKindId| kind.get() != 0 && u32::from(kind.get()) < count;
+        let first = kinds.iter().copied().find(|kind| valid(*kind));
+        let ids = kinds.map(|kind| {
+            if valid(kind) {
+                kind
+            } else {
+                first.unwrap_or_default()
+            }
+        });
+        self.filtered(ArrayKindIds {
+            values: ArrayKindValues {
+                ids,
+                empty: first.is_none(),
+            },
+            index: SymbolIndex::default(),
+        })
+    }
     /// Keeps nodes with the selected field. `None` matches nodes with no field,
     /// including the tree root.
     pub fn filter_field_id(
@@ -836,7 +862,7 @@ impl<'tree, S: GroupScan<'tree>> Scan<'tree, S> {
     /// Keeps nodes belonging to the original grammar supertype.
     pub fn filter_supertype_id(
         self,
-        supertype: GrammarKindId,
+        supertype: GrammarId,
     ) -> Scan<'tree, Filtered<S, SupertypeId>> {
         self.filtered(SupertypeId {
             symbol: supertype,
@@ -2766,20 +2792,20 @@ pub struct ArrayKindIds<const N: usize> {
 // Flat loops own only their encoded comparison values.
 #[derive(Clone, Copy)]
 struct ArrayKindValues<const N: usize> {
-    ids: [RemappedKindId; N],
+    ids: [SquatterKindId; N],
     empty: bool,
 }
 
 // Cache column parameters so singleton scans do not reread the grammar between groups.
 struct KindPredicate {
     width: u32,
-    target: RemappedKindId,
+    target: SquatterKindId,
     column: ColumnPointer,
 }
 
 impl KindPredicate {
     #[inline(always)]
-    fn new(columns: Columns<'_>, target: RemappedKindId) -> Self {
+    fn new(columns: Columns<'_>, target: SquatterKindId) -> Self {
         Self {
             target,
             column: columns.layout().symbol,
@@ -2874,7 +2900,7 @@ enum KindStrategy<'kinds> {
     Single(KindPredicate),
     // Retain the public-ID set for sparse candidate masks.
     Small {
-        ids: [RemappedKindId; 16],
+        ids: [SquatterKindId; 16],
         length: u8,
         kinds: &'kinds KindSet,
     },
@@ -2884,8 +2910,8 @@ impl KindStrategy<'_> {
     fn targets<'scan>(
         &'scan self,
         columns: Columns<'scan>,
-    ) -> impl Iterator<Item = RemappedKindId> + 'scan {
-        let (encoded, public): (&[RemappedKindId], &[KindId]) = match self {
+    ) -> impl Iterator<Item = SquatterKindId> + 'scan {
+        let (encoded, public): (&[SquatterKindId], &[KindId]) = match self {
             Self::Empty => (&[], &[]),
             Self::Single(single) => (std::slice::from_ref(&single.target), &[]),
             Self::Small { ids, length, .. } => (&ids[..usize::from(*length)], &[]),
@@ -2994,7 +3020,7 @@ impl Predicate for KindIds<'_> {
                 .encode_kind(kind)
                 .map_or(KindStrategy::Empty, single),
             targets if targets.len() <= 16 => {
-                let mut ids = [RemappedKindId(0); 16];
+                let mut ids = [SquatterKindId(0); 16];
                 let mut length = 0;
                 for target in targets
                     .iter()
@@ -3051,7 +3077,7 @@ impl Predicate for KindStrategy<'_> {
 fn retain_small_kind_set(
     group: &GroupRef<'_>,
     candidates: Mask,
-    ids: &[RemappedKindId],
+    ids: &[SquatterKindId],
     kinds: &KindSet,
 ) -> Mask {
     if ids.len() > 4 && candidates.at_most::<4>() {
@@ -3076,7 +3102,7 @@ fn retain_kind_set(group: &GroupRef<'_>, candidates: Mask, kinds: &KindSet) -> M
     let mut matches = 0;
     for (slot, bytes) in bytes.chunks_exact(2).enumerate() {
         let symbol = u16::from_le_bytes([bytes[0], bytes[1]]);
-        let kind = group.columns.tables().decode_kind(RemappedKindId(symbol));
+        let kind = group.columns.tables().decode_kind(SquatterKindId(symbol));
         matches |= u64::from(kinds.contains(kind)) << slot;
     }
     candidates.intersection(Mask(matches))
@@ -3176,7 +3202,7 @@ fn retain_supertype_masks(masks: &[u8], candidates: Mask, bit: u16) -> Mask {
 }
 
 pub struct SupertypeId {
-    symbol: GrammarKindId,
+    symbol: GrammarId,
     index: Option<usize>,
 }
 impl sealed::Predicate for SupertypeId {}
@@ -3235,11 +3261,11 @@ mod tests {
             for (bytes, value) in bytes.chunks_exact_mut(2).zip(values) {
                 bytes.copy_from_slice(&value.to_le_bytes());
             }
-            let targets = [0, 1, 127, 128, 255, 256, 32767, 32768, 65535].map(RemappedKindId);
+            let targets = [0, 1, 127, 128, 255, 256, 32767, 32768, 65535].map(SquatterKindId);
             for length in 1..=targets.len() {
                 let targets = &targets[..length];
                 let expected = values.iter().enumerate().fold(0, |mask, (slot, value)| {
-                    mask | (u64::from(targets.contains(&RemappedKindId(*value))) << slot)
+                    mask | (u64::from(targets.contains(&SquatterKindId(*value))) << slot)
                 });
                 assert_eq!(id_mask(simd, bytes, targets), expected);
             }
@@ -3283,14 +3309,14 @@ mod tests {
 
     #[test]
     fn byte_id_masks_match_scalar() {
-        let targets = [RemappedKindId(0), RemappedKindId(128), RemappedKindId(255)];
+        let targets = [SquatterKindId(0), SquatterKindId(128), SquatterKindId(255)];
         for base in 0..=255u8 {
             let bytes: [u8; GROUP_SIZE as usize] =
                 std::array::from_fn(|slot| base.wrapping_add(slot as u8));
             for length in 0..=targets.len() {
                 let targets = &targets[..length];
                 let expected = bytes.iter().enumerate().fold(0, |mask, (slot, &value)| {
-                    mask | (u64::from(targets.contains(&RemappedKindId(u16::from(value)))) << slot)
+                    mask | (u64::from(targets.contains(&SquatterKindId(u16::from(value)))) << slot)
                 });
                 assert_eq!(equal_byte_ids(&bytes, targets), expected);
             }

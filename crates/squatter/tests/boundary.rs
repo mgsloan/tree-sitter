@@ -92,9 +92,7 @@ fn grammar_kind_lookup_ignores_aliases() {
     let native = parser.parse("typedef int T; T value;", None).unwrap();
     let tree = Tree::pack(&grammar, &native).unwrap();
     let kind = grammar.kind_id_for_name("type_identifier", true).unwrap();
-    let original = grammar
-        .grammar_kind_id_for_name("identifier", true)
-        .unwrap();
+    let original = grammar.grammar_id_for_name("identifier", true).unwrap();
     let node = tree
         .root_node()
         .all()
@@ -104,17 +102,11 @@ fn grammar_kind_lookup_ignores_aliases() {
         .unwrap();
     assert_eq!(node.kind_id(), kind);
     assert_eq!(node.grammar_id(), original);
+    assert_eq!(grammar.grammar_id_for_name("type_identifier", true), None);
+    assert_eq!(grammar.grammar_id_for_name("unknown", true), None);
+    assert_eq!(grammar.grammar_id_for_name("identifier", false), None);
     assert_eq!(
-        grammar.grammar_kind_id_for_name("type_identifier", true),
-        None
-    );
-    assert_eq!(grammar.grammar_kind_id_for_name("unknown", true), None);
-    assert_eq!(grammar.grammar_kind_id_for_name("identifier", false), None);
-    assert_eq!(
-        grammar
-            .grammar_kind_id_for_name("ERROR", true)
-            .unwrap()
-            .get(),
+        grammar.grammar_id_for_name("ERROR", true).unwrap().get(),
         u16::MAX
     );
 }

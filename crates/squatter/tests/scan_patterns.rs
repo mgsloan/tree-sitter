@@ -3,7 +3,7 @@ mod support;
 
 use std::{hint::black_box, ops::Range};
 use tree_sitter::Point;
-use tree_squatter::{FieldId, GrammarKindId, KindId, KindSet, Language, Node, SlotIx, Tree};
+use tree_squatter::{FieldId, GrammarId, KindId, KindSet, Language, Node, SlotIx, Tree};
 
 use support::{json_language, parse_native};
 
@@ -247,7 +247,7 @@ mod patterns {
             .count()
     }
     #[inline(never)]
-    pub fn supertype_count(root: Node<'_>, supertype: GrammarKindId) -> usize {
+    pub fn supertype_count(root: Node<'_>, supertype: GrammarId) -> usize {
         root.all().filter_supertype_id(supertype).count()
     }
     #[inline(never)]
@@ -444,7 +444,7 @@ fn assembly_patterns_match_examples() {
     );
 
     for &supertype in grammar.tree_sitter_language().supertypes() {
-        let supertype = black_box(GrammarKindId::new(supertype));
+        let supertype = black_box(GrammarId::new(supertype));
         let expected = nodes
             .iter()
             .filter(|node| node.has_supertype(supertype))

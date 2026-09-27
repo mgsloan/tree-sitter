@@ -60,7 +60,7 @@ struct Arguments {
     #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u8).range(1..=100))]
     range_percent: u8,
 }
-use tree_squatter::{FieldSet, GrammarKindId, KindId};
+use tree_squatter::{FieldSet, GrammarId, KindId};
 type FieldSelection = Option<tree_squatter::FieldId>;
 fn raw_field(field: FieldSelection) -> u16 {
     field.map_or(0, tree_squatter::FieldId::get)
@@ -95,7 +95,7 @@ struct Case {
     intersection_matches: [usize; 5],
     starting_in_matches: usize,
     starting_at_matches: usize,
-    supertype: GrammarKindId,
+    supertype: GrammarId,
     supertype_matches: usize,
     flags_matches: usize,
     combined_matches: usize,
@@ -1271,8 +1271,7 @@ fn main() -> Result<()> {
                 }
             }
         }
-        let supertype =
-            GrammarKindId::from(language.supertypes().first().copied().unwrap_or(u16::MAX));
+        let supertype = GrammarId::from(language.supertypes().first().copied().unwrap_or(u16::MAX));
         let supertype_matches = scalar_preorder(&tree)
             .filter(|node| node.has_supertype(supertype))
             .count();

@@ -166,11 +166,7 @@ impl Program {
         let count = compiled.view.symbol_count;
         self.scan_symbols
             .resize((count as usize + 2).div_ceil(64), 0);
-        let public = unsafe { compiled.view.public_symbols.as_slice() };
-        for symbol in 0..=count {
-            if symbol < count && public[symbol as usize] != symbol as u16 {
-                continue;
-            }
+        for symbol in 1..=count {
             if self.pattern_map[symbol as usize].length != 0 {
                 self.scan_symbols[symbol as usize / 64] |= 1 << (symbol % 64);
                 self.scan_targets.push(symbol as u16);
@@ -263,10 +259,7 @@ impl DirectPlan {
             local_patterns: 0,
         };
         let mut patterns = 0;
-        // The query retains this language; this borrowed wrapper must not drop it.
-        let language = std::mem::ManuallyDrop::new(unsafe {
-            tree_sitter::Language::from_raw(compiled.view.language.cast())
-        });
+        let tables = compiled.language.tables();
 
         for (index, entry) in compiled.entries().iter().copied().enumerate() {
             if entry.flags & 1 == 0 {
@@ -335,7 +328,7 @@ impl DirectPlan {
                     // these plans need neither branching nor longest-match dedup.
                     let named = if step.symbol != 0 {
                         step.symbol as u32 == compiled.view.symbol_count
-                            || language.node_kind_is_named(step.symbol)
+                            || tables.named_index(crate::SquatterKindId(step.symbol))
                     } else {
                         step.has(IS_NAMED)
                     };
@@ -370,18 +363,15 @@ impl DirectPlan {
         // Unsupported plans need no root table.
         plan.roots
             .resize(compiled.view.symbol_count as usize + 2, 0);
-        let public = unsafe { compiled.view.public_symbols.as_slice() };
-        for symbol in 0..=compiled.view.symbol_count as usize {
-            if symbol < compiled.view.symbol_count as usize && public[symbol] != symbol as u16 {
-                continue;
-            }
+        for symbol in 1..=compiled.view.symbol_count as usize {
             for entry in compiled.entries() {
                 let step = compiled.steps()[entry.step_index as usize];
                 if if step.symbol != 0 {
                     step.symbol == symbol as u16
                 } else {
                     symbol != compiled.view.symbol_count as usize
-                        && (!step.has(IS_NAMED) || language.node_kind_is_named(symbol as u16))
+                        && (!step.has(IS_NAMED)
+                            || tables.named_index(crate::SquatterKindId(symbol as u16)))
                 } {
                     plan.roots[symbol] |= 1 << entry.pattern_index.get();
                 }

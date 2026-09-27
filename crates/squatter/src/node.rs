@@ -1,5 +1,5 @@
 use crate::{
-    ChildIx, FieldId, GrammarKindId, KindId, NamedChildIx, SlotIx, Tree,
+    ChildIx, FieldId, GrammarId, KindId, NamedChildIx, SlotIx, Tree,
     scan::{self, Postorder, Preorder, Scan},
     storage::*,
     traits,
@@ -199,16 +199,37 @@ impl<'tree> Node<'tree> {
         self.preorder().filter_kind_ids(kinds).nodes()
     }
 
-    /// Get this node's type as a numerical id.
+    /// This node's displayed kind ID, including aliases, compatible with Tree-sitter.
+    ///
+    /// Use this to compare kinds with Tree-sitter nodes or language APIs.
+    /// [`Self::squatter_kind_id`] provides cheaper access for use within Squatter.
     pub fn kind_id(&self) -> KindId {
         self.data()
             .tables()
             .decode_kind(self.data().symbol_index(self.slot().get()))
     }
 
-    /// Get the node's type as a numerical id as it appears in the grammar
-    /// ignoring aliases.
-    pub fn grammar_id(&self) -> GrammarKindId {
+    /// This node's displayed kind ID, including aliases, for use within Squatter.
+    ///
+    /// Cheaper to access than [`Self::kind_id`]. Use IDs from the same language
+    /// version; use [`Self::kind_id`] when comparing with Tree-sitter IDs.
+    pub fn squatter_kind_id(&self) -> crate::SquatterKindId {
+        self.data().symbol_index(self.slot().get())
+    }
+
+    /// This node's original grammar ID, ignoring aliases, for use within Squatter.
+    ///
+    /// Cheaper to access than [`Self::grammar_id`]. Use IDs from the same language
+    /// version; use [`Self::grammar_id`] when comparing with Tree-sitter IDs.
+    pub fn squatter_grammar_id(&self) -> crate::SquatterGrammarId {
+        self.data().grammar_index(self.slot().get())
+    }
+
+    /// This node's original grammar ID, ignoring aliases, compatible with Tree-sitter.
+    ///
+    /// Use this to compare original symbols with Tree-sitter nodes or grammar tables.
+    /// [`Self::squatter_grammar_id`] provides cheaper access for use within Squatter.
+    pub fn grammar_id(&self) -> GrammarId {
         self.data()
             .tables()
             .decode_grammar_kind(self.data().grammar_index(self.slot().get()))
@@ -321,8 +342,7 @@ impl<'tree> Node<'tree> {
     /// Syntax errors represent parts of the code that could not be incorporated
     /// into a valid syntax tree.
     pub fn is_error(&self) -> bool {
-        self.data().symbol_index(self.slot().get()).get() as u32
-            == self.data().tables().symbol_count
+        self.data().symbol_index(self.slot().get()).get() as u32 == self.data().tables().kind_count
     }
 
     /// Check if this node represents a syntax error or contains any syntax
@@ -354,7 +374,7 @@ impl<'tree> Node<'tree> {
     /// Tests membership using an original grammar symbol ID.
     ///
     /// **Not in Tree-sitter**
-    pub fn has_supertype(self, symbol: GrammarKindId) -> bool {
+    pub fn has_supertype(self, symbol: GrammarId) -> bool {
         let data = self.data();
         let tables = data.tables();
         if tables.supertype_count == 0 {

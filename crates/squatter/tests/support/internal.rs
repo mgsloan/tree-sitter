@@ -1,5 +1,5 @@
 use super::*;
-use crate::{GrammarKindId, Parser, SlotIx};
+use crate::{GrammarId, Parser, SlotIx};
 use std::ffi::c_void;
 
 unsafe extern "C" {
@@ -11,6 +11,7 @@ unsafe extern "C" {
     fn sq_test_supertypes(count: u32, connected: bool) -> *const c_void;
     fn sq_test_supertypes_delete(language: *const c_void);
     fn sq_test_symbols(count: u32) -> *const c_void;
+    fn sq_test_compact_symbols(count: u32) -> *const c_void;
     fn sq_test_symbols_delete(language: *const c_void);
 }
 
@@ -119,8 +120,8 @@ fn leaf(symbol: u16, grammar: u16, supertype: u16, flags: u8) -> InputNode {
         end_byte: 0,
         start_point: Point { row: 0, column: 0 },
         end_point: Point { row: 0, column: 0 },
-        symbol: RemappedKindId(symbol),
-        grammar: RemappedGrammarKindId(grammar),
+        symbol: SquatterKindId(symbol),
+        grammar: SquatterGrammarId(grammar),
         field: None,
         supertype,
         flags: flags.into(),
@@ -132,7 +133,7 @@ fn check_masks(tree: &Tree, slots: &[SlotIx], bits: u32) {
         let node = tree.node_at_slot(slot).unwrap();
         for bit in 0..bits {
             assert_eq!(
-                node.has_supertype(GrammarKindId::new((bit + 2) as u16)),
+                node.has_supertype(GrammarId::new((bit + 2) as u16)),
                 mask & (1 << bit) != 0
             );
         }
@@ -177,7 +178,7 @@ fn synthetic_supertype_emission_and_persistence() {
                     bits,
                 );
             }
-            for (offset, mask) in [(0, 1), (0, 32), (0, 48), (1, 4), (14, 1)] {
+            for (offset, mask) in [(0, 1), (0, 64), (0, 128), (1, 4), (14, 1)] {
                 let mut bytes = tree.as_bytes().to_vec();
                 bytes[offset] ^= mask;
                 assert!(Tree::from_bytes(grammar, &bytes).is_err());
@@ -194,7 +195,7 @@ fn id_width_covers_all_grammars_and_reserved_errors() {
     let wide = Fixture::symbols(255);
     assert_eq!(
         id_width_flags([&small.grammar, &boundary.grammar]),
-        BYTE_IDS
+        BYTE_IDS | BYTE_GRAMMAR_IDS
     );
     assert_eq!(id_width_flags([&small.grammar, &wide.grammar]), 0);
     assert_eq!(id_width_flags([&wide.grammar, &small.grammar]), 0);
@@ -219,16 +220,113 @@ fn id_width_covers_all_grammars_and_reserved_errors() {
 }
 
 #[test]
+fn compact_domains_preserve_aliases_with_independent_widths() {
+    use crate::{KindId, SquatterGrammarId, SquatterKindId};
+
+    let fixture = unsafe { Fixture::new(sq_test_compact_symbols(400), sq_test_symbols_delete) };
+    let language = &fixture.grammar;
+    let display = language.squatter_kind_id(KindId::new(1)).unwrap();
+    let original = language.squatter_grammar_id(GrammarId::new(2)).unwrap();
+    assert_eq!(language.squatter_kind_count(), 5);
+    assert!(language.squatter_grammar_count() > 256);
+    assert_eq!(id_width_flags([language]), BYTE_IDS);
+    assert_eq!(language.squatter_kind_id(KindId::new(2)), None);
+    assert_eq!(language.squatter_kind_id(KindId::new(4)), None);
+    assert_eq!(language.squatter_grammar_id(GrammarId::new(3)), None);
+    assert_eq!(language.squatter_kind_id(KindId::new(400)), None);
+    assert_eq!(language.squatter_grammar_id(GrammarId::new(400)), None);
+    for id in [0, 5, u16::MAX] {
+        assert_eq!(language.kind_id(SquatterKindId::new(id)), None);
+    }
+    for id in [0, language.squatter_grammar_count() as u16, u16::MAX] {
+        assert_eq!(language.grammar_id(SquatterGrammarId::new(id)), None);
+    }
+    for native in [u16::MAX, u16::MAX - 1] {
+        let kind = KindId::new(native);
+        let grammar = GrammarId::new(native);
+        assert_eq!(
+            language.kind_id(language.squatter_kind_id(kind).unwrap()),
+            Some(kind)
+        );
+        assert_eq!(
+            language.grammar_id(language.squatter_grammar_id(grammar).unwrap()),
+            Some(grammar)
+        );
+    }
+
+    let mut builder = Builder::new(language, 1, false).unwrap();
+    for index in 0..100 {
+        builder
+            .emit(
+                &leaf(display.get(), original.get(), 0, u8::from(index == 0)),
+                builder.distance(),
+            )
+            .unwrap();
+    }
+    let default = language.squatter_grammar_id(GrammarId::new(1)).unwrap();
+    builder
+        .emit(&leaf(display.get(), default.get(), 0, 1), 0)
+        .unwrap();
+    let tree = builder
+        .finish(PackOptions {
+            repack: true,
+            ..Default::default()
+        })
+        .unwrap();
+    assert_eq!(tree.data().layout.symbol_width, 1);
+    assert_eq!(tree.data().layout.grammar_width, 2);
+    let restored =
+        Language::from_cache(&language.tree_sitter_language(), &language.cache().unwrap()).unwrap();
+    let loaded = Tree::from_bytes(&restored, tree.as_bytes()).unwrap();
+    assert_eq!(loaded.as_bytes(), tree.as_bytes());
+    for node in loaded.root_node().preorder().nodes().skip(1) {
+        assert_eq!(node.kind_id(), KindId::new(1));
+        assert_eq!(node.grammar_id(), GrammarId::new(2));
+        assert_eq!(node.squatter_kind_id(), display);
+        assert_eq!(node.squatter_grammar_id(), original);
+    }
+    assert_eq!(tree.presence_cache().unwrap().as_bytes().len(), 16 + 5 * 8);
+    assert_eq!(
+        loaded
+            .root_node()
+            .all()
+            .filter_squatter_kind_ids([display])
+            .count(),
+        101
+    );
+    assert_eq!(
+        loaded
+            .root_node()
+            .all()
+            .filter_squatter_kind_ids([SquatterKindId::new(257)])
+            .count(),
+        0
+    );
+
+    let mut builder = Builder::new(language, 1, false).unwrap();
+    let display = language.squatter_kind_id(KindId::new(5)).unwrap();
+    let default = language.squatter_grammar_id(GrammarId::new(5)).unwrap();
+    assert_ne!(display.get(), default.get());
+    builder
+        .emit(&leaf(display.get(), default.get(), 0, 1), 0)
+        .unwrap();
+    let tree = builder.finish(PackOptions::default()).unwrap();
+    assert_eq!(tree.data().flags() & SEPARATE_GRAMMAR, 0);
+    assert_eq!(tree.root_node().grammar_id(), GrammarId::new(5));
+    assert!(Tree::from_bytes(language, tree.as_bytes()).is_ok());
+}
+
+#[test]
 fn symbol_ids_use_byte_columns() {
     let fixture = Fixture::symbols(16);
     let grammar = &fixture.grammar;
     let mut builder = Builder::new(grammar, 1, false).unwrap();
     for index in 0..3 * GROUP_SIZE {
-        let original = (index % 4) as u16;
+        let original = (index % 4 + 1) as u16;
         builder
             .emit(
                 &leaf(
-                    if original < 2 { 0 } else { original },
+                    if original <= 2 { 1 } else { original },
                     original,
                     0,
                     u8::from(index == 0),
@@ -237,7 +335,7 @@ fn symbol_ids_use_byte_columns() {
             )
             .unwrap();
     }
-    builder.emit(&leaf(0, 0, 0, 1), 0).unwrap();
+    builder.emit(&leaf(1, 1, 0, 1), 0).unwrap();
     let tree = builder.finish(PackOptions::default()).unwrap();
     let data = tree.data();
     assert_ne!(data.flags() & SEPARATE_GRAMMAR, 0);
@@ -248,19 +346,26 @@ fn symbol_ids_use_byte_columns() {
         data.layout.last.offset(data.bytes) + bit_bytes(4 * GROUP_SIZE) as usize
     );
     for slot in 0..3 * GROUP_SIZE {
-        let original = (slot % 4) as u16;
+        let original = (slot % 4 + 1) as u16;
         assert_eq!(
             data.symbol_index(slot).get(),
-            if original < 2 { 0 } else { original }
+            if original <= 2 { 1 } else { original }
         );
         assert_eq!(data.grammar_index(slot).get(), original);
     }
     assert_eq!(
-        Layout::new(4, TREE_FORMAT | BYTE_IDS | SEPARATE_GRAMMAR)
+        Layout::new(
+            4,
+            TREE_FORMAT | BYTE_IDS | BYTE_GRAMMAR_IDS | SEPARATE_GRAMMAR
+        )
+        .unwrap()
+        .end
+        .get(),
+        Layout::new(4, TREE_FORMAT | BYTE_IDS | BYTE_GRAMMAR_IDS)
             .unwrap()
             .end
-            .get(),
-        Layout::new(4, TREE_FORMAT | BYTE_IDS).unwrap().end.get() + 4 * GROUP_SIZE,
+            .get()
+            + 4 * GROUP_SIZE,
     );
     let mut bytes = tree.as_bytes().to_vec();
     bytes[..4].copy_from_slice(&(data.flags() & !SEPARATE_GRAMMAR).to_le_bytes());
@@ -319,11 +424,11 @@ fn synthetic_symbol_ids_and_optional_columns() {
             for points in [false, true] {
                 let mut builder = Builder::new(grammar, 1, points).unwrap();
                 for index in 0..65 * GROUP_SIZE {
-                    let original = (index % 4) as u16;
+                    let original = (index % 4 + 1) as u16;
                     builder
                         .emit(
                             &leaf(
-                                if original < 2 { 0 } else { original },
+                                if original <= 2 { 1 } else { original },
                                 original,
                                 0,
                                 u8::from(index == 0)
@@ -337,7 +442,7 @@ fn synthetic_symbol_ids_and_optional_columns() {
                         )
                         .unwrap();
                 }
-                builder.emit(&leaf(0, 0, 0, 1), 0).unwrap();
+                builder.emit(&leaf(1, 1, 0, 1), 0).unwrap();
                 let mut tree = builder
                     .finish(PackOptions {
                         points,
@@ -347,10 +452,10 @@ fn synthetic_symbol_ids_and_optional_columns() {
                 for pass in 0..3 {
                     for node in tree.root_node().preorder().nodes().skip(1) {
                         let slot = node.slot().get();
-                        let original = (slot % 4) as u16;
+                        let original = (slot % 4 + 1) as u16;
                         assert_eq!(
                             node.kind_id().get(),
-                            if original < 2 { 0 } else { original }
+                            if original <= 2 { 1 } else { original }
                         );
                         assert_eq!(node.grammar_id().get(), original);
                         assert_eq!(
@@ -386,8 +491,8 @@ fn synthetic_symbol_ids_and_optional_columns() {
                 };
                 let offset = offset.offset(tree.data().bytes);
                 if tree.data().layout.symbol_width == 1 {
-                    // Symbol 1 maps to public symbol 0, so it is invalid as a display ID.
-                    invalid[offset] = 1;
+                    // Zero is reserved and cannot be stored on a node.
+                    invalid[offset] = 0;
                 } else {
                     invalid[offset..offset + 2].copy_from_slice(&u16::MAX.to_le_bytes());
                 }
@@ -523,7 +628,11 @@ fn exercise_columns(tree: &mut Tree, fill: bool) {
         (layout.supertype, 16, GROUP_SIZE),
         (layout.symbol, layout.symbol_width as usize * 8, GROUP_SIZE),
         (layout.field, 16, GROUP_SIZE),
-        (layout.grammar, layout.symbol_width as usize * 8, GROUP_SIZE),
+        (
+            layout.grammar,
+            layout.grammar_width as usize * 8,
+            GROUP_SIZE,
+        ),
     ]
     .into_iter()
     .enumerate()
@@ -678,7 +787,7 @@ fn presence_ignores_waste_and_invalid_symbols() {
             ] {
                 let symbol = crate::KindId::new(symbol as u16);
                 for group in 0..33 {
-                    let expected = symbol.get() == 0
+                    let expected = symbol.get() == 1
                         || (group == 0 && u32::from(symbol.get()) == count - 1)
                         || symbol.get() == if group % 2 == 0 { 65535 } else { 65534 };
                     assert_eq!(

@@ -47,13 +47,13 @@ version in bits 23–16, and flags in bits 15–0. Types are `FF` for trees,
 All storage versions are currently 0.
 
 Tree version 0 uses 32-slot groups, 16-bit span deltas and supertype entries,
-and 8-byte column alignment. Symbol IDs and original grammar-symbol IDs use
-separate columns with a shared width. Flag bit 4 selects one-byte IDs when every
-grammar in the slab has at most 254 symbols and aliases, leaving room for both
-remapped error IDs. Otherwise both columns use two-byte IDs. The optional columns,
+and 8-byte column alignment. Display and original grammar IDs use separate compact
+domains. Flag bits 4 and 5 independently select one-byte display and grammar IDs
+when the corresponding domain fits in 256 slots, including reserved zero and both
+error IDs. Otherwise that column uses two-byte IDs. The optional columns,
 in storage order, are grammar, extra, error, and missing, with flags in bits
 0, 3, 2, and 1 respectively. The grammar
-column is omitted when all emitted nodes have equal display and original IDs.
+column is omitted when every original ID is recoverable from its display ID.
 Presence, point, and grammar dictionary slabs have no flags. Unrecognized
 types, versions, or flags are rejected.
 
@@ -94,9 +94,9 @@ struct Node {
   /// Subtract both components from end_point_base.
   end_point: u16,
 
-  /// Public symbol after aliasing, with error IDs remapped after the real symbols.
+  /// Compact public kind after aliasing.
   display_symbol: u8 | u16,
-  /// Original grammar symbol; omitted slab-wide when equal to display_symbol.
+  /// Compact original grammar symbol; omitted when derivable from display_symbol.
   grammar_symbol: u8 | u16,
 
   /// ID of the field for this node within the parent.
@@ -142,11 +142,22 @@ Tree-sitter's hidden nodes are omitted entirely since they are not helpful for
 the flat representation without incremental reparse. Their effects are recorded
 in `supertypes`, `is_last_child`, and `field`.
 
-The grammar-ID column is first in the optional tail. Packing tracks whether any
-emitted node has different display and original IDs; finalization omits the column
-when none do, moving retained flag columns earlier. Reads then use the symbol
-column for both IDs. This requires no grammar analysis or second traversal.
-For forests, width is chosen from all participating grammars before packing.
+`KindId` and `GrammarId` retain Tree-sitter's public and original symbol numbers.
+`SquatterKindId` contains only canonical visible public symbols.
+`SquatterGrammarId` retains distinct original symbols: visible symbols, hidden
+nonterminals exposed by aliases, and conservatively all hidden terminals because
+Tree-sitter's alias map covers only nonterminals. Each domain assigns IDs in native
+symbol order, reserves zero, and appends `ERROR` and `_ERROR`. Prepared languages
+own the bidirectional mappings; compact IDs are scoped to that grammar version.
+Queries convert concrete display symbols once after compilation, retaining zero
+for wildcards and native IDs for hidden supertype constraints.
+
+The grammar-ID column is first in the optional tail. Each compact display ID has
+a default compact grammar ID corresponding to the same native symbol, or zero
+for alias-only kinds. Packing tracks whether any emitted grammar ID differs from
+this default; finalization omits the column when none do. Reads then recover the
+grammar ID through the default lookup. The two compact ID numbers need not match.
+For forests, each width is chosen from all participating grammars before packing.
 Every present ID column has that constant stride across grammar regions. Omission
 of the grammar-ID column is also a slab-wide decision.
 
@@ -161,15 +172,13 @@ because LMDB itself is endian-dependent.
 
 # Symbol presence bitmaps
 
-After the `Node`s comes an index of which public display symbols are present in a given group. This is only present if there are more than 32 groups. The builder applies public-symbol mapping to each raw `display_symbol` before indexing it, so different raw IDs with the same public ID contribute to the same entry. Queries use this public ID directly; the node columns retain raw IDs.
+The optional presence sidecar indexes the same compact display IDs used by node
+columns and queries. It reserves one row per compact ID, including zero and both
+errors, without rows for omitted hidden or duplicate native symbols.
 
-Let `P` be the grammar's symbol count plus alias count plus the two remapped builtin error symbols. The index reserves an entry for each ID in this range, including IDs not used by the public map. Builtin error IDs use the same compact remapping as the node columns. First is a mode bitmap of `P` bits, rounded up to whole 64-bit words. A 0 bit indicates the symbol is rare and uses an occurrence list. A 1 bit indicates that a per-group bitmap is used.
-
-Let `G` be `group_count` rounded up to the nearest multiple of 32. After the mode bitmap are `P` entries in public-ID order, each occupying `G / 8` bytes. This determines the index's total byte length from the grammar and header.
-
-When the symbol has a `0` bit, its entry is a descending sequence of `u32` physical slot indexes where the symbol appears, following preorder. This mode is used only when all occurrences fit in the entry; 0xFFFFFFFF fills unused parts of the sequence.
-
-When the symbol has a `1` then its entry is a bitmap where a `1` indicates that the corresponding physical group has a node with that symbol. Bits beyond `group_count` are zero. Both modes omit wasted slots and unused allocation space. The index is built after grouping fixes the physical slot indexes.
+After the 16-byte header, each row contains `ceil(group_count / 64)` little-endian
+`u64` words. A set bit indicates that the group contains a node of that kind.
+Unused bits, wasted slots, and unused allocation capacity contribute no membership.
 
 
 # C API

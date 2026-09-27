@@ -292,6 +292,56 @@ static SQGrammar *grammar_new(const TSLanguage *language, const void *grammar_ca
         metadata.named | (metadata.visible << 1) | (metadata.supertype << 2);
   }
 
+  // Zero is reserved for query wildcards. Native IDs remain available for parser
+  // tables and supertype constraints; only stored node IDs use these domains.
+  grammar->compact_ids = calloc(space, 5 * sizeof(uint16_t) + sizeof(uint8_t));
+  if (!grammar->compact_ids) goto grammar_allocation;
+  uint16_t *kind_to_native = grammar->compact_ids;
+  uint16_t *native_to_kind = kind_to_native + space;
+  uint16_t *grammar_to_native = native_to_kind + space;
+  uint16_t *native_to_grammar = grammar_to_native + space;
+  uint16_t *default_grammar = native_to_grammar + space;
+  uint8_t *kind_flags = (uint8_t *)(default_grammar + space);
+  uint32_t kind_count = 1, compact_grammar_count = 1;
+  for (uint32_t symbol = 1; symbol < symbols; symbol++) {
+    if (language->symbol_metadata[symbol].visible && grammar->public_index[symbol] == symbol) {
+      native_to_kind[symbol] = (uint16_t)kind_count;
+      kind_to_native[kind_count] = (uint16_t)symbol;
+      kind_flags[kind_count++] = grammar->symbol_flags[symbol];
+    }
+  }
+
+  // Aliases can expose hidden nonterminals. Keep hidden terminals conservatively:
+  // the generated alias map covers nonterminals only.
+  for (uint32_t symbol = 1; symbol < language->symbol_count; symbol++)
+    native_to_grammar[symbol] = symbol < language->token_count ||
+                                language->symbol_metadata[symbol].visible;
+  if (language->alias_map) {
+    const uint16_t *entry = language->alias_map;
+    while (*entry) {
+      native_to_grammar[entry[0]] = 1;
+      entry += 2 + entry[1];
+    }
+  }
+  for (uint32_t symbol = 1; symbol < language->symbol_count; symbol++) {
+    if (native_to_grammar[symbol]) {
+      native_to_grammar[symbol] = (uint16_t)compact_grammar_count;
+      grammar_to_native[compact_grammar_count++] = (uint16_t)symbol;
+    }
+  }
+  for (uint32_t index = 0; index < 2; index++) {
+    uint16_t actual = index ? ts_builtin_sym_error_repeat : ts_builtin_sym_error;
+    native_to_kind[symbols + index] = (uint16_t)(kind_count + index);
+    kind_to_native[kind_count + index] = actual;
+    kind_flags[kind_count + index] = grammar->symbol_flags[symbols + index];
+    native_to_grammar[symbols + index] = (uint16_t)(compact_grammar_count + index);
+    grammar_to_native[compact_grammar_count + index] = actual;
+  }
+  for (uint32_t kind = 1; kind < kind_count; kind++)
+    default_grammar[kind] = native_to_grammar[kind_to_native[kind]];
+  default_grammar[kind_count] = (uint16_t)compact_grammar_count;
+  default_grammar[kind_count + 1] = (uint16_t)(compact_grammar_count + 1);
+
   grammar->view = (SQGrammarView){
       .language = grammar->language,
       .symbol_names = language->symbol_names,
@@ -314,6 +364,14 @@ static SQGrammar *grammar_new(const TSLanguage *language, const void *grammar_ca
       .supertype_table = grammar->supertype_grammar ? grammar->supertype_grammar->table : NULL,
       .supertype_table_capacity =
           grammar->supertype_grammar ? grammar->supertype_grammar->table_capacity : 0,
+      .kind_to_native = kind_to_native,
+      .native_to_kind = native_to_kind,
+      .grammar_to_native = grammar_to_native,
+      .native_to_grammar = native_to_grammar,
+      .default_grammar = default_grammar,
+      .kind_flags = kind_flags,
+      .kind_count = kind_count,
+      .compact_grammar_count = compact_grammar_count,
   };
   return grammar;
 
@@ -359,6 +417,7 @@ void sq_native_grammar_delete(SQGrammar *grammar) {
   sq_native_supertype_grammar_delete(grammar->supertype_grammar);
   ts_language_delete(grammar->language);
   free(grammar->supertypes);
+  free(grammar->compact_ids);
   free(grammar->production_fields);
   free(grammar->direct_fields);
   free(grammar);

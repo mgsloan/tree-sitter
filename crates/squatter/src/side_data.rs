@@ -131,7 +131,7 @@ impl Sidecar {
         if header(0) != format
             || header(4) != tree.group_count()
             || header(8) != tree.slot_count()
-            || header(12) != tree.data().tables().symbol_count + 2
+            || header(12) != tree.data().tables().kind_count + 2
         {
             return Err(SideDataError::InvalidTarget);
         }
@@ -164,7 +164,7 @@ impl Sidecar {
 }
 
 fn presence_length(tree: &Tree) -> Result<usize, SideDataError> {
-    let symbols = tree.data().tables().symbol_count as usize + 2;
+    let symbols = tree.data().tables().kind_count as usize + 2;
     let words = (tree.group_count() as usize).div_ceil(64);
     HEADER_BYTES
         .checked_add(
@@ -185,7 +185,7 @@ impl PresenceCache {
     /// Builds symbol membership from the tree. Returns a
     /// cancellation error when the supplied flag is set.
     pub fn build(tree: &Tree, cancel: Option<&AtomicBool>) -> Result<Self, SideDataError> {
-        let symbols = tree.data().tables().symbol_count + 2;
+        let symbols = tree.data().tables().kind_count + 2;
         let mut sidecar = Sidecar::new(
             PRESENCE_FORMAT,
             tree.group_count(),
@@ -326,7 +326,7 @@ impl PointData {
         Ok(Self(Sidecar::new(
             POINT_FORMAT,
             tree.group_count(),
-            tree.data().tables().symbol_count + 2,
+            tree.data().tables().kind_count + 2,
             point_length(tree)? - HEADER_BYTES,
         )?))
     }

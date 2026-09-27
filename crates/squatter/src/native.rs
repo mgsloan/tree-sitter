@@ -1,6 +1,6 @@
 use crate::{
-    Error, FieldId, GrammarKindId, KindId, QueryError,
-    types::{PatternIndex, RemappedGrammarKindId, RemappedKindId},
+    Error, FieldId, GrammarId, KindId, QueryError,
+    types::{PatternIndex, SquatterGrammarId, SquatterKindId},
 };
 use std::{
     ffi::{CStr, c_char, c_void},
@@ -110,6 +110,14 @@ pub(crate) struct GrammarView {
     pub supertype_table: *const u32,
     pub max_alias_sequence_length: u32,
     pub supertype_table_capacity: u32,
+    pub kind_to_native: *const u16,
+    pub native_to_kind: *const u16,
+    pub grammar_to_native: *const u16,
+    pub native_to_grammar: *const u16,
+    pub default_grammar: *const u16,
+    pub kind_flags: *const u8,
+    pub kind_count: u32,
+    pub compact_grammar_count: u32,
 }
 
 impl GrammarView {
@@ -130,22 +138,39 @@ impl GrammarView {
     }
 
     #[inline]
-    pub fn remap_kind(&self, symbol: KindId) -> Option<RemappedKindId> {
-        let symbol = symbol.get();
-        // Values just past the public symbol table are reserved for remapped errors.
-        (u32::from(symbol) < self.symbol_count || symbol >= u16::MAX - 1)
-            .then(|| RemappedKindId(self.encode_id(symbol) as u16))
+    pub fn remap_kind(&self, symbol: KindId) -> Option<SquatterKindId> {
+        if u32::from(symbol.get()) >= self.symbol_count && symbol.get() < u16::MAX - 1 {
+            return None;
+        }
+        let index = self.native_index(symbol.get());
+        if index >= self.symbol_count + 2 {
+            return None;
+        }
+        let id = unsafe { *self.native_to_kind.add(index as usize) };
+        (id != 0).then_some(SquatterKindId(id))
     }
 
-    pub fn decode_kind(&self, symbol: RemappedKindId) -> KindId {
-        KindId::new(self.decode_id(symbol.get() as u32))
+    pub fn remap_grammar(&self, symbol: GrammarId) -> Option<SquatterGrammarId> {
+        if u32::from(symbol.get()) >= self.symbol_count && symbol.get() < u16::MAX - 1 {
+            return None;
+        }
+        let index = self.native_index(symbol.get());
+        if index >= self.symbol_count + 2 {
+            return None;
+        }
+        let id = unsafe { *self.native_to_grammar.add(index as usize) };
+        (id != 0).then_some(SquatterGrammarId(id))
     }
 
-    pub fn decode_grammar_kind(&self, symbol: RemappedGrammarKindId) -> GrammarKindId {
-        GrammarKindId::new(self.decode_id(symbol.get() as u32))
+    pub fn decode_kind(&self, symbol: SquatterKindId) -> KindId {
+        KindId::new(unsafe { *self.kind_to_native.add(symbol.get() as usize) })
     }
 
-    fn encode_id(&self, symbol: u16) -> u32 {
+    pub fn decode_grammar_kind(&self, symbol: SquatterGrammarId) -> GrammarId {
+        GrammarId::new(unsafe { *self.grammar_to_native.add(symbol.get() as usize) })
+    }
+
+    fn native_index(&self, symbol: u16) -> u32 {
         match symbol {
             u16::MAX => self.symbol_count,
             65534 => self.symbol_count + 1,
@@ -154,14 +179,8 @@ impl GrammarView {
     }
 
     #[inline]
-    fn decode_id(&self, index: u32) -> u16 {
-        if index == self.symbol_count {
-            u16::MAX
-        } else if index == self.symbol_count + 1 {
-            65534
-        } else {
-            index as u16
-        }
+    pub fn default_grammar(&self, symbol: SquatterKindId) -> SquatterGrammarId {
+        SquatterGrammarId(unsafe { *self.default_grammar.add(symbol.get() as usize) })
     }
 
     pub fn symbol_name(&self, symbol: u16) -> &str {
@@ -189,12 +208,12 @@ impl GrammarView {
 
     #[inline]
     pub fn named(&self, symbol: u16) -> bool {
-        self.named_index(RemappedKindId(self.encode_id(symbol) as u16))
+        unsafe { *self.symbol_flags.add(self.native_index(symbol) as usize) & 1 != 0 }
     }
 
     #[inline]
-    pub fn named_index(&self, symbol: RemappedKindId) -> bool {
-        unsafe { *self.symbol_flags.add(symbol.get() as usize) & 1 != 0 }
+    pub fn named_index(&self, symbol: SquatterKindId) -> bool {
+        unsafe { *self.kind_flags.add(symbol.get() as usize) & 1 != 0 }
     }
 }
 
@@ -373,15 +392,15 @@ impl Language {
     /// Get a list of all supertype symbols for the language.
     ///
     /// Borrows the original grammar symbols without allocating or remapping hidden symbols.
-    pub fn supertypes(&self) -> &[GrammarKindId] {
-        GrammarKindId::from_slice(self.language.supertypes())
+    pub fn supertypes(&self) -> &[GrammarId] {
+        GrammarId::from_slice(self.language.supertypes())
     }
 
     /// Get a list of all subtype symbols for a given supertype symbol.
     ///
     /// Borrows the original grammar symbols without allocating or remapping hidden symbols.
-    pub fn subtypes_for_supertype(&self, supertype: GrammarKindId) -> &[GrammarKindId] {
-        GrammarKindId::from_slice(self.language.subtypes_for_supertype(supertype.get()))
+    pub fn subtypes_for_supertype(&self, supertype: GrammarId) -> &[GrammarId] {
+        GrammarId::from_slice(self.language.subtypes_for_supertype(supertype.get()))
     }
 
     /// Resolve a displayed kind name in this grammar.
@@ -399,14 +418,74 @@ impl Language {
     ///
     /// **Not in Tree-sitter**. Looks up original grammar symbols, including hidden symbols
     /// and kinds hidden by aliases.
-    pub fn grammar_kind_id_for_name(&self, name: &str, named: bool) -> Option<GrammarKindId> {
+    pub fn grammar_id_for_name(&self, name: &str, named: bool) -> Option<GrammarId> {
         let tables = self.tables();
         (0..tables.grammar_symbol_count as u16)
             .chain([u16::MAX, u16::MAX - 1])
             .find_map(|id| {
                 (tables.symbol_name(id) == name && tables.named(id) == named)
-                    .then_some(GrammarKindId::new(id))
+                    .then_some(GrammarId::new(id))
             })
+    }
+
+    /// A Squatter kind ID for comparing nodes or filtering scans in this language.
+    ///
+    /// Prepare Tree-sitter IDs once to use the cheaper [`crate::Node::squatter_kind_id`]
+    /// accessor and [`crate::Scan::filter_squatter_kind_ids`].
+    /// Hidden and noncanonical IDs return `None`.
+    pub fn squatter_kind_id(&self, id: KindId) -> Option<SquatterKindId> {
+        self.tables().remap_kind(id)
+    }
+
+    /// A Squatter grammar ID for comparing original symbols, ignoring aliases.
+    ///
+    /// Prepare Tree-sitter IDs once to use the cheaper [`crate::Node::squatter_grammar_id`]
+    /// accessor with nodes of this language.
+    /// Symbols excluded from packed storage return `None`.
+    pub fn squatter_grammar_id(&self, id: GrammarId) -> Option<SquatterGrammarId> {
+        self.tables().remap_grammar(id)
+    }
+
+    /// A displayed kind ID compatible with Tree-sitter's nodes and language APIs.
+    ///
+    /// Use this when sharing a Squatter kind ID with Tree-sitter.
+    /// Zero and out-of-range IDs return `None`.
+    pub fn kind_id(&self, id: SquatterKindId) -> Option<KindId> {
+        (id.get() != 0 && u32::from(id.get()) < self.tables().kind_count + 2)
+            .then(|| self.tables().decode_kind(id))
+    }
+
+    /// An original grammar ID compatible with Tree-sitter, ignoring aliases.
+    ///
+    /// Use this when sharing a Squatter grammar ID with Tree-sitter.
+    /// Zero and out-of-range IDs return `None`.
+    pub fn grammar_id(&self, id: SquatterGrammarId) -> Option<GrammarId> {
+        (id.get() != 0 && u32::from(id.get()) < self.tables().compact_grammar_count + 2)
+            .then(|| self.tables().decode_grammar_kind(id))
+    }
+
+    /// Number of compact display ID slots, including reserved zero and both errors.
+    pub fn squatter_kind_count(&self) -> usize {
+        self.tables().kind_count as usize + 2
+    }
+
+    /// Number of compact grammar ID slots, including reserved zero and both errors.
+    pub fn squatter_grammar_count(&self) -> usize {
+        self.tables().compact_grammar_count as usize + 2
+    }
+
+    /// Resolve a displayed name directly into this language's compact domain.
+    pub fn squatter_kind_id_for_name(&self, name: &str, named: bool) -> Option<SquatterKindId> {
+        self.squatter_kind_id(self.kind_id_for_name(name, named)?)
+    }
+
+    /// Resolve an original grammar name directly into this language's compact domain.
+    pub fn squatter_grammar_id_for_name(
+        &self,
+        name: &str,
+        named: bool,
+    ) -> Option<SquatterGrammarId> {
+        self.squatter_grammar_id(self.grammar_id_for_name(name, named)?)
     }
 
     /// Get the numerical id for the given field name.
@@ -561,6 +640,7 @@ pub(crate) struct CompiledQuery {
     // refreshes the view because native arrays may move.
     raw: NonNull<QueryHandle>,
     pub view: QueryView,
+    pub language: Language,
 }
 
 unsafe impl Send for CompiledQuery {}
@@ -580,12 +660,11 @@ impl CompiledQuery {
             message: "query exceeds u32 size".into(),
         })?;
         let tables = language.tables();
-        let language = tables.language;
         let mut offset = 0;
         let mut kind = 0;
         let raw = unsafe {
             sq_native_query_new(
-                language.cast(),
+                tables.language.cast(),
                 source.as_ptr(),
                 length,
                 &mut offset,
@@ -611,10 +690,20 @@ impl CompiledQuery {
         let mut result = Self {
             raw,
             view: unsafe { view.assume_init() },
+            language: language.clone(),
         };
+        result.view.symbol_count = tables.kind_count;
         // Native mutations only remove entries or captures; symbols stay encoded.
         for step in result.steps_mut() {
-            step.symbol = tables.encode_id(step.symbol) as u16;
+            if step.symbol != 0 {
+                step.symbol = tables
+                    .remap_kind(KindId::new(step.symbol))
+                    .ok_or_else(|| QueryError {
+                        offset: 0,
+                        message: "query kind cannot occur in packed storage".into(),
+                    })?
+                    .get();
+            }
         }
         #[cfg(debug_assertions)]
         result.validate();
@@ -684,6 +773,7 @@ impl CompiledQuery {
         unsafe {
             sq_native_query_view(self.raw.as_ptr(), &mut self.view);
         }
+        self.view.symbol_count = self.language.tables().kind_count;
         #[cfg(debug_assertions)]
         self.validate();
     }

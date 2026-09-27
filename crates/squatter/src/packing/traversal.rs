@@ -2,7 +2,7 @@ use super::{Builder, InputNode};
 use crate::{
     Error, FieldId,
     native::{GrammarView, Point, Range, Reduction},
-    types::{RemappedGrammarKindId, RemappedKindId},
+    types::{SquatterGrammarId, SquatterKindId},
 };
 use std::{ffi::c_void, marker::PhantomData, ptr};
 
@@ -557,6 +557,11 @@ impl Walk<'_> {
                 node.alias
             } as usize)
         };
+        let display = unsafe { *self.tables.native_to_kind.add(display as usize) };
+        let grammar = unsafe { *self.tables.native_to_grammar.add(original as usize) };
+        if display == 0 || grammar == 0 {
+            return Err(Error::Language);
+        }
         builder.emit(
             &InputNode {
                 start_byte: node.position.bytes,
@@ -571,8 +576,8 @@ impl Walk<'_> {
                 } else {
                     Point::default()
                 },
-                symbol: RemappedKindId(display),
-                grammar: RemappedGrammarKindId(original),
+                symbol: SquatterKindId(display),
+                grammar: SquatterGrammarId(grammar),
                 field: node.field,
                 supertype: self.mask_id(node.mask)?,
                 flags: u16::from(!node.later) | flags,

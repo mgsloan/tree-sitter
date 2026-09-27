@@ -1,9 +1,9 @@
 use crate::{
-    FieldId, GrammarKindId, Node, Query, QueryCapture, QueryExecutionError, QueryMatch, RawNode,
+    FieldId, GrammarId, Node, Query, QueryCapture, QueryExecutionError, QueryMatch, RawNode,
     SlotIx,
     native::{Pattern, PatternEntry, Step, flags::*},
     storage::ColumnPointer,
-    types::{CaptureId, GroupIx, MatchId, PackedPoint, PatternIndex, RemappedKindId},
+    types::{CaptureId, GroupIx, MatchId, PackedPoint, PatternIndex, SquatterKindId},
 };
 use std::{
     cmp::Ordering,
@@ -1340,12 +1340,12 @@ impl<'query, 'tree> QueryExecution<'_, 'query, 'tree, '_> {
         // Fixed cardinalities keep comparison counts visible to the scan
         // compiler. Larger unions retain the packed-word control kernel.
         match targets.as_slice() {
-            &[first] => return self.find_symbols_simd(start, end, [RemappedKindId(first)]),
+            &[first] => return self.find_symbols_simd(start, end, [SquatterKindId(first)]),
             &[first, second] => {
                 return self.find_symbols_simd(
                     start,
                     end,
-                    [RemappedKindId(first), RemappedKindId(second)],
+                    [SquatterKindId(first), SquatterKindId(second)],
                 );
             }
             &[first, second, third] => {
@@ -1353,9 +1353,9 @@ impl<'query, 'tree> QueryExecution<'_, 'query, 'tree, '_> {
                     start,
                     end,
                     [
-                        RemappedKindId(first),
-                        RemappedKindId(second),
-                        RemappedKindId(third),
+                        SquatterKindId(first),
+                        SquatterKindId(second),
+                        SquatterKindId(third),
                     ],
                 );
             }
@@ -1364,10 +1364,10 @@ impl<'query, 'tree> QueryExecution<'_, 'query, 'tree, '_> {
                     start,
                     end,
                     [
-                        RemappedKindId(first),
-                        RemappedKindId(second),
-                        RemappedKindId(third),
-                        RemappedKindId(fourth),
+                        SquatterKindId(first),
+                        SquatterKindId(second),
+                        SquatterKindId(third),
+                        SquatterKindId(fourth),
                     ],
                 );
             }
@@ -1380,7 +1380,7 @@ impl<'query, 'tree> QueryExecution<'_, 'query, 'tree, '_> {
         &mut self,
         mut start: u32,
         end: u32,
-        targets: [RemappedKindId; N],
+        targets: [SquatterKindId; N],
     ) -> u32 {
         use crate::scan::GroupRef;
         use crate::storage::GROUP_SIZE;
@@ -2133,7 +2133,7 @@ impl<'query, 'tree> QueryExecution<'_, 'query, 'tree, '_> {
                 matches = false;
             }
             if step.supertype_symbol != 0
-                && !node.has_supertype(GrammarKindId::new(step.supertype_symbol))
+                && !node.has_supertype(GrammarId::new(step.supertype_symbol))
             {
                 matches = false;
             }
@@ -2650,7 +2650,7 @@ fn equal_column(
     use crate::storage::GROUP_SIZE;
     if width == 1 {
         let bytes = data.column_slice(address, (group * GROUP_SIZE) as usize, GROUP_SIZE as usize);
-        return crate::scan::equal_byte_ids(bytes, &[RemappedKindId(value)])
+        return crate::scan::equal_byte_ids(bytes, &[SquatterKindId(value)])
             & (u64::MAX >> (64 - GROUP_SIZE + data.waste(group)));
     }
     let mut matches = 0;

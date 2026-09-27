@@ -235,6 +235,7 @@ typedef struct {
   TSLanguage language;
   TSSymbol *public_symbols;
   TSSymbolMetadata *metadata;
+  uint16_t aliases[5];
 } SymbolFixture;
 
 const TSLanguage *sq_test_symbols(unsigned count) {
@@ -243,14 +244,30 @@ const TSLanguage *sq_test_symbols(unsigned count) {
   fixture->public_symbols = malloc(count * sizeof(TSSymbol));
   fixture->metadata = calloc(count, sizeof(TSSymbolMetadata));
   assert(fixture->public_symbols && fixture->metadata);
-  for (unsigned symbol = 0; symbol < count; symbol++) fixture->public_symbols[symbol] = symbol;
-  fixture->public_symbols[1] = 0;
+  for (unsigned symbol = 0; symbol < count; symbol++) {
+    fixture->public_symbols[symbol] = symbol;
+    fixture->metadata[symbol].visible = symbol != 0;
+  }
   fixture->language = (TSLanguage){
     .abi_version = TREE_SITTER_LANGUAGE_VERSION,
     .symbol_count = count,
     .public_symbol_map = fixture->public_symbols,
     .symbol_metadata = fixture->metadata,
   };
+  return &fixture->language;
+}
+
+const TSLanguage *sq_test_compact_symbols(unsigned count) {
+  SymbolFixture *fixture = (SymbolFixture *)sq_test_symbols(count);
+  fixture->metadata[2].visible = false;
+  fixture->metadata[3].visible = false;
+  for (unsigned symbol = 4; symbol < count; symbol++) fixture->public_symbols[symbol] = 1;
+  fixture->public_symbols[5] = 5;
+  fixture->aliases[0] = 2;
+  fixture->aliases[1] = 2;
+  fixture->aliases[2] = 2;
+  fixture->aliases[3] = 1;
+  fixture->language.alias_map = fixture->aliases;
   return &fixture->language;
 }
 

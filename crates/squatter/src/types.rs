@@ -31,7 +31,7 @@ integer_type!(
     /// A node kind in the original grammar, ignoring aliases.
     ///
     /// **Not in Tree-sitter:** it uses `u16` instead.
-    pub GrammarKindId(u16));
+    pub GrammarId(u16));
 integer_type!(
     /// An absolute physical slot in a particular tree's reverse-preorder storage.
     ///
@@ -77,11 +77,19 @@ integer_type!(pub(crate) GroupIx(u32));
 integer_type!(pub(crate) GroupSlotIx(u32));
 integer_type!(pub(crate) SlabOffset(u32));
 integer_type!(
-    /// Displayed kind with error sentinels moved after the grammar's symbols.
-    pub(crate) RemappedKindId(u16));
+    /// A compact displayed kind in one prepared language. Zero is reserved;
+    /// error IDs follow the concrete kinds. Convert through [`crate::Language`].
+    ///
+    /// ```compile_fail
+    /// # fn example(root: tree_squatter::Node<'_>) {
+    /// root.all().filter_kind_ids([root.squatter_kind_id()]);
+    /// # }
+    /// ```
+    pub SquatterKindId(u16));
 integer_type!(
-    /// Original grammar kind with error sentinels moved after the grammar's symbols.
-    pub(crate) RemappedGrammarKindId(u16));
+    /// A compact original grammar symbol in one prepared language, ignoring aliases.
+    /// Zero is reserved; convert through [`crate::Language`].
+    pub SquatterGrammarId(u16));
 integer_type!(pub(crate) CaptureId(u32));
 integer_type!(pub(crate) PatternIndex(u16));
 integer_type!(pub(crate) MatchId(u32));
@@ -132,7 +140,7 @@ impl From<u16> for KindId {
         Self(value)
     }
 }
-impl From<u16> for GrammarKindId {
+impl From<u16> for GrammarId {
     fn from(value: u16) -> Self {
         Self(value)
     }
@@ -186,8 +194,8 @@ impl From<KindId> for u16 {
         value.get()
     }
 }
-impl From<GrammarKindId> for u16 {
-    fn from(value: GrammarKindId) -> Self {
+impl From<GrammarId> for u16 {
+    fn from(value: GrammarId) -> Self {
         value.get()
     }
 }
@@ -207,13 +215,29 @@ impl KindId {
         Self(value)
     }
 }
-impl GrammarKindId {
+impl GrammarId {
     pub(crate) fn from_slice(symbols: &[u16]) -> &[Self] {
-        // GrammarKindId is transparent over u16 and accepts every symbol value.
+        // GrammarId is transparent over u16 and accepts every symbol value.
         unsafe { std::slice::from_raw_parts(symbols.as_ptr().cast(), symbols.len()) }
     }
 
     /// Wrap a raw ID without checking membership in a grammar.
+    #[inline]
+    pub const fn new(value: u16) -> Self {
+        Self(value)
+    }
+}
+
+impl SquatterKindId {
+    /// Wrap an ID without checking membership in a prepared language.
+    #[inline]
+    pub const fn new(value: u16) -> Self {
+        Self(value)
+    }
+}
+
+impl SquatterGrammarId {
+    /// Wrap an ID without checking membership in a prepared language.
     #[inline]
     pub const fn new(value: u16) -> Self {
         Self(value)

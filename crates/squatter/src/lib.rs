@@ -1,5 +1,7 @@
 mod types;
-pub use types::{ChildIx, FieldId, GrammarKindId, KindId, NamedChildIx, SlotIx};
+pub use types::{
+    ChildIx, FieldId, GrammarId, KindId, NamedChildIx, SlotIx, SquatterGrammarId, SquatterKindId,
+};
 mod node;
 use node::RawNode;
 pub use node::{Node, TreeCursor};
@@ -75,8 +77,8 @@ pub trait Id: Copy + Ord + private::Id {
 mod private {
     pub trait Id {}
 }
-impl private::Id for types::RemappedKindId {}
-impl Id for types::RemappedKindId {
+impl private::Id for types::SquatterKindId {}
+impl Id for types::SquatterKindId {
     #[inline]
     fn raw(self) -> u16 {
         self.get()

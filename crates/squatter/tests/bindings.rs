@@ -1,7 +1,7 @@
 mod support;
 
 use std::error::Error;
-use tree_squatter::{FieldId, KindId};
+use tree_squatter::{FieldId, GrammarId, KindId, SquatterGrammarId, SquatterKindId};
 use tree_squatter::{
     KindSet, PackOptions, Tree,
     traits::{CursorLike, NodeLike},
@@ -652,6 +652,75 @@ fn language_inspection_matches_native() {
         }
         assert_eq!(language.field_id_for_name([255]), None);
     }
+}
+
+#[test]
+fn compact_ids_roundtrip_native_kinds_and_scans() -> Result<(), Box<dyn Error>> {
+    for (native, source) in [
+        (json_language(), r#"{"good": 1, "bad": [2, ?]}"#),
+        (
+            c_language(),
+            "struct Point { int x; }; int f(void) { return (1 + ); }",
+        ),
+    ] {
+        let language = tree_squatter::Language::new(&native)?;
+        let parsed = parse_native(&native, source);
+        let tree = Tree::pack(&language, &parsed)?;
+        assert!(language.squatter_kind_count() < language.node_kind_count() + 2);
+        for raw in 1..language.squatter_kind_count() as u16 {
+            let compact = SquatterKindId::new(raw);
+            let native = language.kind_id(compact).unwrap();
+            assert_eq!(language.squatter_kind_id(native), Some(compact));
+        }
+        for raw in 1..language.squatter_grammar_count() as u16 {
+            let compact = SquatterGrammarId::new(raw);
+            let native = language.grammar_id(compact).unwrap();
+            assert_eq!(language.squatter_grammar_id(native), Some(compact));
+        }
+        for (node, expected) in tree
+            .root_node()
+            .preorder()
+            .nodes()
+            .zip(NodeLike::preorder(parsed.root_node()))
+        {
+            let kind = node.squatter_kind_id();
+            let grammar = node.squatter_grammar_id();
+            assert_eq!(
+                language.kind_id(kind),
+                Some(KindId::new(expected.kind_id()))
+            );
+            assert_eq!(
+                language.grammar_id(grammar),
+                Some(GrammarId::new(expected.grammar_id()))
+            );
+            assert_eq!(
+                language.squatter_kind_id_for_name(node.kind(), node.is_named()),
+                Some(kind)
+            );
+            assert_eq!(
+                tree.root_node()
+                    .all()
+                    .filter_squatter_kind_ids([
+                        kind,
+                        SquatterKindId::new(0),
+                        SquatterKindId::new(u16::MAX)
+                    ])
+                    .nodes()
+                    .collect::<Vec<_>>(),
+                tree.root_node()
+                    .all()
+                    .filter_kind_ids([node.kind_id()])
+                    .nodes()
+                    .collect::<Vec<_>>()
+            );
+        }
+        let name = tree.root_node().grammar_name();
+        assert_eq!(
+            language.squatter_grammar_id_for_name(name, true),
+            Some(tree.root_node().squatter_grammar_id())
+        );
+    }
+    Ok(())
 }
 
 #[test]

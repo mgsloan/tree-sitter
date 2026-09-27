@@ -11,7 +11,7 @@
 //! }
 //! ```
 use crate::{
-    ChildIx, FieldId, GrammarKindId, KindId, NamedChildIx, Node, SlotIx, Tree, TreeCursor,
+    ChildIx, FieldId, GrammarId, KindId, NamedChildIx, Node, SlotIx, Tree, TreeCursor,
     scan::IdSelection,
 };
 use std::ops::Range;
@@ -27,7 +27,7 @@ pub struct Attributes<'tree> {
     pub kind: &'tree str,
     pub grammar_name: &'tree str,
     pub kind_id: KindId,
-    pub grammar_id: GrammarKindId,
+    pub grammar_id: GrammarId,
     pub start_byte: usize,
     pub end_byte: usize,
     pub start_position: Point,
@@ -73,11 +73,12 @@ pub trait NodeLike<'tree>: Copy + Eq {
     fn id(&self) -> Self::Id;
     /// Read constant-time attributes; counts are separate operations below.
     fn attributes(self) -> Attributes<'tree>;
-    /// Get this node's type as a numerical id.
+    /// This node's displayed kind ID, including aliases, comparable across
+    /// Squatter and Tree-sitter nodes using the same language version.
     fn kind_id(&self) -> KindId;
-    /// Get the node's type as a numerical id as it appears in the grammar
-    /// ignoring aliases.
-    fn grammar_id(&self) -> GrammarKindId;
+    /// This node's original grammar ID, ignoring aliases, comparable across
+    /// Squatter and Tree-sitter nodes using the same language version.
+    fn grammar_id(&self) -> GrammarId;
     /// Get this node's type as a string.
     fn kind(&self) -> &'tree str;
     /// Get this node's symbol name as it appears in the grammar ignoring
@@ -456,7 +457,7 @@ macro_rules! node_attributes {
         fn kind_id(&self) -> KindId {
             <$node>::kind_id(self).into()
         }
-        fn grammar_id(&self) -> GrammarKindId {
+        fn grammar_id(&self) -> GrammarId {
             <$node>::grammar_id(self).into()
         }
         fn kind(&self) -> &'tree str {

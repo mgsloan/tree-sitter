@@ -3,7 +3,7 @@ use crate::{
     native::{Point, Reduction},
     side_data::{PointData, PresenceCache},
     storage::*,
-    types::{RemappedGrammarKindId, RemappedKindId, SlabOffset},
+    types::{SlabOffset, SquatterGrammarId, SquatterKindId},
 };
 
 mod traversal;
@@ -37,8 +37,8 @@ struct InputNode {
     end_byte: u32,
     start_point: Point,
     end_point: Point,
-    symbol: RemappedKindId,
-    grammar: RemappedGrammarKindId,
+    symbol: SquatterKindId,
+    grammar: SquatterGrammarId,
     field: Option<FieldId>,
     supertype: u16,
     flags: u16,
@@ -314,16 +314,20 @@ impl Builder {
             }
             let data = self.tree.data_mut();
             let layout = data.layout;
+            let default_grammar = data.tables().default_grammar(event.symbol);
             let mut writer = data.writer();
             if layout.symbol_width == 1 {
                 writer.put_byte(layout.symbol, slot, event.symbol.get() as u8);
-                writer.put_byte(layout.grammar, slot, event.grammar.get() as u8);
             } else {
                 writer.put_short(layout.symbol, slot, event.symbol.get());
+            }
+            if layout.grammar_width == 1 {
+                writer.put_byte(layout.grammar, slot, event.grammar.get() as u8);
+            } else {
                 writer.put_short(layout.grammar, slot, event.grammar.get());
             }
             writer.put_short(layout.field, slot, event.field.map_or(0, FieldId::get));
-            if event.grammar.get() != event.symbol.get() {
+            if event.grammar != default_grammar {
                 self.optional |= SEPARATE_GRAMMAR;
             }
 

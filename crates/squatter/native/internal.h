@@ -62,6 +62,11 @@ typedef struct {
   const TSSymbol *alias_sequences;
   const uint32_t *supertype_table;
   uint32_t max_alias_sequence_length, supertype_table_capacity;
+
+  const uint16_t *kind_to_native, *native_to_kind;
+  const uint16_t *grammar_to_native, *native_to_grammar, *default_grammar;
+  const uint8_t *kind_flags;
+  uint32_t kind_count, compact_grammar_count;
 } SQGrammarView;
 
 // owns the interned supertype masks and their open-addressed lookup table
@@ -95,6 +100,7 @@ struct SQGrammar {
   TSSymbol *supertypes;
   uint32_t supertype_count;
   uint16_t *supertype_indexes, *public_index;
+  uint16_t *compact_ids;
 
   DirectFieldSlice *production_fields;
   TSFieldId *direct_fields;

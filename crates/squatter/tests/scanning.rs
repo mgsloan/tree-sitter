@@ -3,7 +3,7 @@ mod support;
 use std::collections::HashSet;
 use tree_sitter::Point;
 use tree_squatter::{
-    FieldId, FieldSet, GrammarKindId, KindId, KindSet, Language, Node, PackOptions, Tree,
+    FieldId, FieldSet, GrammarId, KindId, KindSet, Language, Node, PackOptions, Tree,
     scan::{GroupScan, Scan},
 };
 
@@ -1444,11 +1444,7 @@ fn supertype_membership() {
         exercised_direct |= !supertypes.is_empty() && supertypes.len() <= 8;
         exercised_dictionary |= supertypes.len() > 8;
         let mut matches = 0;
-        for supertype in supertypes
-            .into_iter()
-            .chain([u16::MAX])
-            .map(GrammarKindId::new)
-        {
+        for supertype in supertypes.into_iter().chain([u16::MAX]).map(GrammarId::new) {
             let expected = nodes
                 .iter()
                 .copied()
