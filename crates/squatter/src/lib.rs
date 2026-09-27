@@ -2,7 +2,7 @@ mod types;
 pub use types::{ChildIx, FieldId, GrammarKindId, KindId, NamedChildIx, SlotIx};
 mod node;
 use node::RawNode;
-pub use node::{Children, Cursor, Node};
+pub use node::{Node, TreeCursor};
 pub mod scan;
 pub use scan::{Postorder, Preorder, Scan};
 mod native;

@@ -1,5 +1,5 @@
 use crate::{
-    ChildIx, Error, FieldId, GrammarKindId, KindId, NamedChildIx, SlotIx, Tree,
+    ChildIx, FieldId, GrammarKindId, KindId, NamedChildIx, SlotIx, Tree,
     scan::{self, Postorder, Preorder, Scan},
     storage::*,
     traits,
@@ -321,19 +321,85 @@ impl<'tree> Node<'tree> {
         None
     }
 
-    pub fn children(self) -> Children<'tree> {
+    fn structural_children(self) -> Children<'tree> {
         Children {
             next: self.first_child(),
         }
     }
 
-    pub fn named_children(self) -> impl Iterator<Item = Self> {
-        self.children().filter(|node| node.is_named())
+    pub fn children<'cursor>(
+        &self,
+        cursor: &'cursor mut TreeCursor<'tree>,
+    ) -> impl Iterator<Item = Self> + 'cursor {
+        cursor.reset(*self);
+        let mut ready = cursor.goto_first_child();
+        std::iter::from_fn(move || {
+            if !ready {
+                return None;
+            }
+            let node = cursor.node();
+            ready = cursor.goto_next_sibling();
+            Some(node)
+        })
     }
 
-    pub fn children_by_field_id(self, field: FieldId) -> impl Iterator<Item = Self> {
-        self.children()
+    pub fn named_children<'cursor>(
+        &self,
+        cursor: &'cursor mut TreeCursor<'tree>,
+    ) -> impl Iterator<Item = Self> + 'cursor {
+        cursor.reset(*self);
+        let mut ready = cursor.goto_first_child();
+        std::iter::from_fn(move || {
+            if !ready {
+                return None;
+            }
+            let original = cursor.node;
+            while !cursor.node().is_named() {
+                if !cursor.goto_next_sibling() {
+                    // Exhausting named children leaves the cursor after the last
+                    // yielded child, even when unnamed children follow it.
+                    cursor.node = original;
+                    ready = false;
+                    return None;
+                }
+            }
+            let node = cursor.node();
+            ready = cursor.goto_next_sibling();
+            Some(node)
+        })
+    }
+
+    pub fn children_by_field_id<'cursor>(
+        &self,
+        field: FieldId,
+        cursor: &'cursor mut TreeCursor<'tree>,
+    ) -> impl Iterator<Item = Self> + 'cursor {
+        self.children(cursor)
             .filter(move |node| node.field_id() == Some(field))
+    }
+
+    pub fn children_by_field_name<'cursor>(
+        &self,
+        name: &str,
+        cursor: &'cursor mut TreeCursor<'tree>,
+    ) -> impl Iterator<Item = Self> + 'cursor {
+        let field = self.data().language.field_id_for_name(name);
+        let mut ready = false;
+        if field.is_some() {
+            cursor.reset(*self);
+            ready = cursor.goto_first_child();
+        }
+        std::iter::from_fn(move || {
+            while ready {
+                let node = cursor.node();
+                let matches = cursor.field_id() == field;
+                ready = cursor.goto_next_sibling();
+                if matches {
+                    return Some(node);
+                }
+            }
+            None
+        })
     }
 
     pub fn has_children(self) -> bool {
@@ -341,23 +407,32 @@ impl<'tree> Node<'tree> {
     }
 
     pub fn has_named_children(self) -> bool {
-        self.named_children().next().is_some()
+        self.structural_children()
+            .filter(|node| node.is_named())
+            .next()
+            .is_some()
     }
 
     pub fn child_count(&self) -> ChildIx {
-        ChildIx::new(self.children().count() as u32)
+        ChildIx::new(self.structural_children().count() as u32)
     }
 
     pub fn named_child_count(&self) -> NamedChildIx {
-        NamedChildIx::new(self.named_children().count() as u32)
+        NamedChildIx::new(
+            self.structural_children()
+                .filter(|node| node.is_named())
+                .count() as u32,
+        )
     }
 
     pub fn child(&self, index: ChildIx) -> Option<Self> {
-        self.children().nth(index.get() as usize)
+        self.structural_children().nth(index.get() as usize)
     }
 
     pub fn named_child(&self, index: NamedChildIx) -> Option<Self> {
-        self.named_children().nth(index.get() as usize)
+        self.structural_children()
+            .filter(|node| node.is_named())
+            .nth(index.get() as usize)
     }
 
     pub fn child_by_field_id(&self, field: FieldId) -> Option<Self> {
@@ -366,7 +441,8 @@ impl<'tree> Node<'tree> {
         if self.is_error() {
             None
         } else {
-            self.children_by_field_id(field).next()
+            self.structural_children()
+                .find(|node| node.field_id() == Some(field))
         }
     }
 
@@ -384,7 +460,7 @@ impl<'tree> Node<'tree> {
         {
             return None;
         }
-        self.children()
+        self.structural_children()
             .find(|child| child.first_slot() <= descendant.slot().get())
     }
 
@@ -408,14 +484,14 @@ impl<'tree> Node<'tree> {
 
     pub fn prev_sibling(&self) -> Option<Self> {
         self.parent()?
-            .children()
+            .structural_children()
             .take_while(|node| *node != *self)
             .last()
     }
 
     pub fn prev_named_sibling(&self) -> Option<Self> {
         self.parent()?
-            .children()
+            .structural_children()
             .take_while(|node| *node != *self)
             .filter(|node| node.is_named())
             .last()
@@ -423,12 +499,15 @@ impl<'tree> Node<'tree> {
 
     pub fn first_child_for_byte(&self, byte: usize) -> Option<Self> {
         let byte = byte as u32 as usize;
-        self.children().find(|node| node.end_byte() > byte)
+        self.structural_children()
+            .find(|node| node.end_byte() > byte)
     }
 
     pub fn first_named_child_for_byte(&self, byte: usize) -> Option<Self> {
         let byte = byte as u32 as usize;
-        self.named_children().find(|node| node.end_byte() > byte)
+        self.structural_children()
+            .filter(|node| node.is_named())
+            .find(|node| node.end_byte() > byte)
     }
 
     /// Read the constant-time attributes. Counts are separate operations.
@@ -451,11 +530,11 @@ impl<'tree> Node<'tree> {
         }
     }
 
-    pub fn walk(&self) -> Result<Cursor<'tree>, Error> {
-        Ok(Cursor {
+    pub fn walk(&self) -> TreeCursor<'tree> {
+        TreeCursor {
             node: *self,
             parents: Vec::new(),
-        })
+        }
     }
 
     pub fn descendant_for_byte_range(&self, start: usize, end: usize) -> Option<Self> {
@@ -506,7 +585,7 @@ impl<'tree> Node<'tree> {
     fn seek_descent<const POINTS: bool>(mut self, start: u64, end: u64, named: bool) -> Self {
         let mut result = self;
         loop {
-            let found = self.children().find(|child| {
+            let found = self.structural_children().find(|child| {
                 let child_start = child.start_key::<POINTS>();
                 let child_end = child.end_key::<POINTS>();
                 child_start <= start
@@ -659,7 +738,7 @@ fn start_delta_mask<S: Simd>(simd: S, deltas: &[u8], threshold: u8) -> u64 {
         .to_bitmask()
 }
 
-pub struct Children<'tree> {
+struct Children<'tree> {
     next: Option<Node<'tree>>,
 }
 
@@ -675,12 +754,31 @@ impl<'tree> Iterator for Children<'tree> {
 
 impl std::iter::FusedIterator for Children<'_> {}
 
-pub struct Cursor<'tree> {
+#[derive(Clone)]
+pub struct TreeCursor<'tree> {
     node: Node<'tree>,
     parents: Vec<SlotIx>,
 }
 
-impl<'tree> Cursor<'tree> {
+impl<'tree> TreeCursor<'tree> {
+    pub fn field_id(&self) -> Option<FieldId> {
+        if self.parents.is_empty() {
+            None
+        } else {
+            self.node.field_id()
+        }
+    }
+
+    pub fn field_name(&self) -> Option<&'tree str> {
+        self.field_id()
+            .and_then(|field| self.node.data().tables().field_name(field.get()))
+    }
+
+    pub fn reset_to(&mut self, cursor: &Self) {
+        self.node = cursor.node;
+        self.parents.clone_from(&cursor.parents);
+    }
+
     pub fn attributes(&mut self) -> traits::Attributes<'tree> {
         self.node.attributes()
     }
@@ -743,7 +841,7 @@ impl<'tree> Cursor<'tree> {
     pub fn goto_previous_sibling(&mut self) -> bool {
         let previous = self.parent_node().and_then(|parent| {
             parent
-                .children()
+                .structural_children()
                 .take_while(|node| *node != self.node)
                 .last()
         });
@@ -756,7 +854,7 @@ impl<'tree> Cursor<'tree> {
 
     /// Seek the first child ending after the byte, returning its child index.
     /// Can scan children. Failure leaves the cursor unchanged.
-    pub fn goto_first_child_for_byte(&mut self, byte: usize) -> Option<usize> {
+    pub fn goto_first_child_for_byte(&mut self, byte: usize) -> Option<ChildIx> {
         let byte = byte as u32 as usize;
         self.goto_child_matching(|node| {
             node.end_byte() > byte && node.end_position() > Point::default()
@@ -764,7 +862,7 @@ impl<'tree> Cursor<'tree> {
     }
 
     /// Point counterpart of `goto_first_child_for_byte`.
-    pub fn goto_first_child_for_point(&mut self, point: Point) -> Option<usize> {
+    pub fn goto_first_child_for_point(&mut self, point: Point) -> Option<ChildIx> {
         let point = PackedPoint::from_point_cast(point).point();
         self.goto_child_matching(|node| node.end_byte() > 0 && node.end_position() > point)
     }
@@ -772,15 +870,15 @@ impl<'tree> Cursor<'tree> {
     fn goto_child_matching(
         &mut self,
         mut matches: impl FnMut(Node<'tree>) -> bool,
-    ) -> Option<usize> {
+    ) -> Option<ChildIx> {
         let (index, child) = self
             .node
-            .children()
+            .structural_children()
             .enumerate()
             .find(|(_, node)| matches(*node))?;
         self.parents.push(self.node.slot());
         self.node = child;
-        Some(index)
+        Some(ChildIx::new(index as u32))
     }
 }
 

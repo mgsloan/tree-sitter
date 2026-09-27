@@ -223,17 +223,21 @@ fn shared_coordinates_narrow_like_tree_sitter() {
                 .first_child_for_byte(start)
                 .map(|node| node.byte_range())
         );
-        let mut cursor = root.walk().unwrap();
+        let mut cursor = root.walk();
         let mut native_cursor = expected.walk();
         assert_eq!(
-            cursor.goto_first_child_for_byte(start),
+            cursor
+                .goto_first_child_for_byte(start)
+                .map(|index| index.get() as usize),
             native_cursor.goto_first_child_for_byte(start)
         );
         let point = tree_sitter::Point::new(wrap, start);
         cursor.reset(root);
         native_cursor.reset(expected);
         assert_eq!(
-            cursor.goto_first_child_for_point(point),
+            cursor
+                .goto_first_child_for_point(point)
+                .map(|index| index.get() as usize),
             native_cursor.goto_first_child_for_point(point)
         );
     }

@@ -491,7 +491,7 @@ fn navigation_across_every_waste_boundary() {
                 }
             }
             assert!(tree.node_at_slot(SlotIx::new(3 * GROUP_SIZE)).is_none());
-            let mut cursor = tree.root_node().walk().unwrap();
+            let mut cursor = tree.root_node().walk();
             assert!(cursor.goto_first_child());
             for slot in expected.iter().skip(1) {
                 assert_eq!(cursor.node().slot(), *slot);

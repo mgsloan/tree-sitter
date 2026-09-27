@@ -894,7 +894,7 @@ fn validate(case: &Case) {
         root.preorder().rev().nodes().collect::<Vec<_>>(),
         preorder.iter().rev().copied().collect::<Vec<_>>()
     );
-    let mut cursor = root.walk().unwrap();
+    let mut cursor = root.walk();
     let mut postorder = Vec::new();
     'walk: loop {
         while cursor.goto_first_child() {}

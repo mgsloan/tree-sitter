@@ -27,9 +27,9 @@ fn parse(
     (native, packed)
 }
 
-// Cursor navigation is independent of the group scans.
+// TreeCursor navigation is independent of the group scans.
 fn reference_preorder(root: Node<'_>) -> Vec<Node<'_>> {
-    let mut cursor = root.walk().unwrap();
+    let mut cursor = root.walk();
     let mut nodes = Vec::new();
     loop {
         nodes.push(cursor.node());
@@ -128,7 +128,7 @@ fn orders_subtrees_groups_and_directions() {
         let expected = reference_preorder(root);
         check_pipeline(|| root.preorder(), &expected);
         check_pipeline(|| root.all(), &expected);
-        let mut cursor = root.walk().unwrap();
+        let mut cursor = root.walk();
         let mut postorder = Vec::new();
         loop {
             while cursor.goto_first_child() {}

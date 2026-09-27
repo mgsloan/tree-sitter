@@ -68,7 +68,7 @@ fn check_shared_navigation<'tree, N: NodeLike<'tree>>(
     root: N,
     fields: u16,
 ) -> Result<(), Box<dyn Error>> {
-    let mut cursor = root.walk()?;
+    let mut cursor = root.walk();
     let expected: Vec<_> = root.preorder().collect();
     let all_kinds = KindSet::new(expected.iter().map(|node| node.kind_id()));
     assert!(
@@ -143,9 +143,9 @@ fn check_shared_navigation<'tree, N: NodeLike<'tree>>(
             }
             assert!(cursor.goto_parent());
         }
-        assert!(node.children().collect::<Vec<_>>() == children);
+        assert!(node.children(&mut cursor).collect::<Vec<_>>() == children);
         assert!(
-            node.named_children().collect::<Vec<_>>()
+            node.named_children(&mut cursor).collect::<Vec<_>>()
                 == children
                     .iter()
                     .copied()
@@ -159,7 +159,11 @@ fn check_shared_navigation<'tree, N: NodeLike<'tree>>(
                 .zip(&child_fields)
                 .filter_map(|(&child, &actual)| (actual == Some(field)).then_some(child))
                 .collect();
-            assert!(node.children_by_field_id(field).collect::<Vec<_>>() == filtered);
+            assert!(
+                node.children_by_field_id(field, &mut cursor)
+                    .collect::<Vec<_>>()
+                    == filtered
+            );
         }
         for child in std::iter::once(node).chain(children.iter().copied().take(16)) {
             for byte in [child.start_byte(), child.end_byte(), usize::MAX] {
@@ -167,7 +171,12 @@ fn check_shared_navigation<'tree, N: NodeLike<'tree>>(
                 let expected_index = children.iter().position(|node| {
                     node.end_byte() > byte && node.end_position() > tree_sitter::Point::default()
                 });
-                assert_eq!(cursor.goto_first_child_for_byte(byte), expected_index);
+                assert_eq!(
+                    cursor
+                        .goto_first_child_for_byte(byte)
+                        .map(|index| index.get() as usize),
+                    expected_index
+                );
                 assert!(cursor.node() == expected_index.map_or(node, |index| children[index]));
                 assert_eq!(cursor.depth(), u32::from(expected_index.is_some()));
             }
@@ -180,7 +189,12 @@ fn check_shared_navigation<'tree, N: NodeLike<'tree>>(
                 let expected_index = children
                     .iter()
                     .position(|node| node.end_byte() > 0 && node.end_position() > point);
-                assert_eq!(cursor.goto_first_child_for_point(point), expected_index);
+                assert_eq!(
+                    cursor
+                        .goto_first_child_for_point(point)
+                        .map(|index| index.get() as usize),
+                    expected_index
+                );
                 assert!(cursor.node() == expected_index.map_or(node, |index| children[index]));
             }
         }

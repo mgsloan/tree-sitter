@@ -7,7 +7,7 @@ use tree_squatter::traits::{Attributes, CursorLike, NodeLike};
 pub type Identities<Id> = HashMap<Id, usize>;
 
 pub fn identities<'tree, N: NodeLike<'tree>>(root: N) -> Result<Identities<N::Id>> {
-    let mut cursor = root.walk()?;
+    let mut cursor = root.walk();
     let mut result = HashMap::new();
     loop {
         let ordinal = result.len();
@@ -40,7 +40,7 @@ pub fn attributes_match(expected: &Attributes<'_>, actual: &Attributes<'_>) -> b
 }
 
 fn scan_once<'tree, N: NodeLike<'tree>, const ATTRIBUTES: bool>(root: N) -> Result<usize> {
-    let mut cursor = root.walk()?;
+    let mut cursor = root.walk();
     let mut nodes = 0;
     loop {
         if ATTRIBUTES {
@@ -78,7 +78,7 @@ pub fn walk<'tree, N: NodeLike<'tree>>(
     root: N,
     ids: &Identities<N::Id>,
 ) -> Result<Vec<Record<'tree>>> {
-    let mut cursor = root.walk()?;
+    let mut cursor = root.walk();
     let mut records = Vec::with_capacity(ids.len());
     loop {
         let node = cursor.node();
@@ -134,7 +134,7 @@ fn visible_child_by_field<'tree, N: NodeLike<'tree>>(parent: N, field: u16) -> R
     if field == 0 || parent.attributes().is_error {
         return Ok(None);
     }
-    let mut cursor = parent.walk()?;
+    let mut cursor = parent.walk();
     if cursor.goto_first_child() {
         loop {
             if cursor.field_id().map(u16::from) == Some(field) {
@@ -167,8 +167,8 @@ pub fn relationships<'tree, A: NodeLike<'tree>, B: NodeLike<'tree>>(
     language: &Language,
     expected_fields: &mut usize,
 ) -> Result<()> {
-    let mut first = mainline.walk()?;
-    let mut second = squat.walk()?;
+    let mut first = mainline.walk();
+    let mut second = squat.walk();
     let stride = (mainline_ids.len() / 1000).max(1);
     let identity_a = |node: Option<A>| node.map(|node| mainline_ids[&node.id()]);
     let identity_b = |node: Option<B>| node.map(|node| squat_ids[&node.id()]);
