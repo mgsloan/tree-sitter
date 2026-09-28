@@ -500,6 +500,17 @@ void sq_test_external_lexer(void) {
   // A stateless zero-width token can advance the parse state, even at EOF.
   TFError error;
   assert(tf_parse(prepared, "", 0, NULL, NULL, &error));
+  TFParser *parser = tf_parser_new();
+  assert(parser);
+  TFLanguage *internal = tf_language_load_parser(&language, &message);
+  assert(internal);
+  for (unsigned iteration = 0; iteration < 2; iteration++) {
+    assert(tf_parser_parse(parser, prepared, "", 0, NULL, NULL, &error));
+    assert(tf_parser_parse(parser, internal, "\nx", 2, NULL, NULL, &error));
+    tf_parser_drop_scratch(parser);
+  }
+  tf_language_free(internal);
+  tf_parser_delete(parser);
   tf_language_free(prepared);
 
   // Zero-width extras are rejected unless their serialized state changes.

@@ -36,6 +36,7 @@ struct TFParser {
   TFSpec *spec;
   // Set on a private replay, which stops at this split's fork; see tf_spec__capture.
   TFSpec *capture;
+  TFScanner *scanner;
 };
 
 static bool tf_parser__grow(TFParser *self, uint32_t needed) {
@@ -271,6 +272,80 @@ static bool tf_parser__demote_keyword(const TFLanguage *lang, TSStateId state, T
 
 #include "tf_parser_spec.h"
 
+// Inline the loop twice so lexer selection costs nothing per token.
+static TF_ALWAYS_INLINE bool tf_parser__parse(TFParser *self, void **root,
+                                              bool (*lex)(TFLexer *, TSStateId, TFToken *)) {
+  const TFLanguage *lang = self->lang;
+  TFToken token = {0};
+
+  for (;;) {
+    TSStateId state = self->states[self->depth];
+    if (!lex(&self->lexer, state, &token)) {
+      tf_parser__fail(self, self->lexer.byte, self->lexer.point, "unexpected character");
+      return false;
+    }
+
+    // Reduce until the token can be shifted, or the parse ends.
+    for (;;) {
+      uint32_t count;
+      const TSParseAction *actions = tf_actions(lang, state, token.symbol, &count);
+      if (count == 0) {
+        if (tf_parser__demote_keyword(lang, state, &token, self->lexer.token_is_keyword)) {
+          continue;
+        }
+        tf_parser__fail_unexpected(self, state, &token);
+        return false;
+      }
+      if (count > 1) {
+        // The tables cannot decide here; work it out speculatively and replay.
+        if (!tf_parser__split(self, token, &token)) {
+          return false;
+        }
+        state = self->states[self->depth];
+        continue;
+      }
+
+      TSParseAction action = actions[0];
+      if (action.type == TSParseActionTypeShift) {
+        // An extra does not change the state (parser.c:1633).
+        if (!tf_parser__shift(self, &token, action.shift.extra,
+                              action.shift.extra ? state : action.shift.state)) {
+          goto oom;
+        }
+        break;
+      }
+
+      if (action.type == TSParseActionTypeReduce) {
+        if (!tf_parser__reduce(self, action.reduce.symbol, action.reduce.child_count,
+                               action.reduce.production_id, &token)) {
+          goto oom;
+        }
+        state = self->states[self->depth];
+        continue;
+      }
+
+      if (action.type == TSParseActionTypeAccept) {
+        // The root reduction already went to the sink, end token included. If a
+        // grammar ever reduces its root on another lookahead and still accepts,
+        // the root would be missing its trailing extras and end token.
+        assert(self->root_emitted);
+        if (root && self->leading < self->depth) {
+          *root = self->nodes[self->leading].value;
+        }
+        return true;
+      }
+
+      // TSParseActionTypeRecover: error recovery, which tree-feller does not do.
+      tf_parser__fail_unexpected(self, state, &token);
+      return false;
+    }
+  }
+
+oom:
+  tf_parser__fail(self, token.start_byte, token.start_point, "out of memory");
+  return false;
+}
+
 static bool tf_parser__run(const TFLanguage *lang, const void *source, size_t size,
                            TFInputState *input, const TFSink *sink, void **root, TFError *error,
                            TFSpec *capture, TFParser *storage) {
@@ -293,15 +368,16 @@ static bool tf_parser__run(const TFLanguage *lang, const void *source, size_t si
   if (input) tf_lexer_init_with_callback(&self.lexer, lang, input);
   else tf_lexer_init(&self.lexer, lang, source, (uint32_t)size);
   bool ok = false;
-  // Zeroed, so running out of memory before the first token reports byte 0.
-  TFToken token = {0};
   if (capture) capture->replay = &self;
   if (lang->ts->external_token_count) {
-    self.lexer.scanner = calloc(1, sizeof(TFScanner));
-    if (!self.lexer.scanner) goto oom;
-    if (lang->ts->external_scanner.create) {
-      self.lexer.scanner->payload = lang->ts->external_scanner.create();
-    }
+    if (!self.scanner) self.scanner = malloc(sizeof(TFScanner));
+    if (!self.scanner) goto oom;
+    self.lexer.scanner = self.scanner;
+    self.scanner->current = self.scanner->before = 0;
+    self.scanner->buffers[0].length = 0;
+    self.scanner->token_external = false;
+    self.scanner->payload = lang->ts->external_scanner.create
+                                ? lang->ts->external_scanner.create() : NULL;
   }
 
   if (!tf_parser__grow(&self, 64)) {
@@ -311,72 +387,12 @@ static bool tf_parser__run(const TFLanguage *lang, const void *source, size_t si
   // (stack.c:/ts_stack_new/, which seeds the base node with state 1).
   self.states[0] = 1;
 
-  for (;;) {
-    TSStateId state = self.states[self.depth];
-    if (!tf_lexer_next(&self.lexer, state, &token)) {
-      tf_parser__fail(&self, self.lexer.byte, self.lexer.point, "unexpected character");
-      goto done;
-    }
-
-    // Reduce until the token can be shifted, or the parse ends.
-    for (;;) {
-      uint32_t count;
-      const TSParseAction *actions = tf_actions(lang, state, token.symbol, &count);
-      if (count == 0) {
-        if (tf_parser__demote_keyword(lang, state, &token, self.lexer.token_is_keyword)) {
-          continue;
-        }
-        tf_parser__fail_unexpected(&self, state, &token);
-        goto done;
-      }
-      if (count > 1) {
-        // The tables cannot decide here; work it out speculatively and replay.
-        if (!tf_parser__split(&self, token, &token)) {
-          goto done;
-        }
-        state = self.states[self.depth];
-        continue;
-      }
-
-      TSParseAction action = actions[0];
-      if (action.type == TSParseActionTypeShift) {
-        // An extra does not change the state (parser.c:1633).
-        if (!tf_parser__shift(&self, &token, action.shift.extra,
-                              action.shift.extra ? state : action.shift.state)) {
-          goto oom;
-        }
-        break;
-      }
-
-      if (action.type == TSParseActionTypeReduce) {
-        if (!tf_parser__reduce(&self, action.reduce.symbol, action.reduce.child_count,
-                               action.reduce.production_id, &token)) {
-          goto oom;
-        }
-        state = self.states[self.depth];
-        continue;
-      }
-
-      if (action.type == TSParseActionTypeAccept) {
-        // The root reduction already went to the sink, end token included. If a
-        // grammar ever reduces its root on another lookahead and still accepts,
-        // the root would be missing its trailing extras and end token.
-        assert(self.root_emitted);
-        if (root && self.leading < self.depth) {
-          *root = self.nodes[self.leading].value;
-        }
-        ok = true;
-        goto done;
-      }
-
-      // TSParseActionTypeRecover: error recovery, which tree-feller does not do.
-      tf_parser__fail_unexpected(&self, state, &token);
-      goto done;
-    }
-  }
+  ok = self.lexer.scanner ? tf_parser__parse(&self, root, tf_lexer_next)
+                         : tf_parser__parse(&self, root, tf_lexer_next_internal);
+  goto done;
 
 oom:
-  tf_parser__fail(&self, token.start_byte, token.start_point, "out of memory");
+  tf_parser__fail(&self, 0, (TFPoint){0}, "out of memory");
 done:
   if (input && input->overflow) {
     tf_parser__fail(&self, self.lexer.byte, self.lexer.point, "input is larger than 4 GiB");
@@ -396,17 +412,18 @@ done:
     if (self.lexer.scanner->payload && lang->ts->external_scanner.destroy) {
       lang->ts->external_scanner.destroy(self.lexer.scanner->payload);
     }
-    free(self.lexer.scanner);
+    self.lexer.scanner->payload = NULL;
   }
   if (capture) capture->replay = NULL;
   if (storage) {
     // Retain allocations without pointers into this call's stack or source.
     *storage = (TFParser){.states = self.states, .nodes = self.nodes,
-                          .capacity = self.capacity, .spec = self.spec};
+                          .capacity = self.capacity, .spec = self.spec, .scanner = self.scanner};
     if (self.spec) self.spec->owner = NULL;
   } else {
     free(self.states);
     free(self.nodes);
+    free(self.scanner);
     tf_spec__free(self.spec);
   }
   return ok;
@@ -419,7 +436,7 @@ static void *tf_capture__shift(void *payload, const TFToken *token, bool extra) 
   TFSpec *s = payload;
   TFScanner *scanner = s->replay->lexer.scanner;
   uint32_t scanner_state = scanner && scanner->token_external
-                               ? tf_spec__save_scanner(s, &scanner->state) : 0;
+                               ? tf_spec__save_scanner(s, tf_scanner_state(scanner)) : 0;
   uint32_t id = tf_spec__tree(s, (TFSpecTree){.token = *token, .leaf = true, .extra = extra,
                                             .scanner_state = scanner_state,
                                             .external = scanner && scanner->token_external});
@@ -484,6 +501,7 @@ void tf_parser_drop_scratch(TFParser *self) {
   if (!self) return;
   free(self->states);
   free(self->nodes);
+  free(self->scanner);
   tf_spec__free(self->spec);
   *self = (TFParser){0};
 }

@@ -8,6 +8,12 @@
 
 #include "tf_language.h"
 
+#if defined(__GNUC__) || defined(__clang__)
+#define TF_ALWAYS_INLINE inline __attribute__((always_inline))
+#else
+#define TF_ALWAYS_INLINE inline
+#endif
+
 // Shared by private replays; no borrowed chunk survives another reader's calls.
 typedef struct {
   TFInput input;
@@ -23,10 +29,20 @@ typedef struct {
 
 typedef struct {
   void *payload;
-  // Lookahead is scanned before reductions and must not advance sibling branches.
-  TFScannerState state, before;
+  // The incoming buffer remains intact while scanning lookahead. Internal
+  // tokens leave current and before pointing to the same snapshot.
+  TFScannerState buffers[2];
+  uint8_t current, before;
   bool token_external;
 } TFScanner;
+
+static inline TFScannerState *tf_scanner_state(TFScanner *self) {
+  return &self->buffers[self->current];
+}
+
+static inline TFScannerState *tf_scanner_before(TFScanner *self) {
+  return &self->buffers[self->before];
+}
 
 typedef struct {
   // First member: the generated lex functions are handed this pointer and cast
@@ -72,5 +88,7 @@ void tf_lexer_seek(TFLexer *self, uint32_t byte, TFPoint point);
 // `extra` characters. Returns false if no token matches, leaving the position at
 // the offending character for the caller to report.
 bool tf_lexer_next(TFLexer *self, TSStateId state, TFToken *out);
+// For grammars without external tokens; excludes scanner dispatch and snapshots.
+bool tf_lexer_next_internal(TFLexer *self, TSStateId state, TFToken *out);
 
 #endif  // TF_LEXER_H
