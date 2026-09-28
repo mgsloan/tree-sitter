@@ -21,8 +21,8 @@ error behavior differs. A later fast path needs equivalent output and
 cancellation semantics.
 
 Rename the current `Parser` to `TreeFellerParser`. It remains the explicit direct
-backend: ABI 15 only, no external scanners or nonterminal extras, and no syntax
-error recovery. Keep its owned parse diagnostics and reusable scratch.
+backend: ABI 15 only, native external scanners supported, no nonterminal extras,
+and no syntax error recovery. Keep its owned parse diagnostics and reusable scratch.
 
 `tree_sitter::Parser` remains useful on its own. A shared `traits::Parse` trait lets
 generic callers parse contiguous or chunked UTF-8 input with any of the three
@@ -317,6 +317,38 @@ parses clear logical state and leave the parser reusable on a different source
 without reset. The direct callback also runs during packing. Its
 `is_converting()` and offset follow the same phase and input-node rules as
 `ParseState`; `Break(())` discards the partial packed tree.
+
+### External scanners
+
+Native scanners run before the generated lexer. Serialized state belongs to the
+parse branch: failed scans restore the input position, and speculative token
+caching, branch merging, and private replay preserve scanner snapshots. Without
+input progress, extras must change scanner state; ordinary tokens may advance
+parse state.
+
+The driver swaps two serialization buffers instead of copying state per token.
+Reusable parser scratch retains the buffers, while scanner payloads are created
+and destroyed per parse. External leaves share their snapshot slot with the
+child index, preserving the speculative tree record's size. The ordinary parse
+loop selects its lexer once per parse. The scanner-free variant omits scanner
+dispatch; both paths share source bodies.
+
+Cloud measurements on 2026-09-28 used `squatter-benchmark` (e2-standard-4,
+Intel Broadwell), CPU 2, matched LLD section-shuffle seeds 101–110, three
+repetitions, and balanced execution order. Against the initial scanner integration
+(`1939237ac`), the other optimizations without specialization reduced tiny Python
+raw parse time by 12.4%, improving every layout by 10.0–15.6%. These runs use a
+null sink; they do not establish a packed-output improvement.
+
+Specialization alone favored tiny raw parses in 8/10 layouts and scanner-free C
+in 7/10, in both comparisons. Aggregate reductions were 2.1–3.9% and 1.2–2.0%,
+respectively, but differences changed sign across layouts. Real Python and packed
+output showed no consistent benefit. Specialization is retained to remove
+scanner work from the ordinary scanner-free path; its measured tendency is
+favorable for tiny and C raw parses, without an established layout-independent
+speedup. It adds about 1.4 KiB of raw-parser machine code, or 0.8–1.2 KiB in the
+packed benchmark build. Detailed local artifacts are in
+`build/external-scanners/bench/cloud/`.
 
 ## Implementation order and checks
 
