@@ -469,6 +469,63 @@ fn direct_parser_matches_mainline_packing() -> Result<(), Box<dyn Error>> {
 }
 
 #[test]
+fn direct_parser_external_scanner_matches_python() -> Result<(), Box<dyn Error>> {
+    use tree_squatter::{Language, PackedParseOptions, TreeFellerParser};
+
+    let language = unsafe {
+        tree_sitter::Language::from_raw(tree_sitter_python::LANGUAGE.into_raw()().cast())
+    };
+    let grammar = Language::new(&language)?;
+    let mut mainline = tree_sitter::Parser::new();
+    mainline.set_language(&language)?;
+    let mut parser = TreeFellerParser::new(&grammar)?;
+    for source in [
+        "",
+        "# comment only\n",
+        "if True:\n    if False:\n        pass\n    else:\n        pass\nx = 1\n",
+        "def f(value):\n\treturn f'hello {value!r:>10} π😀'\n",
+        "text = f'outer {f\"inner {value}\"} end'\n",
+        "text = r'''multiline\nπ😀 \"quoted\" text\n'''\n",
+        "text = f'''multiline\n{value + 1}\n'''\n",
+        "values = [\n  item for item in source\n  if item\n]\n",
+        "if True:\n    # comment\n    pass",
+        "if True:\n    if True:\n        pass",
+        "text = 'a' \\\n    'b'\n",
+        "match value:\n    case [first, *rest]:\n        pass\n",
+    ] {
+        let native = mainline.parse(source, None).ok_or("parse failed")?;
+        assert!(!native.root_node().has_error(), "{source}");
+        let expected = Tree::pack(&grammar, &native)?;
+        let actual = parser.parse(source)?;
+        for (left, right) in actual
+            .root_node()
+            .preorder()
+            .nodes()
+            .zip(expected.root_node().preorder().nodes())
+        {
+            assert_eq!(
+                (left.kind(), left.byte_range()),
+                (right.kind(), right.byte_range()),
+                "{source:?}"
+            );
+        }
+        assert_same_tree(&actual, &expected);
+        for chunk_size in [1, 3, 8] {
+            let actual = parser.parse_with_options(
+                &mut |byte, _| {
+                    source.as_bytes()[byte..(byte + chunk_size).min(source.len())].to_vec()
+                },
+                PackedParseOptions::default(),
+            )?;
+            assert_same_tree(&actual, &expected);
+        }
+    }
+    assert!(parser.parse("text = f'unterminated {").is_err());
+    assert!(parser.parse("text = f'fresh {value}'").is_ok());
+    Ok(())
+}
+
+#[test]
 fn direct_parser_rejects_unsupported_grammar() -> Result<(), Box<dyn Error>> {
     use tree_squatter::{Error as SquatError, Language};
 

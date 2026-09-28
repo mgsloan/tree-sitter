@@ -7,5 +7,7 @@
 // - tf_language.c separates driver tables from optional visible-sink metadata.
 // - tree_feller.h, tf_lexer.*, tf_parser.c, and tf_parser_spec.h support callback
 //   input with split UTF-8 decoding and buffer invalidation across private replays.
+// - tf_language.c, tf_lexer.*, tf_parser.c, and tf_parser_spec.h support native
+//   external scanners, including branch snapshots and private replay.
 // Other upstream sources are unmodified. See LICENSE for MIT terms.
 // Only tf_language.c, tf_lexer.c, and tf_parser.c are linked by tree-squatter.

@@ -7,8 +7,10 @@ unsafe extern "C" {
     fn sq_test_grammar_limits();
     fn sq_test_lexer_fallback();
     fn sq_test_chunked_lexer();
+    fn sq_test_external_lexer();
     fn sq_test_unsupported_parsers();
     fn sq_test_parser_language() -> *const c_void;
+    fn sq_test_external_language(branches: bool) -> *const c_void;
     fn sq_test_ambiguous_language() -> *const c_void;
     fn sq_test_supertypes(count: u32, connected: bool) -> *const c_void;
     fn sq_test_supertypes_delete(language: *const c_void);
@@ -184,6 +186,55 @@ fn callback_input_during_ambiguity_replay() {
         parser.parse(source).unwrap().as_bytes(),
         expected.as_bytes()
     );
+}
+
+#[test]
+fn external_scanners_preserve_state_across_branches_and_replay() {
+    unsafe { sq_test_external_lexer() };
+    for (branches, source) in [
+        (false, &b"a + b + c + d + a + b + c + d\n"[..]),
+        (true, &b"a:x!"[..]),
+    ] {
+        let pointer = unsafe { sq_test_external_language(branches) };
+        let fixture = unsafe { Fixture::new(pointer, sq_test_supertypes_delete) };
+        let mut mainline = tree_sitter::Parser::new();
+        mainline
+            .set_language(&fixture.grammar.tree_sitter_language())
+            .unwrap();
+        let native = mainline.parse(source, None).unwrap();
+        assert!(!native.root_node().has_error());
+        let expected = Tree::pack(&fixture.grammar, &native).unwrap();
+        let mut parser = TreeFellerParser::new(&fixture.grammar).unwrap();
+        for chunk_size in 1..=8 {
+            let mut maximum = 0;
+            let mut replays = 0;
+            let actual = parser
+                .parse_with_options(
+                    &mut |byte, _| {
+                        if byte == 0 && maximum > 0 {
+                            replays += 1;
+                        }
+                        maximum = maximum.max(byte);
+                        source[byte..(byte + chunk_size).min(source.len())].to_vec()
+                    },
+                    PackedParseOptions::default(),
+                )
+                .unwrap();
+            if !branches {
+                assert!(replays > 0);
+            }
+            assert_eq!(actual.as_bytes(), expected.as_bytes());
+            assert_eq!(
+                actual.point_data().unwrap().as_bytes(),
+                expected.point_data().unwrap().as_bytes()
+            );
+            assert!(parser.parse("invalid").is_err());
+            assert_eq!(
+                parser.parse(source).unwrap().as_bytes(),
+                expected.as_bytes()
+            );
+        }
+    }
 }
 
 #[test]

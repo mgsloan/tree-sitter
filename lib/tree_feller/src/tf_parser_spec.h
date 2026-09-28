@@ -24,8 +24,8 @@
 
 // Value-free graph-structured stacks for speculative parsing. Included by
 // tf_parser.c so the ordinary shift/reduce path and its sink remain private.
-// The algorithms follow tree-sitter 0.27's stack.c and parser.c; error recovery,
-// incremental reuse, and external scanners are deliberately absent.
+// The algorithms follow tree-sitter 0.27's stack.c and parser.c; error recovery
+// and incremental reuse are deliberately absent.
 #ifndef TF_PARSER_SPEC_H
 #define TF_PARSER_SPEC_H
 
@@ -41,17 +41,19 @@
 #define TF_NOINLINE
 #endif
 
-// Ordered so the small fields fill the hole ahead of `precedence`: 56 bytes
-// rather than 64, over an arena that is one entry per speculative shift and
-// reduction. `structural_count` is a production's child count, which the ABI
-// itself stores in a uint8_t.
+// `structural_count` is a production's child count, which the ABI stores in a uint8_t.
 typedef struct {
   TFToken token;
   uint32_t padding_start;
-  uint32_t first_child, child_count;
+  // Leaves have no children, so scanner snapshots need no extra tree storage.
+  union {
+    uint32_t first_child;
+    uint32_t scanner_state;
+  };
+  uint32_t child_count;
   uint16_t production_id;
   uint8_t structural_count;
-  bool leaf, extra, inherited, opaque;
+  bool leaf, extra, inherited, opaque, external;
   int64_t precedence;
 } TFSpecTree;
 
@@ -69,7 +71,7 @@ typedef struct {
   uint8_t link_count, link_capacity;
 } TFSpecNode;
 typedef struct {
-  uint32_t node;
+  uint32_t node, scanner_state;
   bool halted, errored;
 } TFSpecHead;
 typedef struct {
@@ -108,7 +110,12 @@ struct TFSpec {
   uint32_t capture_capacity;
   uint32_t frontier, prefix_left, prefix_depth;
   bool failed, materialized, captured;
-  TFParser *owner;
+  TFParser *owner, *replay;
+  // Length-prefixed snapshots, discarded at the next split. Offset 0 is empty.
+  char *scanner_states;
+  uint32_t scanner_length, scanner_capacity;
+  uint32_t cached_before, cached_after;
+  bool cached_external;
   uint32_t fork_byte;
   TFToken cached;
   uint32_t cached_byte;
@@ -168,7 +175,42 @@ static void tf_spec__free(TFSpec *s) {
   free(s->scratch);
   free(s->prefix_tree);
   free(s->capture_id);
+  free(s->scanner_states);
   free(s);
+}
+
+static uint32_t tf_spec__save_scanner(TFSpec *s, const TFScannerState *state) {
+  if (!state->length) return 0;
+  uint32_t size = sizeof(state->length) + state->length;
+  if (size > UINT32_MAX - s->scanner_length ||
+      !TF_SPEC_RESERVE(s, scanner_states, scanner_capacity, s->scanner_length + size)) {
+    s->failed = true;
+    return 0;
+  }
+  uint32_t offset = s->scanner_length;
+  memcpy(s->scanner_states + offset, &state->length, sizeof(state->length));
+  memcpy(s->scanner_states + offset + sizeof(state->length), state->data, state->length);
+  s->scanner_length += size;
+  return offset;
+}
+
+static void tf_spec__load_scanner(const TFSpec *s, uint32_t offset, TFScannerState *state) {
+  state->length = 0;
+  if (offset) {
+    memcpy(&state->length, s->scanner_states + offset, sizeof(state->length));
+    memcpy(state->data, s->scanner_states + offset + sizeof(state->length), state->length);
+  }
+}
+
+static bool tf_spec__same_scanner(const TFSpec *s, uint32_t left, uint32_t right) {
+  if (left == right) return true;
+  if (!left || !right) return false;
+  uint32_t left_length, right_length;
+  memcpy(&left_length, s->scanner_states + left, sizeof(left_length));
+  memcpy(&right_length, s->scanner_states + right, sizeof(right_length));
+  return left_length == right_length &&
+         !memcmp(s->scanner_states + left + sizeof(left_length),
+                 s->scanner_states + right + sizeof(right_length), left_length);
 }
 
 static uint32_t tf_spec__tree(TFSpec *s, TFSpecTree tree) {
@@ -184,11 +226,11 @@ static uint32_t tf_spec__tree(TFSpec *s, TFSpecTree tree) {
   return s->tree_count++;
 }
 
-static uint32_t tf_spec__head(TFSpec *s, uint32_t node) {
+static uint32_t tf_spec__head(TFSpec *s, uint32_t node, uint32_t scanner_state) {
   if (!TF_SPEC_RESERVE(s, heads, head_capacity, s->head_count + 1)) {
     return TF_SPEC_NONE;
   }
-  s->heads[s->head_count] = (TFSpecHead){.node = node};
+  s->heads[s->head_count] = (TFSpecHead){.node = node, .scanner_state = scanner_state};
   return s->head_count++;
 }
 
@@ -240,6 +282,8 @@ static void tf_spec__resolve(TFSpec *s, uint32_t k) {
   s->trees[slot].first_child = s->trees[id].first_child;
   s->trees[slot].child_count = s->trees[id].child_count;
   s->trees[slot].opaque = false;
+  s->trees[slot].leaf = s->trees[id].leaf;
+  s->trees[slot].external = s->trees[id].external;
 }
 
 // The real stack below the fork is one chain, so it only has to become graph
@@ -314,7 +358,9 @@ static bool tf_spec__equivalent(TFSpec *s, uint32_t a, uint32_t b) {
   if ((x.opaque || y.opaque) && !tf_spec__materialize(s)) {
     return false;
   }
-  return s->trees[a].child_count == s->trees[b].child_count;
+  return s->trees[a].child_count == s->trees[b].child_count &&
+         tf_spec__same_scanner(s, s->trees[a].external ? s->trees[a].scanner_state : 0,
+                              s->trees[b].external ? s->trees[b].scanner_state : 0);
 }
 
 static void tf_spec__add_link(TFSpec *s, uint32_t target, TFSpecLink link);
@@ -398,7 +444,8 @@ static void tf_spec__add_link(TFSpec *s, uint32_t target, TFSpecLink link) {
 static bool tf_spec__merge(TFSpec *s, uint32_t a, uint32_t b) {
   TFSpecHead x = s->heads[a], y = s->heads[b];
   if (x.halted || y.halted || s->nodes[x.node].state != s->nodes[y.node].state ||
-      s->nodes[x.node].byte != s->nodes[y.node].byte) {
+      s->nodes[x.node].byte != s->nodes[y.node].byte ||
+      !tf_spec__same_scanner(s, x.scanner_state, y.scanner_state)) {
     return false;
   }
   tf_spec__absorb(s, x.node, y.node);
@@ -503,7 +550,7 @@ static void tf_spec__pop(TFSpec *s, uint32_t version, uint32_t goal) {
           n = step.node;
         }
         s->child_count += walked;
-        uint32_t v = tf_spec__head(s, node);
+        uint32_t v = tf_spec__head(s, node, s->heads[version].scanner_state);
         if (s->failed) {
           return;
         }
@@ -555,7 +602,7 @@ static void tf_spec__pop(TFSpec *s, uint32_t version, uint32_t goal) {
           }
         }
         if (v == TF_SPEC_NONE) {
-          v = tf_spec__head(s, current.node);
+          v = tf_spec__head(s, current.node, s->heads[version].scanner_state);
         }
         if (s->failed) {
           return;
@@ -676,24 +723,40 @@ static void tf_spec__error(TFSpec *s, uint32_t byte, TFPoint point, TSStateId st
 }
 
 // parser.c:ts_parser__can_reuse_first_leaf and ts_parser__get_cached_token.
-static bool tf_spec__lex(TFSpec *s, TFParser *p, uint32_t node, TFToken *token, bool *keyword) {
+static bool tf_spec__lex(TFSpec *s, TFParser *p, uint32_t node, uint32_t scanner_state,
+                         TFToken *token, bool *keyword) {
   TFSpecNode n = s->nodes[node];
-  if (s->has_cache && s->cached_byte == n.byte) {
+  if (s->has_cache && s->cached_byte == n.byte &&
+      tf_spec__same_scanner(s, s->cached_before, scanner_state)) {
     uint32_t count;
     tf_actions(p->lang, n.state, s->cached.symbol, &count);
     TSLexerMode a = tf_lex_mode(p->lang, n.state), b = tf_lex_mode(p->lang, s->cached_state);
     bool reusable = count && memcmp(&a, &b, sizeof(a)) == 0 &&
                     (s->cached.symbol != p->lang->ts->keyword_capture_token ||
                      (!s->cached_keyword && s->cached_state == n.state));
-    if (!reusable && (s->cached.end_byte > s->cached.start_byte || s->cached.symbol == 0)) {
+    if (!reusable && a.external_lex_state == 0 &&
+        (s->cached.end_byte > s->cached.start_byte || s->cached.symbol == 0)) {
       reusable =
           p->lang->ts->parse_actions[tf_lookup(p->lang, n.state, s->cached.symbol)].entry.reusable;
     }
     if (reusable) {
       *token = s->cached;
       *keyword = s->cached_keyword;
+      if (p->lexer.scanner) {
+        TFScanner *scanner = p->lexer.scanner;
+        scanner->before = 0;
+        scanner->current = s->cached_external;
+        tf_spec__load_scanner(s, scanner_state, tf_scanner_before(scanner));
+        if (s->cached_external) {
+          tf_spec__load_scanner(s, s->cached_after, tf_scanner_state(scanner));
+        }
+        scanner->token_external = s->cached_external;
+      }
       return true;
     }
+  }
+  if (p->lexer.scanner) {
+    tf_spec__load_scanner(s, scanner_state, tf_scanner_state(p->lexer.scanner));
   }
   tf_lexer_seek(&p->lexer, n.byte, n.point);
   if (!tf_lexer_next(&p->lexer, n.state, token)) {
@@ -701,6 +764,12 @@ static bool tf_spec__lex(TFSpec *s, TFParser *p, uint32_t node, TFToken *token, 
     return false;
   }
   *keyword = p->lexer.token_is_keyword;
+  s->cached_before = s->cached_after = scanner_state;
+  s->cached_external = p->lexer.scanner && p->lexer.scanner->token_external;
+  if (s->cached_external) {
+    s->cached_after = tf_spec__save_scanner(s, tf_scanner_state(p->lexer.scanner));
+    if (s->failed) return false;
+  }
   s->cached = *token;
   s->cached_byte = n.byte;
   s->cached_state = n.state;
@@ -777,11 +846,14 @@ static void tf_spec__accept(TFSpec *s, uint32_t version, TFToken eof) {
 static void tf_spec__advance(TFSpec *s, TFParser *p, uint32_t version) {
   TFToken token;
   bool keyword;
-  if (!tf_spec__lex(s, p, s->heads[version].node, &token, &keyword)) {
+  if (!tf_spec__lex(s, p, s->heads[version].node, s->heads[version].scanner_state,
+                    &token, &keyword)) {
     s->heads[version].halted = true;
     s->heads[version].errored = true;
     return;
   }
+  uint32_t scanner_after = s->cached_after;
+  bool external = s->cached_external;
   for (;;) {
     TSStateId state = s->nodes[s->heads[version].node].state;
     uint32_t count, last = TF_SPEC_NONE;
@@ -794,12 +866,15 @@ static void tf_spec__advance(TFSpec *s, TFParser *p, uint32_t version) {
         uint32_t leaf = tf_spec__tree(s, (TFSpecTree){.token = token,
                                                       .padding_start = s->nodes[top].byte,
                                                       .extra = action.shift.extra,
+                                                      .external = external,
+                                                      .scanner_state = external ? scanner_after : 0,
                                                       .leaf = true});
         if (s->failed) {
           return;
         }
         s->heads[version].node =
             tf_spec__push(s, top, leaf, action.shift.extra ? state : action.shift.state);
+        s->heads[version].scanner_state = scanner_after;
         return;
       }
       if (action.type == TSParseActionTypeReduce) {
@@ -909,6 +984,12 @@ TF_NOINLINE static bool tf_spec__replay(TFSpec *s, TFParser *p, uint32_t first, 
         TSStateId state = p->states[p->depth];
         TFToken token = tree->token;
         bool extra = tree->extra;
+        if (p->lexer.scanner) {
+          p->lexer.scanner->token_external = tree->external;
+          if (tree->external) {
+            tf_spec__load_scanner(s, tree->scanner_state, tf_scanner_state(p->lexer.scanner));
+          }
+        }
         if (!tf_parser__shift(p, &token, extra,
                               extra ? state : tf_next_state(p->lang, state, token.symbol))) {
           return false;
@@ -970,12 +1051,20 @@ static bool tf_parser__split(TFParser *p, TFToken token, TFToken *next) {
     }
   }
   TFSpec *s = p->spec;
+  s->scanner_length = 1;
+  s->cached_before = s->cached_after = 0;
+  s->cached_external = p->lexer.scanner && p->lexer.scanner->token_external;
   s->tree_count = 0;
   s->node_count = 0;
   s->link_count = 0;
   s->head_count = 0;
   s->child_count = 0;
   s->failed = false;
+  if (p->lexer.scanner) {
+    s->cached_before = tf_spec__save_scanner(s, tf_scanner_before(p->lexer.scanner));
+    s->cached_after = tf_spec__save_scanner(s, tf_scanner_state(p->lexer.scanner));
+    if (s->failed) goto oom;
+  }
   s->has_error = false;
   s->finished = TF_SPEC_NONE;
   s->owner = p;
@@ -1000,8 +1089,8 @@ static bool tf_parser__split(TFParser *p, TFToken token, TFToken *next) {
                    .point = p->depth ? p->nodes[p->depth - 1].end_point : (TFPoint){0, 0}};
   s->node_count = 1;
   s->frontier = 0;
-  uint32_t top = 0;
-  tf_spec__head(s, top);
+  uint32_t top = 0, scanner_state = 0;
+  tf_spec__head(s, top, s->cached_before);
   if (s->failed) {
     goto oom;
   }
@@ -1041,6 +1130,7 @@ static bool tf_parser__split(TFParser *p, TFToken token, TFToken *next) {
     }
     if (s->head_count == 1 && s->finished == TF_SPEC_NONE && tf_spec__unique(s, s->heads[0].node)) {
       top = s->heads[0].node;
+      scanner_state = s->heads[0].scanner_state;
       tf_spec__pop(s, 0, TF_SPEC_NONE);
       if (s->failed) {
         goto oom;
@@ -1064,6 +1154,7 @@ static bool tf_parser__split(TFParser *p, TFToken token, TFToken *next) {
     // Only now are the trailing extras on the stack, so the root is reduced here,
     // with the end token as lookahead, as the ordinary loop would.
     const TFSpecTree *root = &s->trees[s->finished];
+    if (p->lexer.scanner) p->lexer.scanner->token_external = false;
     if (!tf_parser__reduce(p, root->token.symbol, root->structural_count, root->production_id,
                            next)) {
       goto oom;
@@ -1071,7 +1162,7 @@ static bool tf_parser__split(TFParser *p, TFToken token, TFToken *next) {
     tf_lexer_seek(&p->lexer, next->end_byte, next->end_point);
   } else {
     bool keyword;
-    if (!tf_spec__lex(s, p, top, next, &keyword)) {
+    if (!tf_spec__lex(s, p, top, scanner_state, next, &keyword)) {
       tf_parser__fail(p, s->error_byte, s->error_point, "unexpected character");
       return false;
     }

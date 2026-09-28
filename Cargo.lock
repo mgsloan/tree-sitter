@@ -2554,6 +2554,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "tree-sitter-python"
+version = "0.25.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6bf85fd39652e740bf60f46f4cda9492c3a9ad75880575bf14960f775cb74a1c"
+dependencies = [
+ "cc",
+ "tree-sitter-language 0.1.5",
+]
+
+[[package]]
 name = "tree-sitter-tags"
 version = "0.28.0"
 dependencies = [
@@ -2585,6 +2595,7 @@ dependencies = [
  "tree-sitter-c",
  "tree-sitter-c-sharp",
  "tree-sitter-json",
+ "tree-sitter-python",
  "xxhash-rust",
 ]
 
