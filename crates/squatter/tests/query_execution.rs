@@ -601,6 +601,9 @@ fn query_edge_cases_match_tree_sitter() {
             "(array (number)? @first (number)* @rest)".to_owned(),
             "(array . (number) @first . (number) @second . (number) @third .) @array".to_owned(),
             "((number) @first (number) @second)".to_owned(),
+            "(\"[\" @open \"]\" @close) (\"{\" @open \"}\" @close)".to_owned(),
+            "(array (number))".to_owned(),
+            "(array (number) @number)".to_owned(),
             "(not_a_real_symbol) @invalid".to_owned(),
             "(_".to_owned(),
             "(_) @".to_owned(),
@@ -649,7 +652,7 @@ fn query_edge_cases_match_tree_sitter() {
                     _ => panic!("compilation differs: {pattern}"),
                 };
                 for optimized in [false, true] {
-                    for mode in 0..8 {
+                    for mode in 0..15 {
                         let mut reference = tree_sitter::QueryCursor::new();
                         let mut cursor = QueryCursor::new();
                         cursor.set_optimized(optimized);
@@ -683,6 +686,44 @@ fn query_edge_cases_match_tree_sitter() {
                             7 => {
                                 reference.set_byte_range(100..101);
                                 cursor.set_byte_range(100..101);
+                            }
+                            8 => {
+                                reference.set_containing_byte_range(1..12);
+                                cursor.set_containing_byte_range(1..12);
+                            }
+                            9 => {
+                                reference
+                                    .set_containing_point_range(Point::new(0, 1)..Point::new(1, 0));
+                                cursor
+                                    .set_containing_point_range(Point::new(0, 1)..Point::new(1, 0));
+                            }
+                            10 => {
+                                reference.set_containing_byte_range(4..4);
+                                cursor.set_containing_byte_range(4..4);
+                            }
+                            11 => {
+                                reference
+                                    .set_containing_byte_range(1..12)
+                                    .set_containing_point_range(Point::new(1, 0)..Point::new(2, 0));
+                                cursor
+                                    .set_containing_byte_range(1..12)
+                                    .set_containing_point_range(Point::new(1, 0)..Point::new(2, 0));
+                            }
+                            12 => {
+                                reference.set_containing_byte_range(100..101);
+                                cursor.set_containing_byte_range(100..101);
+                            }
+                            13 => {
+                                reference.set_containing_byte_range(1..source.len());
+                                cursor.set_containing_byte_range(1..source.len());
+                            }
+                            14 => {
+                                reference
+                                    .set_containing_point_range(Point::new(1, 2)..Point::new(1, 2))
+                                    .set_byte_range(1..12);
+                                cursor
+                                    .set_containing_point_range(Point::new(1, 2)..Point::new(1, 2))
+                                    .set_byte_range(1..12);
                             }
                             _ => {}
                         }
@@ -799,6 +840,153 @@ fn query_edge_cases_match_tree_sitter() {
                 }
             }
         }
+    }
+}
+
+#[test]
+fn containing_ranges_combine_with_intersecting_ranges() {
+    use tree_sitter::{Point, StreamingIterator};
+
+    let source = "[\n [10,20],\n [30,40],\n [50,60]\n]";
+    let (grammar, tree) = json_query_tree(source);
+    let start = source.find("[30").unwrap();
+    let end = start + "[30,40]".len();
+    for pattern in [
+        "(array . (number) @first . (number) @last .)",
+        "((number) @first (number) @last)",
+    ] {
+        let query = Query::new(&grammar, pattern).unwrap();
+        for optimized in [false, true] {
+            let mut cursor = QueryCursor::new();
+            cursor.set_optimized(optimized);
+            cursor
+                .set_containing_byte_range(0..end)
+                .set_containing_point_range(Point::new(2, 0)..Point::new(0, 0))
+                .set_byte_range(start + 1..start + 3)
+                .set_point_range(Point::new(2, 2)..Point::new(2, 4));
+            {
+                let mut matches = cursor.matches(&query, tree.root_node(), source.as_bytes());
+                let found = matches.next().unwrap();
+                assert_eq!(
+                    found
+                        .captures()
+                        .iter()
+                        .map(|capture| &source[capture.node.byte_range()])
+                        .collect::<Vec<_>>(),
+                    ["30", "40"],
+                    "{pattern}, optimized={optimized}"
+                );
+                assert!(matches.next().is_none());
+            }
+            {
+                let mut captures = cursor.captures(&query, tree.root_node(), source.as_bytes());
+                let (found, index) = captures.next().unwrap();
+                assert_eq!(
+                    &source[found.captures()[index.0 as usize].node.byte_range()],
+                    "30"
+                );
+                assert!(captures.next().is_none());
+            }
+
+            // The uncaptured array root must also fit inside the containing range.
+            let rooted = Query::new(&grammar, "(array (number) @number)").unwrap();
+            cursor.set_containing_byte_range(start + 1..end - 1);
+            assert!(
+                cursor
+                    .matches(&rooted, tree.root_node(), source.as_bytes())
+                    .next()
+                    .is_none()
+            );
+            cursor
+                .set_containing_byte_range(0..0)
+                .set_containing_point_range(Point::new(0, 0)..Point::new(0, 0))
+                .set_byte_range(0..0)
+                .set_point_range(Point::new(0, 0)..Point::new(0, 0));
+            assert_eq!(
+                cursor
+                    .matches(&rooted, tree.root_node(), source.as_bytes())
+                    .count(),
+                6
+            );
+        }
+    }
+}
+
+#[test]
+fn containing_ranges_include_missing_nodes_at_the_end() {
+    use tree_sitter::{Point, StreamingIterator};
+
+    let language =
+        unsafe { tree_sitter::Language::from_raw(tree_sitter_c::LANGUAGE.into_raw()().cast()) };
+    let grammar = Language::new(&language).unwrap();
+    let mut parser = tree_sitter::Parser::new();
+    parser.set_language(&language).unwrap();
+    let source = "int f() { return 1 }";
+    let native = parser.parse(source, None).unwrap();
+    let tree = Tree::pack(&grammar, &native).unwrap();
+    let missing = tree
+        .root_node()
+        .preorder()
+        .nodes()
+        .find(|node| node.is_missing())
+        .unwrap();
+    let end = missing.end_byte();
+    let query = Query::new(&grammar, "\";\" @semicolon").unwrap();
+    let reference_query = tree_sitter::Query::new(&language, "\";\" @semicolon").unwrap();
+    for optimized in [false, true] {
+        for points in [false, true] {
+            for range in [0..end, end..end, end..0, end + 1..0] {
+                let mut cursor = QueryCursor::new();
+                let mut reference = tree_sitter::QueryCursor::new();
+                cursor.set_optimized(optimized);
+                if points {
+                    let range = Point::new(0, range.start)..Point::new(0, range.end);
+                    cursor.set_containing_point_range(range.clone());
+                    reference.set_containing_point_range(range);
+                } else {
+                    cursor.set_containing_byte_range(range.clone());
+                    reference.set_containing_byte_range(range.clone());
+                }
+                let expected = reference
+                    .matches(&reference_query, native.root_node(), source.as_bytes())
+                    .count();
+                let actual = cursor
+                    .matches(&query, tree.root_node(), source.as_bytes())
+                    .count();
+                assert_eq!(
+                    actual, expected,
+                    "{range:?}, points={points}, optimized={optimized}"
+                );
+                assert_eq!(actual, usize::from(range.start == 0));
+            }
+        }
+    }
+}
+
+#[test]
+fn containing_ranges_finish_deferred_matches_in_error_subtrees() {
+    use tree_squatter::StreamingIterator;
+
+    let language =
+        unsafe { tree_sitter::Language::from_raw(tree_sitter_c::LANGUAGE.into_raw()().cast()) };
+    let grammar = Language::new(&language).unwrap();
+    let mut parser = tree_sitter::Parser::new();
+    parser.set_language(&language).unwrap();
+    let source = "[\n  1, 2,\n  3, true,\n  [4, 5]\n]\n";
+    let tree = Tree::parse(&grammar, &mut parser, source).unwrap();
+    let query = Query::new(&grammar, "(_ (_)* @children) @parent").unwrap();
+    for optimized in [false, true] {
+        let mut cursor = QueryCursor::new();
+        cursor.set_optimized(optimized);
+        cursor.set_containing_byte_range(1..12).set_byte_range(4..5);
+        let mut matches = cursor.matches(&query, tree.root_node(), source.as_bytes());
+        // Tree-sitter drops this deferred match when hidden traversal skips the
+        // enclosing exit events. Squatter finishes it when exiting the parent.
+        assert_eq!(
+            matches.next().unwrap().captures()[0].node.byte_range(),
+            4..5
+        );
+        assert!(matches.next().is_none());
     }
 }
 
@@ -1674,12 +1862,29 @@ fn cursor_and_iterator_ranges_narrow_validate_and_persist() {
     }
     for optimized in [false, true] {
         for range in ranges.clone() {
-            for points in [false, true] {
+            for (points, containing) in [(false, false), (true, false), (false, true), (true, true)]
+            {
                 let mut reference = tree_sitter::QueryCursor::new();
                 let mut cursor = QueryCursor::new();
                 cursor.set_optimized(optimized);
                 // Reversed ranges must keep a previously stored restriction.
-                if points {
+                if containing && points {
+                    reference.set_containing_point_range(Point::new(0, 3)..Point::new(0, 6));
+                    cursor.set_containing_point_range(Point::new(0, 3)..Point::new(0, 6));
+                    reference.set_containing_point_range(
+                        Point::new(0, range.start)..Point::new(0, range.end),
+                    );
+                    cursor.set_containing_point_range(
+                        Point::new(0, range.start)..Point::new(0, range.end),
+                    );
+                } else if containing {
+                    reference
+                        .set_containing_byte_range(3..6)
+                        .set_containing_byte_range(range.clone());
+                    cursor
+                        .set_containing_byte_range(3..6)
+                        .set_containing_byte_range(range.clone());
+                } else if points {
                     reference.set_point_range(Point::new(0, 3)..Point::new(0, 6));
                     cursor.set_point_range(Point::new(0, 3)..Point::new(0, 6));
                     reference.set_point_range(Point::new(0, range.start)..Point::new(0, range.end));
@@ -1704,7 +1909,7 @@ fn cursor_and_iterator_ranges_narrow_validate_and_persist() {
                 }
                 assert_eq!(
                     actual, expected,
-                    "{range:?}, points={points}, optimized={optimized}"
+                    "{range:?}, points={points}, containing={containing}, optimized={optimized}"
                 );
             }
         }

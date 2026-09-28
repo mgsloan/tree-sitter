@@ -470,6 +470,30 @@ impl Default for QueryRange {
 }
 
 impl QueryRange {
+    fn set_byte_range(&mut self, range: std::ops::Range<usize>) {
+        let start = range.start as u32;
+        let end = match range.end as u32 {
+            0 => NONE,
+            end => end,
+        };
+        if start <= end {
+            self.start_byte = start;
+            self.end_byte = end;
+        }
+    }
+
+    fn set_point_range(&mut self, range: std::ops::Range<Point>) {
+        let start = PackedPoint::from_point_cast(range.start);
+        let mut end = PackedPoint::from_point_cast(range.end);
+        if end == PackedPoint(0) {
+            end = PackedPoint(u64::MAX);
+        }
+        if start <= end {
+            self.start_point = start;
+            self.end_point = end;
+        }
+    }
+
     fn unrestricted(self) -> bool {
         self.start_byte == 0
             && self.end_byte == NONE
@@ -485,6 +509,13 @@ impl QueryRange {
             && (node.packed_end_point() > self.start_point
                 || (empty && node.packed_end_point() == self.start_point))
             && node.packed_start_point() < self.end_point
+    }
+
+    fn contains(self, node: Node<'_>) -> bool {
+        node.start_byte() >= self.start_byte as usize
+            && node.end_byte() <= self.end_byte as usize
+            && node.packed_start_point() >= self.start_point
+            && node.packed_end_point() <= self.end_point
     }
 
     fn precedes(self, node: Node<'_>) -> bool {
@@ -599,6 +630,7 @@ pub struct QueryCursor {
     removal: Rc<Cell<Option<MatchId>>>,
     optimized: bool,
     range: QueryRange,
+    containing_range: QueryRange,
     max_start_depth: u32,
     pool: CapturePool,
     states: Vec<State>,
@@ -649,6 +681,7 @@ impl QueryCursor {
             removal: Rc::new(Cell::new(None)),
             optimized: true,
             range: QueryRange::default(),
+            containing_range: QueryRange::default(),
             max_start_depth: NONE,
             pool: CapturePool::new(),
             states: Vec::with_capacity(8),
@@ -712,15 +745,7 @@ impl QueryCursor {
     /// Restrict matches to nodes intersecting this byte range. Zero end is
     /// unbounded. Coordinates narrow to u32; reversed ranges leave it unchanged.
     pub fn set_byte_range(&mut self, range: std::ops::Range<usize>) -> &mut Self {
-        let start = range.start as u32;
-        let end = match range.end as u32 {
-            0 => NONE,
-            end => end,
-        };
-        if start <= end {
-            self.range.start_byte = start;
-            self.range.end_byte = end;
-        }
+        self.range.set_byte_range(range);
         self
     }
 
@@ -728,15 +753,25 @@ impl QueryCursor {
     /// narrowing and validation rules as `set_byte_range`.
     /// Without point data, nodes use row zero and byte offsets as columns.
     pub fn set_point_range(&mut self, range: std::ops::Range<Point>) -> &mut Self {
-        let start = PackedPoint::from_point_cast(range.start);
-        let mut end = PackedPoint::from_point_cast(range.end);
-        if end == PackedPoint(0) {
-            end = PackedPoint(u64::MAX);
-        }
-        if start <= end {
-            self.range.start_point = start;
-            self.range.end_point = end;
-        }
+        self.range.set_point_range(range);
+        self
+    }
+
+    /// Require all matched nodes to be fully contained in this byte range.
+    /// Can be combined with the intersecting range set by `set_byte_range`.
+    /// Zero end is unbounded. Coordinates narrow to u32; reversed ranges leave
+    /// the previous containing range unchanged.
+    pub fn set_containing_byte_range(&mut self, range: std::ops::Range<usize>) -> &mut Self {
+        self.containing_range.set_byte_range(range);
+        self
+    }
+
+    /// Require all matched nodes to be fully contained in this point range.
+    /// Can be combined with `set_point_range`, using the same narrowing and
+    /// validation rules. Without point data, nodes use row zero and byte
+    /// offsets as columns. A zero end point is unbounded.
+    pub fn set_containing_point_range(&mut self, range: std::ops::Range<Point>) -> &mut Self {
+        self.containing_range.set_point_range(range);
         self
     }
 
@@ -831,6 +866,7 @@ impl QueryCursor {
                 })
         });
         let unrestricted = self.range.unrestricted();
+        let containing_unrestricted = self.containing_range.unrestricted();
         QueryExecution {
             cursor: self,
             query,
@@ -839,6 +875,7 @@ impl QueryCursor {
             patterns: query.compiled.patterns(),
             scan_filter,
             unrestricted,
+            containing_unrestricted,
             root_has_error: root.has_error(),
             total_slots: root.data().groups() * crate::storage::GROUP_SIZE,
             root,
@@ -899,6 +936,7 @@ where
     patterns: &'query [Pattern],
     scan_filter: [(u64, u64); 8],
     unrestricted: bool,
+    containing_unrestricted: bool,
     root_has_error: bool,
     total_slots: u32,
     root: Node<'tree>,
@@ -1793,11 +1831,13 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
                 if target < self.node_end(node) {
                     // A symbol hit must not re-enter a subtree that ordinary
                     // traversal would skip because of the query range.
-                    if !self.unrestricted
+                    if (!self.unrestricted
                         && (!self.cursor.range.intersects(node)
                             || self
                                 .parent()
-                                .is_some_and(|parent| !self.cursor.range.intersects(parent)))
+                                .is_some_and(|parent| !self.cursor.range.intersects(parent))))
+                        || (!self.containing_unrestricted
+                            && !self.cursor.containing_range.intersects(node))
                     {
                         start = self.node_end(node);
                         continue 'search;
@@ -1971,10 +2011,12 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
     fn direct_roots(&self, node: Node<'tree>) -> u64 {
         let plan = self.query.program.direct.as_ref().unwrap();
         let roots = plan.roots[node.data().symbol_index(node.slot().get()).get() as usize];
-        if roots == 0 || self.unrestricted {
+        if roots == 0 || (self.unrestricted && self.containing_unrestricted) {
             return roots;
         }
-        if !self.cursor.range.intersects(node) {
+        if (!self.unrestricted && !self.cursor.range.intersects(node))
+            || (!self.containing_unrestricted && !self.cursor.containing_range.contains(node))
+        {
             return 0;
         }
 
@@ -1983,7 +2025,10 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
         let mut ancestor = node;
         while ancestor.start_byte() == ancestor.end_byte() && ancestor != self.root {
             ancestor = ancestor.parent().unwrap();
-            if !self.cursor.range.intersects(ancestor) {
+            if (!self.unrestricted && !self.cursor.range.intersects(ancestor))
+                || (!self.containing_unrestricted
+                    && !self.cursor.containing_range.intersects(ancestor))
+            {
                 return 0;
             }
         }
@@ -2274,14 +2319,20 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
                         .is_none_or(|parent| self.cursor.range.intersects(parent));
                 let intersects =
                     unrestricted || (parent_intersects && self.cursor.range.intersects(node));
-                did_match |= self.enter(node, intersects, parent_intersects, stop_on_definite);
+                if self.containing_unrestricted || self.cursor.containing_range.contains(node) {
+                    did_match |= self.enter(node, intersects, parent_intersects, stop_on_definite);
+                }
 
                 let descend = (intersects && depth < self.cursor.max_start_depth)
                     || self.cursor.states.iter().any(|state| {
                         let step = self.step(state.step);
                         step.depth != DONE && state.start_depth as u32 + step.depth as u32 > depth
                     });
-                if descend && self.goto_first_child() {
+                if descend
+                    && (self.containing_unrestricted
+                        || self.cursor.containing_range.intersects(node))
+                    && self.goto_first_child()
+                {
                     continue;
                 }
                 self.cursor.ascending = true;
@@ -3129,12 +3180,20 @@ mod scan_tests {
                         end..end + 1,
                         source.len()..source.len() + 1,
                     ] {
-                        for points in [false, true] {
+                        for (points, containing) in
+                            [(false, false), (true, false), (false, true), (true, true)]
+                        {
                             for captures in [false, true] {
                                 let collect = |optimized| {
                                     let mut cursor = QueryCursor::new();
                                     cursor.set_optimized(optimized);
-                                    if points {
+                                    if containing && points {
+                                        cursor.set_containing_point_range(
+                                            point(range.start)..point(range.end),
+                                        );
+                                    } else if containing {
+                                        cursor.set_containing_byte_range(range.clone());
+                                    } else if points {
                                         cursor
                                             .set_point_range(point(range.start)..point(range.end));
                                     } else {
@@ -3182,7 +3241,7 @@ mod scan_tests {
                                 assert_eq!(
                                     collect(true),
                                     collect(false),
-                                    "{pattern}, {range:?}, points={points}, captures={captures}, root={root:?}"
+                                    "{pattern}, {range:?}, points={points}, containing={containing}, captures={captures}, root={root:?}"
                                 );
                             }
                         }

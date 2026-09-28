@@ -408,8 +408,18 @@ fn point_bounded_queries_follow_attachment() {
     .unwrap();
     let query = Query::new(&grammar, "(number) @number").unwrap();
     let mut cursor = QueryCursor::new();
-    let mut count = |tree: &Tree| {
-        cursor.set_point_range(tree_sitter::Point::new(1, 0)..tree_sitter::Point::new(2, 0));
+    let mut count = |tree: &Tree, containing| {
+        let range = tree_sitter::Point::new(1, 0)..tree_sitter::Point::new(2, 0);
+        let unbounded = tree_sitter::Point::new(0, 0)..tree_sitter::Point::new(0, 0);
+        if containing {
+            cursor
+                .set_point_range(unbounded)
+                .set_containing_point_range(range);
+        } else {
+            cursor
+                .set_containing_point_range(unbounded)
+                .set_point_range(range);
+        }
         let mut execution = cursor.execute(&query, tree.root_node(), source.as_slice());
         let mut found = 0;
         while execution.next_match().is_some() {
@@ -419,11 +429,14 @@ fn point_bounded_queries_follow_attachment() {
     };
     let points = PointsData::copy_from_bytes(&tree, tree.point_data().unwrap().as_bytes()).unwrap();
     tree.drop_point_data();
-    assert_eq!(count(&tree), 0);
+    assert_eq!(count(&tree, false), 0);
+    assert_eq!(count(&tree, true), 0);
     tree.set_point_data(points).unwrap();
-    assert_eq!(count(&tree), 1);
+    assert_eq!(count(&tree, false), 1);
+    assert_eq!(count(&tree, true), 1);
     tree.drop_point_data();
-    assert_eq!(count(&tree), 0);
+    assert_eq!(count(&tree, false), 0);
+    assert_eq!(count(&tree, true), 0);
 }
 
 #[test]
