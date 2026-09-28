@@ -24,7 +24,7 @@ pub(crate) struct Store {
     pub(crate) grammars: Database,
     pub(crate) current: Database,
     pub(crate) writer: Mutex<File>,
-    pub(crate) backed_readers: AtomicUsize,
+    pub(crate) retained_readers: AtomicUsize,
     work: crate::work::WorkLocks,
     // Retain application-side directory identity/sidecar access. Heed canonicalizes
     // its open path, so this does not anchor LMDB's own pathname resolution.
@@ -464,7 +464,7 @@ impl Store {
             grammars,
             current,
             writer,
-            backed_readers: AtomicUsize::new(0),
+            retained_readers: AtomicUsize::new(0),
             work,
             _directory: directory,
         });

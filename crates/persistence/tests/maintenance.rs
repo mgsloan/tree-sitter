@@ -185,7 +185,7 @@ fn recreation_cancels_missing_file_cleanup() {
 
 #[test]
 fn sidecars_can_be_evicted_independently_of_core_and_readers() {
-    for read in [ReadPolicy::Owned, ReadPolicy::PreferTransactionBacked] {
+    for read in [ReadPolicy::Owned, ReadPolicy::PreferRetained] {
         let root = tempfile::tempdir().unwrap();
         fs::write(
             root.path().join("file.json"),
@@ -203,8 +203,8 @@ fn sidecars_can_be_evicted_independently_of_core_and_readers() {
         load(&cache);
         let reader = load(&cache);
         assert_eq!(
-            reader.transaction_backed(),
-            read == ReadPolicy::PreferTransactionBacked
+            reader.retains_transaction(),
+            read == ReadPolicy::PreferRetained
         );
         let core = reader.tree().as_bytes().to_vec();
         let presence = reader.tree().presence_cache().unwrap().as_bytes().to_vec();

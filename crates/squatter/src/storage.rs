@@ -657,12 +657,12 @@ impl Tree {
     /// owner without copying its bytes. Side data is not restored.
     ///
     /// **Not in Tree-sitter**
-    pub fn from_owned_slab(
+    pub fn from_retained(
         language: &Language,
         owner: impl StableSlab,
-    ) -> Result<BackedTree, Error> {
+    ) -> Result<RetainedTree, Error> {
         let owner: Box<dyn StableSlab> = Box::new(owner);
-        Ok(BackedTree {
+        Ok(RetainedTree {
             tree: Self::load(language, owner.bytes(), true, false)?,
             _owner: owner,
         })
@@ -922,30 +922,30 @@ pub unsafe trait StableSlab: Send + Sync + 'static {
 
 /// A tree retaining its immutable slab owner.
 ///
-/// The inner tree cannot be replaced independently of its backing storage.
+/// The inner tree cannot be replaced independently of its retained storage.
 ///
 /// ```compile_fail
-/// # fn example(mut backed: tree_squatter::BackedTree, replacement: tree_squatter::Tree) {
-/// let escaped = std::mem::replace(&mut *backed, replacement);
+/// # fn example(mut retained: tree_squatter::RetainedTree, replacement: tree_squatter::Tree) {
+/// let escaped = std::mem::replace(&mut *retained, replacement);
 /// # }
 /// ```
 ///
 /// **Not in Tree-sitter**. Keeps the stable slab owner alive. Loading retains the bytes
 /// without copying; side data remains separate.
-pub struct BackedTree {
-    // The descriptor must be destroyed before its backing storage.
+pub struct RetainedTree {
+    // The descriptor must be destroyed before its retained storage.
     tree: Tree,
     _owner: Box<dyn StableSlab>,
 }
 
-impl Deref for BackedTree {
+impl Deref for RetainedTree {
     type Target = Tree;
     fn deref(&self) -> &Tree {
         &self.tree
     }
 }
 
-impl BackedTree {
+impl RetainedTree {
     /// Validates and attaches separately loaded symbol-presence
     /// data. Release borrowed tree views before replacing side data.
     pub fn set_presence_cache(&mut self, cache: PresenceCache) -> Result<(), SideDataError> {

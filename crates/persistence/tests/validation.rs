@@ -46,26 +46,24 @@ fn tracked(bytes: &[u8], misaligned: bool, drops: Arc<AtomicUsize>) -> TrackedSl
 }
 
 #[test]
-fn owned_slab_retains_storage_and_releases_it_on_all_outcomes() {
+fn retained_slab_retains_storage_and_releases_it_on_all_outcomes() {
     let tree_sitter_language = tree_sitter_language();
     let language = tree_squatter::Language::new(&tree_sitter_language).unwrap();
     let tree = pack(&tree_sitter_language, "[42]", false);
     let drops = Arc::new(AtomicUsize::new(0));
     let owner = tracked(tree.as_bytes(), false, drops.clone());
     let address = tree_squatter::StableSlab::bytes(&owner).as_ptr();
-    let backed = Tree::from_owned_slab(&language, owner).unwrap();
-    assert_eq!(backed.as_bytes().as_ptr(), address);
+    let retained = Tree::from_retained(&language, owner).unwrap();
+    assert_eq!(retained.as_bytes().as_ptr(), address);
     assert_eq!(drops.load(Ordering::Relaxed), 0);
-    let detached = backed.detach().unwrap();
+    let detached = retained.detach().unwrap();
     assert_ne!(detached.as_bytes().as_ptr(), address);
-    drop(backed);
+    drop(retained);
     assert_eq!(drops.load(Ordering::Relaxed), 1);
     assert_eq!(detached.root_node().kind(), "document");
-    assert!(
-        Tree::from_owned_slab(&language, tracked(tree.as_bytes(), true, drops.clone())).is_err()
-    );
+    assert!(Tree::from_retained(&language, tracked(tree.as_bytes(), true, drops.clone())).is_err());
     assert_eq!(drops.load(Ordering::Relaxed), 2);
-    assert!(Tree::from_owned_slab(&language, tracked(b"invalid", false, drops.clone())).is_err());
+    assert!(Tree::from_retained(&language, tracked(b"invalid", false, drops.clone())).is_err());
     assert_eq!(drops.load(Ordering::Relaxed), 3);
 }
 

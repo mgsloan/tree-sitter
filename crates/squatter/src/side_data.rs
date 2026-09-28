@@ -40,7 +40,7 @@ impl std::error::Error for SideDataError {}
 
 enum Storage {
     Owned(Vec<u64>),
-    Backed(Box<dyn StableSlab>),
+    Retained(Box<dyn StableSlab>),
 }
 
 impl Storage {
@@ -49,7 +49,7 @@ impl Storage {
             Self::Owned(words) => unsafe {
                 std::slice::from_raw_parts(words.as_ptr().cast(), words.len() * 8)
             },
-            Self::Backed(owner) => owner.bytes(),
+            Self::Retained(owner) => owner.bytes(),
         }
     }
 }
@@ -95,7 +95,7 @@ impl Sidecar {
             Storage::Owned(words) => unsafe {
                 std::slice::from_raw_parts_mut(words.as_mut_ptr().cast(), words.len() * 8)
             },
-            Storage::Backed(_) => unreachable!(),
+            Storage::Retained(_) => unreachable!(),
         }
     }
     fn word(&self, byte: usize) -> u64 {
@@ -126,12 +126,12 @@ impl Sidecar {
         }
         Ok(())
     }
-    fn from_backing(owner: impl StableSlab) -> Result<Self, SideDataError> {
+    fn from_retained(owner: impl StableSlab) -> Result<Self, SideDataError> {
         if owner.bytes().as_ptr() as usize % 8 != 0 {
             return Err(SideDataError::InvalidTarget);
         }
         Ok(Self {
-            storage: Storage::Backed(Box::new(owner)),
+            storage: Storage::Retained(Box::new(owner)),
         })
     }
     fn copy_from_bytes(bytes: &[u8]) -> Result<Self, SideDataError> {
@@ -204,11 +204,11 @@ impl PresenceCache {
     pub fn as_bytes(&self) -> &[u8] {
         self.0.bytes()
     }
-    /// Validates and retains stable backing bytes for this tree.
+    /// Validates and retains stable storage bytes for this tree.
     /// Use data persisted for this exact snapshot; structural checks do not establish
     /// source identity.
-    pub fn from_backing(tree: &Tree, backing: impl StableSlab) -> Result<Self, SideDataError> {
-        let result = Self(Sidecar::from_backing(backing)?);
+    pub fn from_retained(tree: &Tree, owner: impl StableSlab) -> Result<Self, SideDataError> {
+        let result = Self(Sidecar::from_retained(owner)?);
         result.validate_loaded(tree)?;
         Ok(result)
     }
@@ -365,11 +365,11 @@ impl PointsData {
     pub fn as_bytes(&self) -> &[u8] {
         self.0.bytes()
     }
-    /// Validates and retains stable backing bytes for this tree.
+    /// Validates and retains stable storage bytes for this tree.
     /// Use data persisted for this exact snapshot; structural checks do not establish
     /// source identity.
-    pub fn from_backing(tree: &Tree, backing: impl StableSlab) -> Result<Self, SideDataError> {
-        let result = Self(Sidecar::from_backing(backing)?);
+    pub fn from_retained(tree: &Tree, owner: impl StableSlab) -> Result<Self, SideDataError> {
+        let result = Self(Sidecar::from_retained(owner)?);
         result.validate_loaded(tree)?;
         Ok(result)
     }

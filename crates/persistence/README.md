@@ -62,9 +62,9 @@ Implemented:
   tree or combined value buffer. Misses retain spare capacity until publication;
   deferred/disabled writes avoid eager compaction. The caller's tree is unchanged.
 - Owned cache hits; shared `LoadedFile` values survive publication and cache drops.
-- Opt-in `Options::read = ReadPolicy::PreferTransactionBacked` retains an LMDB
+- Opt-in `Options::read = ReadPolicy::PreferRetained` retains an LMDB
   snapshot for aligned cache slabs. Misaligned hits and local reader pressure use
-  owned copies. `LoadedFile::transaction_backed` reports the actual storage mode;
+  owned copies. `LoadedFile::retains_transaction` reports the actual storage mode;
   `detach` copies without invalidating aliases. Sources remain owned disk captures.
 - Structural safety loading of the core, with cheap sidecar dimension checks
   and point-delta overflow checks, plus debug content checks; no slab checksum. Node source bounds are checked
@@ -128,7 +128,7 @@ Remaining before the full design is implemented:
 - Bounded environment-registry retirement and controlled map growth. The first
   opener's map size governs shared instances; handles stay alive until process exit.
 - Configurable snapshot admission and reader-age/map-usage diagnostics. Currently
-  at most 32 transaction-backed owners are admitted per local environment; clones
+  at most 32 retained snapshots are admitted per local environment; clones
   share one slot. Other processes have their own admission counts, so LMDB's
   global reader limit can still force cache fallback. Long-lived snapshots delay
   reuse of retired pages across the entire environment, not just their tree.

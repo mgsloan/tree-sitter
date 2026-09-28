@@ -62,7 +62,7 @@ const WORKLOADS: &[&str] = &[
     "load-full",
     "load-safety",
     "load-borrowed",
-    "load-backed",
+    "load-retained",
     "compact-copy",
     "repack",
     "language-new",
@@ -117,8 +117,8 @@ impl Case<'_> {
             "load-borrowed" => {
                 measure!(Tree::from_bytes_borrowed(&self.language, self.tree.as_bytes()).unwrap())
             }
-            "load-backed" => {
-                measure!(Tree::from_owned_slab(&self.language, Slab(self.tree.clone())).unwrap())
+            "load-retained" => {
+                measure!(Tree::from_retained(&self.language, Slab(self.tree.clone())).unwrap())
             }
             "compact-copy" => measure!(self.tree.copy_compact_into(&mut self.compact).unwrap()),
             "repack" => measure!(self.tree.repack().unwrap()),
@@ -289,7 +289,7 @@ fn main() -> Result<()> {
             "schema": 1, "arguments": arguments, "results": rows,
             "backend": squatter_bench::BACKEND, "binary_sha256": binary_sha256,
             "resident": "one core, source, mainline tree/parser, grammar, slab, reusable packer and compact destination; query mutations retain up to 16 compiled programs",
-            "timing_contract": "complete operation and destruction; query-drop and query-disable exclude compilation; load-backed includes Arc clone and owner allocation; compact-copy reuses destination; point-access traverses all nodes and reads both endpoints without source lookup",
+            "timing_contract": "complete operation and destruction; query-drop and query-disable exclude compilation; load-retained includes Arc clone and owner allocation; compact-copy reuses destination; point-access traverses all nodes and reads both endpoints without source lookup",
         }))?,
     )?;
     Ok(())
