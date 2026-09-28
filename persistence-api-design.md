@@ -17,7 +17,7 @@ new public modules. This design supersedes the proposal's workflow signatures an
 request ownership; the proposal and examples retain their original API.
 
 Detailed storage and decoder-extraction requirements remain in the proposal.
-The accompanying packing change is renaming `tree_sitter_squatter::PackContext`
+The accompanying packing change is renaming `tree_squatter::PackContext`
 to `TreePacker`, retaining `new`, `pack`, `pack_with_options`, and `drop_scratch`.
 `PackOptions` stays in that crate with its existing defaults: zero initial
 capacity, no repacking, symbol presence enabled, and points enabled.
@@ -91,7 +91,7 @@ and malformed or incompatible cache data.
 
 ```rust
 use std::{io, path::{Path, PathBuf}, sync::Arc};
-use tree_sitter_squatter::{BackedTree, Tree, TreePacker};
+use tree_squatter::{BackedTree, Tree, TreePacker};
 
 use source::{FileMetadata, ParserInput, Source, SourceIdentity};
 use store::Store;
@@ -149,7 +149,7 @@ impl LanguageFingerprint {
 #[derive(Clone)]
 pub struct Language {
     language: tree_sitter::Language,
-    packed: tree_sitter_squatter::Language,
+    packed: tree_squatter::Language,
     fingerprint: LanguageFingerprint,
 }
 
@@ -160,7 +160,7 @@ impl Cache {
         &self,
         language: &tree_sitter::Language,
         fingerprint: LanguageFingerprint,
-    ) -> Result<Language, tree_sitter_squatter::Error>;
+    ) -> Result<Language, tree_squatter::Error>;
 }
 
 impl Loader {
@@ -245,7 +245,7 @@ pub enum LoadedTree {
 impl LoadedTree {
     pub fn tree(&self) -> &Tree;
     pub fn transaction_backed(&self) -> bool;
-    pub fn detach(&self) -> Result<Self, tree_sitter_squatter::Error>;
+    pub fn detach(&self) -> Result<Self, tree_squatter::Error>;
 }
 
 #[must_use = "apply, transfer, queue, or explicitly discard this write"]
@@ -282,7 +282,7 @@ pub enum LoadError {
     Io(io::Error),
     Cache(CacheError),
     Language(tree_sitter::LanguageError),
-    Packing(tree_sitter_squatter::Error),
+    Packing(tree_squatter::Error),
     Cancelled,
     SourceChanged { expected: SourceIdentity, actual: SourceIdentity },
     ParseFailed,

@@ -5,8 +5,6 @@ parser api impl  ->  forests  ->  Viz
 
 # Todos
 
-- [ ] What's with `tree_sitter_squatter` namespace?
-
 - [*] Proper parser APIs
 
 - [*] Move away from AtomicBool cancellation and to cancellation / progress callback

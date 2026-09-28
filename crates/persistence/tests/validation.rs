@@ -2,7 +2,7 @@ use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
 };
-use tree_sitter_squatter::{PackOptions, Tree};
+use tree_squatter::{PackOptions, Tree};
 
 struct TrackedSlab {
     storage: Box<[u64]>,
@@ -16,7 +16,7 @@ impl Drop for TrackedSlab {
     }
 }
 // Heap allocation is stable across owner moves and never mutated after creation.
-unsafe impl tree_sitter_squatter::StableSlab for TrackedSlab {
+unsafe impl tree_squatter::StableSlab for TrackedSlab {
     fn bytes(&self) -> &[u8] {
         unsafe {
             std::slice::from_raw_parts(
@@ -48,11 +48,11 @@ fn tracked(bytes: &[u8], misaligned: bool, drops: Arc<AtomicUsize>) -> TrackedSl
 #[test]
 fn owned_slab_retains_storage_and_releases_it_on_all_outcomes() {
     let tree_sitter_language = tree_sitter_language();
-    let language = tree_sitter_squatter::Language::new(&tree_sitter_language).unwrap();
+    let language = tree_squatter::Language::new(&tree_sitter_language).unwrap();
     let tree = pack(&tree_sitter_language, "[42]", false);
     let drops = Arc::new(AtomicUsize::new(0));
     let owner = tracked(tree.as_bytes(), false, drops.clone());
-    let address = tree_sitter_squatter::StableSlab::bytes(&owner).as_ptr();
+    let address = tree_squatter::StableSlab::bytes(&owner).as_ptr();
     let backed = Tree::from_owned_slab(&language, owner).unwrap();
     assert_eq!(backed.as_bytes().as_ptr(), address);
     assert_eq!(drops.load(Ordering::Relaxed), 0);
@@ -74,7 +74,7 @@ fn tree_sitter_language() -> tree_sitter::Language {
 }
 
 fn pack(tree_sitter_language: &tree_sitter::Language, source: &str, presence: bool) -> Tree {
-    let language = tree_sitter_squatter::Language::new(tree_sitter_language).unwrap();
+    let language = tree_squatter::Language::new(tree_sitter_language).unwrap();
     let mut parser = tree_sitter::Parser::new();
     parser.set_language(tree_sitter_language).unwrap();
     Tree::pack_with_options(
@@ -92,7 +92,7 @@ fn pack(tree_sitter_language: &tree_sitter::Language, source: &str, presence: bo
 #[test]
 fn presence_sidecar_is_separate_and_debug_loading_checks_membership() {
     let tree_sitter_language = tree_sitter_language();
-    let language = tree_sitter_squatter::Language::new(&tree_sitter_language).unwrap();
+    let language = tree_squatter::Language::new(&tree_sitter_language).unwrap();
     let source = format!("[{}0]", "1,".repeat(4096));
     let original = pack(&tree_sitter_language, &source, true);
     let without = pack(&tree_sitter_language, &source, false);
@@ -104,18 +104,16 @@ fn presence_sidecar_is_separate_and_debug_loading_checks_membership() {
     assert!(!loaded.has_points());
     assert!(loaded.presence_cache().is_none());
     assert_eq!(
-        tree_sitter_squatter::PresenceCache::copy_from_bytes(&loaded, &corrupted).is_err(),
+        tree_squatter::PresenceCache::copy_from_bytes(&loaded, &corrupted).is_err(),
         cfg!(debug_assertions),
     );
-    assert!(
-        tree_sitter_squatter::PresenceCache::copy_from_bytes(&loaded, cache.as_bytes()).is_ok()
-    );
+    assert!(tree_squatter::PresenceCache::copy_from_bytes(&loaded, cache.as_bytes()).is_ok());
 }
 
 #[test]
 fn safety_loader_rejects_truncated_sections_and_invalid_headers() {
     let tree_sitter_language = tree_sitter_language();
-    let language = tree_sitter_squatter::Language::new(&tree_sitter_language).unwrap();
+    let language = tree_squatter::Language::new(&tree_sitter_language).unwrap();
     let original = pack(&tree_sitter_language, "{\"key\": [true, 42]}", true);
     for length in 0..original.as_bytes().len() {
         assert!(
@@ -132,7 +130,7 @@ fn safety_loader_rejects_truncated_sections_and_invalid_headers() {
 #[test]
 fn copied_loaders_handle_trees_deeper_than_inline_validation_storage() {
     let tree_sitter_language = tree_sitter_language();
-    let language = tree_sitter_squatter::Language::new(&tree_sitter_language).unwrap();
+    let language = tree_squatter::Language::new(&tree_sitter_language).unwrap();
     let source = format!("{}0{}", "[".repeat(128), "]".repeat(128));
     let original = pack(&tree_sitter_language, &source, false);
     let nodes = original.root_node().preorder().count();
@@ -148,7 +146,7 @@ fn copied_loaders_handle_trees_deeper_than_inline_validation_storage() {
 #[test]
 fn mutated_slabs_are_rejected_or_support_bounded_traversal() {
     let tree_sitter_language = tree_sitter_language();
-    let language = tree_sitter_squatter::Language::new(&tree_sitter_language).unwrap();
+    let language = tree_squatter::Language::new(&tree_sitter_language).unwrap();
     let original = pack(&tree_sitter_language, "{\"key\": [true, 42]}", false);
     let mut state = 42u32;
     for trial in 0..512 {
@@ -175,18 +173,18 @@ fn mutated_slabs_are_rejected_or_support_bounded_traversal() {
 
 #[test]
 fn shared_grammars_support_concurrent_packing_and_outlive_handles() {
-    let json = tree_sitter_squatter::Language::new(&tree_sitter_language()).unwrap();
+    let json = tree_squatter::Language::new(&tree_sitter_language()).unwrap();
     let c_sharp_language = unsafe {
         tree_sitter::Language::from_raw(tree_sitter_c_sharp::LANGUAGE.into_raw()().cast())
     };
-    let c_sharp = tree_sitter_squatter::Language::new(&c_sharp_language).unwrap();
+    let c_sharp = tree_squatter::Language::new(&c_sharp_language).unwrap();
     let workers: Vec<_> = (0..4)
         .map(|_| {
             let json = json.clone();
             let c_sharp = c_sharp.clone();
             std::thread::spawn(move || {
                 let mut parser = tree_sitter::Parser::new();
-                let mut context = tree_sitter_squatter::PackContext::new().unwrap();
+                let mut context = tree_squatter::PackContext::new().unwrap();
                 let mut retained = Vec::new();
                 for _ in 0..4 {
                     for (language, source) in

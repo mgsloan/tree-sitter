@@ -122,7 +122,7 @@ impl Persistence {
         if request.header.as_slice() != &prefix[40..] {
             return Err(invalid().into());
         }
-        let mut tree = tree_sitter_squatter::Tree::from_bytes_safety_checked(
+        let mut tree = tree_squatter::Tree::from_bytes_safety_checked(
             &language.prepared,
             &bytes[path_len + source_len..path_len + source_len + tree_len],
         )
@@ -136,15 +136,14 @@ impl Persistence {
             return Err(invalid().into());
         }
         if request.presence {
-            let cache =
-                tree_sitter_squatter::PresenceCache::build(&tree).map_err(io::Error::other)?;
+            let cache = tree_squatter::PresenceCache::build(&tree).map_err(io::Error::other)?;
             tree.set_presence_cache(cache).map_err(io::Error::other)?;
         }
         if request.points != (points_len != 0) {
             return Err(invalid().into());
         }
         if request.points {
-            let points = tree_sitter_squatter::PointsData::copy_from_bytes(
+            let points = tree_squatter::PointsData::copy_from_bytes(
                 &tree,
                 &bytes[path_len + source_len + tree_len..],
             )

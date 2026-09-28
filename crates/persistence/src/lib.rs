@@ -25,7 +25,7 @@ use std::{
     sync::Arc,
 };
 use store::Store;
-use tree_sitter_squatter::{
+use tree_squatter::{
     PackedParseOptions, ParseOptions, Parser, ParserError, traits::ParseStateLike,
 };
 
@@ -72,11 +72,11 @@ pub enum ReadPolicy {
 
 #[derive(Clone)]
 enum LoadedTree {
-    Owned(Arc<tree_sitter_squatter::Tree>),
-    Backed(Arc<tree_sitter_squatter::BackedTree>),
+    Owned(Arc<tree_squatter::Tree>),
+    Backed(Arc<tree_squatter::BackedTree>),
 }
 impl LoadedTree {
-    fn tree(&self) -> &tree_sitter_squatter::Tree {
+    fn tree(&self) -> &tree_squatter::Tree {
         match self {
             Self::Owned(tree) => tree,
             Self::Backed(tree) => tree,
@@ -101,7 +101,7 @@ pub enum WritePolicy {
 /// returning or publishing a completed tree. Only completed trees report errors.
 #[derive(Default)]
 pub struct LoadOptions<'a> {
-    pub pack: tree_sitter_squatter::PackOptions,
+    pub pack: tree_squatter::PackOptions,
     pub write: WritePolicy,
     pub parse: ParseOptions<'a>,
 }
@@ -159,7 +159,7 @@ pub enum LoadError {
     Language(tree_sitter::LanguageError),
     Cancelled,
     ParseFailed,
-    Pack(tree_sitter_squatter::Error),
+    Pack(tree_squatter::Error),
 }
 impl std::fmt::Display for LoadError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -194,7 +194,7 @@ impl LoadedFile {
     pub fn source(&self) -> &[u8] {
         &self.source
     }
-    pub fn tree(&self) -> &tree_sitter_squatter::Tree {
+    pub fn tree(&self) -> &tree_squatter::Tree {
         self.tree.tree()
     }
     pub fn transaction_backed(&self) -> bool {
@@ -202,7 +202,7 @@ impl LoadedFile {
     }
     /// Return an owned copy. Existing aliases keep their snapshots until dropped.
     /// Auxiliary semantics are not revalidated while detaching.
-    pub fn detach(&self) -> Result<Self, tree_sitter_squatter::Error> {
+    pub fn detach(&self) -> Result<Self, tree_squatter::Error> {
         let LoadedTree::Backed(tree) = &self.tree else {
             return Ok(self.clone());
         };
@@ -245,7 +245,7 @@ pub struct PendingLoad {
     source: Arc<[u8]>,
     language: IdentifiedLanguage,
     store: Option<Arc<Store>>,
-    pack: tree_sitter_squatter::PackOptions,
+    pack: tree_squatter::PackOptions,
     write: WritePolicy,
     read: ReadPolicy,
     persistable: bool,
@@ -326,7 +326,7 @@ impl Persistence {
         &self,
         tree_sitter_language: &tree_sitter::Language,
         fallback_name: &str,
-    ) -> Result<IdentifiedLanguage, tree_sitter_squatter::Error> {
+    ) -> Result<IdentifiedLanguage, tree_squatter::Error> {
         let identity = LanguageIdentity::new(tree_sitter_language, fallback_name);
         self.prepare_identified_language(tree_sitter_language, identity)
     }
@@ -337,7 +337,7 @@ impl Persistence {
         tree_sitter_language: &tree_sitter::Language,
         fallback_name: &str,
         fallback_version: LanguageVersion,
-    ) -> Result<IdentifiedLanguage, tree_sitter_squatter::Error> {
+    ) -> Result<IdentifiedLanguage, tree_squatter::Error> {
         let identity = LanguageIdentity::new_with_version(
             tree_sitter_language,
             fallback_name,
@@ -350,14 +350,14 @@ impl Persistence {
         &self,
         tree_sitter_language: &tree_sitter::Language,
         identity: LanguageIdentity,
-    ) -> Result<IdentifiedLanguage, tree_sitter_squatter::Error> {
+    ) -> Result<IdentifiedLanguage, tree_squatter::Error> {
         let prepared = match self
             .store
             .as_ref()
             .and_then(|store| store.prepare_language(tree_sitter_language, identity.hash))
         {
             Some(prepared) => prepared,
-            None => tree_sitter_squatter::Language::new(tree_sitter_language)?,
+            None => tree_squatter::Language::new(tree_sitter_language)?,
         };
         Ok(IdentifiedLanguage::new(prepared, identity))
     }
@@ -422,10 +422,10 @@ impl Persistence {
         parser: &mut Parser,
     ) -> Result<LoadedFile, LoadError> {
         let options = LoadOptions {
-            pack: tree_sitter_squatter::PackOptions {
+            pack: tree_squatter::PackOptions {
                 symbol_presence: self.options.symbol_presence,
                 points: self.options.points,
-                ..tree_sitter_squatter::PackOptions::default()
+                ..tree_squatter::PackOptions::default()
             },
             ..LoadOptions::default()
         };

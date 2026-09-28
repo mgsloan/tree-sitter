@@ -69,7 +69,7 @@ Implemented:
 - Structural safety loading of the core, with cheap sidecar dimension checks
   and point-delta overflow checks, plus debug content checks; no slab checksum. Node source bounds are checked
   before returning the pair. See [the validator audit](validation.md).
-- Fresh whole-file parsing through `tree_sitter_squatter::Parser`. The parser-taking
+- Fresh whole-file parsing through `tree_squatter::Parser`. The parser-taking
   load methods accept this packed parser; `LoadContext` owns one for worker reuse.
 - `LoadOptions::parse` accepts shared `ParseOptions` and its
   `FnMut(&dyn ParseStateLike) -> ControlFlow<()>` progress callback. Parsing and

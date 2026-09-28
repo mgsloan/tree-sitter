@@ -1,6 +1,6 @@
 // Prototype formats stay at version 0; no persisted data needs backward compatibility.
 use std::path::{Component, Path, PathBuf};
-use tree_sitter_squatter::LanguageHash;
+use tree_squatter::LanguageHash;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LanguageVersion {
@@ -48,7 +48,7 @@ impl LanguageIdentity {
                 .unwrap_or(fallback_name)
                 .to_owned(),
             version: version.or(fallback_version),
-            hash: tree_sitter_squatter::language_hash(
+            hash: tree_squatter::language_hash(
                 tree_sitter_language,
                 fallback_name,
                 fallback_version.map(|version| [version.major, version.minor, version.patch]),
@@ -59,14 +59,14 @@ impl LanguageIdentity {
 
 #[derive(Clone)]
 pub struct IdentifiedLanguage {
-    pub(crate) prepared: tree_sitter_squatter::Language,
+    pub(crate) prepared: tree_squatter::Language,
     pub(crate) identity: LanguageIdentity,
 }
 
 impl IdentifiedLanguage {
     /// Pair a prepared language with its identity.
     /// Use `Persistence::prepare_language` to restore persisted tables.
-    pub fn new(prepared: tree_sitter_squatter::Language, identity: LanguageIdentity) -> Self {
+    pub fn new(prepared: tree_squatter::Language, identity: LanguageIdentity) -> Self {
         Self { prepared, identity }
     }
 
@@ -97,7 +97,7 @@ pub(crate) fn digest(domain: &str, bytes: &[u8]) -> [u8; 32] {
 }
 
 pub(crate) fn representation() -> [u8; 32] {
-    let bytes = tree_sitter_squatter::representation_id().to_le_bytes();
+    let bytes = tree_squatter::representation_id().to_le_bytes();
     digest("tree-squatter representation v0", &bytes)
 }
 

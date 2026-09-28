@@ -1,6 +1,6 @@
 use std::mem::MaybeUninit;
 use tree_sitter::{Language, Point};
-use tree_sitter_squatter::{PackOptions, Query, QueryCursor, Tree};
+use tree_squatter::{PackOptions, Query, QueryCursor, Tree};
 
 fn tree_sitter_language() -> Language {
     unsafe { Language::from_raw(tree_sitter_json::LANGUAGE.into_raw()().cast()) }
@@ -9,7 +9,7 @@ fn tree_sitter_language() -> Language {
 #[test]
 fn compact_copy_matches_repack_for_padded_and_compact_trees() {
     let tree_sitter_language = tree_sitter_language();
-    let language = tree_sitter_squatter::Language::new(&tree_sitter_language).unwrap();
+    let language = tree_squatter::Language::new(&tree_sitter_language).unwrap();
     let mut parser = tree_sitter::Parser::new();
     parser.set_language(&tree_sitter_language).unwrap();
     for source in [
@@ -72,7 +72,7 @@ fn compact_copy_matches_repack_for_padded_and_compact_trees() {
 #[test]
 fn point_free_trees_use_byte_offsets_as_single_line_points() {
     let tree_sitter_language = tree_sitter_language();
-    let language = tree_sitter_squatter::Language::new(&tree_sitter_language).unwrap();
+    let language = tree_squatter::Language::new(&tree_sitter_language).unwrap();
     let source = b"[\n  1,\n  2\n]";
     let mut parser = tree_sitter::Parser::new();
     parser.set_language(&tree_sitter_language).unwrap();

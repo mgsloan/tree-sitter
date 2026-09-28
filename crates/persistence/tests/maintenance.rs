@@ -48,7 +48,7 @@ fn bounded_cleanup_preserves_current_variants_and_old_readers() {
         reader
             .tree()
             .root_node()
-            .named_child(tree_sitter_squatter::NamedChildIx::new(0))
+            .named_child(tree_squatter::NamedChildIx::new(0))
             .unwrap()
             .kind(),
         "array"
@@ -67,9 +67,9 @@ fn stale_cleanup_stops_and_late_writer_cannot_restore_retired_records() {
         .load_with_options(
             Path::new("file.json"),
             &language(),
-            &mut tree_sitter_squatter::Parser::new(),
+            &mut tree_squatter::Parser::new(),
             LoadOptions {
-                pack: tree_sitter_squatter::PackOptions::default(),
+                pack: tree_squatter::PackOptions::default(),
                 write: WritePolicy::Deferred,
                 parse: Default::default(),
             },
@@ -102,7 +102,7 @@ fn missing_cleanup_rejects_deferred_first_writers_across_recreations() {
             .load_with_options(
                 Path::new("file.json"),
                 &language(),
-                &mut tree_sitter_squatter::Parser::new(),
+                &mut tree_squatter::Parser::new(),
                 LoadOptions {
                     write: WritePolicy::Deferred,
                     ..Default::default()
@@ -221,9 +221,9 @@ fn sidecars_can_be_evicted_independently_of_core_and_readers() {
                 .load_with_options(
                     Path::new("file.json"),
                     &language(),
-                    &mut tree_sitter_squatter::Parser::new(),
+                    &mut tree_squatter::Parser::new(),
                     LoadOptions {
-                        pack: tree_sitter_squatter::PackOptions {
+                        pack: tree_squatter::PackOptions {
                             symbol_presence: kind != SidecarKind::Presence,
                             points: kind != SidecarKind::Points,
                             ..Default::default()
@@ -246,7 +246,7 @@ fn sidecars_can_be_evicted_independently_of_core_and_readers() {
                 .load_with_options(
                     Path::new("file.json"),
                     &language(),
-                    &mut tree_sitter_squatter::Parser::new(),
+                    &mut tree_squatter::Parser::new(),
                     LoadOptions {
                         write: WritePolicy::Deferred,
                         ..Default::default()

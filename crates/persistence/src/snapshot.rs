@@ -8,7 +8,7 @@ use std::{
     ptr::NonNull,
     sync::{Arc, atomic::Ordering},
 };
-use tree_sitter_squatter::{BackedTree, StableSlab, Tree};
+use tree_squatter::{BackedTree, StableSlab, Tree};
 
 // Leave most of the 256 environment reader slots available for short operations.
 pub(crate) const MAX_BACKED_READERS: usize = 32;
@@ -118,14 +118,12 @@ pub(crate) fn get(
                     length: bytes.len(),
                     _snapshot: snapshot.clone(),
                 };
-                tree_sitter_squatter::PresenceCache::from_backing(&tree, owner)
+                tree_squatter::PresenceCache::from_backing(&tree, owner)
                     .ok()
-                    .or_else(|| {
-                        tree_sitter_squatter::PresenceCache::copy_from_bytes(&tree, bytes).ok()
-                    })
+                    .or_else(|| tree_squatter::PresenceCache::copy_from_bytes(&tree, bytes).ok())
             });
         complete &= loaded.is_some();
-        let cache = loaded.or_else(|| tree_sitter_squatter::PresenceCache::build(&tree).ok())?;
+        let cache = loaded.or_else(|| tree_squatter::PresenceCache::build(&tree).ok())?;
         tree.set_presence_cache(cache).ok()?;
     }
     if request.points {
@@ -140,11 +138,9 @@ pub(crate) fn get(
                     length: bytes.len(),
                     _snapshot: snapshot.clone(),
                 };
-                tree_sitter_squatter::PointsData::from_backing(&tree, owner)
+                tree_squatter::PointsData::from_backing(&tree, owner)
                     .ok()
-                    .or_else(|| {
-                        tree_sitter_squatter::PointsData::copy_from_bytes(&tree, bytes).ok()
-                    })
+                    .or_else(|| tree_squatter::PointsData::copy_from_bytes(&tree, bytes).ok())
             })?;
         tree.set_point_data(points).ok()?;
     }

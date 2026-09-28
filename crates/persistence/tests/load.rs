@@ -2,7 +2,7 @@ mod common;
 use common::{ChildProcess, language, load};
 
 use std::{fs, ops::ControlFlow, path::Path, sync::Arc};
-use tree_sitter_squatter::{ParseOptions, traits::ParseStateLike};
+use tree_squatter::{ParseOptions, traits::ParseStateLike};
 use tree_squatter_persistence::{
     CACHE_DIRECTORY, LoadError, LoadOptions, Options, Persistence, WriteOutcome, WritePolicy,
 };
@@ -16,9 +16,9 @@ fn miss_hit_and_old_reader_survives_update() {
         .load_with_options(
             Path::new("file.json"),
             &language(),
-            &mut tree_sitter_squatter::Parser::new(),
+            &mut tree_squatter::Parser::new(),
             LoadOptions {
-                pack: tree_sitter_squatter::PackOptions {
+                pack: tree_squatter::PackOptions {
                     initial_group_capacity: 128,
                     ..Default::default()
                 },
@@ -44,7 +44,7 @@ fn miss_hit_and_old_reader_survives_update() {
     assert_eq!(
         new.tree()
             .root_node()
-            .named_child(tree_sitter_squatter::NamedChildIx::new(0))
+            .named_child(tree_squatter::NamedChildIx::new(0))
             .unwrap()
             .kind(),
         "array"
@@ -53,7 +53,7 @@ fn miss_hit_and_old_reader_survives_update() {
         reader
             .tree()
             .root_node()
-            .named_child(tree_sitter_squatter::NamedChildIx::new(0))
+            .named_child(tree_squatter::NamedChildIx::new(0))
             .unwrap()
             .kind(),
         "object"
@@ -74,14 +74,14 @@ fn deferred_disabled_and_cancelled_publication() {
     let root = tempfile::tempdir().unwrap();
     fs::write(root.path().join("file.json"), "123").unwrap();
     let cache = Persistence::open(root.path(), Options::default()).unwrap();
-    let mut parser = tree_sitter_squatter::Parser::new();
+    let mut parser = tree_squatter::Parser::new();
     let result = cache
         .load_with_options(
             Path::new("file.json"),
             &language(),
             &mut parser,
             LoadOptions {
-                pack: tree_sitter_squatter::PackOptions::default(),
+                pack: tree_squatter::PackOptions::default(),
                 write: WritePolicy::Deferred,
                 parse: Default::default(),
             },
@@ -93,9 +93,9 @@ fn deferred_disabled_and_cancelled_publication() {
             .load_with_options(
                 Path::new("file.json"),
                 &language(),
-                &mut tree_sitter_squatter::Parser::new(),
+                &mut tree_squatter::Parser::new(),
                 LoadOptions {
-                    pack: tree_sitter_squatter::PackOptions::default(),
+                    pack: tree_squatter::PackOptions::default(),
                     write: WritePolicy::Disabled,
                     parse: Default::default(),
                 },
@@ -138,9 +138,9 @@ fn stale_deferred_writer_cannot_create_wrong_hit() {
         .load_with_options(
             Path::new("file.json"),
             &language(),
-            &mut tree_sitter_squatter::Parser::new(),
+            &mut tree_squatter::Parser::new(),
             LoadOptions {
-                pack: tree_sitter_squatter::PackOptions::default(),
+                pack: tree_squatter::PackOptions::default(),
                 write: WritePolicy::Deferred,
                 parse: Default::default(),
             },
@@ -159,11 +159,11 @@ fn reuse_cancelled_parser_for_whole_file_load() {
     let root = tempfile::tempdir().unwrap();
     fs::write(root.path().join("file.json"), "[1,2,3]").unwrap();
     let cache = Persistence::open(root.path(), Options::default()).unwrap();
-    let mut parser = tree_sitter_squatter::Parser::new();
+    let mut parser = tree_squatter::Parser::new();
     let tree_sitter_language =
         unsafe { tree_sitter::Language::from_raw(tree_sitter_json::LANGUAGE.into_raw()().cast()) };
     parser
-        .set_language(&tree_sitter_squatter::Language::new(&tree_sitter_language).unwrap())
+        .set_language(&tree_squatter::Language::new(&tree_sitter_language).unwrap())
         .unwrap();
     let source = format!("[{}0]", "0,".repeat(100_000));
     let mut cancel = |_: &dyn ParseStateLike| ControlFlow::Break(());
@@ -182,7 +182,7 @@ fn reuse_cancelled_parser_for_whole_file_load() {
         result
             .tree()
             .root_node()
-            .named_child(tree_sitter_squatter::NamedChildIx::new(0))
+            .named_child(tree_squatter::NamedChildIx::new(0))
             .unwrap()
             .kind(),
         "array"
@@ -200,9 +200,9 @@ fn cancellation_never_creates_entry() {
     let result = cache.load_with_options(
         Path::new("file.json"),
         &language(),
-        &mut tree_sitter_squatter::Parser::new(),
+        &mut tree_squatter::Parser::new(),
         LoadOptions {
-            pack: tree_sitter_squatter::PackOptions::default(),
+            pack: tree_squatter::PackOptions::default(),
             write: WritePolicy::Inline,
             parse: ParseOptions::new().progress_callback(&mut cancel),
         },
@@ -274,9 +274,9 @@ fn unavailable_cache_and_full_map_fall_back() {
         .load_with_options(
             Path::new("file.json"),
             &language(),
-            &mut tree_sitter_squatter::Parser::new(),
+            &mut tree_squatter::Parser::new(),
             LoadOptions {
-                pack: tree_sitter_squatter::PackOptions::default(),
+                pack: tree_squatter::PackOptions::default(),
                 write: WritePolicy::Deferred,
                 parse: Default::default(),
             },
@@ -309,7 +309,7 @@ fn multiple_owned_readers() {
                     assert_eq!(
                         file.tree()
                             .root_node()
-                            .named_child(tree_sitter_squatter::NamedChildIx::new(0))
+                            .named_child(tree_squatter::NamedChildIx::new(0))
                             .unwrap()
                             .named_child_count()
                             .get(),
@@ -421,9 +421,9 @@ fn writer_death_releases_admission_without_stale_files() {
         .load_with_options(
             Path::new("file.json"),
             &language(),
-            &mut tree_sitter_squatter::Parser::new(),
+            &mut tree_squatter::Parser::new(),
             LoadOptions {
-                pack: tree_sitter_squatter::PackOptions::default(),
+                pack: tree_squatter::PackOptions::default(),
                 write: WritePolicy::Deferred,
                 parse: Default::default(),
             },
@@ -471,7 +471,7 @@ fn worker_context_switches_grammars_and_loads_restored_dictionary() {
                     language,
                     &mut context,
                     LoadOptions {
-                        pack: tree_sitter_squatter::PackOptions::default(),
+                        pack: tree_squatter::PackOptions::default(),
                         write: WritePolicy::Disabled,
                         ..Default::default()
                     },
@@ -511,18 +511,18 @@ fn side_data_policy_applies_to_hits_and_late_publication() {
     let root = tempfile::tempdir().unwrap();
     fs::write(root.path().join("file.json"), "[\n1,2]").unwrap();
     let cache = Persistence::open(root.path(), Options::default()).unwrap();
-    let mut parser = tree_sitter_squatter::Parser::new();
-    let load_with = |presence, points, write, parser: &mut tree_sitter_squatter::Parser| {
+    let mut parser = tree_squatter::Parser::new();
+    let load_with = |presence, points, write, parser: &mut tree_squatter::Parser| {
         cache
             .load_with_options(
                 Path::new("file.json"),
                 &language(),
                 parser,
                 LoadOptions {
-                    pack: tree_sitter_squatter::PackOptions {
+                    pack: tree_squatter::PackOptions {
                         symbol_presence: presence,
                         points,
-                        ..tree_sitter_squatter::PackOptions::default()
+                        ..tree_squatter::PackOptions::default()
                     },
                     write,
                     parse: Default::default(),
@@ -644,7 +644,7 @@ fn cancellation_during_capture_and_on_a_cache_hit() {
     let source = format!("\"{}\"", "x".repeat(150_000));
     fs::write(root.path().join("file.json"), &source).unwrap();
     let cache = Persistence::open(root.path(), Options::default()).unwrap();
-    let mut parser = tree_sitter_squatter::Parser::new();
+    let mut parser = tree_squatter::Parser::new();
     let mut cancel = |state: &dyn ParseStateLike| {
         assert!(!state.is_converting());
         assert!(!state.current_byte_offset_descends());

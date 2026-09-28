@@ -4,7 +4,7 @@ mod common;
 use common::{ChildProcess, language, load};
 
 use std::{fs, ops::ControlFlow, os::fd::AsRawFd, path::Path};
-use tree_sitter_squatter::{ParseOptions, traits::ParseStateLike};
+use tree_squatter::{ParseOptions, traits::ParseStateLike};
 use tree_squatter_persistence::*;
 
 #[test]
@@ -103,7 +103,7 @@ fn wait_budget_bypasses_live_owner_and_cancellation_stops_deferred_work() {
         .load_step(
             Path::new("file.json"),
             &language(),
-            &mut tree_sitter_squatter::Parser::new(),
+            &mut tree_squatter::Parser::new(),
             LoadOptions::default(),
         )
         .unwrap()
@@ -112,7 +112,7 @@ fn wait_budget_bypasses_live_owner_and_cancellation_stops_deferred_work() {
     };
     assert!(matches!(
         pending.resume(
-            &mut tree_sitter_squatter::Parser::new(),
+            &mut tree_squatter::Parser::new(),
             ParseOptions::new()
                 .progress_callback(&mut |_: &dyn ParseStateLike| ControlFlow::Break(()))
         ),
@@ -171,7 +171,7 @@ fn deferred_contender_reuses_winner_publication() {
         .load_step(
             Path::new("file.json"),
             &language(),
-            &mut tree_sitter_squatter::Parser::new(),
+            &mut tree_squatter::Parser::new(),
             LoadOptions::default(),
         )
         .unwrap()
@@ -182,7 +182,7 @@ fn deferred_contender_reuses_winner_publication() {
         .load_step(
             Path::new("file.json"),
             &language(),
-            &mut tree_sitter_squatter::Parser::new(),
+            &mut tree_squatter::Parser::new(),
             LoadOptions::default(),
         )
         .unwrap()
@@ -200,7 +200,7 @@ fn deferred_contender_reuses_winner_publication() {
             .cache_hit()
     );
     // No language is installed: a hit must not need to initialize this parser.
-    let mut parser = tree_sitter_squatter::Parser::new();
+    let mut parser = tree_squatter::Parser::new();
     let LoadStep::Ready(result) = contender
         .resume(&mut parser, ParseOptions::default())
         .unwrap()
