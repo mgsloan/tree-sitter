@@ -6,8 +6,10 @@ unsafe extern "C" {
     fn sq_test_dictionaries();
     fn sq_test_grammar_limits();
     fn sq_test_lexer_fallback();
+    fn sq_test_chunked_lexer();
     fn sq_test_unsupported_parsers();
     fn sq_test_parser_language() -> *const c_void;
+    fn sq_test_ambiguous_language() -> *const c_void;
     fn sq_test_supertypes(count: u32, connected: bool) -> *const c_void;
     fn sq_test_supertypes_delete(language: *const c_void);
     fn sq_test_symbols(count: u32) -> *const c_void;
@@ -139,8 +141,58 @@ fn cancellation_during_packing_finalization() {
 }
 
 #[test]
+fn callback_input_during_ambiguity_replay() {
+    let native = unsafe { tree_sitter::Language::from_raw(sq_test_ambiguous_language().cast()) };
+    let language = Language::new(&native).unwrap();
+    let mut parser = TreeFellerParser::new(&language).unwrap();
+    let source = b"x + x + x + x\n";
+    let expected = parser.parse(source).unwrap();
+    for chunk_size in 1..=8 {
+        let mut maximum = 0;
+        let mut replays = 0;
+        let actual = parser
+            .parse_with_callback(
+                &mut |byte, _| {
+                    if byte == 0 && maximum > 0 {
+                        replays += 1;
+                    }
+                    maximum = maximum.max(byte);
+                    source[byte..(byte + chunk_size).min(source.len())].to_vec()
+                },
+                PackOptions::default(),
+            )
+            .unwrap();
+        assert!(replays > 0);
+        assert_eq!(actual.as_bytes(), expected.as_bytes());
+        assert_eq!(
+            actual.point_data().unwrap().as_bytes(),
+            expected.point_data().unwrap().as_bytes()
+        );
+    }
+    let mut maximum = 0;
+    let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        parser.parse_with_callback(
+            &mut |byte, _| {
+                assert!(byte != 0 || maximum == 0, "panic during replay");
+                maximum = maximum.max(byte);
+                source[byte..(byte + 1).min(source.len())].to_vec()
+            },
+            PackOptions::default(),
+        )
+    }));
+    assert!(panic.is_err());
+    assert_eq!(
+        parser.parse(source).unwrap().as_bytes(),
+        expected.as_bytes()
+    );
+}
+
+#[test]
 fn lexer_fallback_and_concurrent_parser_preparation() {
-    unsafe { sq_test_lexer_fallback() };
+    unsafe {
+        sq_test_lexer_fallback();
+        sq_test_chunked_lexer();
+    }
     let language = unsafe { tree_sitter::Language::from_raw(sq_test_parser_language().cast()) };
     let grammar = Language::new(&language).unwrap();
     let mut parser = tree_sitter::Parser::new();

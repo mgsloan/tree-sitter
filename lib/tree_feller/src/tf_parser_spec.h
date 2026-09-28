@@ -1053,7 +1053,7 @@ static bool tf_parser__split(TFParser *p, TFToken token, TFToken *next) {
   if (accepted) {
     *next = s->cached;
     next->symbol = 0;
-    next->start_byte = next->end_byte = p->lexer.size;
+    next->start_byte = next->end_byte = s->trees[s->finished].token.end_byte;
     // EOF's point is retained by the accepted candidate, including whitespace.
     next->start_point = next->end_point = s->trees[s->finished].token.end_point;
   }

@@ -4,11 +4,12 @@ Implementation design for `tree-squatter`. Signatures omit routine lifetimes
 and method bodies.
 
 Implementation scope: direct-parser progress and cancellation are deferred to
-`experimental/tree-feller-cancel`. On `parser-api`, `TreeFellerParser` keeps
-`parse_with_options(source, PackOptions)` and does not implement `Parse` or
-expose `TreeFellerParseState`. The direct-parser callback design below describes
-that experiment; the compatible parser and native Tree-sitter implement the
-shared parsing traits.
+`experimental/tree-feller-cancel`. `TreeFellerParser` keeps
+`parse_with_options(source, PackOptions)` and adds
+`parse_with_callback(callback, PackOptions)`. It does not implement `Parse` or
+expose `TreeFellerParseState`. The direct-parser progress callback design below
+describes that experiment; the compatible parser and native Tree-sitter
+implement the shared parsing traits.
 
 ## Scope
 
@@ -85,8 +86,9 @@ result, error, and options types from `Parse`. Generic callers can pass
 `Default::default()` or convert shared `ParseOptions` with `.into()`.
 They can require packed output with
 `P: ParseWithCallback<Tree = Tree>`. Its implementations omit old-tree input,
-as in `Parse`. `TreeFellerParser` does not implement it because tree-feller
-currently requires contiguous input.
+as in `Parse`. `TreeFellerParser` has an inherent `parse_with_callback` method,
+but does not implement this trait until its `Parse` and progress/options
+contract is implemented.
 
 Progress callbacks use parser-specific state types. A separate shared trait
 exposes the offset and its traversal direction:
@@ -171,8 +173,9 @@ fn parse_with_progress<P: Parse>(
 ```
 
 The `Parse` trait covers only contiguous byte input interpreted as UTF-8.
-The direct backend has no chunked input reader, and its input size is limited
-to `u32::MAX` bytes. The native implementation resets any previously
+The direct backend also accepts callback input through its inherent method;
+both input paths reject input exceeding `u32::MAX` bytes.
+The native implementation resets any previously
 interrupted parse before calling Tree-sitter with no old tree.
 It returns `NoLanguage` when no language was selected. The default
 `parse()` call has no progress callback; `parse_with_options` can supply one.
@@ -281,6 +284,14 @@ and long finalization loops so cancellation can discard a partial packed tree.
 No partial tree is returned on cancellation or packing failure.
 
 ## Direct parser
+
+The implemented callback input method takes `PackOptions`, like the contiguous
+method. Its callback returns bytes starting at the requested offset and point;
+an empty chunk means EOF. Chunks may split UTF-8 characters. Reads can seek
+backward, including to byte zero during private ambiguity replay. The source
+must stay unchanged during parsing. The Rust wrapper retains owned callback
+results until the next read and resumes callback panics after native cleanup.
+The signatures below describe the separate progress/cancellation experiment.
 
 ```rust
 pub struct TreeFellerParser { /* current Parser, renamed */ }

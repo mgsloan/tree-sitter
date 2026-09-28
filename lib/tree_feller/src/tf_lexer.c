@@ -1,10 +1,11 @@
 // Implements the TSLexer callbacks tf_lexer.h declares, and tf_lexer_next's dispatch
 // of one token: the generated lex_fn, then the keyword re-lex tree-sitter itself runs
 // before accepting a word token. Ported from tree-sitter's lexer.c and parser.c; see
-// tf_lexer.h for what the single-buffer, no-included-ranges case leaves out.
+// tf_lexer.h for the supported input modes.
 #include "tf_lexer.h"
 
 #include "tf_utf8.h"
+#include <string.h>
 
 #define TF_BOM 0xFEFF
 #define TF_NO_END UINT32_MAX
@@ -37,16 +38,90 @@ static void tf_lexer__get_lookahead(TFLexer *self) {
   self->lookahead_size = (self->data.lookahead == TF_DECODE_ERROR) ? 1 : i;
 }
 
+static void tf_lexer__read(TFLexer *self, uint32_t byte, TFPoint point) {
+  TFInputState *input = self->input;
+  self->chunk_start = self->size = byte;
+  self->source = NULL;
+  if (input->overflow || (input->has_size && byte >= input->size)) return;
+
+  uint32_t size = 0;
+  const char *source = input->input.read(input->input.payload, byte, point, &size);
+  if (size > UINT32_MAX - byte) {
+    input->overflow = true;
+  } else if (!size) {
+    input->has_size = true;
+    input->size = byte;
+  } else {
+    self->source = (const uint8_t *)source;
+    self->size = byte + size;
+  }
+}
+
+static void tf_lexer__get_chunk_lookahead(TFLexer *self) {
+  if (!self->source || self->byte < self->chunk_start || self->byte >= self->size) {
+    tf_lexer__read(self, self->byte, self->point);
+  }
+  self->at_eof = !self->source;
+  self->lookahead_size = 1;
+  if (self->at_eof) {
+    self->data.lookahead = '\0';
+    return;
+  }
+
+  const uint8_t *source = self->source + (self->byte - self->chunk_start);
+  uint8_t lead = source[0];
+  if (lead < 0x80) {
+    self->data.lookahead = lead;
+    return;
+  }
+  uint32_t available = self->size - self->byte;
+  uint32_t needed = lead < 0xC2 || lead >= 0xF5 ? 1 : lead < 0xE0 ? 2 : lead < 0xF0 ? 3 : 4;
+  uint8_t joined[4];
+  if (available < needed) {
+    // Copy before calling read: the provider may replace or overwrite its buffer.
+    memcpy(joined, source, available);
+    TFPoint point = self->point;
+    uint32_t scanned = 0;
+    while (available < needed) {
+      while (scanned < available) {
+        if (joined[scanned++] == '\n') {
+          point.row++;
+          point.column = 0;
+        } else {
+          point.column++;
+        }
+      }
+      tf_lexer__read(self, self->byte + available, point);
+      if (!self->source) break;
+      uint32_t count = self->size - self->chunk_start;
+      if (count > needed - available) count = needed - available;
+      memcpy(joined + available, self->source, count);
+      available += count;
+    }
+    source = joined;
+  }
+  self->data.lookahead = tf_utf8_next(source, available, &self->lookahead_size);
+  if (self->data.lookahead == TF_DECODE_ERROR) self->lookahead_size = 1;
+}
+
 void tf_lexer_seek(TFLexer *self, uint32_t byte, TFPoint point) {
   self->byte = byte;
   self->point = point;
-  tf_lexer__get_lookahead(self);
+  if (self->input) tf_lexer__get_chunk_lookahead(self);
+  else tf_lexer__get_lookahead(self);
+}
+
+void tf_lexer_refresh(TFLexer *self) {
+  if (self->input) {
+    self->source = NULL;
+    tf_lexer__get_chunk_lookahead(self);
+  }
 }
 
 // lexer.c:194-247. The included-range walk collapses to nothing with one range;
 // what remains is the position arithmetic, which must match exactly: only '\n'
 // advances the row, and `column` counts bytes.
-static void tf_lexer__do_advance(TFLexer *self, bool skip) {
+static void tf_lexer__move(TFLexer *self, bool skip) {
   if (self->lookahead_size) {
     if (self->data.lookahead == '\n') {
       self->point.row++;
@@ -60,7 +135,6 @@ static void tf_lexer__do_advance(TFLexer *self, bool skip) {
     self->token_start_byte = self->byte;
     self->token_start_point = self->point;
   }
-  tf_lexer__get_lookahead(self);
 }
 
 static void tf_lexer__advance(TSLexer *lexer, bool skip) {
@@ -68,7 +142,28 @@ static void tf_lexer__advance(TSLexer *lexer, bool skip) {
   if (self->byte >= self->size) {
     return;  // lexer.c:250, `if (!self->chunk) return`
   }
-  tf_lexer__do_advance(self, skip);
+  tf_lexer__move(self, skip);
+  tf_lexer__get_lookahead(self);
+}
+
+static void tf_lexer__advance_chunk(TSLexer *lexer, bool skip) {
+  TFLexer *self = (TFLexer *)lexer;
+  if (self->at_eof) return;
+  tf_lexer__move(self, skip);
+  uint32_t offset = self->byte - self->chunk_start;
+  if (offset < self->size - self->chunk_start) {
+    uint8_t lead = self->source[offset];
+    if (lead < 0x80) {
+      self->lookahead_size = 1;
+      self->data.lookahead = lead;
+      return;
+    }
+  }
+  tf_lexer__get_chunk_lookahead(self);
+}
+
+static bool tf_lexer__chunk_eof(const TSLexer *lexer) {
+  return ((const TFLexer *)lexer)->at_eof;
 }
 
 static void tf_lexer__mark_end(TSLexer *lexer) {
@@ -97,6 +192,19 @@ static uint32_t tf_lexer__get_column(TSLexer *lexer) {
     }
     i += next;
   }
+  return column;
+}
+
+static uint32_t tf_lexer__get_chunk_column(TSLexer *lexer) {
+  TFLexer *self = (TFLexer *)lexer;
+  TFLexer scan = *self;
+  tf_lexer_seek(&scan, self->byte - self->point.column, (TFPoint){self->point.row, 0});
+  uint32_t column = 0;
+  while (scan.byte < self->byte && !scan.at_eof) {
+    if (scan.byte != 0 || scan.data.lookahead != TF_BOM) column++;
+    tf_lexer__advance_chunk(&scan.data, false);
+  }
+  tf_lexer_refresh(self);
   return column;
 }
 
@@ -129,18 +237,26 @@ void tf_lexer_init(TFLexer *self, const TFLanguage *lang, const void *source, ui
   tf_lexer__get_lookahead(self);
 }
 
+void tf_lexer_init_with_callback(TFLexer *self, const TFLanguage *lang, TFInputState *input) {
+  tf_lexer_init(self, lang, NULL, 0);
+  self->input = input;
+  self->data.advance = tf_lexer__advance_chunk;
+  self->data.eof = tf_lexer__chunk_eof;
+  self->data.get_column = tf_lexer__get_chunk_column;
+  tf_lexer__get_chunk_lookahead(self);
+}
+
 // lexer.c:/ts_lexer_start/. tree-sitter decodes only when its lookahead was
-// invalidated by moving between input chunks or included ranges. Neither exists
-// here: only `tf_lexer_seek` and `tf_lexer__do_advance` move the position, and
-// both refresh the lookahead. Avoids one decode per token on the main path and
-// another on every keyword re-lex.
+// invalidated by moving between input chunks or included ranges. Here every
+// seek, advance, and chunk refresh decodes the lookahead. Avoids one decode per
+// token and another on every keyword re-lex.
 static void tf_lexer__start(TFLexer *self) {
   self->token_start_byte = self->byte;
   self->token_start_point = self->point;
   self->token_end_byte = TF_NO_END;
   self->data.result_symbol = 0;
   if (self->byte == 0 && self->size > 0 && self->data.lookahead == TF_BOM) {
-    tf_lexer__advance(&self->data, true);
+    self->data.advance(&self->data, true);
   }
 }
 

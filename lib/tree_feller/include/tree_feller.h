@@ -97,11 +97,23 @@ typedef struct {
   char message[TF_ERROR_MESSAGE_SIZE];
 } TFError;
 
+// Reads UTF-8 bytes starting at the requested position; zero bytes means EOF.
+// The read function is required; nonempty chunks must have a non-NULL pointer.
+// Reads may seek backward, including to the beginning during ambiguity resolution.
+// The document must remain unchanged during parsing. Returned bytes need only
+// remain valid until the next read, and may end inside a UTF-8 character.
+typedef struct {
+  void *payload;
+  const char *(*read)(void *payload, uint32_t byte, TFPoint point, uint32_t *size);
+} TFInput;
+
 // Parses all of `source`. On success, stores the root value in `*root`. On the
 // first error, returns false and fills `*error`. `sink`, `root`, and `error` may
 // be NULL. Inputs above 4 GiB fail instead of being truncated.
 bool tf_parse(const TFLanguage *lang, const void *source, size_t size, const TFSink *sink,
               void **root, TFError *error);
+bool tf_parse_with_callback(const TFLanguage *lang, TFInput input, const TFSink *sink,
+                            void **root, TFError *error);
 
 // Reusable parser storage. The language and sink are borrowed only for a call;
 // reuse is exclusive and remains valid after failure. drop_scratch/delete accept NULL.
@@ -111,12 +123,14 @@ void tf_parser_drop_scratch(TFParser *self);
 void tf_parser_delete(TFParser *self);
 bool tf_parser_parse(TFParser *self, const TFLanguage *lang, const void *source, size_t size,
                      const TFSink *sink, void **root, TFError *error);
+bool tf_parser_parse_with_callback(TFParser *self, const TFLanguage *lang, TFInput input,
+                                   const TFSink *sink, void **root, TFError *error);
 
 // ---------------------------------------------------------------------------
 // Input
 //
-// Reported offsets refer to the contiguous input buffer. Keep it alive while
-// parsing and while any consumer-built value still refers to it.
+// Reported offsets refer to the logical input document. Keep contiguous input
+// alive while parsing and while any consumer-built value still refers to it.
 
 typedef struct {
   const void *data;

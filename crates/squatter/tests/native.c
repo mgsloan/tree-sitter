@@ -208,6 +208,141 @@ static const TSLanguage language = {
 
 const TSLanguage *sq_test_parser_language(void) { return &language; }
 
+typedef struct {
+  const char *source;
+  uint32_t size, chunk_size;
+  uint32_t maximum, replays;
+  char buffer[8];
+} ChunkInput;
+
+static const char *read_chunk(void *payload, uint32_t byte, TFPoint point, uint32_t *size) {
+  ChunkInput *input = payload;
+  assert(byte <= input->size);
+  if (byte == 0 && input->maximum > 0) input->replays++;
+  if (byte > input->maximum) input->maximum = byte;
+  TFPoint expected = {0};
+  for (uint32_t index = 0; index < byte; index++) {
+    if (input->source[index] == '\n') expected.row++, expected.column = 0;
+    else expected.column++;
+  }
+  assert(point.row == expected.row && point.column == expected.column);
+  *size = input->chunk_size - byte % input->chunk_size;
+  if (*size > input->size - byte) *size = input->size - byte;
+  memset(input->buffer, 0xa5, sizeof(input->buffer));
+  memcpy(input->buffer, input->source + byte, *size);
+  return input->buffer;
+}
+
+static const char *overflow_chunk(void *payload, uint32_t byte, TFPoint point, uint32_t *size) {
+  (void)payload;
+  (void)point;
+  *size = byte ? UINT32_MAX : 1;
+  return "\n";
+}
+
+static bool lex_expression(TSLexer *lexer, TSStateId state) {
+  (void)state;
+  while (lexer->lookahead == ' ' || lexer->lookahead == '\n') lexer->advance(lexer, true);
+  if (lexer->eof(lexer)) {
+    lexer->result_symbol = 0;
+    return true;
+  }
+  if (lexer->lookahead != 'x' && lexer->lookahead != '+') return false;
+  lexer->result_symbol = lexer->lookahead == 'x' ? 1 : 2;
+  lexer->advance(lexer, false);
+  lexer->mark_end(lexer);
+  return true;
+}
+
+// root = expression; expression = 'x' | expression '+' expression, with no associativity.
+static const TSLanguage ambiguous_language = {
+  .abi_version = 15, .symbol_count = 5, .token_count = 3,
+  .state_count = 7, .large_state_count = 7, .production_id_count = 1,
+  .symbol_names = (const char *const[]){"end", "x", "+", "root", "expression"},
+  .symbol_metadata = (const TSSymbolMetadata[]){{0}, {.visible = true}, {.visible = true},
+      {.visible = true, .named = true}, {.visible = true, .named = true}},
+  .public_symbol_map = (const TSSymbol[]){0, 1, 2, 3, 4},
+  .alias_map = (const TSSymbol[]){0},
+  .parse_table = (const uint16_t[]){
+      0, 0, 0, 0, 0,
+      0, 1, 0, 6, 3,
+      3, 0, 3, 0, 0,
+      7, 0, 5, 0, 0,
+      0, 1, 0, 0, 5,
+      12, 0, 9, 0, 0,
+      14, 0, 0, 0, 0,
+  },
+  .parse_actions = (const TSParseActionEntry[]){
+      {.entry = {0}}, {.entry = {.count = 1}}, SHIFT(2),
+      {.entry = {.count = 1}}, REDUCE(4, 1, 0, 0),
+      {.entry = {.count = 1}}, SHIFT(4),
+      {.entry = {.count = 1}}, REDUCE(3, 1, 0, 0),
+      {.entry = {.count = 2}}, REDUCE(4, 3, 0, 0), SHIFT(4),
+      {.entry = {.count = 1}}, REDUCE(4, 3, 0, 0),
+      {.entry = {.count = 1}}, ACCEPT_INPUT(),
+  },
+  .lex_modes = (const TSLexerMode[7]){{0}},
+  .lex_fn = lex_expression,
+};
+
+const TSLanguage *sq_test_ambiguous_language(void) { return &ambiguous_language; }
+
+void sq_test_chunked_lexer(void) {
+  // Includes split BOM/codepoints, embedded NUL, invalid sequences, and truncated EOF.
+  const char source[] = "\xef\xbb\xbf" "a\xcf\x80\xf0\x9f\x98\x80\n"
+                        "\xe2\n\xa0\0\xc0\xaf\xed\xa0\x80\xf4\x90\x80\x80\xf0\x9f";
+  ChunkInput chunks = {.source = source, .size = sizeof(source) - 1};
+  for (chunks.chunk_size = 1; chunks.chunk_size <= sizeof(chunks.buffer); chunks.chunk_size++) {
+    TFInputState input = {.input = {&chunks, read_chunk}};
+    TFLexer contiguous, chunked;
+    tf_lexer_init(&contiguous, NULL, source, chunks.size);
+    tf_lexer_init_with_callback(&chunked, NULL, &input);
+    for (;;) {
+      assert(contiguous.byte == chunked.byte);
+      assert(contiguous.point.row == chunked.point.row);
+      assert(contiguous.point.column == chunked.point.column);
+      assert(contiguous.data.lookahead == chunked.data.lookahead);
+      assert(contiguous.lookahead_size == chunked.lookahead_size);
+      assert(contiguous.data.get_column(&contiguous.data) == chunked.data.get_column(&chunked.data));
+      assert(contiguous.data.eof(&contiguous.data) == chunked.data.eof(&chunked.data));
+      if (contiguous.data.eof(&contiguous.data)) break;
+      contiguous.data.advance(&contiguous.data, false);
+      chunked.data.advance(&chunked.data, false);
+    }
+    // EOF and column rescans must not prevent subsequent backward seeks.
+    for (uint32_t byte = chunks.size; byte > 0;) {
+      byte--;
+      TFPoint point = {0};
+      for (uint32_t index = 0; index < byte; index++) {
+        if (source[index] == '\n') point.row++, point.column = 0;
+        else point.column++;
+      }
+      tf_lexer_seek(&contiguous, byte, point);
+      tf_lexer_seek(&chunked, byte, point);
+      assert(contiguous.data.lookahead == chunked.data.lookahead);
+      assert(contiguous.lookahead_size == chunked.lookahead_size);
+    }
+  }
+
+  const char *message;
+  TFLanguage *prepared = tf_language_load(&language, &message);
+  assert(prepared);
+  TFError error;
+  assert(!tf_parse_with_callback(prepared, (TFInput){NULL, overflow_chunk}, NULL, NULL, &error));
+  assert(!strcmp(error.message, "input is larger than 4 GiB"));
+  tf_language_free(prepared);
+
+  // Associativity ties force materialization of an inherited expression.
+  // The private replay must refetch the outer lexer's overwritten input buffer.
+  prepared = tf_language_load_parser(&ambiguous_language, &message);
+  assert(prepared);
+  chunks = (ChunkInput){.source = "x + x + x + x\n", .size = 14, .chunk_size = 1};
+  assert(tf_parse(prepared, chunks.source, chunks.size, NULL, NULL, &error));
+  assert(tf_parse_with_callback(prepared, (TFInput){&chunks, read_chunk}, NULL, NULL, &error));
+  assert(chunks.replays > 0);
+  tf_language_free(prepared);
+}
+
 void sq_test_lexer_fallback(void) {
   const char *message;
   TFLanguage *prepared = tf_language_load(&language, &message);
@@ -219,6 +354,12 @@ void sq_test_lexer_fallback(void) {
   assert(token.start_byte == 0 && token.end_byte == 2);
   assert(token.start_point.row == 0 && token.end_point.row == 1);
   assert(lexer.token_lex_state == 1);
+  ChunkInput chunks = {.source = "\nx", .size = 2, .chunk_size = 1};
+  TFInputState input = {.input = {&chunks, read_chunk}};
+  tf_lexer_init_with_callback(&lexer, prepared, &input);
+  assert(tf_lexer_next(&lexer, 1, &token));
+  assert(token.start_byte == 0 && token.end_byte == 2);
+  assert(token.start_point.row == 0 && token.end_point.row == 1);
   tf_language_free(prepared);
 }
 

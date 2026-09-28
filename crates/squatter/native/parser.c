@@ -246,22 +246,26 @@ void sq_native_parser_clear(SQParser *parser) {
 
 // Parse into the reusable arena. Sink failures take precedence over parser diagnostics;
 // only an accepted root may be exposed to traversal.
-bool sq_native_parser_parse(SQParser *parser, const char *source, uint32_t length,
-                            SQParseError *error) {
+static bool parse(SQParser *parser, const char *source, uint32_t length, const TFInput *input,
+                   SQParseError *error) {
   sq_native_parser_clear(parser);
   parse_error(error, SQ_OK, 0, (TSPoint){0}, NULL);
 
   TFSink sink = {.payload = parser, .on_reduce = reduce};
   TFError diagnostic = {0};
   void *root = NULL;
-  bool success = tf_parser_parse(parser->feller, parser->language, source ? source : "", length,
-                                 &sink, &root, &diagnostic);
+  bool success = input
+      ? tf_parser_parse_with_callback(parser->feller, parser->language, *input, &sink, &root,
+                                      &diagnostic)
+      : tf_parser_parse(parser->feller, parser->language, source ? source : "", length,
+                         &sink, &root, &diagnostic);
 
   if (parser->failure.code != SQ_OK) {
     *error = parser->failure;
   } else if (!success) {
     SQError code =
         strcmp(diagnostic.message, "out of memory") == 0 ? SQ_ERROR_ALLOCATION : SQ_ERROR_PARSE;
+    if (strcmp(diagnostic.message, "input is larger than 4 GiB") == 0) code = SQ_ERROR_OVERFLOW;
     parse_error(error, code, diagnostic.byte, point_from_feller(diagnostic.point),
                 diagnostic.message);
   } else if (!root || (uintptr_t)root - 1 >= parser->count) {
@@ -273,6 +277,15 @@ bool sq_native_parser_parse(SQParser *parser, const char *source, uint32_t lengt
 
   sq_native_parser_clear(parser);
   return false;
+}
+
+bool sq_native_parser_parse(SQParser *parser, const char *source, uint32_t length,
+                            SQParseError *error) {
+  return parse(parser, source, length, NULL, error);
+}
+
+bool sq_native_parser_parse_with_callback(SQParser *parser, TFInput input, SQParseError *error) {
+  return parse(parser, NULL, 0, &input, error);
 }
 
 // The Rust parse guard retains the arena and excludes parser mutation.

@@ -912,6 +912,12 @@ pub(crate) struct Point {
 }
 
 #[repr(C)]
+struct ParserInput {
+    payload: *mut c_void,
+    read: unsafe extern "C" fn(*mut c_void, u32, Point, *mut u32) -> *const u8,
+}
+
+#[repr(C)]
 pub(crate) struct Reduction {
     pub first_child: u32,
     pub next_sibling: u32,
@@ -1008,6 +1014,89 @@ impl NativeParser {
         Ok(Reductions(self))
     }
 
+    pub fn parse_with_callback<T: AsRef<[u8]>, F: FnMut(usize, tree_sitter::Point) -> T>(
+        &mut self,
+        callback: &mut F,
+    ) -> Result<Reductions<'_>, crate::ParseError> {
+        struct Payload<'a, F, T> {
+            callback: &'a mut F,
+            text: Option<T>,
+            panic: Option<Box<dyn std::any::Any + Send>>,
+            overflow: Option<(u32, Point)>,
+        }
+
+        unsafe extern "C" fn read<T: AsRef<[u8]>, F: FnMut(usize, tree_sitter::Point) -> T>(
+            payload: *mut c_void,
+            byte: u32,
+            point: Point,
+            size: *mut u32,
+        ) -> *const u8 {
+            let payload = unsafe { &mut *payload.cast::<Payload<F, T>>() };
+            unsafe { *size = 0 };
+            if payload.panic.is_some() || payload.overflow.is_some() {
+                return std::ptr::null();
+            }
+            // Keep owned chunks alive until the next read. Unwind only after C
+            // has released its parse state and stopped borrowing the callback.
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                payload.text = Some((payload.callback)(
+                    byte as usize,
+                    tree_sitter::Point::new(point.row as usize, point.column as usize),
+                ));
+                let source = payload.text.as_ref().unwrap().as_ref();
+                if source.len() > (u32::MAX - byte) as usize {
+                    payload.overflow = Some((byte, point));
+                    return std::ptr::null();
+                }
+                unsafe { *size = source.len() as u32 };
+                source.as_ptr()
+            }));
+            match result {
+                Ok(source) => source,
+                Err(panic) => {
+                    payload.panic = Some(panic);
+                    std::ptr::null()
+                }
+            }
+        }
+
+        let mut payload = Payload {
+            callback,
+            text: None::<T>,
+            panic: None,
+            overflow: None,
+        };
+        let mut status = ParseStatus::new();
+        let success = unsafe {
+            sq_native_parser_parse_with_callback(
+                self.raw.as_ptr(),
+                ParserInput {
+                    payload: (&mut payload as *mut Payload<F, T>).cast(),
+                    read: read::<T, F>,
+                },
+                &mut status,
+            )
+        };
+        if payload.panic.is_some() || payload.overflow.is_some() {
+            unsafe { sq_native_parser_clear(self.raw.as_ptr()) };
+        }
+        if let Some(panic) = payload.panic {
+            std::panic::resume_unwind(panic);
+        }
+        if let Some((byte, point)) = payload.overflow {
+            return Err(crate::ParseError {
+                code: Error::Overflow,
+                byte,
+                point: tree_sitter::Point::new(point.row as usize, point.column as usize),
+                message: "source exceeds the 32-bit byte limit".into(),
+            });
+        }
+        if !success {
+            return Err(status.into_error());
+        }
+        Ok(Reductions(self))
+    }
+
     pub fn drop_scratch(&mut self) {
         unsafe {
             sq_native_parser_drop_scratch(self.raw.as_ptr());
@@ -1058,6 +1147,11 @@ unsafe extern "C" {
         parser: *mut ParserHandle,
         source: *const u8,
         length: u32,
+        error: *mut ParseStatus,
+    ) -> bool;
+    fn sq_native_parser_parse_with_callback(
+        parser: *mut ParserHandle,
+        input: ParserInput,
         error: *mut ParseStatus,
     ) -> bool;
     fn sq_native_parser_reductions(

@@ -5,5 +5,7 @@
 // - tf_parser.c checks stack allocation sizes and initializes empty diagnostics.
 // - tf_lexer.c retries the error-state lexer, preserving mainline token caching.
 // - tf_language.c separates driver tables from optional visible-sink metadata.
+// - tree_feller.h, tf_lexer.*, tf_parser.c, and tf_parser_spec.h support callback
+//   input with split UTF-8 decoding and buffer invalidation across private replays.
 // Other upstream sources are unmodified. See LICENSE for MIT terms.
 // Only tf_language.c, tf_lexer.c, and tf_parser.c are linked by tree-squatter.

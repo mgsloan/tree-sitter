@@ -158,6 +158,145 @@ fn callback_input_and_error_recovery() {
     assert_eq!(packed.root_node().byte_range(), 0..source.len());
 }
 
+fn assert_same_tree(actual: &Tree, expected: &Tree) {
+    assert_eq!(actual.as_bytes(), expected.as_bytes());
+    assert_eq!(
+        actual.point_data().map(|points| points.as_bytes()),
+        expected.point_data().map(|points| points.as_bytes()),
+    );
+    assert_eq!(
+        actual.presence_cache().map(|cache| cache.as_bytes()),
+        expected.presence_cache().map(|cache| cache.as_bytes()),
+    );
+}
+
+fn check_point(source: &[u8], byte: usize, point: tree_sitter::Point) {
+    assert!(byte <= source.len());
+    let prefix = &source[..byte];
+    let row = prefix.iter().filter(|&&value| value == b'\n').count();
+    let column = prefix
+        .iter()
+        .rposition(|&value| value == b'\n')
+        .map_or(byte, |newline| byte - newline - 1);
+    assert_eq!(point, tree_sitter::Point::new(row, column));
+}
+
+#[test]
+fn direct_callback_chunks_match_contiguous() {
+    let sources = [
+        "".to_owned(),
+        " \n\t".into(),
+        "\u{feff}/* π😀€ */\nint value; /* trailing */\n".into(),
+        "int f(void) { return sizeof(T) + (T) * value; }\n".into(),
+        "typedef struct { int member; } Item;\nint f(Item *item) { return item->member; }".into(),
+        format!("char *text = \"{}\";\n", "x😀π".repeat(200)),
+        "int f(void) { T(a); T *b; return (T)(a) + sizeof(T); }\n".into(),
+    ];
+    let language = Language::new(&c_language()).unwrap();
+    let mut parser = TreeFellerParser::new(&language).unwrap();
+    let mut compatible = compatible(&language);
+    for source in &sources {
+        for options in [
+            PackOptions::default(),
+            PackOptions {
+                repack: true,
+                points: false,
+                symbol_presence: false,
+                ..Default::default()
+            },
+        ] {
+            let expected = parser.parse_with_options(source, options).unwrap();
+            let packed = compatible
+                .parse_with_options(
+                    source,
+                    PackedParseOptions {
+                        pack: options,
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+            assert_same_tree(&expected, &packed);
+            for chunk_size in [1, 2, 3, 4, 7, 32, 4096] {
+                let source = source.as_bytes();
+                let actual = parser
+                    .parse_with_callback(
+                        &mut |byte, point| {
+                            check_point(source, byte, point);
+                            // Fixed boundaries exercise suffix reads within rope leaves.
+                            let end = ((byte / chunk_size + 1) * chunk_size).min(source.len());
+                            source[byte..end].to_vec()
+                        },
+                        options,
+                    )
+                    .unwrap();
+                assert_same_tree(&actual, &expected);
+            }
+        }
+    }
+
+    // Borrowed chunks stay borrowed and an entire input needs just one read plus EOF.
+    let source = b"int first;\nint second;\n";
+    let mut reads = 0;
+    parser
+        .parse_with_callback(
+            &mut |byte, point| {
+                check_point(source, byte, point);
+                reads += 1;
+                &source[byte..]
+            },
+            PackOptions::default(),
+        )
+        .unwrap();
+    assert_eq!(reads, 2);
+}
+
+#[test]
+fn direct_callback_failures_and_reuse() {
+    let language = Language::new(&c_language()).unwrap();
+    let mut parser = TreeFellerParser::new(&language).unwrap();
+    for source in [
+        &b"int x;\n@"[..],
+        &b"int broken = ;"[..],
+        &b"/* \xf0\x9f"[..],
+        &b"int \xe2\n\xa0;"[..],
+        &b"int \0;"[..],
+    ] {
+        let expected = parser.parse(source);
+        for chunk_size in 1..=4 {
+            let actual = parser.parse_with_callback(
+                &mut |byte, point| {
+                    check_point(source, byte, point);
+                    source[byte..(byte + chunk_size).min(source.len())].to_vec()
+                },
+                PackOptions::default(),
+            );
+            match (&actual, &expected) {
+                (Ok(actual), Ok(expected)) => assert_same_tree(actual, expected),
+                (Err(actual), Err(expected)) => assert_eq!(actual, expected),
+                _ => panic!("chunked and contiguous results differ: {source:?}"),
+            }
+        }
+    }
+    let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        parser.parse_with_callback(
+            &mut |byte, _| {
+                assert!(byte == 0, "input callback panic");
+                b"int value;".to_vec()
+            },
+            PackOptions::default(),
+        )
+    }));
+    assert!(panic.is_err());
+    parser.parse("int reused;").unwrap();
+    parser.drop_scratch();
+    parser
+        .parse_with_callback(
+            &mut |byte, _| &b"int reused;"[byte..],
+            PackOptions::default(),
+        )
+        .unwrap();
+}
+
 fn check_packed<P>(parser: &mut P, source: &str) -> Tree
 where
     P: Parse<Tree = Tree>,

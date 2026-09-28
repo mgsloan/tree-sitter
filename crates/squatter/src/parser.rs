@@ -399,6 +399,23 @@ impl TreeFellerParser {
             .pack_reductions(reductions.language(), nodes, root, options)?)
     }
 
+    /// Parses UTF-8 chunks starting at the requested byte offset and point.
+    /// An empty chunk ends input. Reads can seek backward, including to byte zero;
+    /// the callback must expose the same document throughout the parse.
+    /// Chunks may split UTF-8 characters and may be borrowed or owned.
+    /// Input exceeding the 32-bit byte limit returns [`Error::Overflow`].
+    pub fn parse_with_callback<T: AsRef<[u8]>, F: FnMut(usize, Point) -> T>(
+        &mut self,
+        callback: &mut F,
+        options: PackOptions,
+    ) -> Result<Tree, ParseError> {
+        let reductions = self.native.parse_with_callback(callback)?;
+        let (nodes, root) = reductions.nodes();
+        Ok(self
+            .pack
+            .pack_reductions(reductions.language(), nodes, root, options)?)
+    }
+
     /// Release high-water scratch while retaining the prepared language.
     pub fn drop_scratch(&mut self) {
         self.native.drop_scratch();

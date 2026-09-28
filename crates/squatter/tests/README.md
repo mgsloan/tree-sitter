@@ -18,6 +18,8 @@ slab construction and loading use Rust.
 
 Allocation-failure injection is intentionally omitted. Null C handles,
 containing-range setters, and variable-width column primitives have no
-corresponding Rust API. Query tests also cover metadata and cloning, chunked text
+corresponding Rust API. Direct-parser tests compare callback and contiguous input,
+including split UTF-8, temporary buffers, replay, errors, and parser reuse.
+Query tests also cover metadata and cloning, chunked text
 providers, streaming result borrows and removal, persistent iterator ranges, and
 resumable progress callbacks in optimized and general execution.

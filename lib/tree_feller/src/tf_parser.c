@@ -272,8 +272,8 @@ static bool tf_parser__demote_keyword(const TFLanguage *lang, TSStateId state, T
 #include "tf_parser_spec.h"
 
 static bool tf_parser__run(const TFLanguage *lang, const void *source, size_t size,
-                           const TFSink *sink, void **root, TFError *error, TFSpec *capture,
-                           TFParser *storage) {
+                           TFInputState *input, const TFSink *sink, void **root, TFError *error,
+                           TFSpec *capture, TFParser *storage) {
   static const TFSink no_sink = {0};
   TFParser self = storage ? *storage : (TFParser){0};
   self.lang = lang;
@@ -290,7 +290,8 @@ static bool tf_parser__run(const TFLanguage *lang, const void *source, size_t si
     tf_parser__fail(&self, 0, (TFPoint){0, 0}, "input is larger than 4 GiB");
     return false;
   }
-  tf_lexer_init(&self.lexer, lang, source, (uint32_t)size);
+  if (input) tf_lexer_init_with_callback(&self.lexer, lang, input);
+  else tf_lexer_init(&self.lexer, lang, source, (uint32_t)size);
   bool ok = false;
   // Zeroed, so running out of memory before the first token reports byte 0.
   TFToken token = {0};
@@ -369,6 +370,11 @@ static bool tf_parser__run(const TFLanguage *lang, const void *source, size_t si
 oom:
   tf_parser__fail(&self, token.start_byte, token.start_point, "out of memory");
 done:
+  if (input && input->overflow) {
+    tf_parser__fail(&self, self.lexer.byte, self.lexer.point, "input is larger than 4 GiB");
+    if (root) *root = NULL;
+    ok = false;
+  }
   // A failed parse has no root to hand the consumer, so anything it built is
   // otherwise dropped on the floor. Give it back before the stack goes away.
   if (!ok && self.sink->on_discard) {
@@ -429,8 +435,10 @@ static bool tf_spec__materialize(TFSpec *s) {
     s->materialized = true;
     TFSink sink = {.payload = s, .on_shift = tf_capture__shift, .on_reduce = tf_capture__reduce};
     // The replay stops by failing once it has captured, so only `captured` counts.
-    (void)tf_parser__run(s->owner->lang, s->owner->lexer.source, s->owner->lexer.size, &sink, NULL,
-                         NULL, s, NULL);
+    TFLexer *lexer = &s->owner->lexer;
+    (void)tf_parser__run(s->owner->lang, lexer->input ? NULL : lexer->source,
+                         lexer->input ? 0 : lexer->size, lexer->input, &sink, NULL, NULL, s, NULL);
+    tf_lexer_refresh(lexer);
     if (!s->captured) {
       s->failed = true;
     }
@@ -440,7 +448,12 @@ static bool tf_spec__materialize(TFSpec *s) {
 
 bool tf_parse(const TFLanguage *lang, const void *source, size_t size, const TFSink *sink,
               void **root, TFError *error) {
-  return tf_parser__run(lang, source, size, sink, root, error, NULL, NULL);
+  return tf_parser__run(lang, source, size, NULL, sink, root, error, NULL, NULL);
+}
+
+bool tf_parse_with_callback(const TFLanguage *lang, TFInput input, const TFSink *sink,
+                            void **root, TFError *error) {
+  return tf_parser_parse_with_callback(NULL, lang, input, sink, root, error);
 }
 
 TFParser *tf_parser_new(void) {
@@ -463,7 +476,13 @@ void tf_parser_delete(TFParser *self) {
 
 bool tf_parser_parse(TFParser *self, const TFLanguage *lang, const void *source, size_t size,
                      const TFSink *sink, void **root, TFError *error) {
-  return tf_parser__run(lang, source, size, sink, root, error, NULL, self);
+  return tf_parser__run(lang, source, size, NULL, sink, root, error, NULL, self);
+}
+
+bool tf_parser_parse_with_callback(TFParser *self, const TFLanguage *lang, TFInput input,
+                                   const TFSink *sink, void **root, TFError *error) {
+  TFInputState state = {.input = input};
+  return tf_parser__run(lang, NULL, 0, &state, sink, root, error, NULL, self);
 }
 
 #undef TF_SPEC_RESERVE
