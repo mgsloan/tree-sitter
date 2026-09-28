@@ -1,15 +1,10 @@
 
-parser api impl  ->  forests  ->  Viz
-                              ->  Lean
-                 ->  WIP use in Zed
+forests  ->  Viz
+         ->  Fuzz
+         ->  Docs
+         ->  Lean
 
 # Todos
-
-- [*] Proper parser APIs
-
-- [*] Move away from AtomicBool cancellation and to cancellation / progress callback
-
-- [*] Trickiness with building PointsCache after the fact: could be unrepresentable due to existing group decisions.
 
 - [ ] Update agent rules about documentation and refine documentation.  Should copy text from tree-sitter docs where sensible.  Should describe what's important / guaranteed to the user, not how it's implemented
 
@@ -17,7 +12,11 @@ parser api impl  ->  forests  ->  Viz
 
 ## Organization
 
-- [ ] Remove tree-sitter repo stuff since it's now a dependency.
+`experimental` branch which has tree-sitter / persistence / viz / lean. My development happens here.
+
+`main` branch which only has squatter and tree-feller and nothing else
+
+Script lives on `experimental` which helps out with merging back to `main` - handles any new deletions and new moves.
 
 ## Forests
 
@@ -66,7 +65,7 @@ parser api impl  ->  forests  ->  Viz
 
 - [ ] Try implementing the callback in Rust not C
 
-- [ ] progress and cancellation?
+- [ ] progress and cancellation? Currently just never calls the callback
 
 - [ ] operation on
 
@@ -83,7 +82,9 @@ parser api impl  ->  forests  ->  Viz
 
 ## Persistence
 
-- [ ] Ability to use tree-feller
+- [ ] Clean up tests / benchmarks
+
+- [ ] Ability to use tree-feller as a fallback
 
 - [ ] Define flat format that includes sidecars
 
@@ -179,3 +180,20 @@ Parse only the needed info.
 - [ ] Try OR-ing together presence bitmaps when appropriate
 
 - [ ] Consider progress calback stride
+
+- [ ] Not a big win, but could use perfect hashing for the supertype masks table
+
+- [ ] Benchmark supertype small list-like set vs supertype bitmap for keys
+
+- [ ] Wild and probably impractical / unuseful idea: parallel parsing. The thought is to find chunk
+  boundaries that have good heuristics for determining parse state - such as indentation level.
+  Intuition is that "I'm about to read a declaration" should be predictable for a lot of normal
+  code.
+
+- [ ] Explicit memory prefetching?
+
+# Misc
+
+- [ ] Some applications like ast-grep only care about a file if it contains particular node types.
+  The client being able to have some custom handling of the tree-feller stream could allow for early
+  exit before packing.
