@@ -4,7 +4,6 @@ use tree_sitter::Point;
 use crate::{
     Error, Language, PackOptions, Packer, Tree,
     native::NativeParser,
-    packing::Progress,
     traits::{Parse, ParseStateLike},
 };
 
@@ -41,7 +40,8 @@ impl<'a> ParseOptions<'a> {
 #[derive(Default)]
 pub struct PackedParseOptions<'a> {
     pub parse: ParseOptions<'a>,
-    pub pack: PackOptions,
+    /// Packing controls; its callback runs in addition to the parse callback.
+    pub pack: PackOptions<'a>,
 }
 
 impl PackedParseOptions<'_> {
@@ -52,7 +52,7 @@ impl PackedParseOptions<'_> {
     pub fn reborrow(&mut self) -> PackedParseOptions<'_> {
         PackedParseOptions {
             parse: self.parse.reborrow(),
-            pack: self.pack,
+            pack: self.pack.reborrow(),
         }
     }
 }
@@ -240,18 +240,21 @@ impl Parse for Parser {
         };
         if let Some(progress) = options.parse.progress_callback {
             let has_error = tree.root_node().has_error();
+            let mut packing_progress = options.pack.progress_callback.take();
             let mut report = |byte: u32| {
+                if let Some(callback) = &mut packing_progress {
+                    callback(byte)?;
+                }
                 progress(&ParseState {
                     byte: byte as usize,
                     has_error,
                     converting: true,
                 })
             };
-            Ok(self.pack.pack_with_progress(
+            Ok(self.pack.pack_with_options(
                 language,
                 &tree,
-                options.pack,
-                &mut Progress::new(&mut report),
+                options.pack.reborrow().progress_callback(&mut report),
             )?)
         } else {
             Ok(self.pack.pack_with_options(language, &tree, options.pack)?)
@@ -380,7 +383,7 @@ impl TreeFellerParser {
     /// the callback must expose the same document throughout the parse.
     /// Chunks may split UTF-8 characters and may be borrowed or owned.
     /// Input exceeding the 32-bit byte limit returns [`Error::Overflow`].
-    /// Progress and cancellation callbacks are ignored during parsing and packing.
+    /// The parse progress callback is ignored; packing uses `PackOptions::progress_callback`.
     pub fn parse_with_options<T: AsRef<[u8]>, F: FnMut(usize, Point) -> T>(
         &mut self,
         callback: &mut F,
@@ -397,8 +400,7 @@ impl TreeFellerParser {
 }
 
 /// The progress/cancellation callback in [`PackedParseOptions::parse`] is ignored
-/// and never called. The input callback is used normally; neither parsing nor
-/// packing can be canceled through the progress callback.
+/// and never called. Packing can be canceled through [`PackOptions::progress_callback`].
 impl Parse for TreeFellerParser {
     type Tree = Tree;
     type Error = ParseError;

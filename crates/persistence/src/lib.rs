@@ -101,7 +101,9 @@ pub enum WritePolicy {
 /// returning or publishing a completed tree. Only completed trees report errors.
 #[derive(Default)]
 pub struct LoadOptions<'a> {
-    pub pack: tree_squatter::PackOptions,
+    /// Packing controls. Deferred work retains settings but not the callback;
+    /// use the parse callback passed to `PendingLoad::resume` for later progress.
+    pub pack: tree_squatter::PackOptions<'a>,
     pub write: WritePolicy,
     pub parse: ParseOptions<'a>,
 }
@@ -109,7 +111,7 @@ pub struct LoadOptions<'a> {
 impl LoadOptions<'_> {
     pub fn reborrow(&mut self) -> LoadOptions<'_> {
         LoadOptions {
-            pack: self.pack,
+            pack: self.pack.reborrow(),
             write: self.write,
             parse: self.parse.reborrow(),
         }
@@ -245,7 +247,10 @@ pub struct PendingLoad {
     source: Arc<[u8]>,
     language: IdentifiedLanguage,
     store: Option<Arc<Store>>,
-    pack: tree_squatter::PackOptions,
+    initial_group_capacity: u32,
+    repack: bool,
+    symbol_presence: bool,
+    points: bool,
     write: WritePolicy,
     read: ReadPolicy,
     persistable: bool,
@@ -465,7 +470,7 @@ impl Persistence {
         let started = std::time::Instant::now();
         loop {
             let cooperate = started.elapsed() < self.options.cooperation_wait;
-            match pending.attempt(parser, &mut options.parse, cooperate)? {
+            match pending.attempt(parser, &mut options.parse, &mut options.pack, cooperate)? {
                 LoadStep::Ready(result) => return Ok(result),
                 LoadStep::Deferred(next) => {
                     pending = next;
@@ -488,8 +493,12 @@ impl Persistence {
         parser: &mut Parser,
         mut options: LoadOptions<'_>,
     ) -> Result<LoadStep, LoadError> {
-        self.capture(path, language, &mut options)?
-            .resume(parser, options.parse)
+        self.capture(path, language, &mut options)?.attempt(
+            parser,
+            &mut options.parse,
+            &mut options.pack,
+            true,
+        )
     }
 
     /// Nonblocking load using reusable worker scratch.
@@ -550,7 +559,7 @@ impl Persistence {
             source.extend_from_slice(&chunk[..count]);
         }
         let source: Arc<[u8]> = source.into();
-        let pack = options.pack;
+        let pack = &options.pack;
         let mut request = Request::new(
             encoded,
             &source,
@@ -571,7 +580,10 @@ impl Persistence {
             source,
             language: language.clone(),
             store: store.cloned(),
-            pack,
+            initial_group_capacity: pack.initial_group_capacity,
+            repack: pack.repack,
+            symbol_presence: pack.symbol_presence,
+            points: pack.points,
             write: options.write,
             read: self.options.read,
             persistable,
@@ -585,7 +597,7 @@ impl PendingLoad {
         parser: &mut Parser,
         mut options: ParseOptions<'_>,
     ) -> Result<LoadStep, LoadError> {
-        self.attempt(parser, &mut options, true)
+        self.attempt(parser, &mut options, &mut Default::default(), true)
     }
 
     /// Explicit escape hatch for callers whose wait budget has expired.
@@ -594,7 +606,7 @@ impl PendingLoad {
         parser: &mut Parser,
         mut options: ParseOptions<'_>,
     ) -> Result<LoadResult, LoadError> {
-        match self.attempt(parser, &mut options, false)? {
+        match self.attempt(parser, &mut options, &mut Default::default(), false)? {
             LoadStep::Ready(result) => Ok(result),
             LoadStep::Deferred(_) => unreachable!("cooperation disabled"),
         }
@@ -620,6 +632,7 @@ impl PendingLoad {
         self,
         parser: &mut Parser,
         options: &mut ParseOptions<'_>,
+        pack_options: &mut tree_squatter::PackOptions<'_>,
         cooperate: bool,
     ) -> Result<LoadStep, LoadError> {
         check(options, 0, false)?;
@@ -664,7 +677,13 @@ impl PendingLoad {
             &mut |byte, _| &self.source[byte..],
             PackedParseOptions {
                 parse: options.reborrow(),
-                pack: self.pack,
+                pack: tree_squatter::PackOptions {
+                    initial_group_capacity: self.initial_group_capacity,
+                    repack: self.repack,
+                    symbol_presence: self.symbol_presence,
+                    points: self.points,
+                    progress_callback: pack_options.reborrow().progress_callback,
+                },
             },
         )?;
         self.finish(LoadedTree::Owned(Arc::new(tree)), false, false, options)

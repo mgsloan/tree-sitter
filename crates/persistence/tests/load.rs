@@ -743,3 +743,39 @@ fn inline_publication_cancellation_rolls_back_and_reuses_worker() {
     assert!(!result.file.cache_hit());
     assert!(load(&cache).cache_hit());
 }
+
+#[test]
+fn packing_callback_cancels_load() {
+    let root = tempfile::tempdir().unwrap();
+    fs::write(root.path().join("file.json"), b"[1, 2, 3]").unwrap();
+    let cache = Persistence::open(root.path(), Options::default()).unwrap();
+    let mut parser = tree_squatter::Parser::new();
+    for step in [false, true] {
+        let mut calls = 0;
+        let mut cancel = |_| {
+            calls += 1;
+            ControlFlow::Break(())
+        };
+        let options = LoadOptions {
+            pack: tree_squatter::PackOptions::new().progress_callback(&mut cancel),
+            ..Default::default()
+        };
+        let result = if step {
+            cache
+                .load_step(Path::new("file.json"), &language(), &mut parser, options)
+                .map(|_| ())
+        } else {
+            cache
+                .load_with_options(Path::new("file.json"), &language(), &mut parser, options)
+                .map(|_| ())
+        };
+        assert!(matches!(result, Err(LoadError::Cancelled)));
+        assert_eq!(calls, 1);
+    }
+    assert!(
+        !cache
+            .load(Path::new("file.json"), &language(), &mut parser)
+            .unwrap()
+            .cache_hit()
+    );
+}

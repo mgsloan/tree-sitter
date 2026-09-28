@@ -444,16 +444,17 @@ fn direct_parser_matches_mainline_packing() -> Result<(), Box<dyn Error>> {
         assert!(!native.root_node().has_error());
         for points in [false, true] {
             for symbol_presence in [false, true] {
-                let options = PackOptions {
+                let mut options = PackOptions {
                     initial_group_capacity: 1,
                     repack: true,
                     symbol_presence,
                     points,
+                    ..Default::default()
                 };
                 let direct = direct_parser.parse_with_options(
                     &mut |byte, _| &source.as_bytes()[byte..],
                     PackedParseOptions {
-                        pack: options,
+                        pack: options.reborrow(),
                         ..Default::default()
                     },
                 )?;

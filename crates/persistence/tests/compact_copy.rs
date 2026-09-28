@@ -28,6 +28,7 @@ fn compact_copy_matches_repack_for_padded_and_compact_trees() {
                         repack,
                         symbol_presence: presence,
                         points,
+                        ..Default::default()
                     },
                 )
                 .unwrap();

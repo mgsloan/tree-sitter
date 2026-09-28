@@ -105,7 +105,7 @@ fn cancellation_during_packing_finalization() {
         builder.emit(&leaf(1, 1, 0, 1), 0).unwrap();
         builder
     };
-    let options = PackOptions {
+    let mut options = PackOptions {
         repack: true,
         ..Default::default()
     };
@@ -115,7 +115,7 @@ fn cancellation_during_packing_finalization() {
         ControlFlow::Continue(())
     };
     let tree = build()
-        .finish(options, &mut Progress::new(&mut report))
+        .finish(options.reborrow(), &mut Progress::new(Some(&mut report)))
         .unwrap();
     assert!(tree.presence_cache().is_some());
     assert!(tree.point_data().is_some());
@@ -133,7 +133,7 @@ fn cancellation_during_packing_finalization() {
         };
         assert_eq!(
             build()
-                .finish(options, &mut Progress::new(&mut cancel))
+                .finish(options.reborrow(), &mut Progress::new(Some(&mut cancel)))
                 .unwrap_err(),
             Error::Canceled,
         );
@@ -269,7 +269,11 @@ fn lexer_fallback_and_concurrent_parser_preparation() {
                                 .parse_with_options(
                                     &mut |byte, _| &b"\nx"[byte..],
                                     PackedParseOptions {
-                                        pack: options,
+                                        pack: PackOptions {
+                                            initial_group_capacity: 1,
+                                            repack: true,
+                                            ..Default::default()
+                                        },
                                         ..Default::default()
                                     }
                                 )

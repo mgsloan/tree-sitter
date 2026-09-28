@@ -51,6 +51,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 repack: variant & 2 != 0,
                 points: variant & 4 == 0,
                 symbol_presence: variant & 8 == 0,
+                ..Default::default()
             },
         )?;
         fs::write(format!("{}-{variant}.slab", arguments[2]), tree.as_bytes())?;

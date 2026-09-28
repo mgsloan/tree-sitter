@@ -654,6 +654,7 @@ pub(super) fn pack_reductions(
     scratch: &mut Traversal,
     nodes: &[Reduction],
     root: u32,
+    progress: &mut Progress<'_>,
 ) -> Result<(), Error> {
     let mut walk = Walk {
         scratch,
@@ -679,6 +680,7 @@ pub(super) fn pack_reductions(
     };
     walk.push_reduction(node, root, reduction, true)?;
     while let Some(frame) = walk.scratch.reductions.last_mut() {
+        progress.visit(frame.node.position.bytes)?;
         if frame.next_child == u32::MAX {
             let frame = walk.scratch.reductions.last().unwrap();
             if frame.visible {
@@ -704,6 +706,7 @@ pub(super) fn pack_reductions(
         if walk.words <= 1 {
             // Hidden reductions always have a child with visible output.
             while !child.visible && nodes[child.first_child as usize].next_sibling == u32::MAX {
+                progress.tick()?;
                 if walk.words == 1 {
                     let supertype = walk.supertype(child.symbol);
                     if supertype != 0 {
