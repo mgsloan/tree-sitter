@@ -295,6 +295,14 @@ static bool tf_parser__run(const TFLanguage *lang, const void *source, size_t si
   bool ok = false;
   // Zeroed, so running out of memory before the first token reports byte 0.
   TFToken token = {0};
+  if (capture) capture->replay = &self;
+  if (lang->ts->external_token_count) {
+    self.lexer.scanner = calloc(1, sizeof(TFScanner));
+    if (!self.lexer.scanner) goto oom;
+    if (lang->ts->external_scanner.create) {
+      self.lexer.scanner->payload = lang->ts->external_scanner.create();
+    }
+  }
 
   if (!tf_parser__grow(&self, 64)) {
     goto oom;
@@ -384,6 +392,13 @@ done:
       }
     }
   }
+  if (self.lexer.scanner) {
+    if (self.lexer.scanner->payload && lang->ts->external_scanner.destroy) {
+      lang->ts->external_scanner.destroy(self.lexer.scanner->payload);
+    }
+    free(self.lexer.scanner);
+  }
+  if (capture) capture->replay = NULL;
   if (storage) {
     // Retain allocations without pointers into this call's stack or source.
     *storage = (TFParser){.states = self.states, .nodes = self.nodes,
@@ -402,7 +417,12 @@ done:
 // it calls only this private collector, never the consumer's callbacks.
 static void *tf_capture__shift(void *payload, const TFToken *token, bool extra) {
   TFSpec *s = payload;
-  uint32_t id = tf_spec__tree(s, (TFSpecTree){.token = *token, .leaf = true, .extra = extra});
+  TFScanner *scanner = s->replay->lexer.scanner;
+  uint32_t scanner_state = scanner && scanner->token_external
+                               ? tf_spec__save_scanner(s, &scanner->state) : 0;
+  uint32_t id = tf_spec__tree(s, (TFSpecTree){.token = *token, .leaf = true, .extra = extra,
+                                            .scanner_state = scanner_state,
+                                            .external = scanner && scanner->token_external});
   // Stable arena handle carried in the sink value; never dereferenced.
   // NOLINTNEXTLINE(performance-no-int-to-ptr)
   return s->failed ? NULL : (void *)(uintptr_t)(id + 1);

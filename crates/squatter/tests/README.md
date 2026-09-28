@@ -18,6 +18,8 @@ slab construction and loading use Rust.
 
 Direct-parser tests compare callback and contiguous input, including split UTF-8,
 temporary buffers, replay, errors, and parser reuse.
+External-scanner checks cover branch state, token caching, private replay,
+zero-width tokens, Unicode columns, and Python output against Tree-sitter.
 
 Allocation-failure injection is intentionally omitted. Null C handles and
 variable-width column primitives have no corresponding Rust API. Query tests

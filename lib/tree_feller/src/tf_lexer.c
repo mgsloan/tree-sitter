@@ -1,10 +1,10 @@
-// Implements the TSLexer callbacks tf_lexer.h declares, and tf_lexer_next's dispatch
-// of one token: the generated lex_fn, then the keyword re-lex tree-sitter itself runs
-// before accepting a word token. Ported from tree-sitter's lexer.c and parser.c; see
+// Implements TSLexer callbacks and token dispatch: external scanner, generated
+// lex_fn, then keyword re-lexing. Ported from tree-sitter's lexer.c and parser.c; see
 // tf_lexer.h for the supported input modes.
 #include "tf_lexer.h"
 
 #include "tf_utf8.h"
+#include <assert.h>
 #include <string.h>
 
 #define TF_BOM 0xFEFF
@@ -264,6 +264,50 @@ static void tf_lexer__finish(TFLexer *self) {
   if (self->token_end_byte == TF_NO_END) {
     tf_lexer__mark_end(&self->data);
   }
+  // Scanners can mark an empty token before skipping its lookahead whitespace.
+  if (self->token_end_byte < self->token_start_byte) {
+    self->token_start_byte = self->token_end_byte;
+    self->token_start_point = self->token_end_point;
+  }
+}
+
+static bool tf_lexer__scan(TFLexer *self, TSStateId state, bool error_mode) {
+  const TSLanguage *ts = self->lang->ts;
+  TSLexerMode mode = tf_lex_mode(self->lang, state);
+  uint32_t byte = self->byte;
+  TFPoint point = self->point;
+  TFScanner *scanner = self->scanner;
+  if (mode.external_lex_state && scanner) {
+    tf_lexer__start(self);
+    ts->external_scanner.deserialize(scanner->payload, scanner->before.data,
+                                     scanner->before.length);
+    const bool *valid = ts->external_scanner.states +
+                        (size_t)mode.external_lex_state * ts->external_token_count;
+    bool found = ts->external_scanner.scan(scanner->payload, &self->data, valid);
+    tf_lexer__finish(self);
+    if (found) {
+      scanner->state.length = ts->external_scanner.serialize(scanner->payload, scanner->state.data);
+      assert(scanner->state.length <= TREE_SITTER_SERIALIZATION_BUFFER_SIZE);
+      TSSymbol symbol = ts->external_scanner.symbol_map[self->data.result_symbol];
+      bool changed = scanner->state.length != scanner->before.length ||
+                     memcmp(scanner->state.data, scanner->before.data, scanner->state.length);
+      // Empty extras must advance the scanner state; ordinary empty tokens can
+      // advance the parse state (e.g. indentation).
+      if (self->token_end_byte > byte || changed ||
+          (!error_mode && tf_next_state(self->lang, state, symbol) != state)) {
+        self->data.result_symbol = symbol;
+        scanner->token_external = true;
+        return true;
+      }
+    }
+    scanner->state.length = scanner->before.length;
+    memcpy(scanner->state.data, scanner->before.data, scanner->before.length);
+    tf_lexer_seek(self, byte, point);
+  }
+  tf_lexer__start(self);
+  bool found = ts->lex_fn(&self->data, mode.lex_state);
+  tf_lexer__finish(self);
+  return found;
 }
 
 bool tf_lexer_next(TFLexer *self, TSStateId state, TFToken *out) {
@@ -273,16 +317,17 @@ bool tf_lexer_next(TFLexer *self, TSStateId state, TFToken *out) {
 
   self->token_is_keyword = false;
   self->token_lex_state = state;
-  tf_lexer__start(self);
-  bool found = ts->lex_fn(&self->data, tf_lex_mode(self->lang, state).lex_state);
-  tf_lexer__finish(self);
+  if (self->scanner) {
+    self->scanner->before.length = self->scanner->state.length;
+    memcpy(self->scanner->before.data, self->scanner->state.data, self->scanner->state.length);
+    self->scanner->token_external = false;
+  }
+  bool found = tf_lexer__scan(self, state, false);
   if (!found && state != 0) {
     // Mainline caches tokens from the error-state lexer even for failed GLR
     // branches. Surviving branches can reuse their different token boundaries.
     tf_lexer_seek(self, start_byte, start_point);
-    tf_lexer__start(self);
-    found = ts->lex_fn(&self->data, tf_lex_mode(self->lang, 0).lex_state);
-    tf_lexer__finish(self);
+    found = tf_lexer__scan(self, 0, true);
   }
   if (!found) {
     return false;
@@ -299,7 +344,8 @@ bool tf_lexer_next(TFLexer *self, TSStateId state, TFToken *out) {
   // the same bytes, and the resulting symbol is usable in this state -- either it
   // has actions, or the state reserves it. The keyword lexer is always called
   // with state 0.
-  if (out->symbol == ts->keyword_capture_token && out->symbol != 0) {
+  if (out->symbol == ts->keyword_capture_token && out->symbol != 0 &&
+      (!self->scanner || !self->scanner->token_external)) {
     tf_lexer_seek(self, out->start_byte, out->start_point);
     tf_lexer__start(self);
     bool is_keyword = ts->keyword_lex_fn(&self->data, 0);

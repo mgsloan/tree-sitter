@@ -287,6 +287,274 @@ static const TSLanguage ambiguous_language = {
 
 const TSLanguage *sq_test_ambiguous_language(void) { return &ambiguous_language; }
 
+typedef struct {
+  unsigned count;
+} ScannerFixture;
+
+static void *scanner_create(void) {
+  return calloc(1, sizeof(ScannerFixture));
+}
+
+static void scanner_destroy(void *payload) {
+  free(payload);
+}
+
+static unsigned scanner_serialize(void *payload, char *buffer) {
+  ScannerFixture *scanner = payload;
+  if (!scanner->count) return 0;
+  memcpy(buffer, &scanner->count, sizeof(scanner->count));
+  return sizeof(scanner->count);
+}
+
+static void scanner_deserialize(void *payload, const char *buffer, unsigned length) {
+  ScannerFixture *scanner = payload;
+  scanner->count = 0;
+  if (length) {
+    assert(length == sizeof(scanner->count));
+    memcpy(&scanner->count, buffer, length);
+  }
+}
+
+static bool scanner_expression(void *payload, TSLexer *lexer, const bool *valid) {
+  ScannerFixture *scanner = payload;
+  while (lexer->lookahead == ' ' || lexer->lookahead == '\n') lexer->advance(lexer, true);
+  if (valid[0] && lexer->lookahead == (int32_t)('a' + scanner->count)) {
+    scanner->count = (scanner->count + 1) % 4;
+    lexer->advance(lexer, false);
+    lexer->mark_end(lexer);
+    // Read past the token; the driver must return to mark_end.
+    if (!lexer->eof(lexer)) lexer->advance(lexer, false);
+    lexer->result_symbol = 0;
+    return true;
+  }
+  // Neither failed scans nor another branch's scans may affect the next call.
+  scanner->count = 100;
+  if (!lexer->eof(lexer)) lexer->advance(lexer, true);
+  return false;
+}
+
+static bool scanner_branch(void *payload, TSLexer *lexer, const bool *valid) {
+  ScannerFixture *scanner = payload;
+  if (lexer->lookahead == 'x' && (valid[0] || valid[1])) {
+    scanner->count = valid[0] ? 1 : 2;
+    lexer->result_symbol = valid[0] ? 0 : 1;
+  } else if (lexer->lookahead == '!' && valid[2] && scanner->count == 2) {
+    lexer->result_symbol = 2;
+  } else {
+    scanner->count = 100;
+    return false;
+  }
+  lexer->advance(lexer, false);
+  lexer->mark_end(lexer);
+  return true;
+}
+
+static bool lex_branch(TSLexer *lexer, TSStateId state) {
+  (void)state;
+  if (lexer->eof(lexer)) {
+    lexer->result_symbol = 0;
+    return true;
+  }
+  if (lexer->lookahead != 'a' && lexer->lookahead != ':') return false;
+  lexer->result_symbol = lexer->lookahead == 'a' ? 1 : 2;
+  lexer->advance(lexer, false);
+  lexer->mark_end(lexer);
+  return true;
+}
+
+// Both branches reach state 7 at the same byte with different scanner states.
+// Only the second can scan '!'; merging or sharing its lookahead loses a branch.
+static const TSLanguage scanner_branch_language = {
+  .abi_version = 15, .symbol_count = 8, .token_count = 5,
+  .state_count = 10, .large_state_count = 10, .production_id_count = 1,
+  .symbol_names = (const char *const[]){"end", "a", ":", "x", "!", "root", "left", "right"},
+  .symbol_metadata = (const TSSymbolMetadata[]){{0}, {.visible = true}, {.visible = true},
+      {.visible = true}, {.visible = true}, {.visible = true, .named = true},
+      {.visible = true, .named = true}, {.visible = true, .named = true}},
+  .public_symbol_map = (const TSSymbol[]){0, 1, 2, 3, 4, 5, 6, 7},
+  .alias_map = (const TSSymbol[]){0},
+  .parse_table = (const uint16_t[]){
+      0, 0, 0, 0, 0, 0, 0, 0,
+      0, 1, 0, 0, 0, 8, 3, 4,
+      0, 0, 3, 0, 0, 0, 0, 0,
+      0, 0, 6, 0, 0, 0, 0, 0,
+      0, 0, 8, 0, 0, 0, 0, 0,
+      0, 0, 0, 10, 0, 0, 0, 0,
+      0, 0, 0, 10, 0, 0, 0, 0,
+      0, 0, 0, 0, 12, 0, 0, 0,
+      14, 0, 0, 0, 0, 0, 0, 0,
+      16, 0, 0, 0, 0, 0, 0, 0,
+  },
+  .parse_actions = (const TSParseActionEntry[]){
+      {.entry = {0}}, {.entry = {.count = 1}}, SHIFT(2),
+      {.entry = {.count = 2}}, REDUCE(6, 1, 0, 0), REDUCE(7, 1, 0, 0),
+      {.entry = {.count = 1}}, SHIFT(5),
+      {.entry = {.count = 1}}, SHIFT(6),
+      {.entry = {.count = 1, .reusable = true}}, SHIFT(7),
+      {.entry = {.count = 1, .reusable = true}}, SHIFT(9),
+      {.entry = {.count = 1}}, ACCEPT_INPUT(),
+      {.entry = {.count = 1}}, REDUCE(5, 4, 0, 0),
+  },
+  .lex_modes = (const TSLexerMode[]){{0}, {0}, {0}, {0}, {0},
+      {.external_lex_state = 1}, {.external_lex_state = 2},
+      {.external_lex_state = 3}, {0}, {0}},
+  .lex_fn = lex_branch,
+  .external_token_count = 3,
+  .external_scanner = {
+      .states = (const bool[]){false, false, false, true, false, false,
+                               false, true, false, false, false, true},
+      .symbol_map = (const TSSymbol[]){3, 3, 4},
+      .create = scanner_create, .destroy = scanner_destroy,
+      .scan = scanner_branch, .serialize = scanner_serialize, .deserialize = scanner_deserialize,
+  },
+};
+
+const TSLanguage *sq_test_external_language(bool branches) {
+  TSLanguage *result = malloc(sizeof(*result));
+  assert(result);
+  if (branches) {
+    *result = scanner_branch_language;
+  } else {
+    *result = ambiguous_language;
+    result->external_token_count = 1;
+    static const bool states[] = {false, true};
+    static const TSSymbol symbols[] = {1};
+    static const TSLexerMode modes[7] = {
+        {0}, {.external_lex_state = 1}, {.external_lex_state = 1},
+        {.external_lex_state = 1}, {.external_lex_state = 1},
+        {.external_lex_state = 1}, {.external_lex_state = 1}};
+    result->lex_modes = modes;
+    result->external_scanner.states = states;
+    result->external_scanner.symbol_map = symbols;
+    result->external_scanner.create = scanner_create;
+    result->external_scanner.destroy = scanner_destroy;
+    result->external_scanner.scan = scanner_expression;
+    result->external_scanner.serialize = scanner_serialize;
+    result->external_scanner.deserialize = scanner_deserialize;
+  }
+  return result;
+}
+
+static bool scanner_empty(void *payload, TSLexer *lexer, const bool *valid) {
+  (void)valid;
+  if (payload) {
+    ScannerFixture *scanner = payload;
+    if (scanner->count == 2) return false;
+    scanner->count++;
+  }
+  lexer->result_symbol = 0;
+  lexer->mark_end(lexer);
+  return true;
+}
+
+static unsigned scanner_stateless_serialize(void *payload, char *buffer) {
+  (void)payload;
+  (void)buffer;
+  return 0;
+}
+
+static void scanner_stateless_deserialize(void *payload, const char *buffer, unsigned length) {
+  (void)payload;
+  (void)buffer;
+  assert(length == 0);
+}
+
+static bool scanner_column(void *payload, TSLexer *lexer, const bool *valid) {
+  (void)payload;
+  assert(valid[0]);
+  while (lexer->lookahead == ' ' || lexer->lookahead == 0x03c0 || lexer->lookahead == 0x1f600) {
+    lexer->advance(lexer, true);
+  }
+  if (lexer->lookahead != 'x') return false;
+  assert(lexer->get_column(lexer) == 3);
+  assert(!lexer->is_at_included_range_start(lexer));
+  lexer->advance(lexer, false);
+  assert(lexer->eof(lexer));
+  lexer->mark_end(lexer);
+  lexer->result_symbol = 0;
+  return true;
+}
+
+static bool unexpected_keyword(TSLexer *lexer, TSStateId state) {
+  (void)lexer;
+  (void)state;
+  assert(false);
+  return false;
+}
+
+void sq_test_external_lexer(void) {
+  TSLanguage external = language;
+  const TSLexerMode modes[] = {{.external_lex_state = 1}, {.external_lex_state = 1}, {0}, {0}};
+  external.lex_modes = modes;
+  external.external_token_count = 1;
+  external.external_scanner.states = (const bool[]){false, true};
+  external.external_scanner.symbol_map = (const TSSymbol[]){1};
+  external.external_scanner.scan = scanner_empty;
+  external.external_scanner.serialize = scanner_stateless_serialize;
+  external.external_scanner.deserialize = scanner_stateless_deserialize;
+  external.keyword_capture_token = 1;
+  external.keyword_lex_fn = unexpected_keyword;
+  const char *message;
+  TFLanguage *prepared = tf_language_load_parser(&external, &message);
+  assert(prepared);
+  // A stateless zero-width token can advance the parse state, even at EOF.
+  TFError error;
+  assert(tf_parse(prepared, "", 0, NULL, NULL, &error));
+  tf_language_free(prepared);
+
+  // Zero-width extras are rejected unless their serialized state changes.
+  TSParseActionEntry actions[7];
+  memcpy(actions, language.parse_actions, sizeof(actions));
+  actions[2].action.shift.extra = true;
+  external.parse_actions = actions;
+  external.keyword_capture_token = 0;
+  prepared = tf_language_load_parser(&external, &message);
+  assert(prepared);
+  TFLexer lexer;
+  TFToken token;
+  TFScanner scanner = {0};
+  tf_lexer_init(&lexer, prepared, "x", 1);
+  lexer.scanner = &scanner;
+  assert(tf_lexer_next(&lexer, 1, &token));
+  assert(token.end_byte == 1 && !scanner.token_external);
+  tf_language_free(prepared);
+
+  external.external_scanner.serialize = scanner_serialize;
+  external.external_scanner.deserialize = scanner_deserialize;
+  prepared = tf_language_load_parser(&external, &message);
+  assert(prepared);
+  ScannerFixture payload = {0};
+  scanner = (TFScanner){.payload = &payload};
+  tf_lexer_init(&lexer, prepared, "x", 1);
+  lexer.scanner = &scanner;
+  for (unsigned count = 1; count <= 2; count++) {
+    assert(tf_lexer_next(&lexer, 1, &token));
+    assert(token.end_byte == 0 && scanner.token_external && payload.count == count);
+  }
+  assert(tf_lexer_next(&lexer, 1, &token));
+  assert(token.end_byte == 1 && !scanner.token_external);
+  tf_language_free(prepared);
+
+  // Column callbacks count codepoints, omit the BOM, and may invalidate chunks.
+  external = language;
+  external.lex_modes = modes;
+  external.external_token_count = 1;
+  external.external_scanner.states = (const bool[]){false, true};
+  external.external_scanner.symbol_map = (const TSSymbol[]){1};
+  external.external_scanner.scan = scanner_column;
+  external.external_scanner.serialize = scanner_stateless_serialize;
+  external.external_scanner.deserialize = scanner_stateless_deserialize;
+  prepared = tf_language_load_parser(&external, &message);
+  assert(prepared);
+  const char source[] = "\xef\xbb\xbf" "π😀 x";
+  assert(tf_parse(prepared, source, sizeof(source) - 1, NULL, NULL, &error));
+  for (unsigned chunk_size = 1; chunk_size <= 8; chunk_size++) {
+    ChunkInput chunks = {.source = source, .size = sizeof(source) - 1, .chunk_size = chunk_size};
+    assert(tf_parse_with_callback(prepared, (TFInput){&chunks, read_chunk}, NULL, NULL, &error));
+  }
+  tf_language_free(prepared);
+}
+
 void sq_test_chunked_lexer(void) {
   // Includes split BOM/codepoints, embedded NUL, invalid sequences, and truncated EOF.
   const char source[] = "\xef\xbb\xbf" "a\xcf\x80\xf0\x9f\x98\x80\n"

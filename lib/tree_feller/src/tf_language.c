@@ -1,5 +1,5 @@
 // Builds a TFLanguage from a TSLanguage: checks the grammar is one this driver
-// can run (ABI 15, no external scanner, no empty table), then expands its packed
+// can run (ABI 15, no empty table), then expands its packed
 // tables into the arrays tf_language.h reads directly -- see there for what each
 // expansion buys and why it is safe to skip at lookup time.
 #include "tf_language.h"
@@ -57,8 +57,11 @@ TFLanguage *tf_language_load_parser(const TSLanguage *ts, const char **error) {
     *error = "language has an empty symbol, state or production table";
     return NULL;
   }
-  if (ts->external_token_count != 0) {
-    *error = "grammars with an external scanner are not supported";
+  if (ts->external_token_count &&
+      (!ts->external_scanner.states || !ts->external_scanner.symbol_map ||
+       !ts->external_scanner.scan || !ts->external_scanner.serialize ||
+       !ts->external_scanner.deserialize)) {
+    *error = "language has an incomplete external scanner";
     return NULL;
   }
   TFLanguage *self = calloc(1, sizeof(TFLanguage));

@@ -1,9 +1,8 @@
-// Lexer adapter: runs a grammar's generated `lex_fn` over UTF-8 input.
+// Lexer adapter: runs generated lexers and native scanners over UTF-8 input.
 //
 // A stripped-down `Lexer` (lexer.c): contiguous or callback UTF-8 input,
-// no included ranges, no external scanner, no
-// incremental reuse. What is kept is exactly the observable behaviour the
-// generated lexers and the byte/point arithmetic depend on.
+// no included ranges or incremental reuse. Keeps the observable behaviour the
+// lexers, scanners, and byte/point arithmetic depend on.
 #ifndef TF_LEXER_H
 #define TF_LEXER_H
 
@@ -16,6 +15,18 @@ typedef struct {
   bool has_size;
   bool overflow;
 } TFInputState;
+
+typedef struct {
+  uint32_t length;
+  char data[TREE_SITTER_SERIALIZATION_BUFFER_SIZE];
+} TFScannerState;
+
+typedef struct {
+  void *payload;
+  // Lookahead is scanned before reductions and must not advance sibling branches.
+  TFScannerState state, before;
+  bool token_external;
+} TFScanner;
 
 typedef struct {
   // First member: the generated lex functions are handed this pointer and cast
@@ -45,6 +56,7 @@ typedef struct {
   TFInputState *input;
   uint32_t chunk_start;
   bool at_eof;
+  TFScanner *scanner;
 } TFLexer;
 
 // The source is one contiguous buffer, indexed directly.
