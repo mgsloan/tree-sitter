@@ -3035,6 +3035,43 @@ mod scan_tests {
     use super::*;
     use crate::{Language, PackOptions, Tree};
 
+    fn collect_plan_results(
+        cursor: &mut QueryCursor,
+        query: &Query,
+        root: Node<'_>,
+        source: &[u8],
+        captures: bool,
+        direct: bool,
+    ) -> Vec<(PatternIx, Vec<(u32, CaptureIx)>)> {
+        let mut execution = cursor.execute(query, root, source);
+        assert_eq!(execution.cursor.direct, direct);
+        let mut results = Vec::new();
+        loop {
+            let next = if captures {
+                execution
+                    .next_capture()
+                    .map(|(result, index)| (result, Some(index)))
+            } else {
+                execution.next_match().map(|result| (result, None))
+            };
+            let Some((result, index)) = next else { break };
+            let captures = index.map_or(result.captures(), |index| {
+                &result.captures()[index.0 as usize..index.0 as usize + 1]
+            });
+            results.push((
+                result.pattern_index,
+                captures
+                    .iter()
+                    .map(|capture| (capture.node.slot().get(), capture.index))
+                    .collect(),
+            ));
+            assert!(results.len() < 10_000);
+        }
+        assert_eq!(execution.error(), None);
+        results.sort();
+        results
+    }
+
     #[test]
     fn error_plans_match_general_execution() {
         let language = unsafe {
@@ -3065,40 +3102,15 @@ mod scan_tests {
                                 let mut cursor = QueryCursor::new();
                                 cursor.set_optimized(optimized);
                                 cursor.set_byte_range(range.clone());
-                                let mut execution = cursor.execute(&query, root, source.as_bytes());
-                                assert_eq!(execution.cursor.direct, optimized, "{pattern}");
-                                let mut results = Vec::new();
-                                loop {
-                                    let result = if captures {
-                                        execution.next_capture().map(|(result, index)| {
-                                            (
-                                                result.pattern_index,
-                                                result.captures()
-                                                    [index.0 as usize..index.0 as usize + 1]
-                                                    .to_vec(),
-                                            )
-                                        })
-                                    } else {
-                                        execution.next_match().map(|result| {
-                                            (result.pattern_index, result.captures().to_vec())
-                                        })
-                                    };
-                                    let Some((pattern, captures)) = result else {
-                                        break;
-                                    };
-                                    results.push((
-                                        pattern,
-                                        captures
-                                            .iter()
-                                            .map(|capture| {
-                                                (capture.node.slot().get(), capture.index)
-                                            })
-                                            .collect::<Vec<_>>(),
-                                    ));
-                                    assert!(results.len() < 100);
-                                }
-                                assert_eq!(execution.error(), None);
-                                results.sort();
+                                let results = collect_plan_results(
+                                    &mut cursor,
+                                    &query,
+                                    root,
+                                    source.as_bytes(),
+                                    captures,
+                                    optimized,
+                                );
+                                assert!(results.len() < 100);
                                 results
                             };
                             assert_eq!(
@@ -3199,40 +3211,14 @@ mod scan_tests {
                                     } else {
                                         cursor.set_byte_range(range.clone());
                                     }
-                                    let mut execution =
-                                        cursor.execute(&query, root, source.as_bytes());
-                                    assert_eq!(
-                                        execution.cursor.direct,
+                                    let mut results = collect_plan_results(
+                                        &mut cursor,
+                                        &query,
+                                        root,
+                                        source.as_bytes(),
+                                        captures,
                                         optimized && direct,
-                                        "{pattern}"
                                     );
-                                    let mut results = Vec::new();
-                                    loop {
-                                        let result = if captures {
-                                            execution
-                                                .next_capture()
-                                                .map(|(result, index)| (result, Some(index)))
-                                        } else {
-                                            execution.next_match().map(|result| (result, None))
-                                        };
-                                        let Some((result, index)) = result else { break };
-                                        let captures = index.map_or(result.captures(), |index| {
-                                            &result.captures()
-                                                [index.0 as usize..index.0 as usize + 1]
-                                        });
-                                        results.push((
-                                            result.pattern_index,
-                                            captures
-                                                .iter()
-                                                .map(|capture| {
-                                                    (capture.node.slot().get(), capture.index)
-                                                })
-                                                .collect::<Vec<_>>(),
-                                        ));
-                                        assert!(results.len() < 10_000);
-                                    }
-                                    assert_eq!(execution.error(), None);
-                                    results.sort();
                                     if captures {
                                         results.dedup();
                                     }

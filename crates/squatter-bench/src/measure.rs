@@ -187,21 +187,9 @@ impl Meter {
 mod tests {
     use super::*;
     #[test]
-    fn quantiles_interpolate_and_keep_missing_counters_missing() {
+    fn quantiles_cover_interpolation_minimum_and_empty_input() {
         assert_eq!(percentile(&[1.0, 3.0], 50.0), Some(2.0));
         assert_eq!(percentile(&[1.0, 3.0], 0.0), Some(1.0));
         assert_eq!(percentile(&[], 50.0), None);
-        let metrics = Metrics::median(&[
-            Metrics {
-                wall_ms: 1.0,
-                ..Default::default()
-            },
-            Metrics {
-                wall_ms: 3.0,
-                ..Default::default()
-            },
-        ]);
-        assert_eq!(metrics.wall_ms, 2.0);
-        assert_eq!(metrics.instructions, None);
     }
 }

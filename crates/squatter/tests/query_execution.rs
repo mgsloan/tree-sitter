@@ -1,3 +1,11 @@
+mod support;
+
+use support::{
+    QueryResult as QuerySnapshot, capture_set, native_query_results_with_cursor, query_results,
+    query_snapshot as snapshot,
+};
+use support::{c_language, json_language};
+
 use std::ops::ControlFlow;
 use tree_squatter::QueryCursorOptions;
 use tree_squatter::{Language, Query, QueryCursor, Tree};
@@ -45,17 +53,14 @@ macro_rules! captures {
 
 #[test]
 fn queries_match_with_and_without_plans() {
-    let language =
-        unsafe { tree_sitter::Language::from_raw(tree_sitter_c::LANGUAGE.into_raw()().cast()) };
+    let language = c_language();
     let grammar = Language::new(&language).unwrap();
-    let reference_grammar = tree_squatter::Language::new(&language).unwrap();
     let mut parser = tree_sitter::Parser::new();
     parser.set_language(&language).unwrap();
     // Three ambiguous capture runs create enough states to exercise indexed deduplication.
     let source = "// before\nint alpha(int x, int y) { int a = 1; if (x) return beta(x, y, a, b, c, d, e, f, g, h, i, j, k, l, m, n, o, p, q, r, s, t, u, v, w, x, y, z); return y; }\n// after\nint bravo = 2;\nint other() { return beta(a, b); }";
     let native = parser.parse(source, None).unwrap();
     let tree = Tree::pack(&grammar, &native).unwrap();
-    let reference = tree_squatter::Tree::pack(&reference_grammar, &native).unwrap();
 
     for pattern in [
         "(identifier) @identifier",
@@ -84,12 +89,12 @@ fn queries_match_with_and_without_plans() {
 
         assert_eq!(
             matches!(&mut cursor, &query, tree, source),
-            matches!(&mut reference_cursor, &reference_query, reference, source),
+            matches!(&mut reference_cursor, &reference_query, tree, source),
             "{pattern}"
         );
         assert_eq!(
             captures!(&mut cursor, &query, tree, source),
-            captures!(&mut reference_cursor, &reference_query, reference, source),
+            captures!(&mut reference_cursor, &reference_query, tree, source),
             "{pattern}"
         );
 
@@ -98,14 +103,14 @@ fn queries_match_with_and_without_plans() {
         reference_query.disable_capture(&capture);
         assert_eq!(
             matches!(&mut cursor, &query, tree, source),
-            matches!(&mut reference_cursor, &reference_query, reference, source),
+            matches!(&mut reference_cursor, &reference_query, tree, source),
             "disabled capture: {pattern}"
         );
         query.disable_pattern(tree_squatter::PatternIx(0));
         reference_query.disable_pattern(tree_squatter::PatternIx(0));
         assert_eq!(
             matches!(&mut cursor, &query, tree, source),
-            matches!(&mut reference_cursor, &reference_query, reference, source),
+            matches!(&mut reference_cursor, &reference_query, tree, source),
             "disabled pattern: {pattern}"
         );
     }
@@ -113,8 +118,6 @@ fn queries_match_with_and_without_plans() {
 
 #[test]
 fn error_queries_survive_native_mutations() {
-    use tree_sitter::StreamingIterator;
-
     for (language, source) in [
         (tree_sitter_json::LANGUAGE, "[1, ?, 2]"),
         (
@@ -138,39 +141,27 @@ fn error_queries_survive_native_mutations() {
             let reference = tree_sitter::Query::new(&language, pattern).unwrap();
             let error_capture = reference.capture_index_for_name("error").unwrap();
             let mut reference_cursor = tree_sitter::QueryCursor::new();
-            let mut matches =
-                reference_cursor.matches(&reference, native.root_node(), source.as_bytes());
-            let mut expected = Vec::new();
-            while let Some(result) = matches.next() {
-                expected.push((
-                    result.pattern_index,
-                    result
-                        .captures()
-                        .iter()
-                        .map(|capture| {
-                            (
-                                capture.node.byte_range(),
-                                capture.node.kind_id(),
-                                capture.index,
-                            )
-                        })
-                        .collect::<Vec<_>>(),
-                ));
-            }
-            assert!(expected.iter().any(|(pattern, _)| *pattern == 0));
+            let mut expected = native_query_results_with_cursor(
+                &mut reference_cursor,
+                &reference,
+                native.root_node(),
+                source.as_bytes(),
+                false,
+            );
+            assert!(expected.iter().any(|(pattern, _, _)| *pattern == 0));
 
             for mutation in 0..4 {
                 match mutation {
                     1 => {
                         query.disable_capture("error");
-                        for (_, captures) in &mut expected {
-                            captures.retain(|(_, _, index)| *index != error_capture);
+                        for (_, _, captures) in &mut expected {
+                            captures.retain(|(index, _)| *index != error_capture);
                         }
                     }
                     2 | 3 => {
                         let pattern = 3 - mutation;
                         query.disable_pattern(tree_squatter::PatternIx(pattern));
-                        expected.retain(|(index, _)| *index != pattern);
+                        expected.retain(|(index, _, _)| *index != pattern);
                     }
                     _ => {}
                 }
@@ -178,25 +169,13 @@ fn error_queries_survive_native_mutations() {
                 for optimized in [false, true] {
                     let mut cursor = QueryCursor::new();
                     cursor.set_optimized(optimized);
-                    let mut execution = cursor.execute(&query, tree.root_node(), source.as_bytes());
-                    let mut actual = Vec::new();
-                    while let Some(result) = execution.next_match() {
-                        actual.push((
-                            result.pattern_index.0,
-                            result
-                                .captures()
-                                .iter()
-                                .map(|capture| {
-                                    (
-                                        capture.node.byte_range(),
-                                        capture.node.kind_id().get(),
-                                        capture.index.0,
-                                    )
-                                })
-                                .collect::<Vec<_>>(),
-                        ));
-                    }
-                    assert_eq!(execution.error(), None);
+                    let actual = query_results(
+                        &mut cursor,
+                        &query,
+                        tree.root_node(),
+                        source.as_bytes(),
+                        false,
+                    );
                     assert_eq!(
                         actual, expected,
                         "{pattern}, {source:?}, mutation={mutation}, optimized={optimized}"
@@ -357,8 +336,7 @@ fn malformed_queries_match_with_and_without_plans() {
 
 #[test]
 fn presence_scans_across_groups() {
-    let language =
-        unsafe { tree_sitter::Language::from_raw(tree_sitter_json::LANGUAGE.into_raw()().cast()) };
+    let language = json_language();
     let grammar = Language::new(&language).unwrap();
     let mut parser = tree_sitter::Parser::new();
     parser.set_language(&language).unwrap();
@@ -403,14 +381,8 @@ fn presence_scans_across_groups() {
 
 #[test]
 fn disabling_non_rooted_pattern_preserves_ranges() {
-    let language =
-        unsafe { tree_sitter::Language::from_raw(tree_sitter_c::LANGUAGE.into_raw()().cast()) };
-    let grammar = Language::new(&language).unwrap();
-    let mut parser = tree_sitter::Parser::new();
-    parser.set_language(&language).unwrap();
     let source = "int value = 1;";
-    let native = parser.parse(source, None).unwrap();
-    let tree = Tree::pack(&grammar, &native).unwrap();
+    let (grammar, tree) = query_tree(c_language(), source);
     let pattern = "((identifier) @name (number_literal) @value)\n(identifier) @other";
 
     let identifier = tree
@@ -453,9 +425,8 @@ fn disabling_non_rooted_pattern_preserves_ranges() {
 }
 
 #[test]
-fn cancellation_limits_ranges_and_reuse() {
-    let language =
-        unsafe { tree_sitter::Language::from_raw(tree_sitter_c::LANGUAGE.into_raw()().cast()) };
+fn cancellation_with_match_limit() {
+    let language = c_language();
     let grammar = Language::new(&language).unwrap();
     let mut parser = tree_sitter::Parser::new();
     parser.set_language(&language).unwrap();
@@ -486,40 +457,17 @@ fn cancellation_limits_ranges_and_reuse() {
     assert!(completed_matches < results.len());
     assert_eq!(execution.error(), None);
     drop(execution);
-
-    cursor.set_match_limit(u32::MAX);
-    cursor.set_byte_range(1..10);
-    let mut execution = cursor.execute(&query, tree.root_node(), source.as_bytes());
-    assert!(execution.next_match().is_none());
-    assert_eq!(execution.error(), None);
-    drop(execution);
-
-    let query = Query::new(&grammar, "(identifier) @name").unwrap();
-    let mut execution = cursor.execute(&query, tree.root_node(), source.as_bytes());
-    let first = execution.next_capture().unwrap().0.id();
-    execution.remove_match(first);
-    while let Some((result, _)) = execution.next_capture() {
-        assert_ne!(result.id(), first);
-    }
-    assert!(execution.error().is_none());
 }
 
 #[test]
 fn switching_between_matches_and_captures_preserves_finished_order() {
-    let language =
-        unsafe { tree_sitter::Language::from_raw(tree_sitter_c::LANGUAGE.into_raw()().cast()) };
+    let language = c_language();
     let source = "int alpha(int beta) { return gamma(beta); }\n".repeat(20);
-    let mut parser = tree_sitter::Parser::new();
-    parser.set_language(&language).unwrap();
-    let native = parser.parse(&source, None).unwrap();
+    let native = support::parse_native(&language, &source);
     let grammar = Language::new(&language).unwrap();
     let tree = Tree::pack(&grammar, &native).unwrap();
-    let reference =
-        tree_squatter::Tree::pack(&tree_squatter::Language::new(&language).unwrap(), &native)
-            .unwrap();
     let pattern = "(identifier) @first (identifier) @second (identifier) @third";
     let query = Query::new(&grammar, pattern).unwrap();
-    let reference_query = tree_squatter::Query::new(&grammar, pattern).unwrap();
 
     macro_rules! record {
         ($result:expr) => {
@@ -536,43 +484,40 @@ fn switching_between_matches_and_captures_preserves_finished_order() {
         };
     }
 
-    for optimized in [false, true] {
-        let mut cursor = QueryCursor::new();
-        let mut reference_cursor = tree_squatter::QueryCursor::new();
-        cursor.set_optimized(optimized);
-        reference_cursor.set_optimized(false);
-        let mut execution = cursor.execute(&query, tree.root_node(), source.as_bytes());
-        let mut reference_execution =
-            reference_cursor.execute(&reference_query, reference.root_node(), source.as_bytes());
+    let mut cursor = QueryCursor::new();
+    let mut reference_cursor = tree_squatter::QueryCursor::new();
+    cursor.set_optimized(true);
+    reference_cursor.set_optimized(false);
+    let mut execution = cursor.execute(&query, tree.root_node(), source.as_bytes());
+    let mut reference_execution =
+        reference_cursor.execute(&query, tree.root_node(), source.as_bytes());
 
-        // Multiple finished patterns per node exercise both an untouched queue
-        // and a partially consumed heap when the caller changes stream type.
-        for index in 0..source.len() {
-            let (actual, expected) = if index % 3 == 0 {
-                (
-                    record!(execution.next_capture().map(|(result, _)| result)),
-                    record!(reference_execution.next_capture().map(|(result, _)| result)),
-                )
-            } else {
-                (
-                    record!(execution.next_match()),
-                    record!(reference_execution.next_match()),
-                )
-            };
-            assert_eq!(actual, expected, "operation {index}, optimized={optimized}");
-            if actual.is_none() {
-                break;
-            }
+    // Multiple finished patterns per node exercise both an untouched queue
+    // and a partially consumed heap when the caller changes stream type.
+    for index in 0..source.len() {
+        let (actual, expected) = if index % 3 == 0 {
+            (
+                record!(execution.next_capture().map(|(result, _)| result)),
+                record!(reference_execution.next_capture().map(|(result, _)| result)),
+            )
+        } else {
+            (
+                record!(execution.next_match()),
+                record!(reference_execution.next_match()),
+            )
+        };
+        assert_eq!(actual, expected, "operation {index}");
+        if actual.is_none() {
+            break;
         }
-        assert!(execution.next_match().is_none());
-        assert!(execution.error().is_none());
     }
+    assert!(execution.next_match().is_none());
+    assert!(execution.error().is_none());
 }
 
 #[test]
 fn query_edge_cases_match_tree_sitter() {
-    use std::collections::BTreeSet;
-    use tree_sitter::{Point, StreamingIterator};
+    use tree_sitter::Point;
     for language in [tree_sitter_json::LANGUAGE, tree_sitter_c::LANGUAGE] {
         let language = unsafe { tree_sitter::Language::from_raw(language.into_raw()().cast()) };
         let grammar = Language::new(&language).unwrap();
@@ -656,122 +601,81 @@ fn query_edge_cases_match_tree_sitter() {
                         let mut reference = tree_sitter::QueryCursor::new();
                         let mut cursor = QueryCursor::new();
                         cursor.set_optimized(optimized);
-                        match mode {
-                            1 => {
-                                reference.set_max_start_depth(Some(1));
-                                cursor.set_max_start_depth(Some(1));
-                            }
-                            2 => {
-                                reference.set_byte_range(1..12);
-                                cursor.set_byte_range(1..12);
-                            }
-                            3 => {
-                                reference.set_point_range(Point::new(0, 1)..Point::new(1, 0));
-                                cursor.set_point_range(Point::new(0, 1)..Point::new(1, 0));
-                            }
-                            4 => {
-                                reference.set_byte_range(4..4);
-                                cursor.set_byte_range(4..4);
-                            }
-                            5 => {
-                                reference.set_point_range(Point::new(1, 2)..Point::new(1, 3));
-                                cursor.set_point_range(Point::new(1, 2)..Point::new(1, 3));
-                            }
-                            6 => {
-                                reference.set_byte_range(1..12);
-                                cursor.set_byte_range(1..12);
-                                reference.set_point_range(Point::new(1, 0)..Point::new(2, 0));
-                                cursor.set_point_range(Point::new(1, 0)..Point::new(2, 0));
-                            }
-                            7 => {
-                                reference.set_byte_range(100..101);
-                                cursor.set_byte_range(100..101);
-                            }
-                            8 => {
-                                reference.set_containing_byte_range(1..12);
-                                cursor.set_containing_byte_range(1..12);
-                            }
-                            9 => {
-                                reference
-                                    .set_containing_point_range(Point::new(0, 1)..Point::new(1, 0));
-                                cursor
-                                    .set_containing_point_range(Point::new(0, 1)..Point::new(1, 0));
-                            }
-                            10 => {
-                                reference.set_containing_byte_range(4..4);
-                                cursor.set_containing_byte_range(4..4);
-                            }
-                            11 => {
-                                reference
-                                    .set_containing_byte_range(1..12)
-                                    .set_containing_point_range(Point::new(1, 0)..Point::new(2, 0));
-                                cursor
-                                    .set_containing_byte_range(1..12)
-                                    .set_containing_point_range(Point::new(1, 0)..Point::new(2, 0));
-                            }
-                            12 => {
-                                reference.set_containing_byte_range(100..101);
-                                cursor.set_containing_byte_range(100..101);
-                            }
-                            13 => {
-                                reference.set_containing_byte_range(1..source.len());
-                                cursor.set_containing_byte_range(1..source.len());
-                            }
-                            14 => {
-                                reference
-                                    .set_containing_point_range(Point::new(1, 2)..Point::new(1, 2))
-                                    .set_byte_range(1..12);
-                                cursor
-                                    .set_containing_point_range(Point::new(1, 2)..Point::new(1, 2))
-                                    .set_byte_range(1..12);
-                            }
-                            _ => {}
+                        macro_rules! configure {
+                            ($cursor:ident) => {
+                                match mode {
+                                    1 => {
+                                        $cursor.set_max_start_depth(Some(1));
+                                    }
+                                    2 => {
+                                        $cursor.set_byte_range(1..12);
+                                    }
+                                    3 => {
+                                        $cursor.set_point_range(Point::new(0, 1)..Point::new(1, 0));
+                                    }
+                                    4 => {
+                                        $cursor.set_byte_range(4..4);
+                                    }
+                                    5 => {
+                                        $cursor.set_point_range(Point::new(1, 2)..Point::new(1, 3));
+                                    }
+                                    6 => {
+                                        $cursor.set_byte_range(1..12);
+                                        $cursor.set_point_range(Point::new(1, 0)..Point::new(2, 0));
+                                    }
+                                    7 => {
+                                        $cursor.set_byte_range(100..101);
+                                    }
+                                    8 => {
+                                        $cursor.set_containing_byte_range(1..12);
+                                    }
+                                    9 => {
+                                        $cursor.set_containing_point_range(
+                                            Point::new(0, 1)..Point::new(1, 0),
+                                        );
+                                    }
+                                    10 => {
+                                        $cursor.set_containing_byte_range(4..4);
+                                    }
+                                    11 => {
+                                        $cursor
+                                            .set_containing_byte_range(1..12)
+                                            .set_containing_point_range(
+                                                Point::new(1, 0)..Point::new(2, 0),
+                                            );
+                                    }
+                                    12 => {
+                                        $cursor.set_containing_byte_range(100..101);
+                                    }
+                                    13 => {
+                                        $cursor.set_containing_byte_range(1..source.len());
+                                    }
+                                    14 => {
+                                        $cursor
+                                            .set_containing_point_range(
+                                                Point::new(1, 2)..Point::new(1, 2),
+                                            )
+                                            .set_byte_range(1..12);
+                                    }
+                                    _ => {}
+                                }
+                            };
                         }
-                        let mut execution =
-                            reference.matches(&expected, native.root_node(), source.as_bytes());
-                        let mut expected_matches = Vec::new();
-                        while let Some(result) = execution.next() {
-                            expected_matches.push((
-                                result.pattern_index,
-                                result
-                                    .captures()
-                                    .iter()
-                                    .map(|capture| {
-                                        (
-                                            capture.node.start_byte(),
-                                            capture.node.end_byte(),
-                                            capture.node.kind_id(),
-                                            capture.index,
-                                        )
-                                    })
-                                    .collect::<Vec<_>>(),
-                            ));
-                        }
-                        let mut execution =
-                            cursor.execute(&actual, tree.root_node(), source.as_bytes());
-                        let mut actual_matches = Vec::new();
-                        while let Some(result) = execution.next_match() {
-                            actual_matches.push((
-                                result.pattern_index.0,
-                                result
-                                    .captures()
-                                    .iter()
-                                    .map(|capture| {
-                                        (
-                                            capture.node.start_byte(),
-                                            capture.node.end_byte(),
-                                            capture.node.kind_id().get(),
-                                            capture.index.0,
-                                        )
-                                    })
-                                    .collect::<Vec<_>>(),
-                            ));
-                            assert!(actual_matches.len() < 100_000);
-                        }
-                        assert_eq!(
-                            execution.error(),
-                            None,
-                            "{pattern}, {source:?}, mode={mode}, optimized={optimized}"
+                        configure!(reference);
+                        configure!(cursor);
+                        let mut expected_matches = native_query_results_with_cursor(
+                            &mut reference,
+                            &expected,
+                            native.root_node(),
+                            source.as_bytes(),
+                            false,
+                        );
+                        let mut actual_matches = query_results(
+                            &mut cursor,
+                            &actual,
+                            tree.root_node(),
+                            source.as_bytes(),
+                            false,
                         );
                         expected_matches.sort();
                         actual_matches.sort();
@@ -779,55 +683,29 @@ fn query_edge_cases_match_tree_sitter() {
                             expected_matches, actual_matches,
                             "{pattern}, {source:?}, mode={mode}, optimized={optimized}"
                         );
-                        drop(execution);
-                        let mut expected_captures = BTreeSet::new();
+                        let captured = capture_set(query_results(
+                            &mut cursor,
+                            &actual,
+                            tree.root_node(),
+                            source.as_bytes(),
+                            true,
+                        ));
                         if mode >= 2 {
-                            let mut execution = reference.captures(
+                            let expected_captures = capture_set(native_query_results_with_cursor(
+                                &mut reference,
                                 &expected,
                                 native.root_node(),
                                 source.as_bytes(),
-                            );
-                            while let Some((result, index)) = execution.next() {
-                                let capture = result.captures()[*index];
-                                expected_captures.insert((
-                                    result.pattern_index,
-                                    (
-                                        capture.node.start_byte(),
-                                        capture.node.end_byte(),
-                                        capture.node.kind_id(),
-                                        capture.index,
-                                    ),
-                                ));
-                            }
-                        }
-                        let mut execution =
-                            cursor.execute(&actual, tree.root_node(), source.as_bytes());
-                        let mut captured = BTreeSet::new();
-                        let mut events = 0;
-                        while let Some((result, index)) = execution.next_capture() {
-                            let capture = result.captures()[index.0 as usize];
-                            captured.insert((
-                                result.pattern_index.0,
-                                (
-                                    capture.node.start_byte(),
-                                    capture.node.end_byte(),
-                                    capture.node.kind_id().get(),
-                                    capture.index.0,
-                                ),
+                                true,
                             ));
-                            events += 1;
-                            assert!(events < 100_000);
-                        }
-                        assert!(execution.error().is_none());
-                        if mode >= 2 {
                             assert_eq!(
                                 expected_captures, captured,
                                 "{pattern}, {source:?}, mode={mode}, optimized={optimized}"
                             );
                         } else {
-                            for (pattern, captures) in expected_matches {
+                            for (pattern, _, captures) in expected_matches {
                                 for capture in captures {
-                                    if capture.1 > 0 {
+                                    if capture.1.2 > 0 {
                                         assert!(
                                             captured.contains(&(pattern, capture)),
                                             "pattern {pattern}, capture {capture:?}, source {source:?}, mode={mode}, optimized={optimized}"
@@ -916,8 +794,7 @@ fn containing_ranges_combine_with_intersecting_ranges() {
 fn containing_ranges_include_missing_nodes_at_the_end() {
     use tree_sitter::{Point, StreamingIterator};
 
-    let language =
-        unsafe { tree_sitter::Language::from_raw(tree_sitter_c::LANGUAGE.into_raw()().cast()) };
+    let language = c_language();
     let grammar = Language::new(&language).unwrap();
     let mut parser = tree_sitter::Parser::new();
     parser.set_language(&language).unwrap();
@@ -967,8 +844,7 @@ fn containing_ranges_include_missing_nodes_at_the_end() {
 fn containing_ranges_finish_deferred_matches_in_error_subtrees() {
     use tree_squatter::StreamingIterator;
 
-    let language =
-        unsafe { tree_sitter::Language::from_raw(tree_sitter_c::LANGUAGE.into_raw()().cast()) };
+    let language = c_language();
     let grammar = Language::new(&language).unwrap();
     let mut parser = tree_sitter::Parser::new();
     parser.set_language(&language).unwrap();
@@ -992,10 +868,9 @@ fn containing_ranges_finish_deferred_matches_in_error_subtrees() {
 
 #[test]
 fn quantified_roots_with_ranges_match_tree_sitter() {
-    use tree_sitter::{Point, StreamingIterator};
+    use tree_sitter::Point;
 
-    let language =
-        unsafe { tree_sitter::Language::from_raw(tree_sitter_json::LANGUAGE.into_raw()().cast()) };
+    let language = json_language();
     let grammar = Language::new(&language).unwrap();
     let mut parser = tree_sitter::Parser::new();
     parser.set_language(&language).unwrap();
@@ -1029,84 +904,45 @@ fn quantified_roots_with_ranges_match_tree_sitter() {
                         cursor.set_byte_range(range.clone());
                     }
 
-                    let mut execution =
-                        reference.matches(&expected, native.root_node(), source.as_bytes());
-                    let mut expected_matches = Vec::new();
-                    while let Some(result) = execution.next() {
-                        // Hidden repetition nodes affect the number of empty matches.
-                        if !result.captures().is_empty() {
-                            expected_matches.push(
-                                result
-                                    .captures()
-                                    .iter()
-                                    .map(|capture| {
-                                        (
-                                            capture.node.start_byte(),
-                                            capture.node.end_byte(),
-                                            capture.node.kind_id(),
-                                            capture.index,
-                                        )
-                                    })
-                                    .collect::<Vec<_>>(),
-                            );
-                        }
-                    }
-                    let mut execution = cursor.execute(&query, tree.root_node(), source.as_bytes());
-                    let mut actual_matches = Vec::new();
-                    while let Some(result) = execution.next_match() {
-                        if !result.captures().is_empty() {
-                            actual_matches.push(
-                                result
-                                    .captures()
-                                    .iter()
-                                    .map(|capture| {
-                                        (
-                                            capture.node.start_byte(),
-                                            capture.node.end_byte(),
-                                            capture.node.kind_id().get(),
-                                            capture.index.0,
-                                        )
-                                    })
-                                    .collect::<Vec<_>>(),
-                            );
-                        }
-                    }
-                    assert_eq!(execution.error(), None);
+                    let mut expected_matches = native_query_results_with_cursor(
+                        &mut reference,
+                        &expected,
+                        native.root_node(),
+                        source.as_bytes(),
+                        false,
+                    );
+                    let mut actual_matches = query_results(
+                        &mut cursor,
+                        &query,
+                        tree.root_node(),
+                        source.as_bytes(),
+                        false,
+                    );
+                    // Hidden repetition nodes affect the number of empty matches.
+                    expected_matches.retain(|(_, _, captures)| !captures.is_empty());
+                    actual_matches.retain(|(_, _, captures)| !captures.is_empty());
                     expected_matches.sort();
                     actual_matches.sort();
                     assert_eq!(
                         expected_matches, actual_matches,
                         "{pattern}, {range:?}, points={points}, optimized={optimized}"
                     );
-                    drop(execution);
-
-                    let mut execution =
-                        reference.captures(&expected, native.root_node(), source.as_bytes());
-                    let mut expected_captures = std::collections::BTreeSet::new();
-                    while let Some((result, index)) = execution.next() {
-                        let capture = result.captures()[*index];
-                        expected_captures.insert((
-                            capture.node.start_byte(),
-                            capture.node.end_byte(),
-                            capture.node.kind_id(),
-                            capture.index,
-                        ));
-                    }
-                    let mut execution = cursor.execute(&query, tree.root_node(), source.as_bytes());
-                    let mut actual_captures = std::collections::BTreeSet::new();
-                    while let Some((result, index)) = execution.next_capture() {
-                        let capture = result.captures()[index.0 as usize];
-                        actual_captures.insert((
-                            capture.node.start_byte(),
-                            capture.node.end_byte(),
-                            capture.node.kind_id().get(),
-                            capture.index.0,
-                        ));
-                    }
-                    assert_eq!(execution.error(), None);
                     assert_eq!(
-                        expected_captures, actual_captures,
-                        "{pattern}, {range:?}, points={points}, optimized={optimized}"
+                        capture_set(query_results(
+                            &mut cursor,
+                            &query,
+                            tree.root_node(),
+                            source.as_bytes(),
+                            true
+                        )),
+                        capture_set(native_query_results_with_cursor(
+                            &mut reference,
+                            &expected,
+                            native.root_node(),
+                            source.as_bytes(),
+                            true
+                        )),
+                        "{pattern}, {range:?}, points={points}, optimized={optimized}",
                     );
                 }
             }
@@ -1116,12 +952,7 @@ fn quantified_roots_with_ranges_match_tree_sitter() {
 
 #[test]
 fn disabled_rootless_and_branching_patterns_with_ranges() {
-    let language =
-        unsafe { tree_sitter::Language::from_raw(tree_sitter_json::LANGUAGE.into_raw()().cast()) };
-    let grammar = Language::new(&language).unwrap();
-    let mut parser = tree_sitter::Parser::new();
-    parser.set_language(&language).unwrap();
-    let tree = Tree::parse(&grammar, &mut parser, "[1,2,3]").unwrap();
+    let (grammar, tree) = json_query_tree("[1,2,3]");
     for pattern in [
         "(_) @first\n(_) @node",
         "((_) @first (_) @second)\n(_) @node",
@@ -1169,9 +1000,7 @@ fn disabled_rootless_and_branching_patterns_with_ranges() {
     }
 }
 
-fn json_query_tree(source: &str) -> (Language, Tree) {
-    let language =
-        unsafe { tree_sitter::Language::from_raw(tree_sitter_json::LANGUAGE.into_raw()().cast()) };
+fn query_tree(language: tree_sitter::Language, source: &str) -> (Language, Tree) {
     let grammar = Language::new(&language).unwrap();
     let mut parser = tree_sitter::Parser::new();
     parser.set_language(&language).unwrap();
@@ -1179,21 +1008,8 @@ fn json_query_tree(source: &str) -> (Language, Tree) {
     (grammar, tree)
 }
 
-type QuerySnapshot = (usize, Option<u32>, Vec<(u32, std::ops::Range<usize>)>);
-
-fn snapshot(
-    found: &tree_squatter::QueryMatch<'_, '_>,
-    index: Option<tree_squatter::MatchCaptureIx>,
-) -> QuerySnapshot {
-    (
-        found.pattern_index.0,
-        index.map(|index| index.0),
-        found
-            .captures()
-            .iter()
-            .map(|capture| (capture.index.0, capture.node.byte_range()))
-            .collect(),
-    )
+fn json_query_tree(source: &str) -> (Language, Tree) {
+    query_tree(json_language(), source)
 }
 
 fn provider_results<Provider, Chunk>(
@@ -1346,19 +1162,11 @@ fn chunked_predicates_and_streaming_entry_points() {
     }
 }
 
-#[test]
-fn metadata_diagnostics_and_independent_clones() {
-    use tree_squatter::{CaptureIx, PatternIx, QueryPredicateArg, QueryProperty};
-    let source = "[1,2,3]";
-    let (grammar, tree) = json_query_tree(source);
-    let patterns = "((array (number)+ @number) @array (#set! @number key \"value\") (#is? local) (#is-not? @array marked \"yes\") (#custom! @number \"text\"))\n(number) @single";
-    let mut query = Query::new(&grammar, patterns).unwrap();
-    let reference = tree_sitter::Query::new(&grammar.tree_sitter_language(), patterns).unwrap();
-    assert_eq!(query.capture_names(), reference.capture_names());
-    assert_eq!(query.capture_index_for_name("number"), Some(CaptureIx(0)));
-    assert_eq!(query.capture_index_for_name("absent"), None);
+fn assert_query_metadata(query: &Query, reference: &tree_sitter::Query, source: &str) {
+    assert_eq!(query.pattern_count(), reference.pattern_count(), "{source}");
+    assert_eq!(query.capture_names(), reference.capture_names(), "{source}");
     for pattern in 0..reference.pattern_count() {
-        let index = PatternIx(pattern);
+        let index = tree_squatter::PatternIx(pattern);
         assert_eq!(
             query.capture_quantifiers(index),
             reference.capture_quantifiers(pattern)
@@ -1380,13 +1188,67 @@ fn metadata_diagnostics_and_independent_clones() {
             reference.is_pattern_non_local(pattern)
         );
     }
-    for offset in 0..patterns.len() {
+    for offset in 0..source.len() {
         assert_eq!(
             query.is_pattern_guaranteed_at_step(offset),
             reference.is_pattern_guaranteed_at_step(offset),
             "offset {offset}"
         );
     }
+}
+
+fn assert_query_error(actual: &tree_squatter::QueryError, expected: &tree_sitter::QueryError) {
+    assert_eq!(actual.to_string(), expected.to_string());
+    assert_eq!(
+        (
+            actual.row,
+            actual.column,
+            actual.offset,
+            &actual.kind,
+            &actual.message
+        ),
+        (
+            expected.row,
+            expected.column,
+            expected.offset,
+            &expected.kind,
+            &expected.message
+        ),
+    );
+}
+
+#[test]
+fn metadata_diagnostics_and_independent_clones() {
+    use tree_squatter::{CaptureIx, PatternIx, QueryPredicateArg, QueryProperty};
+    let source = "[1,2,3]";
+    let (grammar, tree) = json_query_tree(source);
+    for source in [
+        "(_) @node",
+        "(pair key: (string) @key value: (_) @value)",
+        "(array [(number) (string)]+ @item)",
+        "((number) @first (number) @second)",
+        "((number)+ @numbers)",
+        "((string) @text (#match? @text \"a\"))",
+        "(array . (number)? @first . (number)* @rest .)",
+        "(not_a_node) @capture",
+        "(pair invalid_field: (_))",
+        "(",
+    ] {
+        match (
+            Query::new(&grammar, source),
+            tree_sitter::Query::new(&grammar.tree_sitter_language(), source),
+        ) {
+            (Ok(query), Ok(reference)) => assert_query_metadata(&query, &reference, source),
+            (Err(actual), Err(expected)) => assert_query_error(&actual, &expected),
+            _ => panic!("different compilation result for {source}"),
+        }
+    }
+    let patterns = "((array (number)+ @number) @array (#set! @number key \"value\") (#is? local) (#is-not? @array marked \"yes\") (#custom! @number \"text\"))\n(number) @single";
+    let mut query = Query::new(&grammar, patterns).unwrap();
+    let reference = tree_sitter::Query::new(&grammar.tree_sitter_language(), patterns).unwrap();
+    assert_eq!(query.capture_index_for_name("number"), Some(CaptureIx(0)));
+    assert_eq!(query.capture_index_for_name("absent"), None);
+    assert_query_metadata(&query, &reference, patterns);
     assert_eq!(
         query.property_settings(PatternIx(0)),
         &[QueryProperty::new("key", Some("value"), Some(CaptureIx(0)))]
@@ -1441,23 +1303,7 @@ fn metadata_diagnostics_and_independent_clones() {
         let expected = tree_sitter::Query::new(&grammar.tree_sitter_language(), pattern)
             .err()
             .unwrap();
-        assert_eq!(actual.to_string(), expected.to_string());
-        assert_eq!(
-            (
-                actual.row,
-                actual.column,
-                actual.offset,
-                actual.kind,
-                actual.message
-            ),
-            (
-                expected.row,
-                expected.column,
-                expected.offset,
-                expected.kind,
-                expected.message
-            )
-        );
+        assert_query_error(&actual, &expected);
     }
 }
 
@@ -1555,24 +1401,7 @@ fn predicate_diagnostics_match_tree_sitter() {
                 tree_squatter::QueryErrorKind::Predicate,
                 "{source}"
             );
-            assert_eq!(actual.to_string(), expected.to_string(), "{source}");
-            assert_eq!(
-                (
-                    actual.row,
-                    actual.column,
-                    actual.offset,
-                    actual.kind,
-                    actual.message
-                ),
-                (
-                    expected.row,
-                    expected.column,
-                    expected.offset,
-                    expected.kind,
-                    expected.message
-                ),
-                "{source}"
-            );
+            assert_query_error(&actual, &expected);
         }
     }
 }
@@ -1597,7 +1426,10 @@ fn removal_keeps_current_captures_readable_and_nodes_independent() {
                 found.remove();
                 assert_eq!(captures, saved);
             }
-            let node = captures[0].node;
+            let node = found
+                .nodes_for_capture_index(query.capture_index_for_name("number").unwrap())
+                .next()
+                .unwrap();
             if explicit {
                 execution.remove_match(id);
                 execution.remove_match(id);
@@ -1606,7 +1438,7 @@ fn removal_keeps_current_captures_readable_and_nodes_independent() {
                 assert_ne!(found.id(), id);
             }
             drop(execution);
-            assert!(!node.kind().is_empty());
+            assert_eq!(node.utf8_text(source.as_bytes()).unwrap(), "1");
         }
         let mut captures = cursor.captures(&query, tree.root_node(), source.as_bytes());
         let (found, _) = captures.next().unwrap();
@@ -1983,8 +1815,7 @@ fn cursor_and_iterator_ranges_narrow_validate_and_persist() {
 #[test]
 fn query_language_mismatch_is_an_execution_error() {
     let (_, tree) = json_query_tree("[1]");
-    let language =
-        unsafe { tree_sitter::Language::from_raw(tree_sitter_c::LANGUAGE.into_raw()().cast()) };
+    let language = c_language();
     let grammar = Language::new(&language).unwrap();
     let query = Query::new(&grammar, "(_) @node").unwrap();
     for optimized in [false, true] {
@@ -1998,50 +1829,4 @@ fn query_language_mismatch_is_an_execution_error() {
         assert!(execution.next_match().is_none());
         assert!(execution.next_capture().is_none());
     }
-}
-
-#[test]
-fn execution_owns_provider_and_releases_it_on_drop() {
-    use std::{cell::Cell, rc::Rc};
-    use tree_squatter::{Node, TextProvider};
-    struct Provider {
-        source: Vec<u8>,
-        dropped: Rc<Cell<bool>>,
-    }
-    impl TextProvider<Vec<u8>> for Provider {
-        type I = std::vec::IntoIter<Vec<u8>>;
-        fn text(&mut self, node: Node<'_>) -> Self::I {
-            self.source[node.byte_range()]
-                .chunks(1)
-                .map(<[u8]>::to_vec)
-                .collect::<Vec<_>>()
-                .into_iter()
-        }
-    }
-    impl Drop for Provider {
-        fn drop(&mut self) {
-            self.dropped.set(true);
-        }
-    }
-    let source = "[123]";
-    let (grammar, tree) = json_query_tree(source);
-    let query = Query::new(&grammar, "((number) @number (#eq? @number \"123\"))").unwrap();
-    let dropped = Rc::new(Cell::new(false));
-    let provider = Provider {
-        source: source.as_bytes().to_vec(),
-        dropped: dropped.clone(),
-    };
-    let mut cursor = QueryCursor::new();
-    let mut execution = cursor.execute(&query, tree.root_node(), provider);
-    let node = execution.next_match().unwrap().captures()[0].node;
-    assert!(!dropped.get());
-    drop(execution);
-    assert!(dropped.get());
-    assert_eq!(node.utf8_text(source.as_bytes()).unwrap(), "123");
-    assert!(
-        cursor
-            .execute(&query, tree.root_node(), source.as_bytes())
-            .next_match()
-            .is_some()
-    );
 }

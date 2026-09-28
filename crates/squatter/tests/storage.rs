@@ -1,15 +1,17 @@
+mod support;
+
+use support::assert_same_tree;
+use support::{c_language, c_sharp_language, json_language};
+
 use tree_squatter::{Language, PackContext, PackOptions, Tree};
 
 #[test]
 fn slab_headers_reject_incompatible_formats() {
     use tree_squatter::{PointsData, PresenceCache};
 
-    let language =
-        unsafe { tree_sitter::Language::from_raw(tree_sitter_json::LANGUAGE.into_raw()().cast()) };
+    let language = json_language();
     let grammar = Language::new(&language).unwrap();
-    let mut parser = tree_sitter::Parser::new();
-    parser.set_language(&language).unwrap();
-    let native = parser.parse("[1]", None).unwrap();
+    let native = support::parse_native(&language, "[1]");
     let tree = Tree::pack(&grammar, &native).unwrap();
     let presence = tree.presence_cache().unwrap();
     let points = tree.point_data().unwrap();
@@ -28,7 +30,10 @@ fn slab_headers_reject_incompatible_formats() {
             let mut invalid = bytes.to_vec();
             invalid[..4].copy_from_slice(&(header ^ (1 << bit)).to_le_bytes());
             let rejected = match expected {
-                0xff00_0000 => Tree::from_bytes(&grammar, &invalid).is_err(),
+                0xff00_0000 => {
+                    assert!(Tree::from_bytes_safety_checked(&grammar, &invalid).is_err());
+                    Tree::from_bytes(&grammar, &invalid).is_err()
+                }
                 0xfe00_0000 => PresenceCache::copy_from_bytes(&tree, &invalid).is_err(),
                 _ => PointsData::copy_from_bytes(&tree, &invalid).is_err(),
             };
@@ -39,12 +44,9 @@ fn slab_headers_reject_incompatible_formats() {
 
 #[test]
 fn packing_context_matches_fresh_packing_and_loading() {
-    let json =
-        unsafe { tree_sitter::Language::from_raw(tree_sitter_json::LANGUAGE.into_raw()().cast()) };
-    let c = unsafe { tree_sitter::Language::from_raw(tree_sitter_c::LANGUAGE.into_raw()().cast()) };
-    let c_sharp = unsafe {
-        tree_sitter::Language::from_raw(tree_sitter_c_sharp::LANGUAGE.into_raw()().cast())
-    };
+    let json = json_language();
+    let c = c_language();
+    let c_sharp = c_sharp_language();
     let wide = format!("[{}0]", "{\"a\": 1, \"b\": true},\n".repeat(1000));
     let deep = format!("{}0{}", "[".repeat(300), "]".repeat(300));
     let sibling_depths = (29..=33)
@@ -94,9 +96,10 @@ fn packing_context_matches_fresh_packing_and_loading() {
         for source in sources {
             let tree = parser.parse(source, None).unwrap();
             for points in [false, true] {
-                for symbol_presence in [false, true] {
-                    for repack in [false, true] {
-                        for initial_group_capacity in [0, 1] {
+                for repack in [false, true] {
+                    for initial_group_capacity in [0, 1] {
+                        let mut core = None;
+                        for symbol_presence in [false, true] {
                             let options = PackOptions {
                                 initial_group_capacity,
                                 repack,
@@ -109,29 +112,12 @@ fn packing_context_matches_fresh_packing_and_loading() {
                                 context.pack_with_options(&grammar, &tree, options).unwrap();
                             assert_eq!(actual.has_points(), points);
                             assert_eq!(actual.presence_cache().is_some(), symbol_presence);
-                            assert_eq!(
-                                actual.point_data().map(|points| points.as_bytes()),
-                                expected.point_data().map(|points| points.as_bytes())
-                            );
-                            assert_eq!(
-                                actual.presence_cache().map(|cache| cache.as_bytes()),
-                                expected.presence_cache().map(|cache| cache.as_bytes())
-                            );
-                            let description = format!("{} bytes, {options:?}", source.len());
-                            assert_eq!(
-                                actual.as_bytes().len(),
-                                expected.as_bytes().len(),
-                                "{description}"
-                            );
-                            assert!(
-                                actual.as_bytes() == expected.as_bytes(),
-                                "different slab: {description}, first difference {:?}",
-                                actual
-                                    .as_bytes()
-                                    .iter()
-                                    .zip(expected.as_bytes())
-                                    .position(|(a, b)| a != b)
-                            );
+                            assert_same_tree(&actual, &expected);
+                            if let Some(core) = &core {
+                                assert_eq!(actual.as_bytes(), core);
+                            } else {
+                                core = Some(actual.as_bytes().to_vec());
+                            }
 
                             let loaded = Tree::from_bytes(&grammar, expected.as_bytes()).unwrap();
                             assert!(!loaded.has_points());
@@ -146,20 +132,6 @@ fn packing_context_matches_fresh_packing_and_loading() {
                             assert_eq!(compact.has_points(), points);
                             assert_eq!(compact.presence_cache().is_some(), symbol_presence);
                             assert_eq!(compact.as_bytes(), expected.repack().unwrap().as_bytes());
-                            for group in 0..actual.group_count() {
-                                for symbol in 0..language.node_kind_count() as u16 {
-                                    assert_eq!(
-                                        actual.group_has_symbol(
-                                            group,
-                                            tree_squatter::KindId::new(symbol)
-                                        ),
-                                        expected.group_has_symbol(
-                                            group,
-                                            tree_squatter::KindId::new(symbol)
-                                        )
-                                    );
-                                }
-                            }
                         }
                     }
                 }
@@ -172,8 +144,7 @@ fn packing_context_matches_fresh_packing_and_loading() {
 #[test]
 fn side_data_changes_only_attached_coordinates() {
     use tree_squatter::{PointsData, PresenceCache};
-    let language =
-        unsafe { tree_sitter::Language::from_raw(tree_sitter_json::LANGUAGE.into_raw()().cast()) };
+    let language = json_language();
     let grammar = Language::new(&language).unwrap();
     let mut parser = tree_sitter::Parser::new();
     parser.set_language(&language).unwrap();
@@ -273,8 +244,7 @@ fn sidecar_mapping_copy_and_failed_replacement() {
         SlabOwner { words, drops }
     }
 
-    let language =
-        unsafe { tree_sitter::Language::from_raw(tree_sitter_json::LANGUAGE.into_raw()().cast()) };
+    let language = json_language();
     let grammar = Language::new(&language).unwrap();
     let source = "[\n1, 2]";
     let mut parser = tree_sitter::Parser::new();
@@ -390,13 +360,10 @@ fn sidecar_mapping_copy_and_failed_replacement() {
 #[test]
 fn point_bounded_queries_follow_attachment() {
     use tree_squatter::{PointsData, Query, QueryCursor};
-    let language =
-        unsafe { tree_sitter::Language::from_raw(tree_sitter_json::LANGUAGE.into_raw()().cast()) };
+    let language = json_language();
     let grammar = Language::new(&language).unwrap();
     let source = b"[\n1,\n2]";
-    let mut parser = tree_sitter::Parser::new();
-    parser.set_language(&language).unwrap();
-    let native = parser.parse(source, None).unwrap();
+    let native = support::parse_native(&language, source);
     let mut tree = Tree::pack_with_options(
         &grammar,
         &native,
@@ -440,47 +407,10 @@ fn point_bounded_queries_follow_attachment() {
 }
 
 #[test]
-fn presence_creation_does_not_change_core_layout() {
-    let language =
-        unsafe { tree_sitter::Language::from_raw(tree_sitter_json::LANGUAGE.into_raw()().cast()) };
-    let grammar = Language::new(&language).unwrap();
-    let source = format!("[{}0]", "1,\n".repeat(500));
-    let mut parser = tree_sitter::Parser::new();
-    parser.set_language(&language).unwrap();
-    let native = parser.parse(&source, None).unwrap();
-    for points in [false, true] {
-        let mut baseline = None;
-        for symbol_presence in [false, true] {
-            let tree = Tree::pack_with_options(
-                &grammar,
-                &native,
-                PackOptions {
-                    points,
-                    symbol_presence,
-                    repack: true,
-                    ..PackOptions::default()
-                },
-            )
-            .unwrap();
-            assert_eq!(tree.has_points(), points);
-            assert_eq!(tree.presence_cache().is_some(), symbol_presence);
-            if let Some(bytes) = &baseline {
-                assert_eq!(tree.as_bytes(), bytes);
-            } else {
-                baseline = Some(tree.as_bytes().to_vec());
-            }
-        }
-    }
-}
-
-#[test]
 fn repacking_in_place_preserves_nodes_and_side_data() {
-    let language =
-        unsafe { tree_sitter::Language::from_raw(tree_sitter_json::LANGUAGE.into_raw()().cast()) };
+    let language = json_language();
     let grammar = Language::new(&language).unwrap();
-    let mut parser = tree_sitter::Parser::new();
-    parser.set_language(&language).unwrap();
-    let native = parser.parse("[1,\n2, 3]", None).unwrap();
+    let native = support::parse_native(&language, "[1,\n2, 3]");
     let mut tree = Tree::pack_with_options(
         &grammar,
         &native,

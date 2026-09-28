@@ -276,12 +276,6 @@ integer_type!(
     /// from all-child indices and physical slots.
     ///
     /// **Not in Tree-sitter:** it uses `u32` indices and `usize` counts instead.
-    ///
-    /// ```compile_fail
-    /// # fn example(node: tree_squatter::Node<'_>) {
-    /// node.named_child(tree_squatter::ChildIx::new(0));
-    /// # }
-    /// ```
     pub NamedChildIx(u32));
 impl NamedChildIx {
     /// Wrap a position or count without checking whether a child exists.

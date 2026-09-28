@@ -4,25 +4,57 @@
 
 - Inventory totals: 112 Rust tests and 15 doctests in `squatter`, five native test entry points called by those Rust tests, seven tests in `squatter-bench`, and one dedicated runner test. Benchmarks comprise eight corpus workloads, 16 lifecycle workloads, and 267 scan workloads (291 total).
 
+- Cleanup status (2026-09-28): the inventory below records the original suite reviewed in commit `fe667aca8`.
+
+  - Shared native parsing, packed-tree byte assertions, query snapshots, query collection, and range-selection checks. Consolidated parser recovery/ownership, language metadata, invalid IDs, symbol layout, maximum coordinates, sparse scans, and side-data invariance cases into their related suites.
+
+  - Removed repeated loaded-tree checks, conservative iterator size-hint assertions, duplicate plan comparisons, and repeated benchmark classification/median fixtures. Kept ordered query events distinct from sorted matches and capture sets.
+
+  - Scan registration now declares pipelines and scalar expectations together. Removed `kind.{nodes,count,fold}` in favor of identical `dynamic_1` workloads: 264 scan workloads remain, with corpus and lifecycle workload counts unchanged.
+
+  - Retained conditional removals involving native replay, code-generation probes, and traversal aliases. Kept the real-grammar cache ownership and in-place repacking tests separate so their lifetime and address assertions stay visible.
+
+  - Left the predicate forwarding matrix, small loader/leaf setup blocks, and cross-binary setup intact: further abstraction would save little source. Corpus traversal validation remains before each timed workload to preserve the existing cache preparation; lazy lifecycle query loading would add branching rather than reduce code.
+
+  - Validation: the full suite passed before the deletion follow-up (97 Squatter Rust tests, seven benchmark-crate tests, and 15 doctests). Current totals are 94, seven, and 14 respectively; the affected query and scanning suites and doctests were rerun after the deletions. All 264 scan workloads pass scalar/count checks on C and JSON fixtures, both with frequent kinds and with absent kinds, full-source ranges, and no symbol index. These smoke runs do not establish performance changes.
+
+- Deletion follow-up:
+
+  - **Done:** deleted `tests/scan_patterns.rs::scan_patterns` and its text helper. The scanning suite retains the behavior checks; the explicit usage examples are gone.
+
+  - **Done:** deleted `tests/scanning.rs::scans_and_groups_are_send_sync`. Its type assertions now run in `orders_subtrees_groups_and_directions`; removed the cross-thread execution smoke block.
+
+  - **Done:** replaced `assembly_patterns_match_examples` with `assembly_patterns_are_callable`, keeping a representative invocation of every uninlined wrapper and removing repeated input matrices and scalar-oracle setup.
+
+  - **Done:** deleted `execution_owns_provider_and_releases_it_on_drop` and its custom provider/drop-counter fixture. The removal test checks retained node text after dropping execution; cursor reuse remains covered there.
+
+  - **Done:** deleted the `NamedChildIx` compile-fail doctest. The reverse-direction `ChildIx` type-distinction example remains.
+
+  - **Retained:** native ambiguity-replay smoke block. The Rust callback replay test is stronger, but the C block directly covers the native callback entry point.
+
+  - Keep malformed-tree error flags, deep/wide postorder, unsupported-grammar rejection, and coordinate narrowing: ordinary valid-tree scans do not imply these behaviors.
+
 - Inventory conventions:
 
   - Paths are relative to the repository root. Each Rust `#[test]`, doctest, native test entry point, and named benchmark workload is listed below. Generated input matrices are described under their owning test.
 
   - **Share** means extract repeated setup or assertions; **merge** means preserve the assertions in a related test; **remove** identifies coverage with a concrete replacement; **keep** calls out superficially similar coverage that exercises a different failure mode.
 
+  - Recommendation status: **done** means implemented, **partial** describes the remaining portion, and **retained** means deliberately left unchanged. The original descriptions and proposed actions remain below for context.
+
   - Recommendations are proposals, not claims established by mutation testing. Removing a standalone test after moving its assertions saves setup, not the assertions themselves.
 
 - Project-wide opportunities:
 
-  - **Share:** use the existing `tests/support/mod.rs` language constructors and `parse_native` throughout integration tests. `boundary.rs`, `navigation.rs`, `storage.rs`, and `query_execution.rs` repeat the unsafe language conversion and parser initialization.
+  - **Share — done:** use the existing `tests/support/mod.rs` language constructors and `parse_native` throughout integration tests. `boundary.rs`, `navigation.rs`, `storage.rs`, and `query_execution.rs` repeat the unsafe language conversion and parser initialization.
 
-  - **Share:** move `parser.rs::assert_same_tree` into support for core/point/presence byte comparisons. Use it in parser equivalence and packing-context tests. Keep pointer identity, ownership, and semantic navigation checks explicit at their call sites.
+  - **Share — done:** move `parser.rs::assert_same_tree` into support for core/point/presence byte comparisons. Use it in parser equivalence and packing-context tests. Keep pointer identity, ownership, and semantic navigation checks explicit at their call sites.
 
-  - **Share:** a small `pack_native(language, source, options)` helper returning native and packed trees can replace `scanning.rs::parse` and similar setup. Keep sources, options, mutations, and expectations visible in each test; do not introduce a configurable fixture framework.
+  - **Share — done:** a small `pack_native(language, source, options)` helper returning native and packed trees can replace `scanning.rs::parse` and similar setup. Keep sources, options, mutations, and expectations visible in each test; do not introduce a configurable fixture framework.
 
-  - **Share:** consolidate query snapshots and result collection. Preserve the distinction between ordered events, sorted completed matches, and deduplicated capture coverage; a universal “sort everything” helper would weaken several tests.
+  - **Share — done:** consolidate query snapshots and result collection. Preserve the distinction between ordered events, sorted completed matches, and deduplicated capture coverage; a universal “sort everything” helper would weaken several tests.
 
-  - **Reduce:** ownership/loading tests often repeat full navigation and predicate suites after byte equality has already been established. Keep one comprehensive loaded-tree comparison plus focused address, lifetime, side-data, and rejection assertions elsewhere.
+  - **Reduce — done:** ownership/loading tests often repeat full navigation and predicate suites after byte equality has already been established. Keep one comprehensive loaded-tree comparison plus focused address, lifetime, side-data, and rejection assertions elsewhere.
 
   - **Keep:** real-grammar integration, synthetic boundary cases, SIMD kernels, and corpus checks have different oracles and reach different paths. Similar terminology is insufficient reason to delete one layer.
 
@@ -68,7 +100,7 @@
 
       - `byte_id_masks_match_scalar` — checks byte-ID equality for all wrapping byte bases and empty/partial target lists.
 
-        - **Share:** could join the kernel test's helper organization, but retain its byte-equality cases; the existing kernel matrix does not cover them.
+        - **Share — retained:** could join the kernel test's helper organization, but retain its byte-equality cases; the existing kernel matrix does not cover them.
 
       - `query_masks_match_indexed_masks_without_preparing_traversal` — checks exact per-group masks before/after presence-index preparation and asserts which path is prepared.
 
@@ -86,7 +118,7 @@
 
     - `query_exec.rs`
 
-      - **Share:** `error_plans_match_general_execution` and `bounded_plans_match_general_execution` repeat collection, sorting, cursor setup, and direct-path assertions. Extract a local collector taking root, configured cursor, and stream choice; retain each test's normalization policy.
+      - **Share — done:** `error_plans_match_general_execution` and `bounded_plans_match_general_execution` repeat collection, sorting, cursor setup, and direct-path assertions. Extract a local collector taking root, configured cursor, and stream choice; retain each test's normalization policy.
 
       - `error_plans_match_general_execution` — compares optimized/general matches and captures on malformed JSON, every subtree, and byte bounds; verifies direct execution is selected.
 
@@ -128,7 +160,7 @@
 
       - `NamedChildIx` compile-fail doctest — rejects an ordinary-child index for named-child access.
 
-        - **Optional removal:** this reverse-direction example adds little beyond `ChildIx`: confusing these nominal types would normally break both. Keep both if their value as API documentation outweighs five lines of duplicate negative coverage.
+        - **Optional removal — done:** this reverse-direction example adds little beyond `ChildIx`: confusing these nominal types would normally break both. Keep both if their value as API documentation outweighs five lines of duplicate negative coverage.
 
   - `tests/`
 
@@ -144,13 +176,13 @@
 
       - `internal.rs` — private packing tests using synthetic grammars and direct slab access.
 
-        - **Share:** repeated leaf emission and `Builder::finish(..., Progress::default())` can use a small local helper where options are unimportant. Keep bespoke grouping, corruption, and cancellation construction explicit.
+        - **Share — retained:** repeated leaf emission and `Builder::finish(..., Progress::default())` can use a small local helper where options are unimportant. Keep bespoke grouping, corruption, and cancellation construction explicit.
 
-        - **Share:** repeated full/safety/borrowed rejection assertions can use a local `assert_invalid_slab` helper, with explicit loader coverage when it differs.
+        - **Share — retained:** repeated full/safety/borrowed rejection assertions can use a local `assert_invalid_slab` helper, with explicit loader coverage when it differs.
 
         - `synthetic_grammar_dictionaries_aliases_and_limits` — invokes native dictionary, grammar-limit, and unsupported-parser tests; checks slab-format encoding.
 
-          - **Remove assertion:** the literal `slab_format` check duplicates the C static assertion and exact header checks in `storage.rs`; incorrect format encoding should break those as well.
+          - **Remove assertion — done:** the literal `slab_format` check duplicates the C static assertion and exact header checks in `storage.rs`; incorrect format encoding should break those as well.
 
         - `compatible_parser_preserves_language_after_failed_selection` — checks failed language selection before and after a valid selection, then parses with the retained language.
 
@@ -162,17 +194,17 @@
 
         - `lexer_fallback_and_concurrent_parser_preparation` — invokes native lexer checks and races four threads preparing/reusing the same grammar, including failures and scratch drops.
 
-          - **Share:** replace the two identical parse-with-options blocks with a local closure; preserve the scratch drop between them.
+          - **Share — done:** replace the two identical parse-with-options blocks with a local closure; preserve the scratch drop between them.
 
         - `point_delta_limits_control_grouping` — exercises each point component at deltas 255/256 with points enabled/disabled and checks decoded endpoints.
 
         - `compressed_points_preserve_maximum_coordinates` — checks maximum row/column roundtrip and zero-width point selection.
 
-          - **Merge candidate:** add a separate maximum-coordinate case to the preceding point-encoding test, sharing the fixture/finalization helper. Retain the scan assertion; ordinary 255/256 cases do not imply it.
+          - **Merge candidate — done:** add a separate maximum-coordinate case to the preceding point-encoding test, sharing the fixture/finalization helper. Retain the scan assertion; ordinary 255/256 cases do not imply it.
 
         - `synthetic_supertype_emission_and_persistence` — checks 0–9 supertype bits, direct/dictionary encodings, resize, copied/borrowed/cache-restored loads, and corrupt headers.
 
-          - **Reduce:** deduplicate `[1 << bits, (1 << bits).min(257)]`; both entries are identical for bits 0–8. Move generic header corruption to `slab_headers_reject_incompatible_formats`, retaining any structural corruption it does not cover.
+          - **Reduce — done:** deduplicate `[1 << bits, (1 << bits).min(257)]`; both entries are identical for bits 0–8. Move generic header corruption to `slab_headers_reject_incompatible_formats`, retaining any structural corruption it does not cover.
 
         - `id_width_covers_all_grammars_and_reserved_errors` — checks width selection across grammars and reserved error IDs at the 254/255 boundary.
 
@@ -180,7 +212,7 @@
 
         - `symbol_ids_use_byte_columns` — checks byte-column offsets, alias roundtrip, layout size, and corrupted symbols/grammar flags.
 
-          - **Merge:** fold byte-layout and corruption assertions into the small-grammar case of `synthetic_symbol_ids_and_optional_columns`; both emit the same repeating alias pattern. Preserve exact offsets and the separate-grammar flag rejection.
+          - **Merge — done:** fold byte-layout and corruption assertions into the small-grammar case of `synthetic_symbol_ids_and_optional_columns`; both emit the same repeating alias pattern. Preserve exact offsets and the separate-grammar flag rejection.
 
         - `matching_ids_omit_grammar_before_flag_columns` — checks omitted grammar columns with matching IDs and combinations of extra/missing/error flags, before/after repack.
 
@@ -216,11 +248,11 @@
 
       - `sq_test_chunked_lexer` — compares chunked/contiguous UTF-8 decoding, positions, EOF, oversized-input rejection, and ambiguity replay.
 
-        - **Reduce:** the final ambiguity replay smoke check overlaps the stronger Rust `callback_input_during_ambiguity_replay`. Remove that block if direct C callback replay is not an independently maintained contract; keep decoding and overflow checks.
+        - **Reduce — retained:** the final ambiguity replay smoke check overlaps the stronger Rust `callback_input_during_ambiguity_replay`. Remove that block if direct C callback replay is not an independently maintained contract; keep decoding and overflow checks.
 
     - `bindings.rs`
 
-      - **Reduce:** this broad suite duplicates newer parser/query/navigation suites. Move unique public-wrapper and ownership assertions to their corresponding suites before deleting broad helper calls.
+      - **Reduce — done:** this broad suite duplicates newer parser/query/navigation suites. Move unique public-wrapper and ownership assertions to their corresponding suites before deleting broad helper calls.
 
       - `error_flags_match_each_native_node` — compares every node's `has_error` with Tree-sitter across malformed inputs, point settings, repack, and copied/borrowed loads.
 
@@ -228,23 +260,23 @@
 
       - `group_boundaries_and_optional_columns` — runs shared navigation on a wide JSON tree with points/presence on/off.
 
-        - **Merge:** make the small and wide inputs explicit cases of `shared_navigation`, preserving the native run and the wide option matrix. Also replace `fixture()` here with `json_language()`; the two discarded trees provide no coverage.
+        - **Merge — done:** make the small and wide inputs explicit cases of `shared_navigation`, preserving the native run and the wide option matrix. Also replace `fixture()` here with `json_language()`; the two discarded trees provide no coverage.
 
       - `streaming_queries_and_cursor_reuse` — compares query/predicate results with native execution and checks cursor reuse after dropping prior queries/trees, disabled patterns, and range reset.
 
-        - **Share/merge:** move the predicate matrix into the native query comparison suite and keep a short cursor-lifetime/reuse case. Preserve the wildcard-disable workaround and exact event comparisons for the cases where agreement is expected.
+        - **Share/merge — partial:** move the predicate matrix into the native query comparison suite and keep a short cursor-lifetime/reuse case. Preserve the wildcard-disable workaround and exact event comparisons for the cases where agreement is expected. Shared query collectors; kept the predicate matrix in bindings.
 
       - `owned_and_borrowed_storage` — checks zero-copy borrowing, independent copied-tree lifetime, compact capacity, loaded queries/navigation, and corrupt-header rejection.
 
-        - **Reduce:** remove the corrupt-header assertion; `slab_headers_reject_incompatible_formats` flips that same bit and all other fixed header bits. Replace full `check_queries`/`check_shared_navigation` reruns with a focused loaded-tree smoke check once storage/navigation suites own that coverage.
+        - **Reduce — done:** remove the corrupt-header assertion; `slab_headers_reject_incompatible_formats` flips that same bit and all other fixed header bits. Replace full `check_queries`/`check_shared_navigation` reruns with a focused loaded-tree smoke check once storage/navigation suites own that coverage.
 
       - `direct_parser_matches_mainline_packing` — checks direct parsing against packed Tree-sitter bytes/sidecars for empty, aliased, long, deep, and wide C inputs and packing options.
 
-        - **Share:** use the common tree-byte assertion. Remove repeated `check_shared_navigation` after exact byte equivalence, retaining a representative direct-output load assertion; this cannot reasonably reveal a navigation bug absent from equivalent packed input.
+        - **Share — done:** use the common tree-byte assertion. Remove repeated `check_shared_navigation` after exact byte equivalence, retaining a representative direct-output load assertion; this cannot reasonably reveal a navigation bug absent from equivalent packed input.
 
       - `direct_parser_reuses_after_failure_and_owns_grammar` — checks error location, reuse, scratch release, grammar ownership, and trees surviving parser destruction.
 
-        - **Merge:** combine with `parser.rs::direct_callback_failures_and_reuse`, preserving explicit error coordinates and drops. That test currently compares against contiguous results rather than independently checking those coordinates.
+        - **Merge — done:** combine with `parser.rs::direct_callback_failures_and_reuse`, preserving explicit error coordinates and drops. That test currently compares against contiguous results rather than independently checking those coordinates.
 
       - `direct_parser_rejects_unsupported_grammar` — checks ABI-14 rejection through the public parser and convenience API.
 
@@ -252,7 +284,7 @@
 
       - `mainline_parse_keeps_error_recovery` — checks recovered compatible parsing versus direct rejection on invalid C.
 
-        - **Remove after moving two wrapper assertions:** `parser.rs::callback_input_and_error_recovery` already checks the same invalid C behavior; add the `Tree::parse`/`Tree::parse_direct` calls there to retain convenience-API coverage.
+        - **Remove after moving two wrapper assertions — done:** `parser.rs::callback_input_and_error_recovery` already checks the same invalid C behavior; add the `Tree::parse`/`Tree::parse_direct` calls there to retain convenience-API coverage.
 
       - `language_inspection_matches_native` — compares metadata, symbol/field lookup, visibility, supertypes, and invalid IDs with native languages.
 
@@ -264,23 +296,23 @@
 
       - `invalid_kinds_are_rejected` — checks error-kind scans and group presence while rejecting several invalid public IDs, with presence indexing on/off.
 
-        - **Merge:** move invalid scan cases into `scanning.rs::empty_missing_and_error_nodes`, and presence cases into `presence_ignores_waste_and_invalid_symbols`. Preserve `ERROR` name lookup in language inspection, then remove this setup.
+        - **Merge — done:** move invalid scan cases into `scanning.rs::empty_missing_and_error_nodes`, and presence cases into `presence_ignores_waste_and_invalid_symbols`. Preserve `ERROR` name lookup in language inspection, then remove this setup.
 
       - `typed_fields_and_slot_lookup` — checks field lookup, slot roundtrip, invalid/absent IDs, and single/set field filtering.
 
-        - **Merge:** add typed lookup assertions to `language_inspection_matches_native`/`shared_navigation`; field-filter expectations already belong to `field_sets`. Preserve `FieldId::new(0)` and slot identity checks.
+        - **Merge — done:** add typed lookup assertions to `language_inspection_matches_native`/`shared_navigation`; field-filter expectations already belong to `field_sets`. Preserve `FieldId::new(0)` and slot identity checks.
 
       - `grammar_kind_lookup_ignores_aliases` — verifies displayed C aliases differ from grammar IDs and checks invalid/error grammar-name lookup.
 
-        - **Merge:** extend `compact_ids_roundtrip_native_kinds_and_scans` with this typedef input and lookup assertions; keep both displayed/original identities explicit.
+        - **Merge — done:** extend `compact_ids_roundtrip_native_kinds_and_scans` with this typedef input and lookup assertions; keep both displayed/original identities explicit.
 
       - `compiler_metadata_and_mutation_match_tree_sitter` — compares query metadata and compile error offsets across a syntax matrix, then calls disable APIs.
 
-        - **Merge/remove:** retain its diverse patterns in a shared metadata checker used by `metadata_diagnostics_and_independent_clones`. Delete the final disable calls: they assert no postcondition, while execution tests already verify mutations.
+        - **Merge/remove — done:** retain its diverse patterns in a shared metadata checker used by `metadata_diagnostics_and_independent_clones`. Delete the final disable calls: they assert no postcondition, while execution tests already verify mutations.
 
       - `language_cache_round_trips_and_outlives_tree_sitter_language` — checks C# cache byte roundtrip and clone survival after dropping wrappers.
 
-        - **Merge candidate:** add this ownership sequence to the cache-restoration cases in `synthetic_supertype_emission_and_persistence`; preserve C# as a real dictionary grammar if removing the standalone test.
+        - **Merge candidate — retained:** add this ownership sequence to the cache-restoration cases in `synthetic_supertype_emission_and_persistence`; preserve C# as a real dictionary grammar if removing the standalone test.
 
       - `shared_coordinates_narrow_like_tree_sitter` — on 64-bit targets, compares overflowing byte/point node and cursor lookup arguments with native narrowing; checks invalid UTF-8 field name.
 
@@ -292,9 +324,9 @@
 
       - `packing_context_matches_fresh_packing_and_loading` — compares reused/fresh packing across three grammars, shape/size boundaries, and all packing options; checks loading, repack, side data, and presence.
 
-        - **Reduce:** after exact core and presence-cache byte equality, the per-group/per-symbol comparison adds little: the same accessors on identical representations should agree. Remove that loop; dedicated presence tests use independent expected membership.
+        - **Reduce — done:** after exact core and presence-cache byte equality, the per-group/per-symbol comparison adds little: the same accessors on identical representations should agree. Remove that loop; dedicated presence tests use independent expected membership.
 
-        - **Share:** flatten the option matrix into an iterator only if it improves readability. Keep source cases named; shrinking matrix dimensions mainly saves runtime, not much code.
+        - **Share — retained:** flatten the option matrix into an iterator only if it improves readability. Keep source cases named; shrinking matrix dimensions mainly saves runtime, not much code.
 
       - `side_data_changes_only_attached_coordinates` — drops/reattaches points and builds presence on another thread; checks coordinates, idempotent drops, and stable core bytes/address/slots.
 
@@ -308,17 +340,17 @@
 
       - `presence_creation_does_not_change_core_layout` — checks presence-on/off core-byte identity on a multigroup tree, with points on/off.
 
-        - **Merge:** add cross-presence core equality to `packing_context_matches_fresh_packing_and_loading`, which already varies the same options. Its current equality only compares fresh versus reused packing at the same options, so do not delete this test without adding that comparison.
+        - **Merge — done:** add cross-presence core equality to `packing_context_matches_fresh_packing_and_loading`, which already varies the same options. Its current equality only compares fresh versus reused packing at the same options, so do not delete this test without adding that comparison.
 
       - `repacking_in_place_preserves_nodes_and_side_data` — checks compact capacity, unchanged sidecar addresses, node values, loadability, and repeated in-place repack.
 
-        - **Merge candidate:** add an in-place branch to an existing packing/storage fixture, but preserve sidecar address checks; out-of-place repack equivalence does not cover them.
+        - **Merge candidate — retained:** add an in-place branch to an existing packing/storage fixture, but preserve sidecar address checks; out-of-place repack equivalence does not cover them.
 
     - `navigation.rs`
 
       - `navigation_and_indexed_ranges_survive_loading` — compares packed versus reloaded nodes, relationships, cursors, and byte/point seeks on empty/error/deep/wide C trees.
 
-        - **Reduce:** this mostly compares the same implementation on equivalent storage. Once core bytes and attached point bytes agree, use one rich fixture for detailed loaded navigation and rely on native-oracle tests for the broader input matrix. Keep absent-point fallback and copied-storage ownership checks.
+        - **Reduce — done:** this mostly compares the same implementation on equivalent storage. Once core bytes and attached point bytes agree, use one rich fixture for detailed loaded navigation and rely on native-oracle tests for the broader input matrix. Keep absent-point fallback and copied-storage ownership checks.
 
       - `indexed_points_follow_attachment_across_wide_trees` — compares point seeks with native byte seeks on 20,000 multiline Unicode elements while dropping/reattaching point data.
 
@@ -326,11 +358,11 @@
 
       - `child_iterators_preserve_cursor_state` — compares partial/full child iterators, fields, cursor state, clone/reset, invalid fields, and index boundaries with native C trees.
 
-        - **Reduce:** remove three repeated `(0, None)` size-hint assertions if that conservative implementation detail is not an API promise; iteration/state behavior is the useful contract.
+        - **Reduce — done:** remove three repeated `(0, None)` size-hint assertions if that conservative implementation detail is not an API promise; iteration/state behavior is the useful contract.
 
     - `parser.rs`
 
-      - **Share:** `callback_tree` duplicates `check_point`'s byte-to-point calculation; call that existing helper.
+      - **Share — done:** `callback_tree` duplicates `check_point`'s byte-to-point calculation; call that existing helper.
 
       - `shared_traits_and_no_language` — checks missing-language errors and generic parse traits across compatible, native, and direct parsers.
 
@@ -350,7 +382,7 @@
 
       - `packing_failure_and_reuse` — checks overflow is reported as `ParserError::Pack` and subsequent parsing succeeds.
 
-        - **Merge candidate:** append this short failure case to `cancellation_in_both_phases_and_reuse`; retain error mapping rather than relying only on the internal packer overflow test.
+        - **Merge candidate — done:** append this short failure case to `cancellation_in_both_phases_and_reuse`; retain error mapping rather than relying only on the internal packer overflow test.
 
       - `native_trait_discards_previously_interrupted_parse` — interrupts through native APIs, then checks the shared trait starts a different input cleanly.
 
@@ -358,15 +390,15 @@
 
       - `options_reborrow_preserves_callback_and_pack_settings` — reuses one options value twice, retaining callback access and disabled side data.
 
-        - **Merge:** make the no-side-data branch of `packed_options_progress_and_equivalence` parse two sources through `options.reborrow()`, preserving callback-count and option assertions, then delete this standalone setup.
+        - **Merge — done:** make the no-side-data branch of `packed_options_progress_and_equivalence` parse two sources through `options.reborrow()`, preserving callback-count and option assertions, then delete this standalone setup.
 
     - `query_execution.rs`
 
-      - **Share:** reuse `support` constructors and snapshots; generalize `json_query_tree` only enough to accept another language. Local byte/point range setup helpers can replace repeated cursor-configuration ladders.
+      - **Share — done:** reuse `support` constructors and snapshots; generalize `json_query_tree` only enough to accept another language. Local byte/point range setup helpers can replace repeated cursor-configuration ladders.
 
       - `queries_match_with_and_without_plans` — compares optimized/general matches and capture sets on a C query matrix, including disabling and state-dedup pressure.
 
-        - **Reduce:** both executions can share one tree and grammar; separate packing is unrelated to plan equivalence. Keep independent query clones only where mutation independence matters.
+        - **Reduce — done:** both executions can share one tree and grammar; separate packing is unrelated to plan equivalence. Keep independent query clones only where mutation independence matters.
 
       - `error_queries_survive_native_mutations` — compares ERROR/wildcard queries with native expectations through capture/pattern disabling on JSON/C# errors.
 
@@ -380,15 +412,15 @@
 
       - `cancellation_limits_ranges_and_reuse` — checks match-limit exhaustion, callback stop, range reuse, and explicit match removal.
 
-        - **Reduce:** keep the match-limit/ambiguous-state scenario; removal is covered more thoroughly by `removal_keeps_current_captures_readable_and_nodes_independent`, range persistence by `cursor_and_iterator_ranges_narrow_validate_and_persist`, and resumable cancellation by `progress_cancellation_resumes_every_entry_point`. Retain a cancellation-plus-low-limit case only if that interaction is intentional.
+        - **Reduce — done:** keep the match-limit/ambiguous-state scenario; removal is covered more thoroughly by `removal_keeps_current_captures_readable_and_nodes_independent`, range persistence by `cursor_and_iterator_ranges_narrow_validate_and_persist`, and resumable cancellation by `progress_cancellation_resumes_every_entry_point`. Retain a cancellation-plus-low-limit case only if that interaction is intentional.
 
       - `switching_between_matches_and_captures_preserves_finished_order` — interleaves result APIs across multiple finished patterns and compares optimized/general ordering.
 
-        - **Reduce:** share the tree/query between cursors. The `optimized=false` pass compares identical paths and can go unless it is deliberately testing independent cursor state.
+        - **Reduce — done:** share the tree/query between cursors. The `optimized=false` pass compares identical paths and can go unless it is deliberately testing independent cursor state.
 
       - `query_edge_cases_match_tree_sitter` — compares compile outcomes, completed matches, and appropriate capture coverage over JSON/C syntax, errors, fields, supertypes, depth, and 15 range modes.
 
-        - **Share:** extract range configuration and snapshot collection; preserve native comparison and range-specific capture semantics. This is already a useful data-driven consolidation.
+        - **Share — done:** extract range configuration and snapshot collection; preserve native comparison and range-specific capture semantics. This is already a useful data-driven consolidation.
 
       - `containing_ranges_combine_with_intersecting_ranges` — combines four bound types, checks rooted/rootless results and uncaptured root containment, then resets restrictions.
 
@@ -402,11 +434,11 @@
 
       - `disabled_rootless_and_branching_patterns_with_ranges` — checks repeated disable operations, disabled captures, and surviving results for wildcard/sibling/alternative roots in both stream modes.
 
-        - **Share with** `disabling_non_rooted_pattern_preserves_ranges`, but retain the latter's exact expected results; this test currently only checks exclusions and nonemptiness.
+        - **Share with — done** `disabling_non_rooted_pattern_preserves_ranges`, but retain the latter's exact expected results; this test currently only checks exclusions and nonemptiness.
 
       - `chunked_predicates_and_streaming_entry_points` — compares borrowed/owned/empty text chunks with contiguous input for predicate variants and seven query entry points.
 
-        - **Reduce matrix:** test the full predicate/chunk matrix through core match/capture execution, then a small representative set through forwarding APIs. Keep owned chunks, split UTF-8, empty chunks, and both optimization modes.
+        - **Reduce matrix — retained:** test the full predicate/chunk matrix through core match/capture execution, then a small representative set through forwarding APIs. Keep owned chunks, split UTF-8, empty chunks, and both optimization modes.
 
       - `metadata_diagnostics_and_independent_clones` — checks metadata/properties/custom predicates, compiler errors, and clones independent of mutation/destruction.
 
@@ -416,7 +448,7 @@
 
       - `predicate_diagnostics_match_tree_sitter` — compares full predicate errors across operators, bad argument shapes, prefixes, and Unicode offsets.
 
-        - **Share:** use the same diagnostic assertion helper as `metadata_diagnostics_and_independent_clones`; keep the distinct input matrix.
+        - **Share — done:** use the same diagnostic assertion helper as `metadata_diagnostics_and_independent_clones`; keep the distinct input matrix.
 
       - `removal_keeps_current_captures_readable_and_nodes_independent` — checks repeated removal, borrowed captures, moved streams, retained nodes, and fresh cursor reuse.
 
@@ -432,13 +464,13 @@
 
       - `execution_owns_provider_and_releases_it_on_drop` — checks provider destruction, copied node lifetime, and cursor reuse.
 
-        - **Optional removal:** ordinary Rust ownership already provides much of this guarantee; chunked owned-provider tests and compile-fail borrow tests cover adjacent contracts. Retain if explicit drop timing is an intended API promise; otherwise move the retained-node assertion into the removal test and delete the custom `Provider`/drop-counter fixture.
+        - **Optional removal — done:** ordinary Rust ownership already provides much of this guarantee; chunked owned-provider tests and compile-fail borrow tests cover adjacent contracts. Retain if explicit drop timing is an intended API promise; otherwise move the retained-node assertion into the removal test and delete the custom `Provider`/drop-counter fixture.
 
     - `scanning.rs`
 
-      - **Share:** keep `check_pipeline`, `check_selection`, and `check_consumption`; they expose distinct count/fold/reversal/group paths without duplicating every assertion in each test.
+      - **Share — retained:** keep `check_pipeline`, `check_selection`, and `check_consumption`; they expose distinct count/fold/reversal/group paths without duplicating every assertion in each test.
 
-      - **Reduce:** `check_selection` explicitly repeats reverse-node assertions already checked by `check_pipeline`. Keep reversal-before-filter coverage in one composition test, rather than every coordinate case.
+      - **Reduce — done:** `check_selection` explicitly repeats reverse-node assertions already checked by `check_pipeline`. Keep reversal-before-filter coverage in one composition test, rather than every coordinate case.
 
       - `orders_subtrees_groups_and_directions` — compares preorder/postorder with native traversal and checks all subtree/group/direction/consumption paths.
 
@@ -448,7 +480,7 @@
 
       - `range_seeks_across_subtrees` — checks byte/point selection on wide/deep trees with long gaps and sampled subtrees.
 
-        - **Share:** factor its repeated relation checks with `check_position_selections`, passing explicit roots/ranges. Do not run the exhaustive small-fixture matrix over every large subtree.
+        - **Share — done:** factor its repeated relation checks with `check_position_selections`, passing explicit roots/ranges. Do not run the exhaustive small-fixture matrix over every large subtree.
 
       - `range_and_position_relations` — checks overlap/within/contain/start/end predicates at byte/point boundaries, including reversed/empty/extreme ranges and borrowed trees.
 
@@ -464,7 +496,7 @@
 
       - `sparse_cursor_pipelines` — checks indexed sparse postings across many groups/subtrees, range restriction, flags, and both kind-filter orders.
 
-        - **Merge candidate:** incorporate `sparse_kind_filters`' broad target set into this fixture, preserving its within-range case; then remove the smaller fixture. Confirm it still exercises sparse candidate masks as well as postings.
+        - **Merge candidate — done:** incorporate `sparse_kind_filters`' broad target set into this fixture, preserving its within-range case; then remove the smaller fixture. Confirm it still exercises sparse candidate masks as well as postings.
 
       - `prepared_kind_sets` — checks dynamic target-cardinality boundaries, invalid/error IDs, range/field/flag composition, and filter-order equivalence.
 
@@ -474,7 +506,7 @@
 
       - `fixed_kind_sets` — checks fixed arrays at several cardinalities, duplicate/invalid/error IDs, subtree/trait APIs, and equivalence with dynamic sets.
 
-        - **Share:** reuse the identical malformed JSON fixture from `dense_id_filters`. Retain fixed and dynamic entry points; they specialize differently. Reuse the first native/tree parse at the end instead of parsing again.
+        - **Share — done:** reuse the identical malformed JSON fixture from `dense_id_filters`. Retain fixed and dynamic entry points; they specialize differently. Reuse the first native/tree parse at the end instead of parsing again.
 
       - `field_sets` — checks fixed/dynamic field unions, absent fields, invalid IDs, duplicates, subtrees, postorder, and range/kind composition.
 
@@ -482,25 +514,25 @@
 
       - `composition_and_reverse_preserve_membership` — checks intersected kind filters and extras through postorder reversal on C#.
 
-        - **Merge:** add this comment-bearing C# case and composition assertions to `supertype_membership`; remove the full `check_ranges` rerun once the range suite includes one extra-bearing fixture.
+        - **Merge — partial:** add this comment-bearing C# case and composition assertions to `supertype_membership`; remove the full `check_ranges` rerun once the range suite includes one extra-bearing fixture. Merged composition coverage; kept the extra-bearing range fixture.
 
       - `scans_and_groups_are_send_sync` — compile-checks thread traits for scan/group types and moves a partially consumed scan to another thread.
 
-        - **Reduce:** retain the type assertions but remove the runtime thread/count portion if thread transfer itself is not a regression target. Partial-consumption correctness is already checked, and auto-trait failures are compile errors. These assertions can share the basic traversal fixture.
+        - **Reduce — done:** retain the type assertions but remove the runtime thread/count portion if thread transfer itself is not a regression target. Partial-consumption correctness is already checked, and auto-trait failures are compile errors. These assertions can share the basic traversal fixture.
 
       - `deep_and_wide_postorder` — compares 512-deep and 2,048-wide postorder/reverse traversal with native output and tests partial consumption.
 
-        - **Share:** reuse a small native-order assertion helper with `orders_subtrees_groups_and_directions`; keep the larger fixtures separate from its all-subtree matrix.
+        - **Share — done:** reuse a small native-order assertion helper with `orders_subtrees_groups_and_directions`; keep the larger fixtures separate from its all-subtree matrix.
 
     - `scan_patterns.rs` — executable usage examples and stable uninlined assembly-inspection entry points; not a timed benchmark.
 
       - `scan_patterns` — checks explicit text results for orders, kinds, fields, ranges, subtrees, partial consumption, and groups.
 
-        - **Optional removal:** broad correctness is already covered by `scanning.rs`. Keep a short readable usage example; remove long expected traversal lists if executable documentation is not needed.
+        - **Optional removal — done:** broad correctness is already covered by `scanning.rs`. Keep a short readable usage example; remove long expected traversal lists if executable documentation is not needed.
 
       - `assembly_patterns_match_examples` — invokes every assembly wrapper against scalar counts/sums/selections.
 
-        - **Reduce:** keep enough calls/assertions to retain and identify the code-generation probes; extensive repeated semantic checks belong in `scanning.rs`. Do not delete wrappers merely because equivalent timed workloads exist: named uninlined functions serve inspection.
+        - **Reduce — done:** keep enough calls/assertions to retain and identify the code-generation probes; extensive repeated semantic checks belong in `scanning.rs`. Do not delete wrappers merely because equivalent timed workloads exist: named uninlined functions serve inspection.
 
       - `patterns/` module — assembly probes, each retained by the test above:
 
@@ -556,7 +588,7 @@
 
       - **Keep:** ordinary little-endian tests cannot replace execution on a big-endian or different-pointer-width target.
 
-      - **Reduce:** `compare` repeats several API assertions already covered elsewhere, but keeping a representative semantic decode check is necessary; identical bytes alone do not prove correct foreign-endian reads.
+      - **Reduce — retained:** `compare` repeats several API assertions already covered elsewhere, but keeping a representative semantic decode check is necessary; identical bytes alone do not prove correct foreign-endian reads.
 
   - `native/{grammar.c, internal.h, parser.c, query.c, query.h, reductions.h, supertypes.c}` — native implementation and headers consumed by tests; no standalone test entry points.
 
@@ -572,7 +604,7 @@
 
       - **Keep shared:** check and benchmark binaries are already three-line entry points over one runner. Merging the executables would save almost no source.
 
-      - **Share:** `observe` maps both traversal workloads to the same correctness snapshot; validate it once per tree pair when both workloads are selected. Keep each timed traversal separate.
+      - **Share — retained:** `observe` maps both traversal workloads to the same correctness snapshot; validate it once per tree pair when both workloads are selected. Keep each timed traversal separate.
 
       - `batches_support_file_counts_and_source_working_sets` — checks file-count batches versus byte-target carousel batches, including overshooting a byte target.
 
@@ -582,7 +614,7 @@
 
       - `direct_parse_measurements_validate_and_classify_results` — checks cold/warm backend rotations and classification of successful, rejected, mismatched, malformed, and unsupported direct parses.
 
-        - **Reduce:** run rejected/mismatched classification assertions once outside the rotation loop; they do not depend on rotation. Keep successful measurements in every rotation.
+        - **Reduce — done:** run rejected/mismatched classification assertions once outside the rotation loop; they do not depend on rotation. Keep successful measurements in every rotation.
 
       - Named workloads, dispatched by both binaries; timings below apply to `squatter-bench`:
 
@@ -604,7 +636,7 @@
 
         - `seek-point` — performs corresponding row/column descendant lookups.
 
-          - **Share:** coordinate selection is already shared. Keep the measurements separate because their indexes/accessors differ.
+          - **Share — retained:** coordinate selection is already shared. Keep the measurements separate because their indexes/accessors differ.
 
         - `cold-parse` — compares fresh native parsing, native-plus-packing, and direct parsing, including applicable parser/grammar construction and parser destruction.
 
@@ -632,7 +664,7 @@
 
       - `quantiles_interpolate_and_keep_missing_counters_missing` — checks interpolation, minimum/empty input, median aggregation, and absent hardware counters.
 
-        - **Reduce:** `summaries_keep_all_cases_and_a_successful_direct_subset` already checks interpolation and absent counters at report level. Keep the empty/minimum cases here; optionally remove the duplicate `Metrics::median` fixture, or move all cases into the reporting test if exposing a small helper is natural.
+        - **Reduce — done:** `summaries_keep_all_cases_and_a_successful_direct_subset` already checks interpolation and absent counters at report level. Keep the empty/minimum cases here; optionally remove the duplicate `Metrics::median` fixture, or move all cases into the reporting test if exposing a small helper is natural.
 
     - `pressure.rs` — cache-pressure setup and application.
 
@@ -658,9 +690,9 @@
 
       - `core-lifecycle-bench.rs` — 16 operation-specific workloads; setup loads one source/native tree, language, packed tree, packer, and compact destination. Most timed operations include returned-owner destruction.
 
-        - **Share:** query drop/disable operations already share bounded batches and exclude compilation. Keep this separate from ordinary operation timing. Query selection can be deferred when only non-query workloads are requested, simplifying their dependency on query fixtures.
+        - **Share — retained:** query drop/disable operations already share bounded batches and exclude compilation. Keep this separate from ordinary operation timing. Query selection can be deferred when only non-query workloads are requested, simplifying their dependency on query fixtures.
 
-        - **Share across binaries:** small registry-loading, digest-checking, and report metadata helpers may help; do not unify CLI input formats or residency policies merely to remove a few lines.
+        - **Share across binaries — retained:** small registry-loading, digest-checking, and report metadata helpers may help; do not unify CLI input formats or residency policies merely to remove a few lines.
 
         - `pack-cold` — packs an existing native tree with a fresh pack context and drops the result.
 
@@ -670,7 +702,7 @@
 
         - `pack-drop-scratch` — drops scratch before each reused-context pack, then drops the result.
 
-          - **Optional removal:** if scratch disposal is no longer being studied, keep `pack-cold`/`pack-reuse` and remove this diagnostic. It is not an exact duplicate: it retains the context and times scratch disposal.
+          - **Optional removal — retained:** if scratch disposal is no longer being studied, keep `pack-cold`/`pack-reuse` and remove this diagnostic. It is not an exact duplicate: it retains the context and times scratch disposal.
 
         - `point-access` — traverses all nodes and reads both point endpoints, optionally with synthetic points when point data is disabled.
 
@@ -712,13 +744,13 @@
 
       - `scanning-bench.rs` — 267 named workloads, expanded below. Parsing, packing, fixture statistics, and correctness validation are outside timing; scan construction is inside.
 
-        - **Share:** replace manual name arrays and duplicated fixed/dynamic/node/count registration with small local macros taking explicit pipelines, cardinalities, and scalar predicates. `combined_kind_workloads` already demonstrates this. Keep generated functions statically specialized and dispatch outside the hot operation.
+        - **Share — done:** replace manual name arrays and duplicated fixed/dynamic/node/count registration with small local macros taking explicit pipelines, cardinalities, and scalar predicates. `combined_kind_workloads` already demonstrates this. Keep generated functions statically specialized and dispatch outside the hot operation.
 
-        - **Share:** associate scalar expected counts with registration rather than reconstructing the workload taxonomy in `main` through string-prefix matching. This removes a second list of workload semantics.
+        - **Share — done:** associate scalar expected counts with registration rather than reconstructing the workload taxonomy in `main` through string-prefix matching. This removes a second list of workload semantics.
 
-        - **Share:** extend the existing range registration macro to overlap, point overlap, and optional scalar/reverse consumers; their handwritten bodies repeat the same structure.
+        - **Share — done:** extend the existing range registration macro to overlap, point overlap, and optional scalar/reverse consumers; their handwritten bodies repeat the same structure.
 
-        - **Reduce validation duplication:** retain scalar semantic checks on corpus fixtures, but combine membership validation with workload registration. `validate`, registration macros, and `main` currently express parts of the same expected membership. Keep checks outside timing and count checks after timed samples.
+        - **Reduce validation duplication — done:** retain scalar semantic checks on corpus fixtures, but combine membership validation with workload registration. `validate`, registration macros, and `main` currently express parts of the same expected membership. Keep checks outside timing and count checks after timed samples.
 
         - **Keep distinct consumers:** `.nodes` uses `next` with per-node `black_box`; `.fold` uses iterator folding with per-node `black_box`; `.count` consumes only an aggregate. These may have specialized implementations despite equal counts. Removing all fold or reverse variants on semantic grounds would lose performance coverage.
 
@@ -730,7 +762,7 @@
 
           - `preorder.rev.fold` — folds over reversed preorder nodes.
 
-            - **Share:** call `consume_fold`, as the other fold workloads already do; this body repeats it inline.
+            - **Share — done:** call `consume_fold`, as the other fold workloads already do; this body repeats it inline.
 
           - `preorder.groups.fold` — folds nodes within each preorder group and sums group counts.
 
@@ -740,7 +772,7 @@
 
           - `kind.fold` — folds nodes matching the single selected kind.
 
-            - **Remove:** identical selected IDs, dynamic set representation, pipeline, and consumer to `dynamic_1.fold`. Keep the sized name, or retain this name only as a CLI alias.
+            - **Remove — done:** identical selected IDs, dynamic set representation, pipeline, and consumer to `dynamic_1.fold`. Keep the sized name, or retain this name only as a CLI alias.
 
           - `multi_kind.fold` — folds nodes matching the configurable selected kind set.
 
@@ -816,11 +848,11 @@
 
           - `kind.nodes` — visits nodes matching the single selected kind.
 
-            - **Remove:** identical selected IDs, dynamic set representation, pipeline, and consumer to `dynamic_1.nodes`. Keep the sized name, or retain this name only as a CLI alias.
+            - **Remove — done:** identical selected IDs, dynamic set representation, pipeline, and consumer to `dynamic_1.nodes`. Keep the sized name, or retain this name only as a CLI alias.
 
           - `kind.count` — counts nodes matching the single selected kind.
 
-            - **Remove:** identical selected IDs, dynamic set representation, pipeline, and consumer to `dynamic_1.count`. Keep the sized name, or retain this name only as a CLI alias.
+            - **Remove — done:** identical selected IDs, dynamic set representation, pipeline, and consumer to `dynamic_1.count`. Keep the sized name, or retain this name only as a CLI alias.
 
           - `kind.scalar` — filters scalar preorder navigation by the selected kind.
 
@@ -884,7 +916,7 @@
 
         - Coordinate selection followed by kind filtering:
 
-          - **Share:** generate fixed/dynamic consumers from one declaration per range method and cardinality; preserve byte/point and overlap/containment distinctions.
+          - **Share — done:** generate fixed/dynamic consumers from one declaration per range method and cardinality; preserve byte/point and overlap/containment distinctions.
 
           - `range.fixed_1.nodes` — visits byte overlap matches filtered by 1 kinds using an array.
 

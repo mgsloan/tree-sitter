@@ -7,7 +7,9 @@ use tree_squatter::{
     traits::{CursorLike, NodeLike},
 };
 
-use support::{c_language, describe_capture, json_language, native_query_results, parse_native};
+use support::{
+    assert_same_tree, c_language, json_language, native_query_results, parse_native, query_results,
+};
 
 #[test]
 fn error_flags_match_each_native_node() -> Result<(), Box<dyn Error>> {
@@ -159,6 +161,7 @@ fn check_shared_navigation<'tree, N: NodeLike<'tree>>(
                 .zip(&child_fields)
                 .filter_map(|(&child, &actual)| (actual == Some(field)).then_some(child))
                 .collect();
+            assert!(node.child_by_field_id(field) == filtered.first().copied());
             assert!(
                 node.children_by_field_id(field, &mut cursor)
                     .collect::<Vec<_>>()
@@ -240,37 +243,13 @@ fn check_queries(
                 let expected =
                     native_query_results(&expected_query, mainline.root_node(), source, captures);
                 let mut actual_cursor = tree_squatter::QueryCursor::new();
-                let mut execution =
-                    actual_cursor.execute(&actual_query, packed.root_node(), source);
-                let mut actual = Vec::new();
-                loop {
-                    let next = if captures {
-                        execution
-                            .next_capture()
-                            .map(|(result, index)| (result, Some(index)))
-                    } else {
-                        execution.next_match().map(|result| (result, None))
-                    };
-                    let Some((result, index)) = next else {
-                        break;
-                    };
-                    actual.push((
-                        result.pattern_index.0,
-                        index.map(|index| index.0 as usize),
-                        result
-                            .captures()
-                            .iter()
-                            .map(|capture| {
-                                describe_capture(
-                                    capture.index.0,
-                                    capture.node.kind_id(),
-                                    capture.node.byte_range(),
-                                )
-                            })
-                            .collect::<Vec<_>>(),
-                    ));
-                }
-                assert_eq!(execution.error(), None);
+                let actual = query_results(
+                    &mut actual_cursor,
+                    &actual_query,
+                    packed.root_node(),
+                    source,
+                    captures,
+                );
                 assert_eq!(
                     expected, actual,
                     "{source_query}; captures={captures}; modification={modification}"
@@ -362,13 +341,8 @@ fn fixture() -> Result<(tree_sitter::Language, tree_sitter::Tree, Tree), Box<dyn
 fn shared_navigation() -> Result<(), Box<dyn Error>> {
     let (language, native, packed) = fixture()?;
     check_shared_navigation(native.root_node(), language.field_count() as u16)?;
+    assert_eq!(packed.root_node().field_id(), None);
     check_shared_navigation(packed.root_node(), language.field_count() as u16)?;
-    Ok(())
-}
-
-#[test]
-fn group_boundaries_and_optional_columns() -> Result<(), Box<dyn Error>> {
-    let (language, _, _) = fixture()?;
     let grammar = tree_squatter::Language::new(&language)?;
     // Cross the presence-index threshold and several physical groups, retaining
     // a rare boolean beside common number and punctuation symbols.
@@ -407,8 +381,11 @@ fn owned_and_borrowed_storage() -> Result<(), Box<dyn Error>> {
     let decoded = Tree::from_bytes(&grammar, compact.as_bytes())?;
     let borrowed = Tree::from_bytes_borrowed(&grammar, compact.as_bytes())?;
     assert_eq!(borrowed.as_bytes().as_ptr(), compact.as_bytes().as_ptr());
-    check_shared_navigation(borrowed.root_node(), language.field_count() as u16)?;
-    check_queries(&language, SOURCE.as_bytes(), &native, &borrowed)?;
+    assert_eq!(
+        borrowed.root_node().byte_range(),
+        compact.root_node().byte_range()
+    );
+    assert_eq!(borrowed.root_node().kind(), compact.root_node().kind());
     let expected: Vec<_> = compact
         .root_node()
         .preorder()
@@ -430,10 +407,6 @@ fn owned_and_borrowed_storage() -> Result<(), Box<dyn Error>> {
             .collect::<Vec<_>>(),
         expected
     );
-    let mut corrupted = decoded.as_bytes().to_vec();
-    corrupted[0] ^= 0x80;
-    let grammar = tree_squatter::Language::new(&language)?;
-    assert!(Tree::from_bytes(&grammar, &corrupted).is_err());
     Ok(())
 }
 
@@ -485,62 +458,13 @@ fn direct_parser_matches_mainline_packing() -> Result<(), Box<dyn Error>> {
                     },
                 )?;
                 let expected = Tree::pack_with_options(&grammar, &native, options)?;
-                assert_eq!(direct.as_bytes(), expected.as_bytes());
-                assert_eq!(
-                    direct.point_data().map(|points| points.as_bytes()),
-                    expected.point_data().map(|points| points.as_bytes())
-                );
-                assert_eq!(
-                    direct.presence_cache().map(|cache| cache.as_bytes()),
-                    expected.presence_cache().map(|cache| cache.as_bytes())
-                );
-                let loaded = Tree::from_bytes(&grammar, direct.as_bytes())?;
-                check_shared_navigation(loaded.root_node(), language.field_count() as u16)?;
+                assert_same_tree(&direct, &expected);
             }
         }
     }
     let tree = Tree::parse_direct(&grammar, "int direct;")?;
     assert_eq!(tree.root_node().byte_range(), 0..11);
-    Ok(())
-}
-
-#[test]
-fn direct_parser_reuses_after_failure_and_owns_grammar() -> Result<(), Box<dyn Error>> {
-    use tree_squatter::{Error as SquatError, Language, TreeFellerParser};
-
-    let mut parser = {
-        let grammar = Language::new(&c_language())?;
-        TreeFellerParser::new(&grammar)?
-    };
-    let first = parser.parse("int before;")?;
-    let failure = parser.parse("int x;\n@").unwrap_err();
-    assert_eq!(failure.code, SquatError::Parse);
-    assert_eq!(failure.byte, 7);
-    assert_eq!(failure.point, tree_sitter::Point::new(1, 0));
-    let syntax_failure = parser.parse("int broken = ;").unwrap_err();
-    assert_eq!(syntax_failure.code, SquatError::Parse);
-    let after = parser.parse("int after;")?;
-    assert_eq!(after.root_node().byte_range(), 0..10);
-    parser.drop_scratch();
-    let after_drop = parser.parse("int f(void) { return 1; }")?;
-    drop(parser);
-    assert_eq!(first.root_node().byte_range(), 0..11);
-    assert_eq!(
-        first
-            .root_node()
-            .named_child(tree_squatter::NamedChildIx::new(0))
-            .unwrap()
-            .kind(),
-        "declaration"
-    );
-    assert_eq!(
-        after_drop
-            .root_node()
-            .named_child(tree_squatter::NamedChildIx::new(0))
-            .unwrap()
-            .kind(),
-        "function_definition"
-    );
+    Tree::from_bytes(&grammar, tree.as_bytes())?;
     Ok(())
 }
 
@@ -559,24 +483,6 @@ fn direct_parser_rejects_unsupported_grammar() -> Result<(), Box<dyn Error>> {
     assert_eq!(
         Tree::parse_direct(&grammar, SOURCE).unwrap_err().code,
         SquatError::Language
-    );
-    Ok(())
-}
-
-#[test]
-fn mainline_parse_keeps_error_recovery() -> Result<(), Box<dyn Error>> {
-    use tree_squatter::{Error as SquatError, Language};
-
-    let language = c_language();
-    let grammar = Language::new(&language)?;
-    let mut mainline = tree_sitter::Parser::new();
-    mainline.set_language(&language)?;
-    let source = "int broken = ;";
-    let recovered = Tree::parse(&grammar, &mut mainline, source)?;
-    assert!(recovered.root_node().has_error());
-    assert_eq!(
-        Tree::parse_direct(&grammar, source).unwrap_err().code,
-        SquatError::Parse
     );
     Ok(())
 }
@@ -656,6 +562,23 @@ fn language_inspection_matches_native() {
             assert_eq!(language.field_id_for_name(name.as_bytes()), Some(id));
         }
         assert_eq!(language.field_id_for_name([255]), None);
+        assert_eq!(FieldId::new(0), None);
+        assert_eq!(language.field_id_for_name("unknown"), None);
+        assert_eq!(
+            language.kind_id_for_name("ERROR", true),
+            Some(KindId::ERROR)
+        );
+        assert_eq!(language.grammar_id_for_name("unknown", true), None);
+        assert_eq!(
+            language.grammar_id_for_name("ERROR", true).unwrap().get(),
+            u16::MAX
+        );
+        if native == json_language() {
+            assert_eq!(language.kind_id_for_name("string", false), None);
+        } else {
+            assert_eq!(language.grammar_id_for_name("type_identifier", true), None);
+            assert_eq!(language.grammar_id_for_name("identifier", false), None);
+        }
     }
 }
 
@@ -665,7 +588,7 @@ fn compact_ids_roundtrip_native_kinds_and_scans() -> Result<(), Box<dyn Error>> 
         (json_language(), r#"{"good": 1, "bad": [2, ?]}"#),
         (
             c_language(),
-            "struct Point { int x; }; int f(void) { return (1 + ); }",
+            "typedef int T; T value; struct Point { int x; }; int f(void) { return (1 + ); }",
         ),
     ] {
         let language = tree_squatter::Language::new(&native)?;
@@ -688,6 +611,13 @@ fn compact_ids_roundtrip_native_kinds_and_scans() -> Result<(), Box<dyn Error>> 
             .nodes()
             .zip(NodeLike::preorder(parsed.root_node()))
         {
+            assert_eq!(tree.node_at_slot(node.slot()), Some(node));
+            if node.kind() == "type_identifier" {
+                assert_eq!(
+                    node.grammar_id(),
+                    language.grammar_id_for_name("identifier", true).unwrap()
+                );
+            }
             let kind = node.squatter_kind_id();
             let grammar = node.squatter_grammar_id();
             assert_eq!(

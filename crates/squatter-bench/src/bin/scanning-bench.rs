@@ -157,725 +157,595 @@ fn source_point(source: &[u8], offset: usize) -> Point {
     )
 }
 type Operation = fn(&Case) -> usize;
+struct Workload {
+    name: &'static str,
+    operation: Operation,
+    expected: Operation,
+}
+
 fn fixed_kinds<const N: usize>(case: &Case) -> [KindId; N] {
     case.selected_kind_ids[..N].try_into().unwrap()
 }
-fn sized_kind_workloads<const N: usize>(
-    cases: &[Case],
-    names: [&'static str; 8],
-) -> Vec<(&'static str, Operation)> {
-    for case in cases {
-        let kinds = &case.sized_kind_sets[N.ilog2() as usize];
-        let mut expected = scalar_preorder(&case.tree)
-            .filter(|node| kinds.contains(node.kind_id()))
-            .collect::<Vec<_>>();
-        expected.reverse();
-        assert_eq!(
-            case.tree
-                .root_node()
-                .all()
-                .filter_kind_ids(fixed_kinds::<N>(case))
-                .rev()
-                .nodes()
-                .collect::<Vec<_>>(),
-            expected,
-            "{}",
-            names[6]
-        );
-        assert_eq!(
-            case.tree
-                .root_node()
-                .all()
-                .filter_kind_ids(kinds)
-                .rev()
-                .nodes()
-                .collect::<Vec<_>>(),
-            expected,
-            "{}",
-            names[7]
-        );
-    }
-    vec![
-        (names[0], |case| {
-            consume(
-                case.tree
-                    .root_node()
-                    .all()
-                    .filter_kind_ids(fixed_kinds::<N>(case))
-                    .nodes(),
-            )
-        }),
-        (names[1], |case| {
-            case.tree
-                .root_node()
-                .all()
-                .filter_kind_ids(fixed_kinds::<N>(case))
-                .count()
-        }),
-        (names[2], |case| {
-            consume_fold(
-                case.tree
-                    .root_node()
-                    .all()
-                    .filter_kind_ids(fixed_kinds::<N>(case))
-                    .nodes(),
-            )
-        }),
-        (names[3], |case| {
-            consume(
-                case.tree
-                    .root_node()
-                    .all()
-                    .filter_kind_ids(&case.sized_kind_sets[N.ilog2() as usize])
-                    .nodes(),
-            )
-        }),
-        (names[4], |case| {
-            case.tree
-                .root_node()
-                .all()
-                .filter_kind_ids(&case.sized_kind_sets[N.ilog2() as usize])
-                .count()
-        }),
-        (names[5], |case| {
-            consume_fold(
-                case.tree
-                    .root_node()
-                    .all()
-                    .filter_kind_ids(&case.sized_kind_sets[N.ilog2() as usize])
-                    .nodes(),
-            )
-        }),
-        (names[6], |case| {
-            consume(
-                case.tree
-                    .root_node()
-                    .all()
-                    .filter_kind_ids(fixed_kinds::<N>(case))
-                    .rev()
-                    .nodes(),
-            )
-        }),
-        (names[7], |case| {
-            consume(
-                case.tree
-                    .root_node()
-                    .all()
-                    .filter_kind_ids(&case.sized_kind_sets[N.ilog2() as usize])
-                    .rev()
-                    .nodes(),
-            )
-        }),
-    ]
+
+fn fixed_fields<const N: usize>(case: &Case) -> [FieldSelection; N] {
+    case.frequent_field_ids[..N].try_into().unwrap()
 }
-fn workloads(cases: &[Case]) -> Vec<(&'static str, Operation)> {
-    let mut workloads: Vec<(&'static str, Operation)> = vec![
-        ("preorder.fold", |case| {
-            consume_fold(case.tree.root_node().preorder().nodes())
-        }),
-        ("preorder.rev.fold", |case| {
-            case.tree
-                .root_node()
-                .preorder()
-                .rev()
-                .nodes()
-                .fold(0, |count, node| {
-                    black_box(node);
-                    count + 1
-                })
-        }),
-        ("preorder.groups.fold", |case| {
-            case.tree
-                .root_node()
-                .preorder()
-                .groups()
-                .map(|group| consume_fold(group.nodes()))
-                .sum()
-        }),
-        ("postorder.fold", |case| {
-            consume_fold(case.tree.root_node().postorder().nodes())
-        }),
-        ("postorder.rev.fold", |case| {
-            consume_fold(case.tree.root_node().postorder().rev().nodes())
-        }),
-        ("kind.fold", |case| {
-            consume_fold(
-                case.tree
-                    .root_node()
-                    .all()
-                    .filter_kind_ids(&case.kinds)
-                    .nodes(),
-            )
-        }),
-        ("multi_kind.fold", |case| {
-            consume_fold(
-                case.tree
-                    .root_node()
-                    .all()
-                    .filter_kind_ids(&case.multiple_kinds)
-                    .nodes(),
-            )
-        }),
-        ("supertype.nodes", |case| {
-            consume(
-                case.tree
-                    .root_node()
-                    .all()
-                    .filter_supertype_id(case.supertype)
-                    .nodes(),
-            )
-        }),
-        ("supertype.count", |case| {
-            case.tree
-                .root_node()
-                .all()
-                .filter_supertype_id(case.supertype)
-                .count()
-        }),
-        ("flags.count", |case| {
-            case.tree
-                .root_node()
-                .all()
-                .filter_extra(false)
-                .filter_missing(false)
-                .count()
-        }),
-        ("combined.count", |case| {
-            case.tree
-                .root_node()
-                .all()
-                .filter_kind_ids(&case.kinds)
-                .filter_field_id(case.field)
-                .filter_extra(false)
-                .filter_missing(false)
-                .count()
-        }),
-        ("multi_kind.nodes", |case| {
-            consume(
-                case.tree
-                    .root_node()
-                    .all()
-                    .filter_kind_ids(&case.multiple_kinds)
-                    .nodes(),
-            )
-        }),
-        ("multi_kind.count", |case| {
-            case.tree
-                .root_node()
-                .all()
-                .filter_kind_ids(&case.multiple_kinds)
-                .count()
-        }),
-        ("field.nodes", |case| {
-            consume(
-                case.tree
-                    .root_node()
-                    .all()
-                    .filter_field_id(case.field)
-                    .nodes(),
-            )
-        }),
-        ("field.count", |case| {
-            case.tree
-                .root_node()
-                .all()
-                .filter_field_id(case.field)
-                .count()
-        }),
-        ("field.scalar", |case| {
-            consume(scalar_preorder(&case.tree).filter(|node| node.field_id() == case.field))
-        }),
-        ("postorder.field.nodes", |case| {
-            consume(
-                case.tree
-                    .root_node()
-                    .postorder()
-                    .filter_field_id(case.field)
-                    .nodes(),
-            )
-        }),
-        ("postorder.field.count", |case| {
-            case.tree
-                .root_node()
-                .postorder()
-                .filter_field_id(case.field)
-                .count()
-        }),
-        ("postorder.kind.nodes", |case| {
-            consume(
-                case.tree
-                    .root_node()
-                    .postorder()
-                    .filter_kind_ids(&case.kinds)
-                    .nodes(),
-            )
-        }),
-        ("postorder.kind.count", |case| {
-            case.tree
-                .root_node()
-                .postorder()
-                .filter_kind_ids(&case.kinds)
-                .count()
-        }),
-        ("postorder.rev.kind.nodes", |case| {
-            consume(
-                case.tree
-                    .root_node()
-                    .postorder()
-                    .rev()
-                    .filter_kind_ids(&case.kinds)
-                    .nodes(),
-            )
-        }),
-        ("preorder.nodes", |case| {
-            consume(case.tree.root_node().preorder().nodes())
-        }),
-        ("preorder.rev.nodes", |case| {
-            consume(case.tree.root_node().preorder().rev().nodes())
-        }),
-        ("postorder.nodes", |case| {
-            consume(case.tree.root_node().postorder().nodes())
-        }),
-        ("postorder.rev.nodes", |case| {
-            consume(case.tree.root_node().postorder().rev().nodes())
-        }),
-        ("all.nodes", |case| {
-            consume(case.tree.root_node().all().nodes())
-        }),
-        ("all.rev.nodes", |case| {
-            consume(case.tree.root_node().all().rev().nodes())
-        }),
-        ("scalar_next_preorder", |case| {
-            consume(scalar_preorder(&case.tree))
-        }),
-        ("mainline_cursor", |case| {
-            consume(case.native.root_node().preorder())
-        }),
-        ("preorder.count", |case| {
-            case.tree.root_node().preorder().count()
-        }),
-        ("preorder.nodes.count", |case| {
-            case.tree.root_node().preorder().nodes().count()
-        }),
-        ("postorder.count", |case| {
-            case.tree.root_node().postorder().count()
-        }),
-        ("all.count", |case| case.tree.root_node().all().count()),
-        ("kind.nodes", |case| {
-            consume(
-                case.tree
-                    .root_node()
-                    .all()
-                    .filter_kind_ids(&case.kinds)
-                    .nodes(),
-            )
-        }),
-        ("kind.count", |case| {
-            case.tree
-                .root_node()
-                .all()
-                .filter_kind_ids(&case.kinds)
-                .count()
-        }),
-        ("kind.scalar", |case| {
-            consume(scalar_preorder(&case.tree).filter(|node| case.kinds.contains(node.kind_id())))
-        }),
-        ("range.nodes", |case| {
-            consume(
-                case.tree
-                    .root_node()
-                    .all()
-                    .overlapping_bytes(case.range.clone())
-                    .nodes(),
-            )
-        }),
-        ("range.count", |case| {
-            case.tree
-                .root_node()
-                .all()
-                .overlapping_bytes(case.range.clone())
-                .count()
-        }),
-        ("range.fold", |case| {
-            consume_fold(
-                case.tree
-                    .root_node()
-                    .all()
-                    .overlapping_bytes(case.range.clone())
-                    .nodes(),
-            )
-        }),
-        ("range.reverse_nodes", |case| {
-            consume(
-                case.tree
-                    .root_node()
-                    .preorder()
-                    .rev()
-                    .overlapping_bytes(case.range.clone())
-                    .nodes(),
-            )
-        }),
-        ("range.scalar", |case| {
-            consume(scalar_preorder(&case.tree).filter(|&node| overlaps(node, &case.range)))
-        }),
-        ("point_range.nodes", |case| {
-            consume(
-                case.tree
-                    .root_node()
-                    .all()
-                    .overlapping_points(case.point_range.clone())
-                    .nodes(),
-            )
-        }),
-        ("point_range.count", |case| {
-            case.tree
-                .root_node()
-                .all()
-                .overlapping_points(case.point_range.clone())
-                .count()
-        }),
-        ("point_range.fold", |case| {
-            consume_fold(
-                case.tree
-                    .root_node()
-                    .all()
-                    .overlapping_points(case.point_range.clone())
-                    .nodes(),
-            )
-        }),
-        ("point_range.reverse_nodes", |case| {
-            consume(
-                case.tree
-                    .root_node()
-                    .preorder()
-                    .rev()
-                    .overlapping_points(case.point_range.clone())
-                    .nodes(),
-            )
-        }),
-        ("point_range.scalar", |case| {
-            consume(
-                scalar_preorder(&case.tree)
-                    .filter(|&node| overlaps_points(node, &case.point_range)),
-            )
-        }),
-    ];
-    macro_rules! range_workloads {
-        ($name:literal, $method:ident, $case:ident, $value:expr) => {
-            let selected: [(&'static str, Operation); 3] = [
-                (concat!($name, ".nodes"), |$case| {
-                    consume($case.tree.root_node().all().$method($value).nodes())
-                }),
-                (concat!($name, ".count"), |$case| {
-                    $case.tree.root_node().all().$method($value).count()
-                }),
-                (concat!($name, ".fold"), |$case| {
-                    consume_fold($case.tree.root_node().all().$method($value).nodes())
-                }),
-            ];
-            workloads.extend(selected);
+
+fn workloads(cases: &[Case]) -> Vec<Workload> {
+    let mut workloads = Vec::new();
+    macro_rules! workload {
+        ($name:expr, $case:ident, $operation:expr, $expected:expr) => {
+            workloads.push(Workload {
+                name: $name,
+                operation: |$case| $operation,
+                expected: |$case| $expected,
+            });
         };
     }
-    range_workloads!("within", within_bytes, case, case.range.clone());
-    range_workloads!("starting_in", starting_in_bytes, case, case.range.clone());
-    range_workloads!("starting_at", starting_at_byte, case, case.range.start);
-    range_workloads!(
-        "point_within",
-        within_points,
+    macro_rules! scan_workloads {
+        ($name:expr, $case:ident, $scan:expr, $expected:expr, [$($consumer:ident),+]) => {$(
+            scan_workloads!(@consumer $consumer, $name, $case, $scan, $expected);
+        )+};
+        (@consumer nodes, $name:expr, $case:ident, $scan:expr, $expected:expr) => {
+            workload!(concat!($name, ".nodes"), $case, consume($scan.nodes()), $expected);
+        };
+        (@consumer count, $name:expr, $case:ident, $scan:expr, $expected:expr) => {
+            workload!(concat!($name, ".count"), $case, $scan.count(), $expected);
+        };
+        (@consumer fold, $name:expr, $case:ident, $scan:expr, $expected:expr) => {
+            workload!(concat!($name, ".fold"), $case, consume_fold($scan.nodes()), $expected);
+        };
+        (@consumer reverse_nodes, $name:expr, $case:ident, $scan:expr, $expected:expr) => {
+            workload!(concat!($name, ".reverse_nodes"), $case, consume($scan.rev().nodes()), $expected);
+        };
+    }
+    scan_workloads!(
+        "preorder",
         case,
-        case.point_range.clone()
+        case.tree.root_node().preorder(),
+        case.nodes,
+        [nodes, count, fold]
     );
-    range_workloads!(
+    scan_workloads!(
+        "preorder.rev",
+        case,
+        case.tree.root_node().preorder().rev(),
+        case.nodes,
+        [nodes, fold]
+    );
+    scan_workloads!(
+        "postorder",
+        case,
+        case.tree.root_node().postorder(),
+        case.nodes,
+        [nodes, count, fold]
+    );
+    scan_workloads!(
+        "postorder.rev",
+        case,
+        case.tree.root_node().postorder().rev(),
+        case.nodes,
+        [nodes, fold]
+    );
+    scan_workloads!(
+        "all",
+        case,
+        case.tree.root_node().all(),
+        case.nodes,
+        [nodes, count]
+    );
+    scan_workloads!(
+        "all.rev",
+        case,
+        case.tree.root_node().all().rev(),
+        case.nodes,
+        [nodes]
+    );
+    workload!(
+        "preorder.groups.fold",
+        case,
+        case.tree
+            .root_node()
+            .preorder()
+            .groups()
+            .map(|group| consume_fold(group.nodes()))
+            .sum(),
+        case.nodes
+    );
+    workload!(
+        "preorder.nodes.count",
+        case,
+        case.tree.root_node().preorder().nodes().count(),
+        case.nodes
+    );
+    workload!(
+        "scalar_next_preorder",
+        case,
+        consume(scalar_preorder(&case.tree)),
+        case.nodes
+    );
+    workload!(
+        "mainline_cursor",
+        case,
+        consume(case.native.root_node().preorder()),
+        case.nodes
+    );
+
+    scan_workloads!(
+        "multi_kind",
+        case,
+        case.tree
+            .root_node()
+            .all()
+            .filter_kind_ids(&case.multiple_kinds),
+        case.multiple_kind_matches,
+        [nodes, count, fold]
+    );
+    scan_workloads!(
+        "field",
+        case,
+        case.tree.root_node().all().filter_field_id(case.field),
+        case.field_matches,
+        [nodes, count]
+    );
+    scan_workloads!(
+        "postorder.field",
+        case,
+        case.tree
+            .root_node()
+            .postorder()
+            .filter_field_id(case.field),
+        case.field_matches,
+        [nodes, count]
+    );
+    scan_workloads!(
+        "postorder.kind",
+        case,
+        case.tree
+            .root_node()
+            .postorder()
+            .filter_kind_ids(&case.kinds),
+        case.kind_matches,
+        [nodes, count]
+    );
+    scan_workloads!(
+        "postorder.rev.kind",
+        case,
+        case.tree
+            .root_node()
+            .postorder()
+            .rev()
+            .filter_kind_ids(&case.kinds),
+        case.kind_matches,
+        [nodes]
+    );
+    workload!(
+        "field.scalar",
+        case,
+        consume(scalar_preorder(&case.tree).filter(|node| node.field_id() == case.field)),
+        case.field_matches
+    );
+    workload!(
+        "kind.scalar",
+        case,
+        consume(scalar_preorder(&case.tree).filter(|node| case.kinds.contains(node.kind_id()))),
+        case.kind_matches
+    );
+    scan_workloads!(
+        "supertype",
+        case,
+        case.tree
+            .root_node()
+            .all()
+            .filter_supertype_id(case.supertype),
+        case.supertype_matches,
+        [nodes, count]
+    );
+    scan_workloads!(
+        "flags",
+        case,
+        case.tree
+            .root_node()
+            .all()
+            .filter_extra(false)
+            .filter_missing(false),
+        case.flags_matches,
+        [count]
+    );
+    scan_workloads!(
+        "combined",
+        case,
+        case.tree
+            .root_node()
+            .all()
+            .filter_kind_ids(&case.kinds)
+            .filter_field_id(case.field)
+            .filter_extra(false)
+            .filter_missing(false),
+        case.combined_matches,
+        [count]
+    );
+
+    scan_workloads!(
+        "range",
+        case,
+        case.tree
+            .root_node()
+            .all()
+            .overlapping_bytes(case.range.clone()),
+        case.range_matches,
+        [nodes, count, fold, reverse_nodes]
+    );
+    scan_workloads!(
+        "point_range",
+        case,
+        case.tree
+            .root_node()
+            .all()
+            .overlapping_points(case.point_range.clone()),
+        case.range_matches,
+        [nodes, count, fold, reverse_nodes]
+    );
+    workload!(
+        "range.scalar",
+        case,
+        consume(scalar_preorder(&case.tree).filter(|&node| overlaps(node, &case.range))),
+        case.range_matches
+    );
+    workload!(
+        "point_range.scalar",
+        case,
+        consume(
+            scalar_preorder(&case.tree).filter(|&node| overlaps_points(node, &case.point_range))
+        ),
+        case.range_matches
+    );
+    scan_workloads!(
+        "within",
+        case,
+        case.tree.root_node().all().within_bytes(case.range.clone()),
+        case.within_matches,
+        [nodes, count, fold]
+    );
+    scan_workloads!(
+        "starting_in",
+        case,
+        case.tree
+            .root_node()
+            .all()
+            .starting_in_bytes(case.range.clone()),
+        case.starting_in_matches,
+        [nodes, count, fold]
+    );
+    scan_workloads!(
+        "starting_at",
+        case,
+        case.tree
+            .root_node()
+            .all()
+            .starting_at_byte(case.range.start),
+        case.starting_at_matches,
+        [nodes, count, fold]
+    );
+    scan_workloads!(
+        "point_within",
+        case,
+        case.tree
+            .root_node()
+            .all()
+            .within_points(case.point_range.clone()),
+        case.within_matches,
+        [nodes, count, fold]
+    );
+    scan_workloads!(
         "point_starting_in",
-        starting_in_points,
         case,
-        case.point_range.clone()
+        case.tree
+            .root_node()
+            .all()
+            .starting_in_points(case.point_range.clone()),
+        case.starting_in_matches,
+        [nodes, count, fold]
     );
-    range_workloads!(
+    scan_workloads!(
         "point_starting_at",
-        starting_at_point,
         case,
-        case.point_range.start
+        case.tree
+            .root_node()
+            .all()
+            .starting_at_point(case.point_range.start),
+        case.starting_at_matches,
+        [nodes, count, fold]
     );
-    macro_rules! range_kind_workloads {
-        ($name:literal, $method:ident, $case:ident, $value:expr, $length:literal) => {
-            let selected: [(&'static str, Operation); 4] = [
-                (concat!($name, ".fixed_", $length, ".nodes"), |$case| {
-                    consume(
-                        $case
-                            .tree
-                            .root_node()
-                            .all()
-                            .$method($value)
-                            .filter_kind_ids(fixed_kinds::<$length>($case))
-                            .nodes(),
-                    )
-                }),
-                (concat!($name, ".fixed_", $length, ".count"), |$case| {
-                    $case
-                        .tree
-                        .root_node()
-                        .all()
-                        .$method($value)
-                        .filter_kind_ids(fixed_kinds::<$length>($case))
-                        .count()
-                }),
-                (concat!($name, ".dynamic_", $length, ".nodes"), |$case| {
-                    consume(
-                        $case
-                            .tree
-                            .root_node()
-                            .all()
-                            .$method($value)
-                            .filter_kind_ids(
-                                &$case.sized_kind_sets[($length as usize).ilog2() as usize],
-                            )
-                            .nodes(),
-                    )
-                }),
-                (concat!($name, ".dynamic_", $length, ".count"), |$case| {
-                    $case
-                        .tree
-                        .root_node()
-                        .all()
-                        .$method($value)
-                        .filter_kind_ids(
-                            &$case.sized_kind_sets[($length as usize).ilog2() as usize],
-                        )
-                        .count()
-                }),
-            ];
-            workloads.extend(selected);
-        };
-    }
-    range_kind_workloads!("range", overlapping_bytes, case, case.range.clone(), 1);
-    range_kind_workloads!("range", overlapping_bytes, case, case.range.clone(), 4);
-    range_kind_workloads!("range", overlapping_bytes, case, case.range.clone(), 8);
-    range_kind_workloads!(
-        "point_range",
-        overlapping_points,
-        case,
-        case.point_range.clone(),
-        1
-    );
-    range_kind_workloads!(
-        "point_range",
-        overlapping_points,
-        case,
-        case.point_range.clone(),
-        4
-    );
-    range_kind_workloads!("within", within_bytes, case, case.range.clone(), 1);
-    range_kind_workloads!("within", within_bytes, case, case.range.clone(), 4);
-    range_kind_workloads!(
-        "point_within",
-        within_points,
-        case,
-        case.point_range.clone(),
-        1
-    );
-    range_kind_workloads!(
-        "point_within",
-        within_points,
-        case,
-        case.point_range.clone(),
-        4
-    );
-    // Keep each composed query and its scalar membership check together.
-    macro_rules! combined_kind_workloads {
-        ($name:literal, $length:literal, $case:ident, $ids:ident, $scan:expr, $node:ident, $reference:expr) => {
+
+    // Keep each pipeline's static specialization and scalar oracle together.
+    macro_rules! kind_workloads {
+        ($name:literal, $length:literal, $case:ident, $ids:ident, $scan:expr, $expected:expr, $node:ident, $predicate:expr, [$($consumer:ident),+]) => {
             for $case in cases {
                 let kinds = &$case.sized_kind_sets[($length as usize).ilog2() as usize];
                 let expected = scalar_preorder(&$case.tree)
-                    .filter(|$node| kinds.contains($node.kind_id()) && $reference)
+                    .filter(|$node| kinds.contains($node.kind_id()) && $predicate)
                     .collect::<Vec<_>>();
                 let $ids = fixed_kinds::<$length>($case);
                 assert_eq!($scan.nodes().collect::<Vec<_>>(), expected, $name);
                 let $ids = kinds;
                 assert_eq!($scan.nodes().collect::<Vec<_>>(), expected, $name);
             }
-            let selected: [(&'static str, Operation); 4] = [
-                (concat!($name, ".fixed_", $length, ".nodes"), |$case| {
-                    let $ids = fixed_kinds::<$length>($case);
-                    consume($scan.nodes())
-                }),
-                (concat!($name, ".fixed_", $length, ".count"), |$case| {
-                    let $ids = fixed_kinds::<$length>($case);
-                    $scan.count()
-                }),
-                (concat!($name, ".dynamic_", $length, ".nodes"), |$case| {
-                    let $ids = &$case.sized_kind_sets[($length as usize).ilog2() as usize];
-                    consume($scan.nodes())
-                }),
-                (concat!($name, ".dynamic_", $length, ".count"), |$case| {
-                    let $ids = &$case.sized_kind_sets[($length as usize).ilog2() as usize];
-                    $scan.count()
-                }),
-            ];
-            workloads.extend(selected);
+            scan_workloads!(concat!($name, "fixed_", $length), $case,
+                { let $ids = fixed_kinds::<$length>($case); $scan }, $expected, [$($consumer),+]);
+            scan_workloads!(concat!($name, "dynamic_", $length), $case,
+                { let $ids = &$case.sized_kind_sets[($length as usize).ilog2() as usize]; $scan }, $expected, [$($consumer),+]);
         };
     }
+    macro_rules! range_kind_workloads {
+        ($name:literal, $method:ident, $value:ident, $matches:ident, $length:literal, $node:ident, $case:ident, $predicate:expr) => {
+            kind_workloads!(
+                $name,
+                $length,
+                $case,
+                ids,
+                $case
+                    .tree
+                    .root_node()
+                    .all()
+                    .$method($case.$value.clone())
+                    .filter_kind_ids(ids),
+                $case.$matches[($length as usize).ilog2() as usize],
+                $node,
+                $predicate,
+                [nodes, count]
+            );
+        };
+    }
+    macro_rules! range_kind_sizes {
+        ($($length:literal),+) => {$(
+            range_kind_workloads!(
+                "range.",
+                overlapping_bytes,
+                range,
+                range_kind_matches,
+                $length,
+                node,
+                case,
+                overlaps(*node, &case.range)
+            );
+            range_kind_workloads!(
+                "point_range.",
+                overlapping_points,
+                point_range,
+                range_kind_matches,
+                $length,
+                node,
+                case,
+                overlaps_points(*node, &case.point_range)
+            );
+            range_kind_workloads!(
+                "within.",
+                within_bytes,
+                range,
+                within_kind_matches,
+                $length,
+                node,
+                case,
+                case.range.start <= node.start_byte() && node.end_byte() <= case.range.end
+            );
+            range_kind_workloads!(
+                "point_within.",
+                within_points,
+                point_range,
+                within_kind_matches,
+                $length,
+                node,
+                case,
+                case.point_range.start <= node.start_position()
+                    && node.end_position() <= case.point_range.end
+            );
+        )+};
+    }
+    range_kind_sizes!(1, 4);
+    range_kind_workloads!(
+        "range.",
+        overlapping_bytes,
+        range,
+        range_kind_matches,
+        8,
+        node,
+        case,
+        overlaps(*node, &case.range)
+    );
     macro_rules! combined_kind_sizes {
         ($($length:literal),+) => {$(
-            range_kind_workloads!("field", filter_field_id, case, case.field, $length);
-            combined_kind_workloads!("kind_field", $length, case, ids,
-                case.tree.root_node().all().filter_kind_ids(ids).filter_field_id(case.field),
-                node, node.field_id() == case.field);
-            combined_kind_workloads!("flags", $length, case, ids,
-                case.tree.root_node().all().filter_extra(false).filter_missing(false).filter_kind_ids(ids),
-                node, !node.is_extra() && !node.is_missing());
-            combined_kind_workloads!("range_field", $length, case, ids,
-                case.tree.root_node().all().overlapping_bytes(case.range.clone())
-                    .filter_field_id(case.field).filter_kind_ids(ids),
-                node, overlaps(*node, &case.range) && node.field_id() == case.field);
-            combined_kind_workloads!("range_kind_field", $length, case, ids,
-                case.tree.root_node().all().overlapping_bytes(case.range.clone())
-                    .filter_kind_ids(ids).filter_field_id(case.field),
-                node, overlaps(*node, &case.range) && node.field_id() == case.field);
-            combined_kind_workloads!("intersection", $length, case, ids,
-                case.tree.root_node().all().filter_kind_ids(ids).filter_kind_ids(&case.intersecting_kinds),
-                node, case.intersecting_kinds.contains(node.kind_id()));
-            combined_kind_workloads!("intersection_reverse", $length, case, ids,
-                case.tree.root_node().all().filter_kind_ids(&case.intersecting_kinds).filter_kind_ids(ids),
-                node, case.intersecting_kinds.contains(node.kind_id()));
+            kind_workloads!(
+                "field.",
+                $length,
+                case,
+                ids,
+                case.tree
+                    .root_node()
+                    .all()
+                    .filter_field_id(case.field)
+                    .filter_kind_ids(ids),
+                case.field_kind_matches[($length as usize).ilog2() as usize],
+                node,
+                node.field_id() == case.field,
+                [nodes, count]
+            );
+            kind_workloads!(
+                "kind_field.",
+                $length,
+                case,
+                ids,
+                case.tree
+                    .root_node()
+                    .all()
+                    .filter_kind_ids(ids)
+                    .filter_field_id(case.field),
+                case.field_kind_matches[($length as usize).ilog2() as usize],
+                node,
+                node.field_id() == case.field,
+                [nodes, count]
+            );
+            kind_workloads!(
+                "flags.",
+                $length,
+                case,
+                ids,
+                case.tree
+                    .root_node()
+                    .all()
+                    .filter_extra(false)
+                    .filter_missing(false)
+                    .filter_kind_ids(ids),
+                case.flags_kind_matches[($length as usize).ilog2() as usize],
+                node,
+                !node.is_extra() && !node.is_missing(),
+                [nodes, count]
+            );
+            kind_workloads!(
+                "range_field.",
+                $length,
+                case,
+                ids,
+                case.tree
+                    .root_node()
+                    .all()
+                    .overlapping_bytes(case.range.clone())
+                    .filter_field_id(case.field)
+                    .filter_kind_ids(ids),
+                case.range_field_kind_matches[($length as usize).ilog2() as usize],
+                node,
+                overlaps(*node, &case.range) && node.field_id() == case.field,
+                [nodes, count]
+            );
+            kind_workloads!(
+                "range_kind_field.",
+                $length,
+                case,
+                ids,
+                case.tree
+                    .root_node()
+                    .all()
+                    .overlapping_bytes(case.range.clone())
+                    .filter_kind_ids(ids)
+                    .filter_field_id(case.field),
+                case.range_field_kind_matches[($length as usize).ilog2() as usize],
+                node,
+                overlaps(*node, &case.range) && node.field_id() == case.field,
+                [nodes, count]
+            );
+            kind_workloads!(
+                "intersection.",
+                $length,
+                case,
+                ids,
+                case.tree
+                    .root_node()
+                    .all()
+                    .filter_kind_ids(ids)
+                    .filter_kind_ids(&case.intersecting_kinds),
+                case.intersection_matches[($length as usize).ilog2() as usize],
+                node,
+                case.intersecting_kinds.contains(node.kind_id()),
+                [nodes, count]
+            );
+            kind_workloads!(
+                "intersection_reverse.",
+                $length,
+                case,
+                ids,
+                case.tree
+                    .root_node()
+                    .all()
+                    .filter_kind_ids(&case.intersecting_kinds)
+                    .filter_kind_ids(ids),
+                case.intersection_matches[($length as usize).ilog2() as usize],
+                node,
+                case.intersecting_kinds.contains(node.kind_id()),
+                [nodes, count]
+            );
         )+};
     }
     combined_kind_sizes!(2, 4, 8, 16);
-    workloads.extend(sized_kind_workloads::<1>(
-        cases,
-        [
-            "fixed_1.nodes",
-            "fixed_1.count",
-            "fixed_1.fold",
-            "dynamic_1.nodes",
-            "dynamic_1.count",
-            "dynamic_1.fold",
-            "fixed_1.reverse_nodes",
-            "dynamic_1.reverse_nodes",
-        ],
-    ));
-    workloads.extend(sized_kind_workloads::<2>(
-        cases,
-        [
-            "fixed_2.nodes",
-            "fixed_2.count",
-            "fixed_2.fold",
-            "dynamic_2.nodes",
-            "dynamic_2.count",
-            "dynamic_2.fold",
-            "fixed_2.reverse_nodes",
-            "dynamic_2.reverse_nodes",
-        ],
-    ));
-    workloads.extend(sized_kind_workloads::<4>(
-        cases,
-        [
-            "fixed_4.nodes",
-            "fixed_4.count",
-            "fixed_4.fold",
-            "dynamic_4.nodes",
-            "dynamic_4.count",
-            "dynamic_4.fold",
-            "fixed_4.reverse_nodes",
-            "dynamic_4.reverse_nodes",
-        ],
-    ));
-    workloads.extend(sized_kind_workloads::<8>(
-        cases,
-        [
-            "fixed_8.nodes",
-            "fixed_8.count",
-            "fixed_8.fold",
-            "dynamic_8.nodes",
-            "dynamic_8.count",
-            "dynamic_8.fold",
-            "fixed_8.reverse_nodes",
-            "dynamic_8.reverse_nodes",
-        ],
-    ));
-    workloads.extend(sized_kind_workloads::<16>(
-        cases,
-        [
-            "fixed_16.nodes",
-            "fixed_16.count",
-            "fixed_16.fold",
-            "dynamic_16.nodes",
-            "dynamic_16.count",
-            "dynamic_16.fold",
-            "fixed_16.reverse_nodes",
-            "dynamic_16.reverse_nodes",
-        ],
-    ));
-    workloads.extend(sized_field_workloads::<1>([
-        "fixed_field_1.nodes",
-        "fixed_field_1.count",
-        "dynamic_field_1.nodes",
-        "dynamic_field_1.count",
-        "scalar_field_1.nodes",
-    ]));
-    workloads.extend(sized_field_workloads::<2>([
-        "fixed_field_2.nodes",
-        "fixed_field_2.count",
-        "dynamic_field_2.nodes",
-        "dynamic_field_2.count",
-        "scalar_field_2.nodes",
-    ]));
-    workloads.extend(sized_field_workloads::<4>([
-        "fixed_field_4.nodes",
-        "fixed_field_4.count",
-        "dynamic_field_4.nodes",
-        "dynamic_field_4.count",
-        "scalar_field_4.nodes",
-    ]));
+    macro_rules! kind_sizes {
+        ($($length:literal),+) => {$(
+            kind_workloads!(
+                "",
+                $length,
+                case,
+                ids,
+                case.tree.root_node().all().filter_kind_ids(ids),
+                case.sized_kind_matches[($length as usize).ilog2() as usize],
+                _node,
+                true,
+                [nodes, count, fold, reverse_nodes]
+            );
+            for case in cases {
+                let kinds = &case.sized_kind_sets[($length as usize).ilog2() as usize];
+                let mut expected = scalar_preorder(&case.tree)
+                    .filter(|node| kinds.contains(node.kind_id()))
+                    .collect::<Vec<_>>();
+                expected.reverse();
+                assert_eq!(
+                    case.tree
+                        .root_node()
+                        .all()
+                        .filter_kind_ids(fixed_kinds::<$length>(case))
+                        .rev()
+                        .nodes()
+                        .collect::<Vec<_>>(),
+                    expected
+                );
+                assert_eq!(
+                    case.tree
+                        .root_node()
+                        .all()
+                        .filter_kind_ids(kinds)
+                        .rev()
+                        .nodes()
+                        .collect::<Vec<_>>(),
+                    expected
+                );
+            }
+        )+};
+    }
+    kind_sizes!(1, 2, 4, 8, 16);
+    macro_rules! field_sizes {
+        ($($length:literal),+) => {$(
+            scan_workloads!(
+                concat!("fixed_field_", $length),
+                case,
+                case.tree
+                    .root_node()
+                    .all()
+                    .filter_field_ids(fixed_fields::<$length>(case)),
+                case.sized_field_matches[($length as usize).ilog2() as usize],
+                [nodes, count]
+            );
+            scan_workloads!(
+                concat!("dynamic_field_", $length),
+                case,
+                case.tree
+                    .root_node()
+                    .all()
+                    .filter_field_ids(&case.sized_field_sets[($length as usize).ilog2() as usize]),
+                case.sized_field_matches[($length as usize).ilog2() as usize],
+                [nodes, count]
+            );
+            workload!(
+                concat!("scalar_field_", $length, ".nodes"),
+                case,
+                consume(
+                    scalar_preorder(&case.tree)
+                        .filter(|node| fixed_fields::<$length>(case).contains(&node.field_id()))
+                ),
+                case.sized_field_matches[($length as usize).ilog2() as usize]
+            );
+        )+};
+    }
+    field_sizes!(1, 2, 4);
     workloads
 }
-fn fixed_fields<const N: usize>(case: &Case) -> [FieldSelection; N] {
-    case.frequent_field_ids[..N].try_into().unwrap()
-}
-fn sized_field_workloads<const N: usize>(
-    names: [&'static str; 5],
-) -> Vec<(&'static str, Operation)> {
-    vec![
-        (names[0], |case| {
-            consume(
-                case.tree
-                    .root_node()
-                    .all()
-                    .filter_field_ids(fixed_fields::<N>(case))
-                    .nodes(),
-            )
-        }),
-        (names[1], |case| {
-            case.tree
-                .root_node()
-                .all()
-                .filter_field_ids(fixed_fields::<N>(case))
-                .count()
-        }),
-        (names[2], |case| {
-            consume(
-                case.tree
-                    .root_node()
-                    .all()
-                    .filter_field_ids(&case.sized_field_sets[N.ilog2() as usize])
-                    .nodes(),
-            )
-        }),
-        (names[3], |case| {
-            case.tree
-                .root_node()
-                .all()
-                .filter_field_ids(&case.sized_field_sets[N.ilog2() as usize])
-                .count()
-        }),
-        (names[4], |case| {
-            consume(
-                scalar_preorder(&case.tree)
-                    .filter(|node| fixed_fields::<N>(case).contains(&node.field_id())),
-            )
-        }),
-    ]
-}
+
 fn run(operation: Operation, cases: &[Case], iterations: usize) -> usize {
     let mut count = 0;
     for _ in 0..iterations {
@@ -981,63 +851,6 @@ fn validate(case: &Case) {
         case.point_range.start,
         |node: &Node<'_>| node.start_byte() == case.range.start
     );
-    macro_rules! validate_range_kinds {
-        ($length:literal, $byte_method:ident, $point_method:ident, $predicate:expr) => {
-            let kinds = &case.sized_kind_sets[($length as usize).ilog2() as usize];
-            let expected = preorder
-                .iter()
-                .copied()
-                .filter($predicate)
-                .filter(|node| kinds.contains(node.kind_id()))
-                .collect::<Vec<_>>();
-            for actual in [
-                root.all()
-                    .$byte_method(case.range.clone())
-                    .filter_kind_ids(fixed_kinds::<$length>(case))
-                    .nodes()
-                    .collect::<Vec<_>>(),
-                root.all()
-                    .$byte_method(case.range.clone())
-                    .filter_kind_ids(kinds)
-                    .nodes()
-                    .collect::<Vec<_>>(),
-                root.all()
-                    .$point_method(case.point_range.clone())
-                    .filter_kind_ids(fixed_kinds::<$length>(case))
-                    .nodes()
-                    .collect::<Vec<_>>(),
-                root.all()
-                    .$point_method(case.point_range.clone())
-                    .filter_kind_ids(kinds)
-                    .nodes()
-                    .collect::<Vec<_>>(),
-            ] {
-                assert_eq!(actual, expected);
-            }
-        };
-    }
-    validate_range_kinds!(1, overlapping_bytes, overlapping_points, |node: &Node<
-        '_,
-    >| overlaps(
-        *node,
-        &case.range
-    ));
-    validate_range_kinds!(4, overlapping_bytes, overlapping_points, |node: &Node<
-        '_,
-    >| overlaps(
-        *node,
-        &case.range
-    ));
-    validate_range_kinds!(1, within_bytes, within_points, |node: &Node<'_>| case
-        .range
-        .start
-        <= node.start_byte()
-        && node.end_byte() <= case.range.end);
-    validate_range_kinds!(4, within_bytes, within_points, |node: &Node<'_>| case
-        .range
-        .start
-        <= node.start_byte()
-        && node.end_byte() <= case.range.end);
     let point_matches = preorder
         .iter()
         .copied()
@@ -1358,76 +1171,26 @@ fn main() -> Result<()> {
     let mut workloads = workloads(&cases);
     for name in &arguments.workload {
         ensure!(
-            workloads.iter().any(|(candidate, _)| candidate == name),
+            workloads.iter().any(|workload| workload.name == name),
             "unknown workload: {name}"
         );
     }
     if !arguments.workload.is_empty() {
-        workloads.retain(|(name, _)| arguments.workload.iter().any(|selected| selected == name));
+        workloads.retain(|workload| {
+            arguments
+                .workload
+                .iter()
+                .any(|selected| selected == workload.name)
+        });
     }
     if arguments.reverse_workloads {
         workloads.reverse();
     }
     let mut results = Vec::new();
-    for &(name, operation) in &workloads {
-        let expected: usize = cases
-            .iter()
-            .map(|case| {
-                if let Some((selection, sized)) = name
-                    .split_once(".fixed_")
-                    .or_else(|| name.split_once(".dynamic_"))
-                {
-                    let length = sized.split('.').next().unwrap().parse::<usize>().unwrap();
-                    let matches = match selection {
-                        "range" | "point_range" => &case.range_kind_matches,
-                        "within" | "point_within" => &case.within_kind_matches,
-                        "field" | "kind_field" => &case.field_kind_matches,
-                        "flags" => &case.flags_kind_matches,
-                        "range_field" | "range_kind_field" => &case.range_field_kind_matches,
-                        "intersection" | "intersection_reverse" => &case.intersection_matches,
-                        _ => unreachable!("unknown kind selection: {selection}"),
-                    };
-                    matches[length.ilog2() as usize]
-                } else if let Some(sized) = name
-                    .strip_prefix("fixed_field_")
-                    .or_else(|| name.strip_prefix("dynamic_field_"))
-                    .or_else(|| name.strip_prefix("scalar_field_"))
-                {
-                    let length = sized.split('.').next().unwrap().parse::<usize>().unwrap();
-                    case.sized_field_matches[length.ilog2() as usize]
-                } else if let Some(sized) = name
-                    .strip_prefix("fixed_")
-                    .or_else(|| name.strip_prefix("dynamic_"))
-                {
-                    let length = sized.split('.').next().unwrap().parse::<usize>().unwrap();
-                    case.sized_kind_matches[length.ilog2() as usize]
-                } else if name.starts_with("multi_kind.") {
-                    case.multiple_kind_matches
-                } else if name.starts_with("kind.") || name.contains(".kind.") {
-                    case.kind_matches
-                } else if name.starts_with("field.") || name.contains(".field.") {
-                    case.field_matches
-                } else if name.starts_with("within.") || name.starts_with("point_within.") {
-                    case.within_matches
-                } else if name.starts_with("starting_in.") || name.starts_with("point_starting_in.")
-                {
-                    case.starting_in_matches
-                } else if name.starts_with("starting_at.") || name.starts_with("point_starting_at.")
-                {
-                    case.starting_at_matches
-                } else if name.starts_with("range.") || name.starts_with("point_range.") {
-                    case.range_matches
-                } else if name.starts_with("supertype.") {
-                    case.supertype_matches
-                } else if name == "flags.count" {
-                    case.flags_matches
-                } else if name == "combined.count" {
-                    case.combined_matches
-                } else {
-                    case.nodes
-                }
-            })
-            .sum();
+    for workload in &workloads {
+        let name = workload.name;
+        let operation = workload.operation;
+        let expected = cases.iter().map(workload.expected).sum::<usize>();
         assert_eq!(run(operation, &cases, 1), expected, "{name}");
         let start = Instant::now();
         let count = run(operation, &cases, 1);
@@ -1450,7 +1213,7 @@ fn main() -> Result<()> {
     for round in 0..arguments.samples {
         for offset in 0..workloads.len() {
             let index = (offset + round * 7) % workloads.len();
-            let (_, operation) = workloads[index];
+            let operation = workloads[index].operation;
             let result = &mut results[index];
             let start = Instant::now();
             let count = run(operation, &cases, result.iterations_per_sample);

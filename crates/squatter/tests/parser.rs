@@ -1,7 +1,7 @@
 mod support;
 
 use std::ops::ControlFlow;
-use support::{c_language, json_language};
+use support::{assert_same_tree, c_language, json_language};
 use tree_squatter::{
     Error, Language, PackOptions, PackedParseOptions, ParseOptions, Parser, ParserError, Tree,
     TreeFellerParser,
@@ -120,14 +120,7 @@ where
         .parse_with_options(
             &mut |byte, point| {
                 reads += 1;
-                assert!(byte <= source.len());
-                let prefix = &source[..byte];
-                let row = prefix.iter().filter(|&&value| value == b'\n').count();
-                let column = prefix
-                    .iter()
-                    .rposition(|&value| value == b'\n')
-                    .map_or(byte, |newline| byte - newline - 1);
-                assert_eq!(point, tree_sitter::Point::new(row, column));
+                check_point(source, byte, point);
                 source[byte..(byte + 3).min(source.len())].to_vec()
             },
             Default::default(),
@@ -183,6 +176,21 @@ fn callback_input_and_error_recovery() {
             .root_node()
             .has_error()
     );
+    let grammar = parser.language().unwrap();
+    let mut native = tree_sitter::Parser::new();
+    native.set_language(&c_language()).unwrap();
+    assert!(
+        Tree::parse(grammar, &mut native, "int broken = ;")
+            .unwrap()
+            .root_node()
+            .has_error()
+    );
+    assert_eq!(
+        Tree::parse_direct(grammar, "int broken = ;")
+            .unwrap_err()
+            .code,
+        Error::Parse
+    );
     let mut direct = TreeFellerParser::new(parser.language().unwrap()).unwrap();
     assert_eq!(
         direct.parse("int broken = ;").unwrap_err().code,
@@ -197,18 +205,6 @@ fn callback_input_and_error_recovery() {
     assert!(!parser.parse("int good;").unwrap().root_node().has_error());
     drop(parser);
     assert_eq!(packed.root_node().byte_range(), 0..source.len());
-}
-
-fn assert_same_tree(actual: &Tree, expected: &Tree) {
-    assert_eq!(actual.as_bytes(), expected.as_bytes());
-    assert_eq!(
-        actual.point_data().map(|points| points.as_bytes()),
-        expected.point_data().map(|points| points.as_bytes()),
-    );
-    assert_eq!(
-        actual.presence_cache().map(|cache| cache.as_bytes()),
-        expected.presence_cache().map(|cache| cache.as_bytes()),
-    );
 }
 
 fn check_point(source: &[u8], byte: usize, point: tree_sitter::Point) {
@@ -296,8 +292,19 @@ fn direct_callback_chunks_match_contiguous() {
 
 #[test]
 fn direct_callback_failures_and_reuse() {
-    let language = Language::new(&c_language()).unwrap();
-    let mut parser = TreeFellerParser::new(&language).unwrap();
+    let mut parser = {
+        let language = Language::new(&c_language()).unwrap();
+        TreeFellerParser::new(&language).unwrap()
+    };
+    let first = parser.parse("int before;").unwrap();
+    let failure = parser.parse("int x;\n@").unwrap_err();
+    assert_eq!(failure.code, Error::Parse);
+    assert_eq!(failure.byte, 7);
+    assert_eq!(failure.point, tree_sitter::Point::new(1, 0));
+    assert_eq!(
+        parser.parse("int broken = ;").unwrap_err().code,
+        Error::Parse
+    );
     for source in [
         &b"int x;\n@"[..],
         &b"int broken = ;"[..],
@@ -339,6 +346,25 @@ fn direct_callback_failures_and_reuse() {
             PackedParseOptions::default(),
         )
         .unwrap();
+    let after = parser.parse("int f(void) { return 1; }").unwrap();
+    drop(parser);
+    assert_eq!(first.root_node().byte_range(), 0..11);
+    assert_eq!(
+        first
+            .root_node()
+            .named_child(tree_squatter::NamedChildIx::new(0))
+            .unwrap()
+            .kind(),
+        "declaration"
+    );
+    assert_eq!(
+        after
+            .root_node()
+            .named_child(tree_squatter::NamedChildIx::new(0))
+            .unwrap()
+            .kind(),
+        "function_definition"
+    );
 }
 
 fn check_packed<P>(parser: &mut P, source: &str) -> Tree
@@ -399,32 +425,33 @@ fn packed_options_progress_and_equivalence() {
             },
         )
         .unwrap();
-    assert_eq!(packed.as_bytes(), direct.as_bytes());
-    assert_eq!(
-        packed.point_data().unwrap().as_bytes(),
-        direct.point_data().unwrap().as_bytes()
-    );
-    assert_eq!(
-        packed.presence_cache().unwrap().as_bytes(),
-        direct.presence_cache().unwrap().as_bytes()
-    );
+    assert_same_tree(&packed, &direct);
 
     let mut parser = compatible(&language);
-    let tree = parser
-        .parse_with_options(
-            &mut |byte, _| &source.as_bytes()[byte..],
-            PackedParseOptions {
-                pack: PackOptions {
-                    points: false,
-                    symbol_presence: false,
-                    ..Default::default()
-                },
-                ..Default::default()
-            },
-        )
-        .unwrap();
-    assert!(tree.point_data().is_none());
-    assert!(tree.presence_cache().is_none());
+    let mut callbacks = 0;
+    let mut progress = |_: &dyn ParseStateLike| {
+        callbacks += 1;
+        ControlFlow::Continue(())
+    };
+    let mut options = PackedParseOptions {
+        parse: ParseOptions::new().progress_callback(&mut progress),
+        pack: PackOptions {
+            points: false,
+            symbol_presence: false,
+            ..Default::default()
+        },
+    };
+    for source in ["int first;", "int second;"] {
+        let tree = parser
+            .parse_with_options(
+                &mut |byte, _| &source.as_bytes()[byte..],
+                options.reborrow(),
+            )
+            .unwrap();
+        assert!(tree.point_data().is_none());
+        assert!(tree.presence_cache().is_none());
+    }
+    assert!(callbacks >= 2);
 }
 
 fn check_cancellation<P: Parse<Error = ParserError>>(
@@ -474,7 +501,7 @@ fn check_cancellation<P: Parse<Error = ParserError>>(
 }
 
 #[test]
-fn cancellation_in_both_phases_and_reuse() {
+fn cancellation_and_packing_failure_allow_reuse() {
     let language = Language::new(&c_language()).unwrap();
     let source = "int value = 123;\n".repeat(1000);
     let mut parser = compatible(&language);
@@ -484,12 +511,7 @@ fn cancellation_in_both_phases_and_reuse() {
     let mut native = tree_sitter::Parser::new();
     native.set_language(&c_language()).unwrap();
     check_cancellation(&mut native, &source, false);
-}
 
-#[test]
-fn packing_failure_and_reuse() {
-    let language = Language::new(&c_language()).unwrap();
-    let mut parser = compatible(&language);
     let options = PackedParseOptions {
         pack: PackOptions {
             initial_group_capacity: u32::MAX,
@@ -524,34 +546,4 @@ fn native_trait_discards_previously_interrupted_parse() {
     let tree = Parse::parse(&mut parser, "int other;").unwrap();
     assert_eq!(tree.root_node().byte_range(), 0..10);
     assert!(!tree.root_node().has_error());
-}
-
-#[test]
-fn options_reborrow_preserves_callback_and_pack_settings() {
-    let language = Language::new(&c_language()).unwrap();
-    let mut parser = compatible(&language);
-    let mut callbacks = 0;
-    let mut progress = |_: &dyn ParseStateLike| {
-        callbacks += 1;
-        ControlFlow::Continue(())
-    };
-    let mut options = PackedParseOptions {
-        parse: ParseOptions::new().progress_callback(&mut progress),
-        pack: PackOptions {
-            points: false,
-            symbol_presence: false,
-            ..Default::default()
-        },
-    };
-    for source in ["int first;", "int second;"] {
-        let tree = parser
-            .parse_with_options(
-                &mut |byte, _| &source.as_bytes()[byte..],
-                options.reborrow(),
-            )
-            .unwrap();
-        assert!(tree.point_data().is_none());
-        assert!(tree.presence_cache().is_none());
-    }
-    assert!(callbacks >= 2);
 }

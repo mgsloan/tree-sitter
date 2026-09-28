@@ -216,7 +216,9 @@ denominator includes those grammars; per-file supertype IDs and match counts are
 recorded so this early-rejection effect is visible.
 
 `fixed_N.{nodes,count,fold}` and `dynamic_N.{nodes,count,fold}` compare arrays and
-reusable sets for N = 1, 2, 4, 8, 16 frequent named kinds. Field variants are
+reusable sets for N = 1, 2, 4, 8, 16 frequent named kinds. Use
+`dynamic_1.{nodes,count,fold}` for single-kind scans; these replace the duplicate
+`kind.{nodes,count,fold}` workloads. Field variants are
 `fixed_field_N`, `dynamic_field_N`, and `scalar_field_N`, for N = 1, 2, 4 frequent
 nonzero fields (or zero when none exists). If fewer distinct IDs are available,
 arrays repeat the first selected ID; dynamic sets deduplicate the same selection.

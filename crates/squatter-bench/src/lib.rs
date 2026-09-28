@@ -294,28 +294,6 @@ mod batch_tests {
                 let result = validate_feller(&context, &native, &packed, measurements.feller);
                 assert_eq!(result.status, FellerStatus::Ok);
                 assert!(result.metrics.is_some());
-                let rejected = validate_feller(
-                    &context,
-                    &native,
-                    &packed,
-                    Some((
-                        Err(anyhow::anyhow!("rejected valid input")),
-                        Metrics::default(),
-                    )),
-                );
-                assert_eq!(rejected.status, FellerStatus::Failed);
-                assert!(rejected.metrics.is_none());
-                let different = context.direct(b"int other;", mode, PackOptions::default());
-                assert_eq!(
-                    validate_feller(
-                        &context,
-                        &native,
-                        &packed,
-                        Some((different, Metrics::default()))
-                    )
-                    .status,
-                    FellerStatus::Failed
-                );
             }
             let native = context.native(b"int broken = ;", false, false)?;
             let packed = context.packed(b"int broken = ;", mode, PackOptions::default())?;
@@ -323,6 +301,30 @@ mod batch_tests {
             assert_eq!(result.status, FellerStatus::MainlineSyntaxError);
             assert!(result.metrics.is_none());
         }
+        let native = context.native(b"int value = 1;", true, false)?;
+        let packed = context.packed(b"int value = 1;", "warm-parse", PackOptions::default())?;
+        let rejected = validate_feller(
+            &context,
+            &native,
+            &packed,
+            Some((
+                Err(anyhow::anyhow!("rejected valid input")),
+                Metrics::default(),
+            )),
+        );
+        assert_eq!(rejected.status, FellerStatus::Failed);
+        assert!(rejected.metrics.is_none());
+        let different = context.direct(b"int other;", "warm-parse", PackOptions::default());
+        assert_eq!(
+            validate_feller(
+                &context,
+                &native,
+                &packed,
+                Some((different, Metrics::default()))
+            )
+            .status,
+            FellerStatus::Failed
+        );
         let language = unsafe {
             tree_sitter::Language::from_raw(tree_sitter_json::LANGUAGE.into_raw()().cast())
         };

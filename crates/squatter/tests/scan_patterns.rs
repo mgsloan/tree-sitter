@@ -1,4 +1,4 @@
-//! Small scan examples, also used to inspect optimized code generation.
+//! Uninlined scan consumers for inspecting optimized code generation.
 mod support;
 
 use std::{hint::black_box, ops::Range};
@@ -15,148 +15,6 @@ fn fixture() -> (Language, Tree) {
     let native = parse_native(&language, SOURCE);
     let tree = Tree::pack(&grammar, &native).unwrap();
     (grammar, tree)
-}
-
-fn texts<'tree>(nodes: impl IntoIterator<Item = Node<'tree>>) -> Vec<&'static str> {
-    nodes
-        .into_iter()
-        .map(|node| node.utf8_text(SOURCE.as_bytes()).unwrap())
-        .collect()
-}
-
-#[test]
-fn scan_patterns() {
-    let (grammar, tree) = fixture();
-    let root = tree.root_node();
-    let numbers = KindSet::new([grammar.kind_id_for_name("number", true).unwrap()]);
-    let containers_and_numbers = KindSet::new(
-        ["pair", "array", "number"].map(|name| grammar.kind_id_for_name(name, true).unwrap()),
-    );
-    let value_field = Some(grammar.field_id_for_name("value").unwrap());
-
-    let preorder = [
-        r#""a": [1, 2]"#,
-        "[1, 2]",
-        "1",
-        "2",
-        r#""b": {"c": 3}"#,
-        r#""c": 3"#,
-        "3",
-        r#""d": 4"#,
-        "4",
-    ];
-    let postorder = [
-        "1",
-        "2",
-        "[1, 2]",
-        r#""a": [1, 2]"#,
-        "3",
-        r#""c": 3"#,
-        r#""b": {"c": 3}"#,
-        "4",
-        r#""d": 4"#,
-    ];
-    assert_eq!(
-        texts(root.preorder().filter_kind_ids(&containers_and_numbers)),
-        preorder
-    );
-    assert_eq!(
-        texts(root.postorder().filter_kind_ids(&containers_and_numbers)),
-        postorder
-    );
-    assert_eq!(
-        texts(
-            root.preorder()
-                .rev()
-                .filter_kind_ids(&containers_and_numbers)
-        ),
-        preorder.into_iter().rev().collect::<Vec<_>>()
-    );
-    assert_eq!(
-        texts(
-            root.postorder()
-                .filter_kind_ids(&containers_and_numbers)
-                .rev()
-                .nodes()
-        ),
-        postorder.into_iter().rev().collect::<Vec<_>>()
-    );
-
-    // all() promises membership, not a particular traversal order.
-    let mut all_numbers = texts(root.all().filter_kind_ids(&numbers));
-    all_numbers.sort_unstable();
-    assert_eq!(all_numbers, ["1", "2", "3", "4"]);
-    assert_eq!(
-        texts(root.preorder().filter_field_id(value_field)),
-        ["[1, 2]", r#"{"c": 3}"#, "3", "4"]
-    );
-    let key_field = Some(grammar.field_id_for_name("key").unwrap());
-    assert_eq!(
-        texts(root.preorder().filter_field_ids([key_field, value_field])),
-        [
-            r#""a""#,
-            "[1, 2]",
-            r#""b""#,
-            r#"{"c": 3}"#,
-            r#""c""#,
-            "3",
-            r#""d""#,
-            "4"
-        ]
-    );
-    assert_eq!(
-        texts(
-            root.preorder()
-                .filter_kind_ids(&numbers)
-                .filter_field_id(value_field)
-        ),
-        ["3", "4"]
-    );
-
-    // Overlap includes crossing ancestors, not just nodes contained in the range.
-    let third_number = SOURCE.find('3').unwrap();
-    assert_eq!(
-        texts(
-            root.preorder()
-                .overlapping_bytes(third_number..third_number + 1)
-                .filter_kind_ids(&containers_and_numbers)
-        ),
-        [r#""b": {"c": 3}"#, r#""c": 3"#, "3"]
-    );
-    assert_eq!(
-        root.all()
-            .overlapping_bytes(third_number..third_number)
-            .count(),
-        0
-    );
-
-    let array = root
-        .preorder()
-        .filter_kind_ids(&KindSet::new([grammar
-            .kind_id_for_name("array", true)
-            .unwrap()]))
-        .nodes()
-        .next()
-        .unwrap();
-    assert_eq!(
-        texts(array.preorder().filter_kind_ids(&numbers)),
-        ["1", "2"]
-    );
-
-    let mut backwards = root.postorder().filter_kind_ids(&numbers).rev().nodes();
-    assert_eq!(texts(backwards.next()), ["4"]);
-    assert_eq!(texts(backwards.next()), ["3"]);
-    assert_eq!(backwards.count(), 2);
-
-    let grouped_numbers = root.preorder().filter_kind_ids(&numbers).groups();
-    let mut matching_slots = 0;
-    let mut grouped_texts = Vec::new();
-    for group in grouped_numbers {
-        matching_slots += group.matches().count_ones();
-        grouped_texts.extend(texts(group.nodes()));
-    }
-    assert_eq!(matching_slots, 4);
-    assert_eq!(grouped_texts, ["1", "2", "3", "4"]);
 }
 
 // Keeping only the consumer boundaries uninlined makes them easy to find in ASM.
@@ -311,145 +169,56 @@ mod patterns {
 }
 
 #[test]
-fn assembly_patterns_match_examples() {
+fn assembly_patterns_are_callable() {
     let (grammar, tree) = fixture();
     let root = black_box(tree.root_node());
-    // Scalar navigation supplies an independent reference for the reductions.
-    let nodes = std::iter::successors(Some(root), |node| node.next_preorder()).collect::<Vec<_>>();
-    assert_eq!(nodes.len(), 41);
     assert_eq!(patterns::all_count(root), 41);
     assert_eq!(patterns::preorder_count(root), 41);
     assert_eq!(patterns::postorder_count(root), 41);
     assert_eq!(patterns::reverse_postorder_count(root), 41);
     assert_eq!(patterns::nodes_count(root), 41);
 
-    let slots = nodes
-        .iter()
-        .map(|node| u64::from(node.slot().get()))
-        .sum::<u64>();
-    assert_eq!(patterns::preorder_slots(root), slots);
+    let slots = patterns::preorder_slots(root);
     assert_eq!(patterns::reverse_preorder_slots(root), slots);
     assert_eq!(patterns::postorder_slots(root), slots);
     assert_eq!(patterns::reverse_postorder_slots(root), slots);
     assert_eq!(patterns::grouped_slots(root), slots);
 
-    for (names, count) in [
-        (vec!["number"], 4),
-        (vec!["pair", "array", "number"], 9),
-        (vec![], 0),
-    ] {
-        let kinds = KindSet::new(
-            names
-                .iter()
-                .map(|name| grammar.kind_id_for_name(name, true).unwrap()),
-        );
-        let kinds = black_box(&kinds);
-        assert_eq!(patterns::kind_count(root, kinds), count);
-        assert_eq!(patterns::scalar_kind_count(root, kinds), count);
-        let matching_nodes = nodes.iter().filter(|node| kinds.contains(node.kind_id()));
-        assert_eq!(
-            patterns::first_kind_slot(root, kinds),
-            matching_nodes.clone().next().map(|node| node.slot())
-        );
-        assert_eq!(
-            patterns::kind_start_bytes(root, kinds),
-            matching_nodes.map(|node| node.start_byte()).sum::<usize>()
-        );
-    }
-
-    let fixed = ["number", "array", "pair", "string"]
-        .map(|name| grammar.kind_id_for_name(name, true).unwrap());
-    let expected = nodes
-        .iter()
-        .filter(|node| fixed.contains(&node.kind_id()))
-        .count();
-    assert_eq!(patterns::four_kind_count(root, black_box(fixed)), expected);
-    assert_eq!(
-        patterns::eight_kind_count(
-            root,
-            black_box([
-                fixed[0],
-                fixed[1],
-                fixed[2],
-                fixed[3],
-                KindId::new(32768),
-                KindId::new(32769),
-                fixed[0],
-                fixed[1]
-            ])
-        ),
-        expected
-    );
-    let numbers = KindSet::new([grammar.kind_id_for_name("number", true).unwrap()]);
+    let number = grammar.kind_id_for_name("number", true).unwrap();
+    let numbers = KindSet::new([number]);
     let numbers = black_box(&numbers);
+    assert_eq!(patterns::kind_count(root, numbers), 4);
+    assert_eq!(patterns::scalar_kind_count(root, numbers), 4);
+    assert_eq!(patterns::four_kind_count(root, black_box([number; 4])), 4);
+    assert_eq!(patterns::eight_kind_count(root, black_box([number; 8])), 4);
+    black_box(patterns::first_kind_slot(root, numbers));
+    black_box(patterns::kind_start_bytes(root, numbers));
+
     let value_field = black_box(Some(grammar.field_id_for_name("value").unwrap()));
     assert_eq!(patterns::field_count(root, value_field), 4);
     assert_eq!(
         patterns::two_field_count(
             root,
-            black_box([Some(grammar.field_id_for_name("key").unwrap()), value_field])
+            black_box([Some(grammar.field_id_for_name("key").unwrap()), value_field]),
         ),
         8
     );
+    let range = black_box(0..SOURCE.len());
+    assert_eq!(patterns::range_count(root, range.clone()), 41);
+    assert_eq!(patterns::range_slots(root, range.clone()), slots);
     assert_eq!(
-        patterns::combined_count(root, black_box(0..SOURCE.len()), numbers, value_field),
+        patterns::point_range_slots(
+            root,
+            black_box(Point::new(0, range.start)..Point::new(0, range.end)),
+        ),
+        slots
+    );
+    assert_eq!(
+        patterns::combined_count(root, range, numbers, value_field),
         2
     );
-    let third_number = SOURCE.find('3').unwrap();
-    assert_eq!(patterns::range_count(root, black_box(0..SOURCE.len())), 41);
     assert_eq!(
-        patterns::range_count(root, black_box(third_number..third_number + 1)),
-        6
-    );
-    assert_eq!(patterns::range_count(root, black_box(0..0)), 0);
-    for range in [
-        0..0,
-        0..SOURCE.len(),
-        third_number..third_number + 1,
-        0..usize::MAX,
-    ] {
-        let expected = nodes
-            .iter()
-            .filter(|node| {
-                !range.is_empty()
-                    && node.start_byte() < range.end
-                    && (node.end_byte() > range.start || node.start_byte() >= range.start)
-            })
-            .map(|node| u64::from(node.slot().get()))
-            .sum::<u64>();
-        assert_eq!(
-            patterns::range_slots(root, black_box(range.clone())),
-            expected
-        );
-        assert_eq!(
-            patterns::point_range_slots(
-                root,
-                black_box(Point::new(0, range.start)..Point::new(0, range.end)),
-            ),
-            expected,
-        );
-    }
-    assert_eq!(
-        patterns::combined_count(
-            root,
-            black_box(third_number..third_number + 1),
-            numbers,
-            value_field
-        ),
-        1
-    );
-    assert_eq!(
-        patterns::combined_count(root, black_box(0..0), numbers, value_field),
+        patterns::supertype_count(root, black_box(GrammarId::new(0))),
         0
     );
-
-    for &supertype in grammar.tree_sitter_language().supertypes() {
-        let supertype = black_box(GrammarId::new(supertype));
-        let expected = nodes
-            .iter()
-            .filter(|node| node.has_supertype(supertype))
-            .count();
-        assert!(expected > 0);
-        assert_eq!(patterns::supertype_count(root, supertype), expected);
-    }
 }

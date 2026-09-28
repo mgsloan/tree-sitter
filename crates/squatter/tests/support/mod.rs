@@ -15,7 +15,7 @@ pub fn c_sharp_language() -> Language {
     unsafe { Language::from_raw(tree_sitter_c_sharp::LANGUAGE.into_raw()().cast()) }
 }
 
-pub fn parse_native(language: &Language, source: &str) -> Tree {
+pub fn parse_native(language: &Language, source: impl AsRef<[u8]>) -> Tree {
     let mut parser = tree_sitter::Parser::new();
     parser.set_language(language).unwrap();
     parser.parse(source, None).unwrap()
@@ -62,7 +62,16 @@ pub fn native_query_results(
     source: &[u8],
     captures: bool,
 ) -> Vec<QueryResult> {
-    let mut cursor = QueryCursor::new();
+    native_query_results_with_cursor(&mut QueryCursor::new(), query, root, source, captures)
+}
+
+pub fn native_query_results_with_cursor(
+    cursor: &mut QueryCursor,
+    query: &Query,
+    root: Node<'_>,
+    source: &[u8],
+    captures: bool,
+) -> Vec<QueryResult> {
     let mut results = Vec::new();
     let mut append = |result: &tree_sitter::QueryMatch<'_, '_>, index| {
         results.push((
@@ -123,4 +132,86 @@ where
     }
     assert_eq!(items.next(), None);
     assert_eq!(items.next(), None);
+}
+
+pub fn assert_same_tree(actual: &tree_squatter::Tree, expected: &tree_squatter::Tree) {
+    assert_eq!(actual.as_bytes(), expected.as_bytes());
+    assert_eq!(
+        actual.point_data().map(|points| points.as_bytes()),
+        expected.point_data().map(|points| points.as_bytes()),
+    );
+    assert_eq!(
+        actual.presence_cache().map(|cache| cache.as_bytes()),
+        expected.presence_cache().map(|cache| cache.as_bytes()),
+    );
+}
+
+pub fn pack_native(
+    language: &Language,
+    source: &str,
+    options: tree_squatter::PackOptions,
+) -> (Tree, tree_squatter::Tree) {
+    let native = parse_native(language, source);
+    let packed = tree_squatter::Tree::pack_with_options(
+        &tree_squatter::Language::new(language).unwrap(),
+        &native,
+        options,
+    )
+    .unwrap();
+    (native, packed)
+}
+
+pub fn query_snapshot(
+    found: &tree_squatter::QueryMatch<'_, '_>,
+    index: Option<tree_squatter::MatchCaptureIx>,
+) -> QueryResult {
+    (
+        found.pattern_index.0,
+        index.map(|index| index.0 as usize),
+        found
+            .captures()
+            .iter()
+            .map(|capture| {
+                describe_capture(
+                    capture.index.0,
+                    capture.node.kind_id(),
+                    capture.node.byte_range(),
+                )
+            })
+            .collect(),
+    )
+}
+
+pub fn query_results(
+    cursor: &mut tree_squatter::QueryCursor,
+    query: &tree_squatter::Query,
+    root: tree_squatter::Node<'_>,
+    source: &[u8],
+    captures: bool,
+) -> Vec<QueryResult> {
+    let mut execution = cursor.execute(query, root, source);
+    let mut results = Vec::new();
+    loop {
+        let next = if captures {
+            execution
+                .next_capture()
+                .map(|(found, index)| (found, Some(index)))
+        } else {
+            execution.next_match().map(|found| (found, None))
+        };
+        let Some((found, index)) = next else { break };
+        results.push(query_snapshot(&found, index));
+        assert!(results.len() < 100_000, "unexpected query result explosion");
+    }
+    assert_eq!(execution.error(), None);
+    results
+}
+
+pub fn capture_set(
+    results: Vec<QueryResult>,
+) -> std::collections::BTreeSet<(usize, CaptureDescription)> {
+    results
+        .into_iter()
+        .map(|(pattern, index, captures)| (pattern, captures[index.unwrap()]))
+        .collect()
 }
