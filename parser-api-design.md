@@ -14,7 +14,7 @@ direct-parser progress callback design below describes that experiment.
 ## Scope
 
 `Parser` is the recommended entry point and returns packed `Tree` snapshots. It
-uses Tree-sitter to parse, then `PackContext` to pack. This supports Tree-sitter's
+uses Tree-sitter to parse, then `Packer` to pack. This supports Tree-sitter's
 error recovery for grammars accepted by `Language::new`. Do not select the
 direct backend automatically in this implementation: its grammar, input, and
 error behavior differs. A later fast path needs equivalent output and
@@ -196,7 +196,7 @@ pub enum ParserError {
     Pack(Error),
 }
 
-pub struct Parser { /* Tree-sitter parser, selected Language, PackContext */ }
+pub struct Parser { /* Tree-sitter parser, selected Language, Packer */ }
 
 impl Parser {
     pub fn new() -> Self;
@@ -223,7 +223,7 @@ impl ParseState {
 ```
 
 `new()` is infallible: initialize empty packing scratch without allocating
-(adding `Default` to `PackContext` if needed) and use Tree-sitter's infallible
+(adding `Default` to `Packer` if needed) and use Tree-sitter's infallible
 constructor. `set_language` assigns the underlying
 Tree-sitter language first, then retains a clone of the prepared `Language`.
 A failed selection preserves the previous language. `language()` returns that
@@ -358,7 +358,7 @@ packed benchmark build. Detailed local artifacts are in
    including associated tree and error types. Add shared `ParseOptions`,
    `PackedParseOptions`, and progress-state adapters. Share the callback
    input adapter where possible. Add the compatible `Parser` using
-   Tree-sitter and `PackContext`.
+   Tree-sitter and `Packer`.
 3. Add options, callback input, cancellation, and reset to the compatible parser.
 4. Add progress and cancellation to conversion traversal and finalization, then
    to tree-feller and its Rust wrapper.

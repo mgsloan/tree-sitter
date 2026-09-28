@@ -47,7 +47,7 @@ pub struct PackInput<'tree> {
     pub root: tree_sitter::Node<'tree>,
 }
 
-impl PackContext {
+impl Packer {
     pub fn pack_forest(
         &mut self,
         inputs: &[PackInput<'_>],

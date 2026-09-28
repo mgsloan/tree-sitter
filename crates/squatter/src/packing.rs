@@ -103,11 +103,11 @@ struct InputNode {
 ///
 /// **Not in Tree-sitter**
 #[derive(Default)]
-pub struct PackContext {
+pub struct Packer {
     traversal: traversal::Traversal,
 }
 
-impl PackContext {
+impl Packer {
     /// Creates empty reusable packing scratch.
     pub fn new() -> Result<Self, Error> {
         Ok(Self::default())
@@ -194,7 +194,7 @@ impl Tree {
         tree: &tree_sitter::Tree,
         options: PackOptions,
     ) -> Result<Self, Error> {
-        PackContext::new()?.pack_with_options(language, tree, options)
+        Packer::new()?.pack_with_options(language, tree, options)
     }
 
     /// Parses using the supplied tree-sitter parser, then packs the

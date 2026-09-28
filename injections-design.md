@@ -207,7 +207,7 @@ cache-key design are separate work.
 
 The packed host must be a whole host-tree root paired with the registry's host
 language/grammar and captured source. Validate that pairing before discovery.
-After parsing, pass only injection nodes to `PackContext::pack_forest`, preserving
+After parsing, pass only injection nodes to `Packer::pack_forest`, preserving
 the engine's chosen input order. Use its input-to-tree mapping to populate parsed
 layer states; never infer logical order from physical IDs. Adjacent same-grammar
 inputs share a region; nested injections may create further regions for a

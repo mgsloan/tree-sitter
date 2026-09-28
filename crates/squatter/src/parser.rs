@@ -2,7 +2,7 @@ use std::ops::ControlFlow;
 use tree_sitter::Point;
 
 use crate::{
-    Error, Language, PackContext, PackOptions, Tree,
+    Error, Language, PackOptions, Packer, Tree,
     native::NativeParser,
     packing::Progress,
     traits::{Parse, ParseStateLike},
@@ -162,7 +162,7 @@ impl From<Error> for ParserError {
 pub struct Parser {
     native: tree_sitter::Parser,
     language: Option<Language>,
-    pack: PackContext,
+    pack: Packer,
 }
 
 impl Parser {
@@ -343,7 +343,7 @@ impl From<Error> for ParseError {
 /// The [`Parse`] implementation ignores progress and cancellation callbacks.
 pub struct TreeFellerParser {
     native: NativeParser,
-    pack: PackContext,
+    pack: Packer,
 }
 
 impl TreeFellerParser {
@@ -351,7 +351,7 @@ impl TreeFellerParser {
     pub fn new(language: &Language) -> Result<Self, ParseError> {
         Ok(Self {
             native: NativeParser::new(language)?,
-            pack: PackContext::default(),
+            pack: Packer::default(),
         })
     }
 

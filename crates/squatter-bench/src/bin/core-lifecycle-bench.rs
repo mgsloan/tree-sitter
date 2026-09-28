@@ -3,7 +3,7 @@ use anyhow::{Context, Result, ensure};
 use clap::Parser;
 use corpus_analysis::{LoadedGrammar, Registry, digest, digest_file};
 use std::{fs, hint::black_box, mem::MaybeUninit, path::PathBuf, sync::Arc, time::Instant};
-use tree_squatter::{Language, PackContext, PackOptions, Query, StableSlab, Tree};
+use tree_squatter::{Language, PackOptions, Packer, Query, StableSlab, Tree};
 
 #[derive(Parser, serde::Serialize)]
 struct Arguments {
@@ -49,7 +49,7 @@ struct Case<'input> {
     language: Language,
     cache: Vec<u8>,
     tree: Arc<Tree>,
-    packer: PackContext,
+    packer: Packer,
     compact: Vec<MaybeUninit<u8>>,
     options: PackOptions,
 }
@@ -237,7 +237,7 @@ fn main() -> Result<()> {
             language: owner,
             compact: vec![MaybeUninit::uninit(); tree.compact_size()],
             tree,
-            packer: PackContext::new()?,
+            packer: Packer::new()?,
             options,
         };
         for &workload in WORKLOADS {

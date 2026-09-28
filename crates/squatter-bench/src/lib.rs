@@ -19,7 +19,7 @@ use std::{
     time::Duration,
 };
 use tree_sitter::Point;
-use tree_squatter::{PackContext, PackOptions, Tree};
+use tree_squatter::{PackOptions, Packer, Tree};
 
 pub const BACKEND: &str = "rust";
 
@@ -402,7 +402,7 @@ struct ParseContext {
     language: tree_squatter::Language,
     mainline: tree_sitter::Parser,
     packing_parser: tree_sitter::Parser,
-    pack: PackContext,
+    pack: Packer,
     feller: Option<Result<tree_squatter::TreeFellerParser, tree_squatter::ParseError>>,
 }
 
@@ -426,7 +426,7 @@ impl ParseContext {
             language,
             mainline,
             packing_parser,
-            pack: PackContext::new()?,
+            pack: Packer::new()?,
             feller,
         })
     }

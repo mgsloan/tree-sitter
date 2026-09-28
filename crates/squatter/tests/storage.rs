@@ -3,7 +3,7 @@ mod support;
 use support::assert_same_tree;
 use support::{c_language, c_sharp_language, json_language};
 
-use tree_squatter::{Language, PackContext, PackOptions, Tree};
+use tree_squatter::{Language, PackOptions, Packer, Tree};
 
 #[test]
 fn slab_headers_reject_incompatible_formats() {
@@ -91,7 +91,7 @@ fn packing_context_matches_fresh_packing_and_loading() {
         let fresh_grammar = tree_squatter::Language::new(&language).unwrap();
         let mut parser = tree_sitter::Parser::new();
         parser.set_language(&language).unwrap();
-        let mut context = PackContext::new().unwrap();
+        let mut context = Packer::new().unwrap();
 
         for source in sources {
             let tree = parser.parse(source, None).unwrap();

@@ -1079,7 +1079,7 @@ fn packing_rejects_wrong_grammar_and_recovers_after_overflow() {
     let mut parser = tree_sitter::Parser::new();
     parser.set_language(&language).unwrap();
     let native = parser.parse("\nx", None).unwrap();
-    let mut context = PackContext::new().unwrap();
+    let mut context = Packer::new().unwrap();
     assert_eq!(
         context.pack(&other.grammar, &native).unwrap_err(),
         Error::Language
