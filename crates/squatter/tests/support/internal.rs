@@ -1,5 +1,5 @@
 use super::*;
-use crate::{GrammarId, SlotIx, TreeFellerParser};
+use crate::{GrammarId, PackedParseOptions, SlotIx, TreeFellerParser};
 use std::ffi::c_void;
 
 unsafe extern "C" {
@@ -151,7 +151,7 @@ fn callback_input_during_ambiguity_replay() {
         let mut maximum = 0;
         let mut replays = 0;
         let actual = parser
-            .parse_with_callback(
+            .parse_with_options(
                 &mut |byte, _| {
                     if byte == 0 && maximum > 0 {
                         replays += 1;
@@ -159,7 +159,7 @@ fn callback_input_during_ambiguity_replay() {
                     maximum = maximum.max(byte);
                     source[byte..(byte + chunk_size).min(source.len())].to_vec()
                 },
-                PackOptions::default(),
+                PackedParseOptions::default(),
             )
             .unwrap();
         assert!(replays > 0);
@@ -171,13 +171,13 @@ fn callback_input_during_ambiguity_replay() {
     }
     let mut maximum = 0;
     let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        parser.parse_with_callback(
+        parser.parse_with_options(
             &mut |byte, _| {
                 assert!(byte != 0 || maximum == 0, "panic during replay");
                 maximum = maximum.max(byte);
                 source[byte..(byte + 1).min(source.len())].to_vec()
             },
-            PackOptions::default(),
+            PackedParseOptions::default(),
         )
     }));
     assert!(panic.is_err());
@@ -215,7 +215,13 @@ fn lexer_fallback_and_concurrent_parser_preparation() {
                     assert!(parser.parse("?").is_err());
                     assert_eq!(
                         parser
-                            .parse_with_options("\nx", options)
+                            .parse_with_options(
+                                &mut |byte, _| &b"\nx"[byte..],
+                                PackedParseOptions {
+                                    pack: options,
+                                    ..Default::default()
+                                }
+                            )
                             .unwrap()
                             .as_bytes(),
                         expected.as_bytes()
@@ -223,7 +229,13 @@ fn lexer_fallback_and_concurrent_parser_preparation() {
                     parser.drop_scratch();
                     assert_eq!(
                         parser
-                            .parse_with_options("\nx", options)
+                            .parse_with_options(
+                                &mut |byte, _| &b"\nx"[byte..],
+                                PackedParseOptions {
+                                    pack: options,
+                                    ..Default::default()
+                                }
+                            )
                             .unwrap()
                             .as_bytes(),
                         expected.as_bytes()

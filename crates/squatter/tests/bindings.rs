@@ -439,7 +439,7 @@ fn owned_and_borrowed_storage() -> Result<(), Box<dyn Error>> {
 
 #[test]
 fn direct_parser_matches_mainline_packing() -> Result<(), Box<dyn Error>> {
-    use tree_squatter::{Language, TreeFellerParser};
+    use tree_squatter::{Language, PackedParseOptions, TreeFellerParser};
 
     let language = c_language();
     let grammar = Language::new(&language)?;
@@ -477,7 +477,13 @@ fn direct_parser_matches_mainline_packing() -> Result<(), Box<dyn Error>> {
                     symbol_presence,
                     points,
                 };
-                let direct = direct_parser.parse_with_options(&source, options)?;
+                let direct = direct_parser.parse_with_options(
+                    &mut |byte, _| &source.as_bytes()[byte..],
+                    PackedParseOptions {
+                        pack: options,
+                        ..Default::default()
+                    },
+                )?;
                 let expected = Tree::pack_with_options(&grammar, &native, options)?;
                 assert_eq!(direct.as_bytes(), expected.as_bytes());
                 assert_eq!(

@@ -5,7 +5,7 @@ use crate::{
     Error, Language, PackContext, PackOptions, Tree,
     native::NativeParser,
     packing::Progress,
-    traits::{Parse, ParseStateLike, ParseWithCallback},
+    traits::{Parse, ParseStateLike},
 };
 
 /// Controls parsing for native and packed output.
@@ -190,23 +190,15 @@ impl Parser {
         Parse::parse(self, source)
     }
 
-    pub fn parse_with_options(
-        &mut self,
-        source: impl AsRef<[u8]>,
-        options: PackedParseOptions<'_>,
-    ) -> Result<Tree, ParserError> {
-        Parse::parse_with_options(self, source, options)
-    }
-
     /// Returns bytes starting at the requested offset; an empty chunk ends input.
     /// Chunk sizes and input offsets must fit Tree-sitter's u32 representation.
     /// Sizes are not checked on this path.
-    pub fn parse_with_callback<T: AsRef<[u8]>, F: FnMut(usize, Point) -> T>(
+    pub fn parse_with_options<T: AsRef<[u8]>, F: FnMut(usize, Point) -> T>(
         &mut self,
         callback: &mut F,
         options: PackedParseOptions<'_>,
     ) -> Result<Tree, ParserError> {
-        ParseWithCallback::parse_with_callback(self, callback, options)
+        Parse::parse_with_options(self, callback, options)
     }
 
     /// Releases packing scratch while retaining the selected language.
@@ -220,21 +212,15 @@ impl Parse for Parser {
     type Error = ParserError;
     type Options<'a> = PackedParseOptions<'a>;
 
-    fn parse_with_options(
-        &mut self,
-        source: impl AsRef<[u8]>,
-        options: PackedParseOptions<'_>,
-    ) -> Result<Tree, ParserError> {
+    fn parse(&mut self, source: impl AsRef<[u8]>) -> Result<Tree, ParserError> {
         let source = source.as_ref();
         if source.len() > u32::MAX as usize {
             return Err(ParserError::Pack(Error::Overflow));
         }
-        self.parse_with_callback(&mut slice_callback(source), options)
+        self.parse_with_options(&mut slice_callback(source), PackedParseOptions::default())
     }
-}
 
-impl ParseWithCallback for Parser {
-    fn parse_with_callback<T: AsRef<[u8]>, F: FnMut(usize, Point) -> T>(
+    fn parse_with_options<T: AsRef<[u8]>, F: FnMut(usize, Point) -> T>(
         &mut self,
         callback: &mut F,
         mut options: PackedParseOptions<'_>,
@@ -302,17 +288,7 @@ impl Parse for tree_sitter::Parser {
     type Error = ParserError;
     type Options<'a> = ParseOptions<'a>;
 
-    fn parse_with_options(
-        &mut self,
-        source: impl AsRef<[u8]>,
-        options: ParseOptions<'_>,
-    ) -> Result<tree_sitter::Tree, ParserError> {
-        ParseWithCallback::parse_with_callback(self, &mut slice_callback(source.as_ref()), options)
-    }
-}
-
-impl ParseWithCallback for tree_sitter::Parser {
-    fn parse_with_callback<T: AsRef<[u8]>, F: FnMut(usize, Point) -> T>(
+    fn parse_with_options<T: AsRef<[u8]>, F: FnMut(usize, Point) -> T>(
         &mut self,
         callback: &mut F,
         options: ParseOptions<'_>,
@@ -363,7 +339,7 @@ impl From<Error> for ParseError {
 /// Syntax errors are returned rather than recovered; no mainline tree is built.
 /// Raw reductions are buffered for the whole parse before column encoding.
 /// Output trees own their storage and remain valid across reuse or parser drop.
-/// Progress callbacks are unsupported, so this backend does not implement [`Parse`].
+/// The [`Parse`] implementation ignores progress and cancellation callbacks.
 pub struct TreeFellerParser {
     native: NativeParser,
     pack: PackContext,
@@ -383,11 +359,10 @@ impl TreeFellerParser {
     }
 
     pub fn parse(&mut self, source: impl AsRef<[u8]>) -> Result<Tree, ParseError> {
-        self.parse_with_options(source, PackOptions::default())
+        Parse::parse(self, source)
     }
 
-    /// Parses a fresh document. Failure does not prevent subsequent reuse.
-    pub fn parse_with_options(
+    fn parse_contiguous(
         &mut self,
         source: impl AsRef<[u8]>,
         options: PackOptions,
@@ -404,22 +379,44 @@ impl TreeFellerParser {
     /// the callback must expose the same document throughout the parse.
     /// Chunks may split UTF-8 characters and may be borrowed or owned.
     /// Input exceeding the 32-bit byte limit returns [`Error::Overflow`].
-    pub fn parse_with_callback<T: AsRef<[u8]>, F: FnMut(usize, Point) -> T>(
+    /// Progress and cancellation callbacks are ignored during parsing and packing.
+    pub fn parse_with_options<T: AsRef<[u8]>, F: FnMut(usize, Point) -> T>(
         &mut self,
         callback: &mut F,
-        options: PackOptions,
+        options: PackedParseOptions<'_>,
     ) -> Result<Tree, ParseError> {
-        let reductions = self.native.parse_with_callback(callback)?;
-        let (nodes, root) = reductions.nodes();
-        Ok(self
-            .pack
-            .pack_reductions(reductions.language(), nodes, root, options)?)
+        Parse::parse_with_options(self, callback, options)
     }
 
     /// Release high-water scratch while retaining the prepared language.
     pub fn drop_scratch(&mut self) {
         self.native.drop_scratch();
         self.pack.drop_scratch();
+    }
+}
+
+/// The progress/cancellation callback in [`PackedParseOptions::parse`] is ignored
+/// and never called. The input callback is used normally; neither parsing nor
+/// packing can be canceled through the progress callback.
+impl Parse for TreeFellerParser {
+    type Tree = Tree;
+    type Error = ParseError;
+    type Options<'a> = PackedParseOptions<'a>;
+
+    fn parse(&mut self, source: impl AsRef<[u8]>) -> Result<Tree, ParseError> {
+        self.parse_contiguous(source, PackOptions::default())
+    }
+
+    fn parse_with_options<T: AsRef<[u8]>, F: FnMut(usize, Point) -> T>(
+        &mut self,
+        callback: &mut F,
+        options: PackedParseOptions<'_>,
+    ) -> Result<Tree, ParseError> {
+        let reductions = self.native.parse_chunks(callback)?;
+        let (nodes, root) = reductions.nodes();
+        Ok(self
+            .pack
+            .pack_reductions(reductions.language(), nodes, root, options.pack)?)
     }
 }
 
@@ -435,6 +432,6 @@ impl Tree {
         source: impl AsRef<[u8]>,
         options: PackOptions,
     ) -> Result<Self, ParseError> {
-        TreeFellerParser::new(language)?.parse_with_options(source, options)
+        TreeFellerParser::new(language)?.parse_contiguous(source, options)
     }
 }

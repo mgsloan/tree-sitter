@@ -170,7 +170,7 @@ fn reuse_cancelled_parser_for_whole_file_load() {
     assert!(
         parser
             .parse_with_options(
-                &source,
+                &mut |byte, _| &source.as_bytes()[byte..],
                 ParseOptions::new().progress_callback(&mut cancel).into()
             )
             .is_err()

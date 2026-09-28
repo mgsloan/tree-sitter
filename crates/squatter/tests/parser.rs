@@ -5,7 +5,7 @@ use support::{c_language, json_language};
 use tree_squatter::{
     Error, Language, PackOptions, PackedParseOptions, ParseOptions, Parser, ParserError, Tree,
     TreeFellerParser,
-    traits::{NodeLike, Parse, ParseStateLike, ParseWithCallback, TreeLike},
+    traits::{NodeLike, Parse, ParseStateLike, TreeLike},
 };
 
 fn compatible(language: &Language) -> Parser {
@@ -28,7 +28,7 @@ where
     };
     let tree = parser
         .parse_with_options(
-            source,
+            &mut |byte, _| &source.as_bytes()[byte..],
             ParseOptions::new().progress_callback(&mut progress).into(),
         )
         .unwrap();
@@ -42,7 +42,7 @@ fn shared_traits_and_no_language() {
     assert_eq!(parser.parse("x").unwrap_err(), ParserError::NoLanguage);
     assert_eq!(
         parser
-            .parse_with_callback(&mut |_, _| b"" as &[u8], Default::default())
+            .parse_with_options(&mut |_, _| b"" as &[u8], Default::default())
             .unwrap_err(),
         ParserError::NoLanguage
     );
@@ -52,31 +52,72 @@ fn shared_traits_and_no_language() {
         ParserError::NoLanguage
     );
     assert_eq!(
-        ParseWithCallback::parse_with_callback(
-            &mut native,
-            &mut |_, _| b"" as &[u8],
-            Default::default()
-        )
-        .unwrap_err(),
+        Parse::parse_with_options(&mut native, &mut |_, _| b"" as &[u8], Default::default())
+            .unwrap_err(),
         ParserError::NoLanguage
     );
 
     let language = Language::new(&c_language()).unwrap();
     parser.set_language(&language).unwrap();
     native.set_language(&c_language()).unwrap();
-    let direct = TreeFellerParser::new(&language).unwrap();
+    let mut direct = TreeFellerParser::new(&language).unwrap();
     assert_eq!(direct.language().tree_sitter_language(), c_language());
     check_generic(&mut parser);
     check_generic(&mut native);
+    check_generic(&mut direct);
+    let source = b"int value;\n";
+    assert_same_tree(
+        &callback_tree(&mut direct, source),
+        &Parse::parse(&mut direct, source).unwrap(),
+    );
 }
 
-fn callback_tree<P: ParseWithCallback>(parser: &mut P, source: &[u8]) -> P::Tree
+#[test]
+fn direct_traits_ignore_progress_callbacks() {
+    let language = Language::new(&c_language()).unwrap();
+    let mut parser = TreeFellerParser::new(&language).unwrap();
+    let mut calls = 0;
+    let mut cancel = |_: &dyn ParseStateLike| {
+        calls += 1;
+        ControlFlow::Break(())
+    };
+    let mut options = PackedParseOptions {
+        parse: ParseOptions::new().progress_callback(&mut cancel),
+        pack: PackOptions {
+            points: false,
+            symbol_presence: false,
+            ..Default::default()
+        },
+    };
+    let source = b"int value;\n";
+    let contiguous = Parse::parse_with_options(
+        &mut parser,
+        &mut |byte, _| &source[byte..],
+        options.reborrow(),
+    )
+    .unwrap();
+    let chunked = Parse::parse_with_options(
+        &mut parser,
+        &mut |byte, _| source[byte..(byte + 2).min(source.len())].to_vec(),
+        options,
+    )
+    .unwrap();
+    assert_eq!(calls, 0);
+    for tree in [&contiguous, &chunked] {
+        assert_eq!(tree.root_node().byte_range(), 0..source.len());
+        assert!(tree.point_data().is_none());
+        assert!(tree.presence_cache().is_none());
+    }
+    assert_same_tree(&chunked, &contiguous);
+}
+
+fn callback_tree<P: Parse>(parser: &mut P, source: &[u8]) -> P::Tree
 where
     P::Error: std::fmt::Debug,
 {
     let mut reads = 0;
     let tree = parser
-        .parse_with_callback(
+        .parse_with_options(
             &mut |byte, point| {
                 reads += 1;
                 assert!(byte <= source.len());
@@ -126,7 +167,7 @@ fn callback_input_and_error_recovery() {
     };
     let recovered = parser
         .parse_with_options(
-            "{broken",
+            &mut |byte, _| &b"{broken"[byte..],
             ParseOptions::new().progress_callback(&mut progress).into(),
         )
         .unwrap();
@@ -205,10 +246,10 @@ fn direct_callback_chunks_match_contiguous() {
                 ..Default::default()
             },
         ] {
-            let expected = parser.parse_with_options(source, options).unwrap();
+            let expected = Tree::parse_direct_with_options(&language, source, options).unwrap();
             let packed = compatible
                 .parse_with_options(
-                    source,
+                    &mut |byte, _| &source.as_bytes()[byte..],
                     PackedParseOptions {
                         pack: options,
                         ..Default::default()
@@ -219,14 +260,17 @@ fn direct_callback_chunks_match_contiguous() {
             for chunk_size in [1, 2, 3, 4, 7, 32, 4096] {
                 let source = source.as_bytes();
                 let actual = parser
-                    .parse_with_callback(
+                    .parse_with_options(
                         &mut |byte, point| {
                             check_point(source, byte, point);
                             // Fixed boundaries exercise suffix reads within rope leaves.
                             let end = ((byte / chunk_size + 1) * chunk_size).min(source.len());
                             source[byte..end].to_vec()
                         },
-                        options,
+                        PackedParseOptions {
+                            pack: options,
+                            ..Default::default()
+                        },
                     )
                     .unwrap();
                 assert_same_tree(&actual, &expected);
@@ -238,13 +282,13 @@ fn direct_callback_chunks_match_contiguous() {
     let source = b"int first;\nint second;\n";
     let mut reads = 0;
     parser
-        .parse_with_callback(
+        .parse_with_options(
             &mut |byte, point| {
                 check_point(source, byte, point);
                 reads += 1;
                 &source[byte..]
             },
-            PackOptions::default(),
+            PackedParseOptions::default(),
         )
         .unwrap();
     assert_eq!(reads, 2);
@@ -263,12 +307,12 @@ fn direct_callback_failures_and_reuse() {
     ] {
         let expected = parser.parse(source);
         for chunk_size in 1..=4 {
-            let actual = parser.parse_with_callback(
+            let actual = parser.parse_with_options(
                 &mut |byte, point| {
                     check_point(source, byte, point);
                     source[byte..(byte + chunk_size).min(source.len())].to_vec()
                 },
-                PackOptions::default(),
+                PackedParseOptions::default(),
             );
             match (&actual, &expected) {
                 (Ok(actual), Ok(expected)) => assert_same_tree(actual, expected),
@@ -278,21 +322,21 @@ fn direct_callback_failures_and_reuse() {
         }
     }
     let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        parser.parse_with_callback(
+        parser.parse_with_options(
             &mut |byte, _| {
                 assert!(byte == 0, "input callback panic");
                 b"int value;".to_vec()
             },
-            PackOptions::default(),
+            PackedParseOptions::default(),
         )
     }));
     assert!(panic.is_err());
     parser.parse("int reused;").unwrap();
     parser.drop_scratch();
     parser
-        .parse_with_callback(
+        .parse_with_options(
             &mut |byte, _| &b"int reused;"[byte..],
-            PackOptions::default(),
+            PackedParseOptions::default(),
         )
         .unwrap();
 }
@@ -325,7 +369,10 @@ where
         },
     };
     let tree = parser
-        .parse_with_options(source, options.reborrow())
+        .parse_with_options(
+            &mut |byte, _| &source.as_bytes()[byte..],
+            options.reborrow(),
+        )
         .unwrap();
     assert!(parsing);
     assert_eq!(offsets[0], 0);
@@ -341,10 +388,13 @@ fn packed_options_progress_and_equivalence() {
     let direct = TreeFellerParser::new(&language)
         .unwrap()
         .parse_with_options(
-            &source,
-            PackOptions {
-                initial_group_capacity: 1,
-                repack: true,
+            &mut |byte, _| &source.as_bytes()[byte..],
+            PackedParseOptions {
+                pack: PackOptions {
+                    initial_group_capacity: 1,
+                    repack: true,
+                    ..Default::default()
+                },
                 ..Default::default()
             },
         )
@@ -362,7 +412,7 @@ fn packed_options_progress_and_equivalence() {
     let mut parser = compatible(&language);
     let tree = parser
         .parse_with_options(
-            &source,
+            &mut |byte, _| &source.as_bytes()[byte..],
             PackedParseOptions {
                 pack: PackOptions {
                     points: false,
@@ -391,7 +441,7 @@ fn check_cancellation<P: Parse<Error = ParserError>>(
     };
     parser
         .parse_with_options(
-            source,
+            &mut |byte, _| &source.as_bytes()[byte..],
             ParseOptions::new().progress_callback(&mut progress).into(),
         )
         .unwrap();
@@ -410,7 +460,7 @@ fn check_cancellation<P: Parse<Error = ParserError>>(
         assert_eq!(
             parser
                 .parse_with_options(
-                    source,
+                    &mut |byte, _| &source.as_bytes()[byte..],
                     ParseOptions::new().progress_callback(&mut progress).into()
                 )
                 .err(),
@@ -449,7 +499,7 @@ fn packing_failure_and_reuse() {
     };
     assert_eq!(
         parser
-            .parse_with_options("int value;", options)
+            .parse_with_options(&mut |byte, _| &b"int value;"[byte..], options)
             .unwrap_err(),
         ParserError::Pack(Error::Overflow)
     );
@@ -495,7 +545,10 @@ fn options_reborrow_preserves_callback_and_pack_settings() {
     };
     for source in ["int first;", "int second;"] {
         let tree = parser
-            .parse_with_options(source, options.reborrow())
+            .parse_with_options(
+                &mut |byte, _| &source.as_bytes()[byte..],
+                options.reborrow(),
+            )
             .unwrap();
         assert!(tree.point_data().is_none());
         assert!(tree.presence_cache().is_none());

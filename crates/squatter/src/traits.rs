@@ -24,24 +24,21 @@ pub trait Parse {
     type Error;
     type Options<'a>: Default + From<crate::ParseOptions<'a>>;
 
-    fn parse_with_options(
-        &mut self,
-        source: impl AsRef<[u8]>,
-        options: Self::Options<'_>,
-    ) -> Result<Self::Tree, Self::Error>;
-
-    fn parse(&mut self, source: impl AsRef<[u8]>) -> Result<Self::Tree, Self::Error> {
-        self.parse_with_options(source, Default::default())
-    }
-}
-
-/// Parses fresh UTF-8 input in chunks. An empty chunk ends input.
-pub trait ParseWithCallback: Parse {
-    fn parse_with_callback<T: AsRef<[u8]>, F: FnMut(usize, Point) -> T>(
+    /// Parses chunks starting at the requested byte offset and point.
+    /// An empty chunk ends input; reads may seek backward.
+    fn parse_with_options<T: AsRef<[u8]>, F: FnMut(usize, Point) -> T>(
         &mut self,
         callback: &mut F,
         options: Self::Options<'_>,
     ) -> Result<Self::Tree, Self::Error>;
+
+    fn parse(&mut self, source: impl AsRef<[u8]>) -> Result<Self::Tree, Self::Error> {
+        let source = source.as_ref();
+        self.parse_with_options(
+            &mut |byte, _| source.get(byte..).unwrap_or_default(),
+            Default::default(),
+        )
+    }
 }
 
 /// Progress within parsing or conversion, valid only during the callback.

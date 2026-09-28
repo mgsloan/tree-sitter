@@ -467,7 +467,13 @@ impl ParseContext {
                 .unwrap()
                 .as_mut()
                 .unwrap()
-                .parse_with_options(source, options)?)
+                .parse_with_options(
+                    &mut |byte, _| &source[byte..],
+                    tree_squatter::PackedParseOptions {
+                        pack: options,
+                        ..Default::default()
+                    },
+                )?)
         }
     }
 }

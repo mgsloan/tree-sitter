@@ -1014,7 +1014,7 @@ impl NativeParser {
         Ok(Reductions(self))
     }
 
-    pub fn parse_with_callback<T: AsRef<[u8]>, F: FnMut(usize, tree_sitter::Point) -> T>(
+    pub fn parse_chunks<T: AsRef<[u8]>, F: FnMut(usize, tree_sitter::Point) -> T>(
         &mut self,
         callback: &mut F,
     ) -> Result<Reductions<'_>, crate::ParseError> {

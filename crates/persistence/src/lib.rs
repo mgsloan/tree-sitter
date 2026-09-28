@@ -661,7 +661,7 @@ impl PendingLoad {
             .set_language(&self.language.prepared)
             .map_err(LoadError::Language)?;
         let tree = parser.parse_with_options(
-            &self.source,
+            &mut |byte, _| &self.source[byte..],
             PackedParseOptions {
                 parse: options.reborrow(),
                 pack: self.pack,
