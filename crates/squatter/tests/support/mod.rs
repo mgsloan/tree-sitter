@@ -167,7 +167,7 @@ pub fn query_snapshot(
 ) -> QueryResult {
     (
         found.pattern_index.0,
-        index.map(|index| index.get_raw() as usize),
+        index.map(|index| index.raw() as usize),
         found
             .captures()
             .iter()

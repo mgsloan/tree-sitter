@@ -109,7 +109,7 @@ pub(crate) fn runtime() -> [u8; 32] {
 
 pub(crate) fn language_key(hash: LanguageHash) -> [u8; 40] {
     let mut key = [0; 40];
-    key[..8].copy_from_slice(&hash.get_raw().to_le_bytes());
+    key[..8].copy_from_slice(&hash.raw().to_le_bytes());
     key[8..].copy_from_slice(&runtime());
     key
 }
@@ -147,7 +147,7 @@ impl Request {
         source_key[32..40].copy_from_slice(&(source.len() as u64).to_le_bytes());
         source_key[40..].copy_from_slice(blake3::hash(source).as_bytes());
         let mut identity = Vec::new();
-        identity.extend_from_slice(&language.identity.hash.get_raw().to_le_bytes());
+        identity.extend_from_slice(&language.identity.hash.raw().to_le_bytes());
         identity.extend_from_slice(&runtime());
         identity.extend_from_slice(&representation());
         // Keep the envelope aligned for transaction-backed core slabs.

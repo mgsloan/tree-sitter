@@ -325,7 +325,7 @@ fn sidecar_mapping_copy_and_failed_replacement() {
     invalid[4..8].copy_from_slice(&0u32.to_le_bytes());
     assert!(PointsData::copy_from_bytes(&tree, &invalid).is_err());
     let mut invalid = points.as_bytes().to_vec();
-    let root_start = 16 + (tree.root_node().slot().get_raw() as usize / 32) * (16 + 32 * 4);
+    let root_start = 16 + (tree.root_node().slot().raw() as usize / 32) * (16 + 32 * 4);
     invalid[root_start..root_start + 8].copy_from_slice(&u64::MAX.to_le_bytes());
     invalid[root_start + 16..root_start + 18].copy_from_slice(&1u16.to_le_bytes());
     assert!(PointsData::copy_from_bytes(&tree, &invalid).is_err());

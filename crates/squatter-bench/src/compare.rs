@@ -227,7 +227,7 @@ pub fn relationships<'tree, A: NodeLike<'tree>, B: NodeLike<'tree>>(
             // Indexed child access scans siblings. A wide array must not turn
             // the validation harness into quadratic work; cursor transitions
             // below still check every child, and small parents are exhaustive.
-            let child_count = child_count.get_raw();
+            let child_count = child_count.raw();
             let child_stride = (child_count as usize / 100).max(1);
             for index in (0..child_count)
                 .step_by(child_stride)
@@ -239,7 +239,7 @@ pub fn relationships<'tree, A: NodeLike<'tree>, B: NodeLike<'tree>>(
                     "child {index} differs at ordinal {ordinal}"
                 );
             }
-            let named_child_count = named_child_count.get_raw();
+            let named_child_count = named_child_count.raw();
             let named_stride = (named_child_count as usize / 100).max(1);
             for index in (0..named_child_count)
                 .step_by(named_stride)

@@ -9,7 +9,7 @@ macro_rules! integer_type {
 
         impl $name {
             #[inline]
-            pub const fn get_raw(self) -> $integer {
+            pub const fn raw(self) -> $integer {
                 self.0
             }
         }
@@ -22,7 +22,7 @@ macro_rules! integer_type {
 
         impl $name {
             #[inline]
-            pub const fn get_raw(self) -> $integer {
+            pub const fn raw(self) -> $integer {
                 self.0
             }
         }
@@ -75,7 +75,7 @@ impl FieldId {
     }
 
     #[inline]
-    pub const fn get_raw(self) -> u16 {
+    pub const fn raw(self) -> u16 {
         self.0.get()
     }
 }
@@ -154,7 +154,7 @@ impl PackedPoint {
 
 impl From<FieldId> for u16 {
     fn from(value: FieldId) -> Self {
-        value.get_raw()
+        value.raw()
     }
 }
 
@@ -192,23 +192,23 @@ impl GroupIx {
         SlotIx(self.0 * crate::storage::GROUP_SIZE)
     }
     pub(crate) fn slot(self, slot: GroupSlotIx) -> SlotIx {
-        SlotIx(self.first_slot().get_raw() + slot.get_raw())
+        SlotIx(self.first_slot().raw() + slot.raw())
     }
 }
 
 impl From<KindId> for u16 {
     fn from(value: KindId) -> Self {
-        value.get_raw()
+        value.raw()
     }
 }
 impl From<GrammarId> for u16 {
     fn from(value: GrammarId) -> Self {
-        value.get_raw()
+        value.raw()
     }
 }
 impl From<SlotIx> for u32 {
     fn from(value: SlotIx) -> Self {
-        value.get_raw()
+        value.raw()
     }
 }
 
@@ -300,7 +300,7 @@ impl NamedChildIx {
 pub struct PatternIx(pub usize);
 
 impl PatternIx {
-    pub const fn get_raw(self) -> usize {
+    pub const fn raw(self) -> usize {
         self.0
     }
 }
@@ -311,7 +311,7 @@ impl PatternIx {
 pub struct CaptureIx(pub u32);
 
 impl CaptureIx {
-    pub const fn get_raw(self) -> u32 {
+    pub const fn raw(self) -> u32 {
         self.0
     }
 }
@@ -326,7 +326,7 @@ impl MatchId {
         Self(value)
     }
 
-    pub const fn get_raw(self) -> u32 {
+    pub const fn raw(self) -> u32 {
         self.0
     }
 }
@@ -341,7 +341,7 @@ impl MatchCaptureIx {
         Self(value)
     }
 
-    pub const fn get_raw(self) -> u32 {
+    pub const fn raw(self) -> u32 {
         self.0
     }
 }

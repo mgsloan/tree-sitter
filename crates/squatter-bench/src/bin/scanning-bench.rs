@@ -63,7 +63,7 @@ struct Arguments {
 use tree_squatter::{FieldSet, GrammarId, KindId};
 type FieldSelection = Option<tree_squatter::FieldId>;
 fn raw_field(field: FieldSelection) -> u16 {
-    field.map_or(0, tree_squatter::FieldId::get_raw)
+    field.map_or(0, tree_squatter::FieldId::raw)
 }
 
 #[derive(Deserialize, Serialize)]

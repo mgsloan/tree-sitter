@@ -608,7 +608,7 @@ impl<'tree> NodeLike<'tree> for tree_sitter::Node<'tree> {
     {
         let mut children = tree_sitter::Node::children_by_field_id(
             self,
-            std::num::NonZeroU16::new(field.get_raw()).unwrap(),
+            std::num::NonZeroU16::new(field.raw()).unwrap(),
             cursor,
         );
         std::iter::from_fn(move || children.next())
@@ -625,10 +625,10 @@ impl<'tree> NodeLike<'tree> for tree_sitter::Node<'tree> {
         std::iter::from_fn(move || children.next())
     }
     fn field_name_for_child(&self, index: ChildIx) -> Option<&'tree str> {
-        tree_sitter::Node::field_name_for_child(self, index.get_raw())
+        tree_sitter::Node::field_name_for_child(self, index.raw())
     }
     fn field_name_for_named_child(&self, index: NamedChildIx) -> Option<&'tree str> {
-        tree_sitter::Node::field_name_for_named_child(self, index.get_raw())
+        tree_sitter::Node::field_name_for_named_child(self, index.raw())
     }
     fn has_children(self) -> bool {
         tree_sitter::Node::child_count(&self) != 0
@@ -656,10 +656,10 @@ impl<'tree> NodeLike<'tree> for tree_sitter::Node<'tree> {
         self.walk()
     }
     fn child(&self, index: ChildIx) -> Option<Self> {
-        tree_sitter::Node::child(self, index.get_raw())
+        tree_sitter::Node::child(self, index.raw())
     }
     fn named_child(&self, index: NamedChildIx) -> Option<Self> {
-        tree_sitter::Node::named_child(self, index.get_raw())
+        tree_sitter::Node::named_child(self, index.raw())
     }
     node_navigation!(tree_sitter::Node<'tree>);
 }

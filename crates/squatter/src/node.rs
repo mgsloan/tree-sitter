@@ -53,7 +53,7 @@ impl std::fmt::Debug for Node<'_> {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("Node")
-            .field("slot", &self.slot().get_raw())
+            .field("slot", &self.slot().raw())
             .field("kind", &self.kind())
             .field("bytes", &self.byte_range())
             .finish()
@@ -89,9 +89,8 @@ impl Tree {
     ///
     /// **Not in Tree-sitter**
     pub fn node_at_slot(&self, slot: SlotIx) -> Option<Node<'_>> {
-        (slot.get_raw() < self.slot_count()
-            && slot.get_raw() < self.data().group_end(slot.group().get_raw()))
-        .then(|| self.root_node().at(slot))
+        (slot.raw() < self.slot_count() && slot.raw() < self.data().group_end(slot.group().raw()))
+            .then(|| self.root_node().at(slot))
     }
 }
 
@@ -112,7 +111,7 @@ impl<'tree> Node<'tree> {
 
     #[inline]
     pub(crate) fn first_slot(self) -> u32 {
-        self.data().first_slot(self.slot().get_raw())
+        self.data().first_slot(self.slot().raw())
     }
 
     /// Physical slot in reverse preorder; decreasing slots advance preorder.
@@ -207,7 +206,7 @@ impl<'tree> Node<'tree> {
     pub fn kind_id(&self) -> KindId {
         self.data()
             .tables()
-            .decode_kind(self.data().symbol_index(self.slot().get_raw()))
+            .decode_kind(self.data().symbol_index(self.slot().raw()))
     }
 
     /// This node's displayed kind ID, including aliases, for use within Squatter.
@@ -215,7 +214,7 @@ impl<'tree> Node<'tree> {
     /// Cheaper to access than [`Self::kind_id`]. Use IDs from the same language
     /// version; use [`Self::kind_id`] when comparing with Tree-sitter IDs.
     pub fn squatter_kind_id(&self) -> crate::SquatterKindId {
-        self.data().symbol_index(self.slot().get_raw())
+        self.data().symbol_index(self.slot().raw())
     }
 
     /// This node's original grammar ID, ignoring aliases, for use within Squatter.
@@ -223,7 +222,7 @@ impl<'tree> Node<'tree> {
     /// Cheaper to access than [`Self::grammar_id`]. Use IDs from the same language
     /// version; use [`Self::grammar_id`] when comparing with Tree-sitter IDs.
     pub fn squatter_grammar_id(&self) -> crate::SquatterGrammarId {
-        self.data().grammar_index(self.slot().get_raw())
+        self.data().grammar_index(self.slot().raw())
     }
 
     /// This node's original grammar ID, ignoring aliases, compatible with Tree-sitter.
@@ -233,37 +232,34 @@ impl<'tree> Node<'tree> {
     pub fn grammar_id(&self) -> GrammarId {
         self.data()
             .tables()
-            .decode_grammar_kind(self.data().grammar_index(self.slot().get_raw()))
+            .decode_grammar_kind(self.data().grammar_index(self.slot().raw()))
     }
 
     /// Get this node's type as a string.
     pub fn kind(&self) -> &'tree str {
-        self.data().tables().symbol_name(self.kind_id().get_raw())
+        self.data().tables().symbol_name(self.kind_id().raw())
     }
 
     /// Get this node's symbol name as it appears in the grammar ignoring
     /// aliases as a string.
     pub fn grammar_name(&self) -> &'tree str {
-        self.data()
-            .tables()
-            .symbol_name(self.grammar_id().get_raw())
+        self.data().tables().symbol_name(self.grammar_id().raw())
     }
 
     /// Get the byte offset where this node starts.
     #[inline]
     pub fn start_byte(&self) -> usize {
         let data = self.data();
-        (data.word(data.layout.start_byte_base, self.slot().group().get_raw())
-            + data.byte(data.layout.start_byte_delta, self.slot().get_raw()) as u32)
-            as usize
+        (data.word(data.layout.start_byte_base, self.slot().group().raw())
+            + data.byte(data.layout.start_byte_delta, self.slot().raw()) as u32) as usize
     }
 
     /// Get the byte offset where this node ends.
     #[inline]
     pub fn end_byte(&self) -> usize {
         let data = self.data();
-        (data.word(data.layout.end_byte_base, self.slot().group().get_raw())
-            - data.short(data.layout.end_byte_delta, self.slot().get_raw()) as u32) as usize
+        (data.word(data.layout.end_byte_base, self.slot().group().raw())
+            - data.short(data.layout.end_byte_delta, self.slot().raw()) as u32) as usize
     }
 
     /// Get this node's start position in terms of rows and columns.
@@ -297,7 +293,7 @@ impl<'tree> Node<'tree> {
         let data = self.data();
         data.point_data.as_ref().map_or_else(
             || PackedPoint(self.start_byte() as u64),
-            |points| points.start(self.slot().get_raw()),
+            |points| points.start(self.slot().raw()),
         )
     }
 
@@ -306,7 +302,7 @@ impl<'tree> Node<'tree> {
         let data = self.data();
         data.point_data.as_ref().map_or_else(
             || PackedPoint(self.end_byte() as u64),
-            |points| points.end(self.slot().get_raw()),
+            |points| points.end(self.slot().raw()),
         )
     }
 
@@ -318,7 +314,7 @@ impl<'tree> Node<'tree> {
     pub fn is_named(&self) -> bool {
         self.data()
             .tables()
-            .named_index(self.data().symbol_index(self.slot().get_raw()))
+            .named_index(self.data().symbol_index(self.slot().raw()))
     }
 
     /// Check if this node is *extra*.
@@ -327,9 +323,7 @@ impl<'tree> Node<'tree> {
     /// grammar, but can appear anywhere.
     pub fn is_extra(&self) -> bool {
         self.data().flags() & EXTRAS != 0
-            && self
-                .data()
-                .bit(self.data().layout.extra, self.slot().get_raw())
+            && self.data().bit(self.data().layout.extra, self.slot().raw())
     }
 
     /// Check if this node is *missing*.
@@ -340,7 +334,7 @@ impl<'tree> Node<'tree> {
         self.data().flags() & MISSING != 0
             && self
                 .data()
-                .bit(self.data().layout.missing, self.slot().get_raw())
+                .bit(self.data().layout.missing, self.slot().raw())
     }
 
     /// Check if this node represents a syntax error.
@@ -348,17 +342,14 @@ impl<'tree> Node<'tree> {
     /// Syntax errors represent parts of the code that could not be incorporated
     /// into a valid syntax tree.
     pub fn is_error(&self) -> bool {
-        self.data().symbol_index(self.slot().get_raw()).get_raw() as u32
-            == self.data().tables().kind_count
+        self.data().symbol_index(self.slot().raw()).raw() as u32 == self.data().tables().kind_count
     }
 
     /// Check if this node represents a syntax error or contains any syntax
     /// errors anywhere within it.
     pub fn has_error(&self) -> bool {
         self.data().flags() & ERRORS != 0
-            && self
-                .data()
-                .bit(self.data().layout.error, self.slot().get_raw())
+            && self.data().bit(self.data().layout.error, self.slot().raw())
     }
 
     /// Reads the stored field of this node in constant time. Unlike
@@ -368,7 +359,7 @@ impl<'tree> Node<'tree> {
     pub fn field_id(self) -> Option<FieldId> {
         FieldId::from_raw(
             self.data()
-                .short(self.data().layout.field, self.slot().get_raw()),
+                .short(self.data().layout.field, self.slot().raw()),
         )
     }
 
@@ -377,7 +368,7 @@ impl<'tree> Node<'tree> {
     ///
     /// **Not in Tree-sitter**
     pub fn field_name(self) -> Option<&'tree str> {
-        self.data().tables().field_name(self.field_id()?.get_raw())
+        self.data().tables().field_name(self.field_id()?.raw())
     }
 
     /// Tests membership using an original grammar symbol ID.
@@ -391,10 +382,10 @@ impl<'tree> Node<'tree> {
         }
 
         let symbols = tables.supertypes();
-        let Ok(index) = symbols.binary_search(&symbol.get_raw()) else {
+        let Ok(index) = symbols.binary_search(&symbol.raw()) else {
             return false;
         };
-        let value = data.short(data.layout.supertype, self.slot().get_raw()) as usize;
+        let value = data.short(data.layout.supertype, self.slot().raw()) as usize;
         if tables.supertype_count <= 8 {
             value & (1 << index) != 0
         } else {
@@ -408,10 +399,10 @@ impl<'tree> Node<'tree> {
     /// **Different performance than Tree-sitter:** Scans packed groups in this subtree.
     pub fn descendant_count(&self) -> usize {
         let first = self.first_slot();
-        let waste: u32 = (first / GROUP_SIZE..self.slot().group().get_raw())
+        let waste: u32 = (first / GROUP_SIZE..self.slot().group().raw())
             .map(|group| self.data().waste(group))
             .sum();
-        (self.slot().get_raw() - first + 1 - waste) as usize
+        (self.slot().raw() - first + 1 - waste) as usize
     }
 
     /// Returns the next node in tree-wide preorder, which may leave
@@ -421,7 +412,7 @@ impl<'tree> Node<'tree> {
     #[inline]
     pub fn next_preorder(self) -> Option<Self> {
         self.data()
-            .previous_slot(self.slot().get_raw())
+            .previous_slot(self.slot().raw())
             .map(|slot| self.at(SlotIx::from_raw(slot)))
     }
 
@@ -435,24 +426,21 @@ impl<'tree> Node<'tree> {
     }
 
     fn previous_preorder_slot(self) -> u32 {
-        let slot = self.slot().get_raw() + 1;
-        if slot < self.data().group_end(self.slot().group().get_raw()) {
+        let slot = self.slot().raw() + 1;
+        if slot < self.data().group_end(self.slot().group().raw()) {
             slot
         } else {
-            (self.slot().group().get_raw() + 1) * GROUP_SIZE
+            (self.slot().group().raw() + 1) * GROUP_SIZE
         }
     }
 
     fn first_child(self) -> Option<Self> {
         self.next_preorder()
-            .filter(|node| node.slot().get_raw() >= self.first_slot())
+            .filter(|node| node.slot().raw() >= self.first_slot())
     }
 
     pub(crate) fn next_sibling_including_empty(self) -> Option<Self> {
-        if self
-            .data()
-            .bit(self.data().layout.last, self.slot().get_raw())
-        {
+        if self.data().bit(self.data().layout.last, self.slot().raw()) {
             None
         } else {
             // Subtree boundaries include leading waste, so the predecessor is live.
@@ -468,7 +456,7 @@ impl<'tree> Node<'tree> {
     /// cursor retains ancestry for repeated navigation.
     pub fn parent(&self) -> Option<Self> {
         let data = self.data();
-        let mut slot = self.slot().get_raw() + 1;
+        let mut slot = self.slot().raw() + 1;
         while slot < data.groups() * GROUP_SIZE {
             let group = slot / GROUP_SIZE;
             let end = data.group_end(group);
@@ -476,10 +464,10 @@ impl<'tree> Node<'tree> {
 
             // Reject a whole group if even its largest possible span cannot
             // reach this node. The first enclosing span is the nearest parent.
-            if slot as u64 <= self.slot().get_raw() as u64 + maximum {
+            if slot as u64 <= self.slot().raw() as u64 + maximum {
                 while slot < end {
                     if slot as u64
-                        <= self.slot().get_raw() as u64 + maximum - data.span_delta(slot) as u64
+                        <= self.slot().raw() as u64 + maximum - data.span_delta(slot) as u64
                     {
                         return Some(self.at(SlotIx::from_raw(slot)));
                     }
@@ -654,7 +642,7 @@ impl<'tree> Node<'tree> {
     /// **Different performance than Tree-sitter:** Visits up to index + 1 children. Repeated
     /// indexed lookup across a wide node can be quadratic; prefer one traversal.
     pub fn child(&self, index: ChildIx) -> Option<Self> {
-        self.structural_children().nth(index.get_raw() as usize)
+        self.structural_children().nth(index.raw() as usize)
     }
 
     /// Get this node's *named* child at the given index.
@@ -669,7 +657,7 @@ impl<'tree> Node<'tree> {
     pub fn named_child(&self, index: NamedChildIx) -> Option<Self> {
         self.structural_children()
             .filter(|node| node.is_named())
-            .nth(index.get_raw() as usize)
+            .nth(index.raw() as usize)
     }
 
     /// Get this node's child with the given numerical field id.
@@ -710,12 +698,12 @@ impl<'tree> Node<'tree> {
     pub fn child_with_descendant(&self, descendant: Self) -> Option<Self> {
         if self.raw.tree != descendant.raw.tree
             || descendant.slot() >= self.slot()
-            || descendant.slot().get_raw() < self.first_slot()
+            || descendant.slot().raw() < self.first_slot()
         {
             return None;
         }
         self.structural_children()
-            .find(|child| child.first_slot() <= descendant.slot().get_raw())
+            .find(|child| child.first_slot() <= descendant.slot().raw())
     }
 
     /// Get this node's next sibling.
@@ -824,8 +812,8 @@ impl<'tree> Node<'tree> {
     /// coordinates.
     pub fn descendant_for_point_range(&self, start: Point, end: Point) -> Option<Self> {
         self.seek::<true>(
-            PackedPoint::from_point_cast(start).get_raw(),
-            PackedPoint::from_point_cast(end).get_raw(),
+            PackedPoint::from_point_cast(start).raw(),
+            PackedPoint::from_point_cast(end).raw(),
             false,
         )
     }
@@ -837,8 +825,8 @@ impl<'tree> Node<'tree> {
     /// coordinates.
     pub fn named_descendant_for_point_range(&self, start: Point, end: Point) -> Option<Self> {
         self.seek::<true>(
-            PackedPoint::from_point_cast(start).get_raw(),
-            PackedPoint::from_point_cast(end).get_raw(),
+            PackedPoint::from_point_cast(start).raw(),
+            PackedPoint::from_point_cast(end).raw(),
             true,
         )
     }
@@ -846,7 +834,7 @@ impl<'tree> Node<'tree> {
     #[inline]
     fn start_key<const POINTS: bool>(self) -> u64 {
         if POINTS {
-            self.packed_start_point().get_raw()
+            self.packed_start_point().raw()
         } else {
             self.start_byte() as u64
         }
@@ -855,7 +843,7 @@ impl<'tree> Node<'tree> {
     #[inline]
     fn end_key<const POINTS: bool>(self) -> u64 {
         if POINTS {
-            self.packed_end_point().get_raw()
+            self.packed_end_point().raw()
         } else {
             self.end_byte() as u64
         }
@@ -908,7 +896,7 @@ impl<'tree> Node<'tree> {
         // group's earliest start, including for independently stored points.
         let first = self.first_slot();
         let mut low = first / GROUP_SIZE;
-        let mut high = self.slot().group().get_raw();
+        let mut high = self.slot().group().raw();
         while low < high {
             let middle = low + (high - low) / 2;
             let after = if POINTS {
@@ -926,7 +914,7 @@ impl<'tree> Node<'tree> {
         }
 
         let mut slot = (low * GROUP_SIZE).max(first);
-        let limit = data.group_end(low).min(self.slot().get_raw() + 1);
+        let limit = data.group_end(low).min(self.slot().raw() + 1);
         if POINTS {
             let group = scan::GroupRef::new(self).at_group(GroupIx(low));
             slot = (low * GROUP_SIZE + group.first_point_start_before(start, slot % GROUP_SIZE))
@@ -942,7 +930,7 @@ impl<'tree> Node<'tree> {
         }
         if slot == limit {
             slot = (low + 1) * GROUP_SIZE;
-            if slot > self.slot().get_raw() {
+            if slot > self.slot().raw() {
                 return Some(self);
             }
         }
@@ -960,7 +948,7 @@ impl<'tree> Node<'tree> {
 
         // Long point end scans can skip whole intervening subtrees through
         // their parent spans. Byte end scans use the compact delta columns.
-        if POINTS && self.slot().get_raw() - candidate.slot().get_raw() > 512 * GROUP_SIZE {
+        if POINTS && self.slot().raw() - candidate.slot().raw() > 512 * GROUP_SIZE {
             while candidate.slot() < self.slot() {
                 let candidate_end = candidate.end_key::<true>();
                 if candidate_end >= end && candidate_end > start && (!named || candidate.is_named())
@@ -977,16 +965,16 @@ impl<'tree> Node<'tree> {
             if candidate_end >= end && candidate_end > start && (!named || candidate.is_named()) {
                 return Some(candidate);
             }
-            candidate.raw.slot = SlotIx::from_raw(candidate.raw.slot.get_raw() + 1);
+            candidate.raw.slot = SlotIx::from_raw(candidate.raw.slot.raw() + 1);
         }
 
         // Earlier preorder siblings end before the range. The first qualifying
         // end after the selected start is an enclosing ancestor.
         while candidate.slot() < self.slot() {
-            let group = candidate.slot().group().get_raw();
-            let limit = data.group_end(group).min(self.slot().get_raw());
+            let group = candidate.slot().group().raw();
+            let limit = data.group_end(group).min(self.slot().raw());
             let view = scan::GroupRef::new(self).at_group(GroupIx(group));
-            let mut first = candidate.slot().in_group().get_raw();
+            let mut first = candidate.slot().in_group().raw();
             while let Some(offset) = view.first_end_after::<POINTS>(start, end, first) {
                 let slot = group * GROUP_SIZE + offset;
                 if slot >= limit {
@@ -1066,7 +1054,7 @@ impl<'tree> TreeCursor<'tree> {
     /// full tree.
     pub fn field_name(&self) -> Option<&'tree str> {
         self.field_id()
-            .and_then(|field| self.node.data().tables().field_name(field.get_raw()))
+            .and_then(|field| self.node.data().tables().field_name(field.raw()))
     }
 
     /// Re-initialize a tree cursor to the same position as another cursor.

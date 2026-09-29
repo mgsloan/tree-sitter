@@ -97,7 +97,7 @@ impl Layout<SlabOffset> {
             .checked_mul(GROUP_SIZE)
             .filter(|_| capacity != 0)
             .ok_or(Error::Overflow)?;
-        let mut next = Self::WASTE.get_raw() as u64;
+        let mut next = Self::WASTE.raw() as u64;
         let mut column = |length: u64| {
             let offset = SlabOffset(next as u32);
             next = (next + length + ALIGNMENT as u64 - 1) & !(ALIGNMENT as u64 - 1);
@@ -250,7 +250,7 @@ pub(crate) trait SlabAddress: Copy {
 impl SlabAddress for SlabOffset {
     #[inline]
     fn pointer(self, bytes: NonNull<u8>) -> *mut u8 {
-        bytes.as_ptr().wrapping_add(self.get_raw() as usize)
+        bytes.as_ptr().wrapping_add(self.raw() as usize)
     }
 }
 
@@ -565,7 +565,7 @@ impl Tree {
         // emitted IDs match, and flag columns when all their bits are zero.
         let flags = TREE_FORMAT | OPTIONAL | id_width_flags([language]);
         let layout = Layout::new(capacity, flags)?;
-        let mut tree = Self::allocate(language, layout, layout.end.get_raw(), None, true)?;
+        let mut tree = Self::allocate(language, layout, layout.end.raw(), None, true)?;
         let data = tree.data_mut();
         data.put_word(SlabOffset(0), 0, flags);
         data.put_word(SlabOffset(0), 1, 0);
@@ -674,10 +674,7 @@ impl Tree {
     /// **Not in Tree-sitter**
     pub fn compact_size(&self) -> usize {
         let data = self.data();
-        Layout::new(data.groups(), data.flags())
-            .unwrap()
-            .end
-            .get_raw() as usize
+        Layout::new(data.groups(), data.flags()).unwrap().end.raw() as usize
     }
 
     /// Copies a compact slab into a destination of exactly
@@ -723,21 +720,21 @@ impl Tree {
                 ptr::write_bytes(
                     destination.add(previous),
                     0,
-                    target.get_raw() as usize - previous,
+                    target.raw() as usize - previous,
                 );
                 ptr::copy_nonoverlapping(
                     offset.as_ptr(),
-                    destination.add(target.get_raw() as usize),
+                    destination.add(target.raw() as usize),
                     length,
                 );
             }
-            previous = target.get_raw() as usize + length;
+            previous = target.raw() as usize + length;
         }
         unsafe {
             ptr::write_bytes(
                 destination.add(previous),
                 0,
-                next.end.get_raw() as usize - previous,
+                next.end.raw() as usize - previous,
             );
         }
     }
@@ -746,7 +743,7 @@ impl Tree {
         let data = self.data();
         let layout = Layout::new(capacity, flags)?;
         let mut replacement =
-            Self::allocate(&data.language, layout, layout.end.get_raw(), None, false)?;
+            Self::allocate(&data.language, layout, layout.end.raw(), None, false)?;
         unsafe {
             self.copy_columns(replacement.data().bytes.as_ptr(), layout, flags);
         }
@@ -811,7 +808,7 @@ impl Tree {
             }
         }
         data.layout = next.resolve(data.bytes);
-        data.length = next.end.get_raw();
+        data.length = next.end.raw();
         data.put_word(SlabOffset(0), 0, flags);
         data.put_word(SlabOffset(0), 2, capacity);
         self.shrink_allocation(next, 256)
@@ -1006,7 +1003,7 @@ impl TreeData {
             return false;
         }
         if let Some(cache) = &self.presence_cache {
-            return cache.has(group, symbol.get_raw() as usize, self.groups());
+            return cache.has(group, symbol.raw() as usize, self.groups());
         }
         (group * GROUP_SIZE..self.group_end(group)).any(|slot| self.symbol_index(slot) == symbol)
     }
@@ -1036,7 +1033,7 @@ impl Tree {
             return Err(Error::InvalidSlab);
         }
         let layout = Layout::new(capacity, flags).map_err(|_| Error::InvalidSlab)?;
-        if layout.end.get_raw() as usize != bytes.len() {
+        if layout.end.raw() as usize != bytes.len() {
             return Err(Error::InvalidSlab);
         }
         let tree = Self::allocate(
@@ -1096,11 +1093,11 @@ impl Tree {
                 {
                     return Err(Error::InvalidSlab);
                 }
-                let symbol = u32::from(data.symbol_index(slot).get_raw());
+                let symbol = u32::from(data.symbol_index(slot).raw());
                 if symbol == 0 || symbol >= symbols || field > tables.field_count {
                     return Err(Error::InvalidSlab);
                 }
-                let grammar = u32::from(data.grammar_index(slot).get_raw());
+                let grammar = u32::from(data.grammar_index(slot).raw());
                 if grammar == 0 || grammar >= tables.compact_grammar_count + 2 {
                     return Err(Error::InvalidSlab);
                 }
@@ -1144,27 +1141,23 @@ mod tests {
                 let flags = TREE_FORMAT | optional | width;
                 let layout = Layout::new(5, flags).unwrap();
                 let mut tree =
-                    Tree::allocate(&language, layout, layout.end.get_raw(), None, false).unwrap();
+                    Tree::allocate(&language, layout, layout.end.raw(), None, false).unwrap();
                 unsafe {
-                    ptr::write_bytes(
-                        tree.data().bytes.as_ptr(),
-                        0x5a,
-                        layout.end.get_raw() as usize,
-                    );
+                    ptr::write_bytes(tree.data().bytes.as_ptr(), 0x5a, layout.end.raw() as usize);
                 }
                 tree.data_mut().put_word(SlabOffset(0), 0, flags);
                 tree.data_mut().put_word(SlabOffset(0), 1, 3);
                 tree.data_mut().put_word(SlabOffset(0), 2, 5);
                 for capacity in [3, 9] {
                     let next = Layout::new(capacity, flags).unwrap();
-                    let mut destination = vec![0xff; next.end.get_raw() as usize];
+                    let mut destination = vec![0xff; next.end.raw() as usize];
                     unsafe {
                         tree.copy_columns(destination.as_mut_ptr(), next, flags);
                     }
                     assert_eq!(&destination[..16], &tree.as_bytes()[..16]);
                     let mut copied = vec![false; destination.len()];
                     for (offset, length) in next.columns(3, flags) {
-                        let start = offset.get_raw() as usize;
+                        let start = offset.raw() as usize;
                         copied[start..start + length].fill(true);
                     }
                     for index in 16..destination.len() {
@@ -1185,7 +1178,7 @@ mod tests {
         };
         let language = Language::new(&language).unwrap();
         let layout = Layout::new(1, TREE_FORMAT | BYTE_IDS).unwrap();
-        let length = layout.end.get_raw();
+        let length = layout.end.raw();
         for (excess, threshold, shrink) in [
             (0, 0, false),
             (1, 0, true),

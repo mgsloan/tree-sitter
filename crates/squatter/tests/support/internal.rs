@@ -487,10 +487,10 @@ fn id_width_covers_all_grammars_and_reserved_errors() {
             if count == 254 { 1 } else { 2 }
         );
         let tree = Tree::from_bytes(&fixture.grammar, tree.as_bytes()).unwrap();
-        assert_eq!(tree.data().symbol_index(0).get_raw(), count + 1);
-        assert_eq!(tree.data().grammar_index(0).get_raw(), count + 1);
-        assert_eq!(tree.data().symbol_index(1).get_raw(), count);
-        assert_eq!(tree.data().grammar_index(1).get_raw(), count);
+        assert_eq!(tree.data().symbol_index(0).raw(), count + 1);
+        assert_eq!(tree.data().grammar_index(0).raw(), count + 1);
+        assert_eq!(tree.data().symbol_index(1).raw(), count);
+        assert_eq!(tree.data().grammar_index(1).raw(), count);
     }
 }
 
@@ -535,12 +535,7 @@ fn compact_domains_preserve_aliases_with_independent_widths() {
     for index in 0..100 {
         builder
             .emit(
-                &leaf(
-                    display.get_raw(),
-                    original.get_raw(),
-                    0,
-                    u8::from(index == 0),
-                ),
+                &leaf(display.raw(), original.raw(), 0, u8::from(index == 0)),
                 builder.distance(),
             )
             .unwrap();
@@ -549,7 +544,7 @@ fn compact_domains_preserve_aliases_with_independent_widths() {
         .squatter_grammar_id(GrammarId::from_raw(1))
         .unwrap();
     builder
-        .emit(&leaf(display.get_raw(), default.get_raw(), 0, 1), 0)
+        .emit(&leaf(display.raw(), default.raw(), 0, 1), 0)
         .unwrap();
     let tree = builder
         .finish(
@@ -595,9 +590,9 @@ fn compact_domains_preserve_aliases_with_independent_widths() {
     let default = language
         .squatter_grammar_id(GrammarId::from_raw(5))
         .unwrap();
-    assert_ne!(display.get_raw(), default.get_raw());
+    assert_ne!(display.raw(), default.raw());
     builder
-        .emit(&leaf(display.get_raw(), default.get_raw(), 0, 1), 0)
+        .emit(&leaf(display.raw(), default.raw(), 0, 1), 0)
         .unwrap();
     let tree = builder
         .finish(PackOptions::default(), &mut Progress::default())
@@ -636,8 +631,8 @@ fn matching_ids_omit_grammar_before_flag_columns() {
                 assert_eq!(tree.data().layout.grammar.0, tree.data().layout.extra.0);
                 let tree = Tree::from_bytes(&fixture.grammar, tree.as_bytes()).unwrap();
                 for node in tree.root_node().preorder().nodes().skip(1) {
-                    assert_eq!(node.kind_id().get_raw(), 2);
-                    assert_eq!(node.grammar_id().get_raw(), 2);
+                    assert_eq!(node.kind_id().raw(), 2);
+                    assert_eq!(node.grammar_id().raw(), 2);
                     assert_eq!(node.is_extra(), flags & 2 != 0);
                     assert_eq!(node.is_missing(), flags & 4 != 0);
                     assert_eq!(node.has_error(), flags & 8 != 0);
@@ -697,10 +692,10 @@ fn synthetic_symbol_ids_and_optional_columns() {
                     for slot in 0..3 * GROUP_SIZE {
                         let original = (slot % 4 + 1) as u16;
                         assert_eq!(
-                            data.symbol_index(slot).get_raw(),
+                            data.symbol_index(slot).raw(),
                             if original <= 2 { 1 } else { original }
                         );
-                        assert_eq!(data.grammar_index(slot).get_raw(), original);
+                        assert_eq!(data.grammar_index(slot).raw(), original);
                     }
                     assert_eq!(
                         Layout::new(
@@ -709,11 +704,11 @@ fn synthetic_symbol_ids_and_optional_columns() {
                         )
                         .unwrap()
                         .end
-                        .get_raw(),
+                        .raw(),
                         Layout::new(4, TREE_FORMAT | BYTE_IDS | BYTE_GRAMMAR_IDS)
                             .unwrap()
                             .end
-                            .get_raw()
+                            .raw()
                             + 4 * GROUP_SIZE,
                     );
                     let mut bytes = tree.as_bytes().to_vec();
@@ -728,13 +723,13 @@ fn synthetic_symbol_ids_and_optional_columns() {
                 }
                 for pass in 0..3 {
                     for node in tree.root_node().preorder().nodes().skip(1) {
-                        let slot = node.slot().get_raw();
+                        let slot = node.slot().raw();
                         let original = (slot % 4 + 1) as u16;
                         assert_eq!(
-                            node.kind_id().get_raw(),
+                            node.kind_id().raw(),
                             if original <= 2 { 1 } else { original }
                         );
-                        assert_eq!(node.grammar_id().get_raw(), original);
+                        assert_eq!(node.grammar_id().raw(), original);
                         assert_eq!(
                             node.is_extra(),
                             flags & 2 != 0 && [2, 63 * GROUP_SIZE].contains(&slot)
@@ -790,13 +785,13 @@ fn maximum_spans_roundtrip_and_reject_delta_underflow() {
 
     let source = format!("[{}0]", "0,".repeat(33000));
     let tree = Tree::parse(&grammar, &mut parser, &source).unwrap();
-    assert!(tree.root_node().slot().get_raw() > u16::MAX as u32);
+    assert!(tree.root_node().slot().raw() > u16::MAX as u32);
     let loaded = Tree::from_bytes(&grammar, tree.as_bytes()).unwrap();
     let array = loaded
         .root_node()
         .named_child(crate::NamedChildIx::new(0))
         .unwrap();
-    assert_eq!(array.named_child_count().get_raw(), 33001);
+    assert_eq!(array.named_child_count().raw(), 33001);
     for index in [0, 33000] {
         let child = array.named_child(crate::NamedChildIx::new(index)).unwrap();
         assert_eq!(child.parent(), Some(array));
@@ -841,12 +836,8 @@ fn navigation_across_every_waste_boundary() {
                 }
             }
             let root = *slots.last().unwrap();
-            put_span_delta(
-                data,
-                root.get_raw(),
-                (3 * GROUP_SIZE - root.get_raw()) as u16,
-            );
-            data.put_bit(data.layout.last, root.get_raw(), true);
+            put_span_delta(data, root.raw(), (3 * GROUP_SIZE - root.raw()) as u16);
+            data.put_bit(data.layout.last, root.raw(), true);
             assert_eq!(tree.root_node().slot(), root);
             let expected: Vec<_> = slots.iter().rev().copied().collect();
             assert_eq!(
@@ -1073,9 +1064,9 @@ fn presence_ignores_waste_and_invalid_symbols() {
             ] {
                 let symbol = crate::KindId::from_raw(symbol as u16);
                 for group in 0..33 {
-                    let expected = symbol.get_raw() == 1
-                        || (group == 0 && u32::from(symbol.get_raw()) == count - 1)
-                        || symbol.get_raw() == if group % 2 == 0 { 65535 } else { 65534 };
+                    let expected = symbol.raw() == 1
+                        || (group == 0 && u32::from(symbol.raw()) == count - 1)
+                        || symbol.raw() == if group % 2 == 0 { 65535 } else { 65534 };
                     assert_eq!(
                         tree.group_has_symbol(group, symbol),
                         expected,

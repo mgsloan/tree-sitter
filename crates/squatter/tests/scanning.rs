@@ -71,7 +71,7 @@ fn check_pipeline<'tree, S: GroupScan<'tree>>(
         for node in fragment.nodes() {
             assert!(seen.insert(node.slot()));
             assert_eq!(
-                group.node(node.slot().get_raw() - group.first_slot().get_raw()),
+                group.node(node.slot().raw() - group.first_slot().raw()),
                 Some(node)
             );
         }

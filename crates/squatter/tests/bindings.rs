@@ -110,10 +110,10 @@ fn check_shared_navigation<'tree, N: NodeLike<'tree>>(
         assert_eq!(node.is_missing(), attributes.is_missing);
         assert_eq!(node.is_error(), attributes.is_error);
         assert_eq!(node.has_error(), attributes.has_error);
-        assert_eq!(node.has_children(), node.child_count().get_raw() != 0);
+        assert_eq!(node.has_children(), node.child_count().raw() != 0);
         assert_eq!(
             node.has_named_children(),
-            node.named_child_count().get_raw() != 0
+            node.named_child_count().raw() != 0
         );
     }
     for &node in expected.iter().take(16) {
@@ -171,7 +171,7 @@ fn check_shared_navigation<'tree, N: NodeLike<'tree>>(
                 assert_eq!(
                     cursor
                         .goto_first_child_for_byte(byte)
-                        .map(|index| index.get_raw() as usize),
+                        .map(|index| index.raw() as usize),
                     expected_index
                 );
                 assert!(cursor.node() == expected_index.map_or(node, |index| children[index]));
@@ -189,7 +189,7 @@ fn check_shared_navigation<'tree, N: NodeLike<'tree>>(
                 assert_eq!(
                     cursor
                         .goto_first_child_for_point(point)
-                        .map(|index| index.get_raw() as usize),
+                        .map(|index| index.raw() as usize),
                     expected_index
                 );
                 assert!(cursor.node() == expected_index.map_or(node, |index| children[index]));
@@ -564,7 +564,7 @@ fn language_inspection_matches_native() {
             language
                 .supertypes()
                 .iter()
-                .map(|id| id.get_raw())
+                .map(|id| id.raw())
                 .collect::<Vec<_>>(),
             native.supertypes()
         );
@@ -573,9 +573,9 @@ fn language_inspection_matches_native() {
                 language
                     .subtypes_for_supertype(supertype)
                     .iter()
-                    .map(|id| id.get_raw())
+                    .map(|id| id.raw())
                     .collect::<Vec<_>>(),
-                native.subtypes_for_supertype(supertype.get_raw())
+                native.subtypes_for_supertype(supertype.raw())
             );
         }
         for raw in (0..native.node_kind_count() as u16).chain([u16::MAX - 1, u16::MAX]) {
@@ -596,7 +596,7 @@ fn language_inspection_matches_native() {
             if let Some(name) = native.node_kind_for_id(raw) {
                 for named in [false, true] {
                     assert_eq!(
-                        language.id_for_node_kind(name, named).get_raw(),
+                        language.id_for_node_kind(name, named).raw(),
                         native.id_for_node_kind(name, named)
                     );
                 }
@@ -622,10 +622,7 @@ fn language_inspection_matches_native() {
         );
         assert_eq!(language.grammar_id_for_name("unknown", true), None);
         assert_eq!(
-            language
-                .grammar_id_for_name("ERROR", true)
-                .unwrap()
-                .get_raw(),
+            language.grammar_id_for_name("ERROR", true).unwrap().raw(),
             u16::MAX
         );
         if native == json_language() {

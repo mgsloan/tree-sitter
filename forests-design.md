@@ -31,14 +31,14 @@ pub struct TreeIx(u32);
 
 impl TreeIx {
     pub const fn from_raw(value: u32) -> Self;
-    pub const fn get_raw(self) -> u32;
+    pub const fn raw(self) -> u32;
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct RegionIx(u32);
 
 impl RegionIx {
-    pub const fn get_raw(self) -> u32;
+    pub const fn raw(self) -> u32;
 }
 
 #[derive(Clone, Copy)]
@@ -318,7 +318,7 @@ pub struct NodeId(u64);
 
 impl NodeId {
     pub const fn new(tree: TreeIx, slot: SlotIx) -> Self {
-        Self(((tree.get_raw() as u64) << 32) | slot.get_raw() as u64)
+        Self(((tree.raw() as u64) << 32) | slot.raw() as u64)
     }
 
     pub const fn tree(self) -> TreeIx {
@@ -329,7 +329,7 @@ impl NodeId {
         SlotIx::from_raw(self.0 as u32)
     }
 
-    pub const fn get_raw(self) -> u64 {
+    pub const fn raw(self) -> u64 {
         self.0
     }
 }

@@ -429,16 +429,16 @@ impl Builder {
             let default_grammar = data.tables().default_grammar(event.symbol);
             let mut writer = data.writer();
             if layout.symbol_width == 1 {
-                writer.put_byte(layout.symbol, slot, event.symbol.get_raw() as u8);
+                writer.put_byte(layout.symbol, slot, event.symbol.raw() as u8);
             } else {
-                writer.put_short(layout.symbol, slot, event.symbol.get_raw());
+                writer.put_short(layout.symbol, slot, event.symbol.raw());
             }
             if layout.grammar_width == 1 {
-                writer.put_byte(layout.grammar, slot, event.grammar.get_raw() as u8);
+                writer.put_byte(layout.grammar, slot, event.grammar.raw() as u8);
             } else {
-                writer.put_short(layout.grammar, slot, event.grammar.get_raw());
+                writer.put_short(layout.grammar, slot, event.grammar.raw());
             }
-            writer.put_short(layout.field, slot, event.field.map_or(0, FieldId::get_raw));
+            writer.put_short(layout.field, slot, event.field.map_or(0, FieldId::raw));
             if event.grammar != default_grammar {
                 self.optional |= SEPARATE_GRAMMAR;
             }
