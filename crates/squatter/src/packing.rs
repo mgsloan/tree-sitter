@@ -15,6 +15,8 @@ mod traversal;
 pub struct PackOptions<'options> {
     pub initial_group_capacity: u32,
     pub repack: bool,
+    /// Select coverage once per region after layout finalization. The default
+    /// selects regions with at least 64 groups, an initial size heuristic.
     pub symbol_presence: &'options dyn Fn(ForestRegion<'_>) -> bool,
     /// Store coordinates during construction; enabling points can change grouping.
     pub points: bool,
@@ -108,7 +110,9 @@ impl Packer {
         let mut expected_nodes = 0u64;
         for input in &inputs {
             for root in &input.roots {
-                expected_nodes += root.descendant_count() as u64;
+                expected_nodes = expected_nodes
+                    .checked_add(root.descendant_count() as u64)
+                    .ok_or(Error::Overflow)?;
             }
         }
         let expected_nodes = u32::try_from(expected_nodes).map_err(|_| Error::Overflow)?;
@@ -236,7 +240,7 @@ struct Pending {
 }
 
 struct Builder {
-    tree: Forest,
+    forest: Forest,
     pending: [Pending; GROUP_SIZE as usize],
     count: u32,
     slot_base: u32,
@@ -268,10 +272,10 @@ impl Builder {
     }
 
     fn new_forest(languages: &[Language], capacity: u32, points: bool) -> Result<Self, Error> {
-        let tree = Forest::empty(languages, capacity)?;
-        let points = points.then(|| PointsData::empty(&tree)).transpose()?;
+        let forest = Forest::empty(languages, capacity)?;
+        let points = points.then(|| PointsData::empty(&forest)).transpose()?;
         Ok(Self {
-            tree,
+            forest,
             pending: [Pending::default(); GROUP_SIZE as usize],
             count: 0,
             slot_base: 0,
@@ -379,22 +383,22 @@ impl Builder {
                 continue;
             }
 
-            if self.count == 0 && self.tree.group_count() == self.tree.group_capacity() {
+            if self.count == 0 && self.forest.group_count() == self.forest.group_capacity() {
                 let capacity = self
-                    .tree
+                    .forest
                     .group_capacity()
                     .checked_mul(2)
                     .ok_or(Error::Overflow)?;
-                self.tree.resize(capacity, self.tree.data().flags())?;
+                self.forest.resize(capacity, self.forest.data().flags())?;
             }
 
             let slot = self.distance();
-            if slot % GROUP_SIZE == 0
+            if slot.is_multiple_of(GROUP_SIZE)
                 && let Some(points) = &mut self.points
             {
                 points.grow(slot / GROUP_SIZE + 1)?;
             }
-            let data = self.tree.data_mut();
+            let data = self.forest.data_mut();
             let layout = data.layout;
             let mut writer = data.writer();
             if layout.symbol_width == 1 {
@@ -402,7 +406,7 @@ impl Builder {
             } else {
                 writer.put_short(layout.symbol, slot, event.symbol.raw());
             }
-            if layout.grammar_width == 1 {
+            if layout.symbol_width == 1 {
                 writer.put_byte(layout.grammar, slot, event.grammar.raw() as u8);
             } else {
                 writer.put_short(layout.grammar, slot, event.grammar.raw());
@@ -430,7 +434,7 @@ impl Builder {
             return;
         }
 
-        let data = self.tree.data_mut();
+        let data = self.forest.data_mut();
         let group = data.groups();
         let layout = data.layout;
         data.put_word(SlabOffset(0), 1, group + 1);
@@ -524,7 +528,7 @@ impl Builder {
 
     fn finish_root(&mut self, start: u32, region: RegionIx) -> Result<TreeIx, Error> {
         self.close();
-        let data = self.tree.data_mut();
+        let data = self.forest.data_mut();
         let index = TreeIx::from_raw(u32::try_from(data.trees.len()).map_err(|_| Error::Overflow)?);
         let end = TreeIx::from_raw(index.raw().checked_add(1).ok_or(Error::Overflow)?);
         data.trees.try_reserve(1).map_err(|_| Error::Allocation)?;
@@ -544,25 +548,26 @@ impl Builder {
 
     fn finish(mut self, options: PackOptions<'_>) -> Result<Forest, Error> {
         self.close();
-        if self.tree.data().trees.is_empty() && self.tree.group_count() != 0 {
+        if self.forest.data().trees.is_empty() && self.forest.group_count() != 0 {
             self.finish_root(0, RegionIx(0))?;
         }
-        let groups = self.tree.group_count();
+        let groups = self.forest.group_count();
         let capacity = if options.repack {
             groups
         } else {
-            self.tree.group_capacity()
+            self.forest.group_capacity()
         };
-        self.tree.finish_layout(capacity, self.optional)?;
-        self.tree.classify_regions();
-        let cache = PresenceCache::build_selected(&self.tree, options.symbol_presence)?;
-        if cache.has_selected_regions() {
-            self.tree.set_presence_cache(cache)?;
+        self.forest.finish_layout(capacity, self.optional)?;
+        self.forest.classify_regions();
+        if let Some(cache) =
+            PresenceCache::build_for_packing(&self.forest, options.symbol_presence)?
+        {
+            self.forest.set_presence_cache(cache)?;
         }
         if let Some(points) = self.points {
-            self.tree.set_point_data(points)?;
+            self.forest.set_point_data(points)?;
         }
-        Ok(self.tree)
+        Ok(self.forest)
     }
 }
 

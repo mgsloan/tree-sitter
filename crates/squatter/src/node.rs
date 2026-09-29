@@ -1250,6 +1250,12 @@ impl<'tree> TreeCursor<'tree> {
     }
 }
 
+#[cfg(target_pointer_width = "64")]
+const _: () = {
+    assert!(size_of::<Node<'_>>() == 16);
+    assert!(size_of::<Option<Node<'_>>>() == 16);
+};
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1278,9 +1284,3 @@ mod tests {
         }
     }
 }
-
-#[cfg(target_pointer_width = "64")]
-const _: () = {
-    assert!(size_of::<Node<'_>>() == 16);
-    assert!(size_of::<Option<Node<'_>>>() == 16);
-};

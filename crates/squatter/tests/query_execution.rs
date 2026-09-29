@@ -856,7 +856,7 @@ fn containing_ranges_finish_deferred_matches_in_error_subtrees() {
         cursor.set_optimized(optimized);
         cursor.set_containing_byte_range(1..12).set_byte_range(4..5);
         let mut matches = cursor.matches(&query, tree.root_node(), source.as_bytes());
-        // Forest-sitter drops this deferred match when hidden traversal skips the
+        // Tree-sitter drops this deferred match when hidden traversal skips the
         // enclosing exit events. Squatter finishes it when exiting the parent.
         assert_eq!(
             matches.next().unwrap().captures()[0].node.byte_range(),

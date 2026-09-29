@@ -427,7 +427,7 @@ fn id_width_covers_all_grammars_and_reserved_errors() {
     let wide = Fixture::symbols(255);
     assert_eq!(
         id_width_flags([&small.grammar, &boundary.grammar]),
-        BYTE_IDS | BYTE_GRAMMAR_IDS
+        BYTE_IDS
     );
     assert_eq!(id_width_flags([&small.grammar, &wide.grammar]), 0);
     assert_eq!(id_width_flags([&wide.grammar, &small.grammar]), 0);
@@ -512,7 +512,6 @@ fn compact_domains_preserve_aliases_with_shared_width() {
         })
         .unwrap();
     assert_eq!(tree.data().layout.symbol_width, 2);
-    assert_eq!(tree.data().layout.grammar_width, 2);
     let restored =
         Language::from_cache(&language.tree_sitter_language(), &language.cache().unwrap()).unwrap();
     let loaded = Forest::from_bytes(std::slice::from_ref(&restored), tree.as_bytes()).unwrap();
@@ -656,17 +655,11 @@ fn synthetic_symbol_ids_and_optional_columns() {
                         assert_eq!(data.grammar_index(slot).raw(), original);
                     }
                     assert_eq!(
-                        Layout::new(
-                            4,
-                            TREE_FORMAT | BYTE_IDS | BYTE_GRAMMAR_IDS | SEPARATE_GRAMMAR
-                        )
-                        .unwrap()
-                        .end
-                        .raw(),
-                        Layout::new(4, TREE_FORMAT | BYTE_IDS | BYTE_GRAMMAR_IDS)
+                        Layout::new(4, FOREST_FORMAT | BYTE_IDS | SEPARATE_GRAMMAR)
                             .unwrap()
                             .end
-                            .raw()
+                            .raw(),
+                        Layout::new(4, FOREST_FORMAT | BYTE_IDS).unwrap().end.raw()
                             + 4 * GROUP_SIZE,
                     );
                     let mut bytes = tree.as_bytes().to_vec();
@@ -876,11 +869,7 @@ fn exercise_columns(tree: &mut Forest, fill: bool) {
         (layout.supertype, 16, GROUP_SIZE),
         (layout.symbol, layout.symbol_width as usize * 8, GROUP_SIZE),
         (layout.field, 16, GROUP_SIZE),
-        (
-            layout.grammar,
-            layout.grammar_width as usize * 8,
-            GROUP_SIZE,
-        ),
+        (layout.grammar, layout.symbol_width as usize * 8, GROUP_SIZE),
     ]
     .into_iter()
     .enumerate()
@@ -929,7 +918,7 @@ fn column_growth_compaction_and_little_endian_encoding() {
         let mut tree = synthetic_forest(&fixture.grammar, 3).unwrap();
         assert_eq!(
             tree.data().flags(),
-            TREE_FORMAT | OPTIONAL | id_width_flags([&fixture.grammar])
+            FOREST_FORMAT | OPTIONAL | id_width_flags([&fixture.grammar])
         );
         tree.data_mut().put_word(SlabOffset(0), 1, 2);
         exercise_columns(&mut tree, true);

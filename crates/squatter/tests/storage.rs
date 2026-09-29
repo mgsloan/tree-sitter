@@ -25,7 +25,7 @@ fn slab_headers_reject_incompatible_formats() {
     let points = tree.point_data().unwrap();
 
     for (bytes, expected, flags) in [
-        (tree.as_bytes(), 0xff00_0000, 0x3f),
+        (tree.as_bytes(), 0xff00_0000, 0x1f),
         (presence.as_bytes(), 0xfe00_0000, 0),
         (points.as_bytes(), 0xfd00_0000, 0),
     ] {

@@ -1685,7 +1685,7 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
     }
 
     fn stage_remaining(&mut self, index: usize) {
-        if self.cursor.states.len() - index - 1 >= 32 && self.cursor.pending.is_empty() {
+        if self.cursor.states.len() - index > 32 && self.cursor.pending.is_empty() {
             self.cursor
                 .pending
                 .extend_from_slice(&self.cursor.states[index + 1..]);

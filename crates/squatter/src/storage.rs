@@ -11,7 +11,7 @@ use std::{
     ptr::{self, NonNull},
 };
 
-// implied by tree storage version 0
+// implied by forest storage version 0
 pub(crate) const GROUP_SIZE: u32 = 32;
 pub(crate) const SPAN_BITS: u32 = 16;
 pub(crate) const ALIGNMENT: usize = 8;
@@ -21,20 +21,20 @@ pub(crate) const fn slab_format(slab_type: u8, version: u8) -> u32 {
     ((slab_type as u32) << 24) | ((version as u32) << 16)
 }
 
-pub(crate) const TREE_FORMAT: u32 = slab_format(0xff, 0);
+// header: format, used groups, capacity, region count; descriptors follow columns
+pub(crate) const FOREST_FORMAT: u32 = slab_format(0xff, 0);
 pub(crate) const EXTRAS: u32 = 1 << 3;
 pub(crate) const ERRORS: u32 = 1 << 2;
 pub(crate) const MISSING: u32 = 1 << 1;
 pub(crate) const SEPARATE_GRAMMAR: u32 = 1;
 pub(crate) const BYTE_IDS: u32 = 1 << 4;
-pub(crate) const BYTE_GRAMMAR_IDS: u32 = 1 << 5;
 pub(crate) const OPTIONAL: u32 = EXTRAS | ERRORS | MISSING | SEPARATE_GRAMMAR;
 
 // Reserve room for both remapped error IDs in every grammar sharing the slab.
 pub(crate) fn id_width_flags<'language>(
     languages: impl IntoIterator<Item = &'language Language>,
 ) -> u32 {
-    let mut flags = BYTE_IDS | BYTE_GRAMMAR_IDS;
+    let mut flags = BYTE_IDS;
     for language in languages {
         if language.tables().kind_count > 254 || language.tables().compact_grammar_count > 254 {
             flags = 0;
@@ -47,13 +47,12 @@ pub(crate) fn id_width_flags<'language>(
 ///
 /// **Not in Tree-sitter**
 pub fn representation_id() -> u64 {
-    TREE_FORMAT as u64
+    FOREST_FORMAT as u64
 }
 
 #[derive(Clone, Copy, Default, Debug)]
 pub(crate) struct Layout<Column> {
     pub symbol_width: u32,
-    pub grammar_width: u32,
     pub waste: Column,
     pub start_byte_base: Column,
     pub start_byte_delta: Column,
@@ -88,7 +87,6 @@ impl Layout<SlabOffset> {
 
     pub fn new(capacity: u32, flags: u32) -> Result<Self, Error> {
         let symbol_width = if flags & BYTE_IDS != 0 { 1 } else { 2 };
-        let grammar_width = if flags & BYTE_GRAMMAR_IDS != 0 { 1 } else { 2 };
         let slots = capacity.checked_mul(GROUP_SIZE).ok_or(Error::Overflow)?;
         let mut next = Self::WASTE.raw() as u64;
         let mut column = |length: u64| {
@@ -98,7 +96,6 @@ impl Layout<SlabOffset> {
         };
         let mut result = Self {
             symbol_width,
-            grammar_width,
             waste: column(aligned_bytes(capacity, 2)),
             start_byte_base: column(aligned_bytes(capacity, 4)),
             start_byte_delta: column(aligned_bytes(slots, 1)),
@@ -111,7 +108,7 @@ impl Layout<SlabOffset> {
             supertype: column(aligned_bytes(slots, 2)),
             last: column(bit_bytes(slots)),
             grammar: column(if flags & SEPARATE_GRAMMAR != 0 {
-                aligned_bytes(slots, grammar_width)
+                aligned_bytes(slots, symbol_width)
             } else {
                 0
             }),
@@ -139,7 +136,6 @@ impl Layout<SlabOffset> {
     fn resolve(self, bytes: NonNull<u8>) -> Layout<ColumnPointer> {
         Layout {
             symbol_width: self.symbol_width,
-            grammar_width: self.grammar_width,
             waste: ColumnPointer(self.waste.pointer(bytes)),
             start_byte_base: ColumnPointer(self.start_byte_base.pointer(bytes)),
             start_byte_delta: ColumnPointer(self.start_byte_delta.pointer(bytes)),
@@ -184,7 +180,7 @@ impl<Column: Copy> Layout<Column> {
             (
                 self.grammar,
                 if flags & SEPARATE_GRAMMAR != 0 {
-                    aligned_bytes(slots, self.grammar_width) as usize
+                    aligned_bytes(slots, self.symbol_width) as usize
                 } else {
                     0
                 },
@@ -220,7 +216,7 @@ impl<Column: Copy> Layout<Column> {
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct ColumnPointer(pub(crate) *mut u8);
 
-// Column access borrows the owning tree; published slabs are immutable.
+// Column access borrows the owning forest; published slabs are immutable.
 unsafe impl Send for ColumnPointer {}
 unsafe impl Sync for ColumnPointer {}
 
@@ -273,7 +269,7 @@ unsafe impl Sync for Slab {}
 
 impl Slab {
     pub(crate) fn zeroed(length: usize) -> Result<Self, Error> {
-        if length % ALIGNMENT != 0 {
+        if !length.is_multiple_of(ALIGNMENT) {
             return Err(Error::InvalidArgument);
         }
         let mut words = Vec::new();
@@ -298,7 +294,9 @@ impl Slab {
     pub(crate) fn retained(owner: impl StableSlab) -> Result<Self, Error> {
         let owner = Box::new(owner);
         let bytes = owner.bytes();
-        if bytes.as_ptr() as usize % ALIGNMENT != 0 || bytes.len() % ALIGNMENT != 0 {
+        if !(bytes.as_ptr() as usize).is_multiple_of(ALIGNMENT)
+            || !bytes.len().is_multiple_of(ALIGNMENT)
+        {
             return Err(Error::InvalidArgument);
         }
         let pointer = NonNull::from(bytes).cast();
@@ -311,7 +309,9 @@ impl Slab {
     }
 
     fn borrowed(bytes: &[u8]) -> Result<Self, Error> {
-        if bytes.as_ptr() as usize % ALIGNMENT != 0 || bytes.len() % ALIGNMENT != 0 {
+        if !(bytes.as_ptr() as usize).is_multiple_of(ALIGNMENT)
+            || !bytes.len().is_multiple_of(ALIGNMENT)
+        {
             return Err(Error::InvalidArgument);
         }
         Ok(Self {
@@ -335,7 +335,7 @@ impl Slab {
         let Storage::Owned(words) = &mut self.storage else {
             return Err(Error::InvalidArgument);
         };
-        if length % 8 != 0 || length < self.length {
+        if !length.is_multiple_of(8) || length < self.length {
             return Err(Error::InvalidArgument);
         }
         words
@@ -359,6 +359,7 @@ pub(crate) struct ForestData {
     pub point_data: Option<PointsData>,
 }
 
+#[derive(Clone)]
 pub(crate) struct TreeData {
     pub region: RegionIx,
     pub slots: Range<SlotIx>,
@@ -571,7 +572,7 @@ impl ForestData {
     #[inline]
     pub fn previous_slot(&self, slot: u32) -> Option<u32> {
         let previous = slot.checked_sub(1)?;
-        Some(if slot % GROUP_SIZE == 0 {
+        Some(if slot.is_multiple_of(GROUP_SIZE) {
             previous - self.waste(previous / GROUP_SIZE)
         } else {
             previous
@@ -742,7 +743,7 @@ impl Forest {
 
     pub(crate) fn empty(languages: &[Language], capacity: u32) -> Result<Self, Error> {
         let count = u32::try_from(languages.len()).map_err(|_| Error::Overflow)?;
-        let flags = TREE_FORMAT | OPTIONAL | id_width_flags(languages);
+        let flags = FOREST_FORMAT | OPTIONAL | id_width_flags(languages);
         let layout = Layout::new(capacity, flags)?;
         let length = slab_length(layout, count)?;
         let mut forest = Self::allocate(layout, Slab::zeroed(length)?);
@@ -772,6 +773,9 @@ impl Forest {
     /// Copies core bytes. Supply grammar bindings in the same order used to pack
     /// regions; repeated grammars may share a binding. Side data loads separately.
     pub fn from_bytes(languages: &[Language], bytes: &[u8]) -> Result<Self, Error> {
+        if bytes.len() < 16 || bytes.len() > u32::MAX as usize {
+            return Err(Error::InvalidSlab);
+        }
         Self::load(languages, Slab::copy(bytes)?)
     }
 
@@ -963,32 +967,50 @@ impl Forest {
         self.finish_layout(self.group_count(), self.data.flags() & OPTIONAL)
     }
 
+    /// Copies compact core columns and attached side data into independent storage.
     pub fn repack(&self) -> Result<Self, Error> {
-        let languages = self.language_bindings();
-        let mut forest = Self::from_bytes(&languages, &self.to_bytes()?)?;
-        if let Some(cache) = &self.data.presence_cache {
-            forest.set_presence_cache(PresenceCache::from_bytes(cache.as_bytes())?)?;
+        let layout = Layout::new(self.group_count(), self.data.flags())?;
+        let mut storage = Slab::zeroed(self.compact_size())?;
+        unsafe {
+            self.copy_columns(
+                storage.bytes_mut().as_mut_ptr(),
+                layout,
+                self.data.flags(),
+                self.group_count(),
+            );
         }
-        if let Some(points) = &self.data.point_data {
-            forest.set_point_data(PointsData::from_bytes(points.as_bytes())?)?;
-        }
-        Ok(forest)
+        self.copy_with_storage(layout, storage)
     }
 
-    fn language_bindings(&self) -> Vec<Language> {
-        let mut bindings = Vec::new();
-        for (index, region) in self.data.regions.iter().enumerate() {
-            let binding = self.data.word(self.data.layout.end + index as u32 * 8, 0) as usize;
-            bindings.resize_with(bindings.len().max(binding + 1), || region.language.clone());
-            bindings[binding] = region.language.clone();
-        }
-        bindings
-    }
-
-    /// Copies core and attached side data into independent owned storage.
+    /// Copies core and attached side data without changing group capacity or IDs.
     pub fn detach(&self) -> Result<Self, Error> {
-        let languages = self.language_bindings();
-        let mut forest = Self::from_bytes(&languages, self.as_bytes())?;
+        let layout = Layout::new(self.group_capacity(), self.data.flags())?;
+        self.copy_with_storage(layout, Slab::copy(self.as_bytes())?)
+    }
+
+    fn copy_with_storage(&self, layout: Layout<SlabOffset>, storage: Slab) -> Result<Self, Error> {
+        let mut forest = Self::allocate(layout, storage);
+        forest
+            .data
+            .trees
+            .try_reserve(self.data.trees.len())
+            .map_err(|_| Error::Allocation)?;
+        forest.data.trees.extend(self.data.trees.iter().cloned());
+        forest
+            .data
+            .regions
+            .try_reserve(self.data.regions.len())
+            .map_err(|_| Error::Allocation)?;
+        forest
+            .data
+            .regions
+            .extend(self.data.regions.iter().map(|region| RegionData {
+                slots: region.slots.clone(),
+                trees: region.trees.clone(),
+                language: region.language.clone(),
+                order: region.order,
+                presence: None,
+            }));
         if let Some(cache) = &self.data.presence_cache {
             forest.set_presence_cache(PresenceCache::from_bytes(cache.as_bytes())?)?;
         }
@@ -1009,8 +1031,7 @@ impl Forest {
         let groups = header(1);
         let capacity = header(2);
         let region_count = header(3);
-        if flags & !(OPTIONAL | BYTE_IDS | BYTE_GRAMMAR_IDS) != TREE_FORMAT
-            || (flags & BYTE_IDS != 0) != (flags & BYTE_GRAMMAR_IDS != 0)
+        if flags & !(OPTIONAL | BYTE_IDS) != FOREST_FORMAT
             || groups > capacity
             || (groups == 0) != (region_count == 0)
             || (flags & MISSING != 0 && flags & ERRORS == 0)
@@ -1211,8 +1232,7 @@ impl Forest {
                         return Err(Error::InvalidSlab);
                     }
                     let end = slot - span as u32;
-                    if end != slots.start.raw() && end - 1 >= data.group_end((end - 1) / GROUP_SIZE)
-                    {
+                    if end != slots.start.raw() && end > data.group_end((end - 1) / GROUP_SIZE) {
                         return Err(Error::InvalidSlab);
                     }
                     let last = data.bit(data.layout.last, slot);
@@ -1276,8 +1296,8 @@ mod tests {
         };
         let language = Language::new(&language).unwrap();
         for optional in 0..=OPTIONAL {
-            for width in [0, BYTE_IDS, BYTE_GRAMMAR_IDS, BYTE_IDS | BYTE_GRAMMAR_IDS] {
-                let flags = TREE_FORMAT | optional | width;
+            for width in [0, BYTE_IDS] {
+                let flags = FOREST_FORMAT | optional | width;
                 let layout = Layout::new(5, flags).unwrap();
                 let mut tree = Forest::empty(std::slice::from_ref(&language), 5).unwrap();
                 unsafe {
@@ -1317,7 +1337,7 @@ mod tests {
 
     #[test]
     fn shrinking_respects_absolute_and_relative_thresholds() {
-        let layout = Layout::new(1, TREE_FORMAT | BYTE_IDS).unwrap();
+        let layout = Layout::new(1, FOREST_FORMAT | BYTE_IDS).unwrap();
         let length = layout.end.raw();
         for (excess, threshold, shrink) in [
             (0, 0, false),

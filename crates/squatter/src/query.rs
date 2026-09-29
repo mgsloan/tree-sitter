@@ -14,7 +14,7 @@
 //!
 //! let mut captures = cursor.captures(query, root, source);
 //! while let Some((found, index)) = captures.next() {
-//!     let capture = found.captures()[index.0 as usize];
+//!     let capture = found.captures()[index.raw() as usize];
 //!     found.remove(); // suppress subsequent events for this match
 //! }
 //! # }

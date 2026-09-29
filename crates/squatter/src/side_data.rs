@@ -3,6 +3,7 @@ use crate::{
     storage::{GROUP_SIZE, Slab, StableSlab, slab_format},
     types::PackedPoint,
 };
+use smallvec::SmallVec;
 use std::ptr::NonNull;
 
 const PRESENCE_FORMAT: u32 = slab_format(0xfe, 0);
@@ -152,7 +153,29 @@ impl PresenceCache {
         forest: &Forest,
         select: impl Fn(ForestRegion<'_>) -> bool,
     ) -> Result<Self, SideDataError> {
-        let selected: Vec<_> = forest.regions().map(select).collect();
+        Ok(Self::build_selected_inner(forest, select, false)?.unwrap())
+    }
+
+    pub(crate) fn build_for_packing(
+        forest: &Forest,
+        select: impl Fn(ForestRegion<'_>) -> bool,
+    ) -> Result<Option<Self>, SideDataError> {
+        Self::build_selected_inner(forest, select, true)
+    }
+
+    fn build_selected_inner(
+        forest: &Forest,
+        select: impl Fn(ForestRegion<'_>) -> bool,
+        omit_empty: bool,
+    ) -> Result<Option<Self>, SideDataError> {
+        let mut selected = SmallVec::<[bool; 1]>::new();
+        selected
+            .try_reserve(forest.data().regions.len())
+            .map_err(|_| Error::Allocation)?;
+        selected.extend(forest.regions().map(select));
+        if omit_empty && !selected.iter().any(|&present| present) {
+            return Ok(None);
+        }
         let mut length = 0usize;
         for (region, &present) in forest.regions().zip(&selected) {
             length = length
@@ -194,7 +217,7 @@ impl PresenceCache {
             }
             offset += presence_length(groups, symbols, present)?;
         }
-        Ok(Self(sidecar))
+        Ok(Some(Self(sidecar)))
     }
 
     pub fn as_bytes(&self) -> &[u8] {
@@ -218,13 +241,6 @@ impl PresenceCache {
         let sidecar = Sidecar(Slab::retained(owner)?);
         presence_records(sidecar.bytes())?;
         Ok(Self(sidecar))
-    }
-
-    pub(crate) fn has_selected_regions(&self) -> bool {
-        presence_records(self.as_bytes())
-            .unwrap()
-            .iter()
-            .any(|(_, header)| header.format == PRESENCE_FORMAT)
     }
 
     fn views(&self, forest: &Forest) -> Result<Vec<Option<PresenceView>>, SideDataError> {
@@ -342,6 +358,7 @@ fn validate_points(bytes: &[u8]) -> Result<Header, SideDataError> {
     if header.format != POINT_FORMAT
         || bytes.len() != point_length(header.groups)?
         || (header.groups == 0) != (header.dimension == 0)
+        || header.dimension > header.groups
     {
         return Err(SideDataError::InvalidTarget);
     }
