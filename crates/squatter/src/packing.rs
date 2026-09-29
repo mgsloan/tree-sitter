@@ -562,14 +562,13 @@ impl Builder {
         } else {
             self.tree.group_capacity()
         };
-        self.tree
-            .finish_layout_with_progress(capacity, self.optional, progress)?;
+        self.tree.finish_layout(capacity, self.optional)?;
         if options.symbol_presence {
-            let cache = PresenceCache::build_with_progress(&self.tree, progress)?;
+            let cache = PresenceCache::build(&self.tree)?;
             self.tree.set_presence_cache(cache)?;
         }
         if let Some(points) = self.points {
-            self.tree.set_point_data_with_progress(points, progress)?;
+            self.tree.set_point_data(points)?;
         }
         progress.poll()?;
         Ok(self.tree)

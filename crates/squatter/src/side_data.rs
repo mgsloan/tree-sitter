@@ -173,14 +173,6 @@ pub struct PresenceCache(Sidecar);
 impl PresenceCache {
     /// Builds symbol membership from the tree.
     pub fn build(tree: &Tree) -> Result<Self, SideDataError> {
-        Self::build_with_progress(tree, &mut Default::default())
-    }
-
-    pub(crate) fn build_with_progress(
-        tree: &Tree,
-        progress: &mut crate::packing::Progress<'_>,
-    ) -> Result<Self, SideDataError> {
-        progress.poll()?;
         let symbols = tree.data().tables().kind_count + 2;
         let mut sidecar = Sidecar::new(
             PRESENCE_FORMAT,
@@ -191,7 +183,6 @@ impl PresenceCache {
         let words = (tree.group_count() as usize).div_ceil(64);
         let data = tree.data();
         for group in 0..tree.group_count() {
-            progress.tick()?;
             for slot in group * GROUP_SIZE..data.group_end(group) {
                 let symbol = data.symbol_index(slot).raw() as usize;
                 let offset = HEADER_BYTES + (symbol * words + group as usize / 64) * 8;
@@ -383,18 +374,8 @@ impl PointsData {
         Ok(result)
     }
     fn validate_loaded(&self, tree: &Tree) -> Result<(), SideDataError> {
-        self.validate_with_progress(tree, &mut Default::default())
-    }
-
-    fn validate_with_progress(
-        &self,
-        tree: &Tree,
-        progress: &mut crate::packing::Progress<'_>,
-    ) -> Result<(), SideDataError> {
-        progress.poll()?;
         self.0.validate(tree, POINT_FORMAT, point_length(tree)?)?;
         for group in 0..tree.group_count() {
-            progress.tick()?;
             let used = (tree.data().group_end(group) - group * GROUP_SIZE) as usize;
             for (end, (base, deltas)) in [
                 (false, self.column::<false>(group)),
@@ -456,15 +437,7 @@ impl Tree {
     ///
     /// **Not in Tree-sitter**
     pub fn set_point_data(&mut self, points: PointsData) -> Result<(), SideDataError> {
-        self.set_point_data_with_progress(points, &mut Default::default())
-    }
-
-    pub(crate) fn set_point_data_with_progress(
-        &mut self,
-        points: PointsData,
-        progress: &mut crate::packing::Progress<'_>,
-    ) -> Result<(), SideDataError> {
-        points.validate_with_progress(self, progress)?;
+        points.validate_loaded(self)?;
         self.data_mut().point_data = Some(points);
         Ok(())
     }
