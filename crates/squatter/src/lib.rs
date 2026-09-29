@@ -28,7 +28,7 @@ pub use native::{Language, LanguageHash, language_hash};
 pub use query::{
     CaptureQuantifier, Query, QueryCapture, QueryCaptures, QueryCursor, QueryCursorOptions,
     QueryCursorState, QueryError, QueryErrorKind, QueryExecution, QueryExecutionError, QueryMatch,
-    QueryMatches, QueryPredicate, QueryPredicateArg, QueryProperty, StreamingIterator,
+    QueryMatches, QueryPredicate, QueryPredicateArg, QueryProperty, QueryScope, StreamingIterator,
     TextProvider,
 };
 

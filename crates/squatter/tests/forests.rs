@@ -186,3 +186,229 @@ fn forest_packing_and_round_trip() {
         0
     );
 }
+
+type MatchDescription = (usize, Vec<tree_squatter::NodeId>);
+
+fn matches<'forest>(
+    cursor: &mut tree_squatter::QueryCursor,
+    query: &tree_squatter::Query,
+    scope: impl Into<tree_squatter::QueryScope<'forest>>,
+    sources: &[&[u8]],
+) -> Vec<MatchDescription> {
+    let provider = |node: Node<'_>| {
+        let source = sources[node.id().tree().raw() as usize];
+        std::iter::once(&source[node.byte_range()])
+    };
+    let mut execution = cursor.execute(query, scope, provider);
+    let mut results = Vec::new();
+    let mut identities = HashSet::new();
+    while let Some(found) = execution.next_match() {
+        assert!(identities.insert(found.id()));
+        results.push((
+            found.pattern_index.raw(),
+            found
+                .captures()
+                .iter()
+                .map(|capture| capture.node.id())
+                .collect(),
+        ));
+    }
+    assert!(execution.error().is_none());
+    results
+}
+
+#[test]
+fn region_queries_select_sources_by_tree() {
+    use tree_squatter::{Query, QueryCursor, QueryExecutionError};
+    let c = support::c_language();
+    let json = support::json_language();
+    let language = Language::new(&c).unwrap();
+    let sources = [
+        b"int answer() { return 42; }".as_slice(),
+        b"int answer = ;",
+        b"int other;",
+        b"[]",
+        b"int answer;",
+    ];
+    let native: Vec<_> = sources
+        .iter()
+        .enumerate()
+        .map(|(index, source)| support::parse_native(if index == 3 { &json } else { &c }, source))
+        .collect();
+    let (forest, _) = Packer::new()
+        .unwrap()
+        .pack_forest(
+            vec![
+                PackRegion {
+                    language: language.clone(),
+                    roots: native[..3].iter().map(|tree| tree.root_node()).collect(),
+                },
+                PackRegion {
+                    language: Language::new(&json).unwrap(),
+                    roots: vec![native[3].root_node()],
+                },
+                PackRegion {
+                    language: language.clone(),
+                    roots: vec![native[4].root_node()],
+                },
+            ],
+            PackOptions {
+                symbol_presence: &|_| true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let query = Query::new(&language, "((identifier) @name (#eq? @name \"answer\"))").unwrap();
+    let regions: Vec<_> = forest.regions().collect();
+    for optimized in [false, true] {
+        let mut cursor = QueryCursor::new();
+        cursor.set_optimized(optimized);
+        for region in [regions[0], regions[2]] {
+            let expected: Vec<_> = region
+                .trees()
+                .flat_map(|tree| matches(&mut cursor, &query, tree, &sources))
+                .collect();
+            assert_eq!(matches(&mut cursor, &query, &region, &sources), expected);
+            assert!(!expected.is_empty());
+        }
+        let mut wrong_language = cursor.execute(&query, &regions[1], sources[3]);
+        assert_eq!(
+            wrong_language.error(),
+            Some(QueryExecutionError::InvalidExecution)
+        );
+        assert!(wrong_language.next_match().is_none());
+    }
+    let mut cursor = QueryCursor::new();
+    let provider = |node: Node<'_>| {
+        std::iter::once(&sources[node.id().tree().raw() as usize][node.byte_range()])
+    };
+    let mut execution = cursor.execute(&query, &regions[0], provider);
+    let mut removed = None;
+    let mut identities = HashSet::new();
+    while let Some((found, _)) = execution.next_capture() {
+        assert_ne!(Some(found.id()), removed);
+        identities.insert(found.id());
+        if removed.is_none() {
+            removed = Some(found.id());
+            found.remove();
+        }
+    }
+    assert!(identities.len() >= 2);
+}
+
+#[test]
+fn bounded_region_queries_preserve_ordering_semantics() {
+    use tree_squatter::{Query, QueryCursor};
+    let json = support::json_language();
+    let language = Language::new(&json).unwrap();
+    let examples = [
+        (vec![0..20, 30..40, 50..70], 35..55, vec![1, 2]),
+        (
+            vec![0..1000, 20..40, 500..600, 700..800],
+            510..520,
+            vec![0, 2],
+        ),
+        (
+            vec![500..600, 700..800, 20..40, 0..1000],
+            510..520,
+            vec![0, 3],
+        ),
+    ];
+    for (bounds, viewport, selected) in examples {
+        let text: Vec<_> = bounds
+            .iter()
+            .map(|range| format!("\"{}\"", " ".repeat(range.len() - 2)))
+            .collect();
+        let native: Vec<_> = text
+            .iter()
+            .map(|source| support::parse_native(&json, source))
+            .collect();
+        let roots: Vec<_> = native
+            .iter()
+            .zip(&bounds)
+            .map(|(tree, range)| {
+                tree.root_node_with_offset(range.start, tree_sitter::Point::new(0, range.start))
+            })
+            .collect();
+        let sources: Vec<_> = text
+            .iter()
+            .zip(&bounds)
+            .map(|(source, range)| format!("{}{}", " ".repeat(range.start), source).into_bytes())
+            .collect();
+        let sources: Vec<_> = sources.iter().map(Vec::as_slice).collect();
+        let (forest, _) = Packer::new()
+            .unwrap()
+            .pack_forest(
+                vec![PackRegion {
+                    language: language.clone(),
+                    roots,
+                }],
+                PackOptions {
+                    symbol_presence: &|_| true,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let loaded =
+            Forest::from_bytes(std::slice::from_ref(&language), forest.as_bytes()).unwrap();
+        let query = Query::new(&language, "(document (string) @value) @root").unwrap();
+        for forest in [&forest, &loaded] {
+            for optimized in [false, true] {
+                for points in [false, true] {
+                    let mut cursor = QueryCursor::new();
+                    cursor.set_optimized(optimized);
+                    if points {
+                        cursor.set_point_range(
+                            tree_sitter::Point::new(0, viewport.start)
+                                ..tree_sitter::Point::new(0, viewport.end),
+                        );
+                    } else {
+                        cursor.set_byte_range(viewport.clone());
+                    }
+                    let expected: Vec<_> = forest
+                        .trees()
+                        .flat_map(|tree| matches(&mut cursor, &query, tree, &sources))
+                        .collect();
+                    let region = forest.regions().next().unwrap();
+                    let actual = matches(&mut cursor, &query, &region, &sources);
+                    assert_eq!(actual, expected);
+                    assert_eq!(
+                        actual
+                            .iter()
+                            .map(|(_, captures)| captures[0].tree().raw())
+                            .collect::<Vec<_>>(),
+                        selected
+                    );
+                }
+            }
+        }
+    }
+    // Empty roots at the viewport start must survive the nonoverlapping seek.
+    let c = support::c_language();
+    let language = Language::new(&c).unwrap();
+    let empty = support::parse_native(&c, "");
+    let root = empty.root_node_with_offset(10, tree_sitter::Point::new(0, 10));
+    let (forest, _) = Packer::new()
+        .unwrap()
+        .pack_forest(
+            vec![PackRegion {
+                language: language.clone(),
+                roots: vec![root, root],
+            }],
+            PackOptions::default(),
+        )
+        .unwrap();
+    let query = Query::new(&language, "(translation_unit) @root").unwrap();
+    let mut cursor = QueryCursor::new();
+    cursor.set_byte_range(10..11);
+    assert_eq!(
+        matches(
+            &mut cursor,
+            &query,
+            forest.regions().next().unwrap(),
+            &[b"          ", b"          "]
+        )
+        .len(),
+        2
+    );
+}

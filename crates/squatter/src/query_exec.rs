@@ -1,9 +1,10 @@
 use crate::{
-    FieldId, GrammarId, MatchCaptureIx, Node, PatternIx, Query, QueryCapture, QueryCursorOptions,
-    QueryCursorState, QueryExecutionError, QueryMatch, RawNode, SlotIx, StreamingIterator,
-    TextProvider,
+    FieldId, ForestRegion, GrammarId, MatchCaptureIx, Node, NodeId, PatternIx, Query, QueryCapture,
+    QueryCursorOptions, QueryCursorState, QueryExecutionError, QueryMatch, QueryScope, RawNode,
+    SlotIx, StreamingIterator, TextProvider, TreeIx,
     native::{Pattern, PatternEntry, Step, flags::*},
-    storage::ColumnPointer,
+    query::Scope,
+    storage::{ColumnPointer, RegionOrder},
     types::{CaptureIx, GroupIx, MatchId, PackedPoint, PatternIndex, SquatterKindId},
 };
 use std::{cell::Cell, cmp::Ordering, marker::PhantomData, rc::Rc};
@@ -527,6 +528,57 @@ impl QueryRange {
     }
 }
 
+struct RegionTrees<'forest> {
+    region: ForestRegion<'forest>,
+    next: u32,
+    end: u32,
+}
+
+impl<'forest> RegionTrees<'forest> {
+    fn new(region: ForestRegion<'forest>, range: QueryRange) -> Self {
+        let trees = region.data().trees.clone();
+        let mut next = trees.start.raw();
+        let end = trees.end.raw();
+        if region.data().order == RegionOrder::NonOverlapping {
+            let mut upper = end;
+            while next < upper {
+                let middle = next + (upper - next) / 2;
+                let root = region.forest.tree(TreeIx::from_raw(middle)).root_node();
+                let root_end = root.end_byte();
+                let before = root_end < range.start_byte as usize
+                    || (root_end == range.start_byte as usize && root.start_byte() != root_end);
+                if before {
+                    next = middle + 1;
+                } else {
+                    upper = middle;
+                }
+            }
+        }
+        Self { region, next, end }
+    }
+
+    fn next_root(&mut self, range: QueryRange) -> Option<Node<'forest>> {
+        while self.next < self.end {
+            let root = self
+                .region
+                .forest
+                .tree(TreeIx::from_raw(self.next))
+                .root_node();
+            self.next += 1;
+            if self.region.data().order != RegionOrder::Unordered
+                && root.start_byte() >= range.end_byte as usize
+            {
+                self.next = self.end;
+                return None;
+            }
+            if range.intersects(root) {
+                return Some(root);
+            }
+        }
+        None
+    }
+}
+
 #[derive(Clone, Copy, Default)]
 struct PresenceCache {
     start: u32,
@@ -640,8 +692,8 @@ pub struct QueryCursor {
     comparison_blocks: Vec<ComparisonBlock>,
     finished: Vec<State>,
     finished_heap_size: usize,
-    parents: Vec<SlotIx>,
-    position: SlotIx,
+    parents: Vec<NodeId>,
+    position: NodeId,
     ascending: bool,
     halted: bool,
     error: Option<QueryExecutionError>,
@@ -692,7 +744,7 @@ impl QueryCursor {
             finished: Vec::with_capacity(8),
             finished_heap_size: 0,
             parents: Vec::new(),
-            position: SlotIx::from_raw(0),
+            position: NodeId::new(TreeIx::from_raw(0), SlotIx::from_raw(0)),
             ascending: false,
             halted: false,
             error: None,
@@ -775,33 +827,7 @@ impl QueryCursor {
         self
     }
 
-    /// Start a fresh execution, retaining the provider and borrowing this cursor
-    /// until dropped. Unavailable optimizations fall back to general execution.
-    pub fn execute<'cursor, 'query, 'tree, Provider, Chunk>(
-        &'cursor mut self,
-        query: &'query Query,
-        root: Node<'tree>,
-        text_provider: Provider,
-    ) -> QueryExecution<'cursor, 'query, 'tree, 'static, Provider, Chunk>
-    where
-        Provider: TextProvider<Chunk>,
-        Chunk: AsRef<[u8]>,
-    {
-        self.execute_with_options(query, root, text_provider, QueryCursorOptions::new())
-    }
-
-    /// Start a fresh execution with a resumable progress callback.
-    pub fn execute_with_options<'cursor, 'query, 'tree, 'options, Provider, Chunk>(
-        &'cursor mut self,
-        query: &'query Query,
-        root: Node<'tree>,
-        text_provider: Provider,
-        options: QueryCursorOptions<'options>,
-    ) -> QueryExecution<'cursor, 'query, 'tree, 'options, Provider, Chunk>
-    where
-        Provider: TextProvider<Chunk>,
-        Chunk: AsRef<[u8]>,
-    {
+    fn start_tree(&mut self, query: &Query, root: Node<'_>) {
         self.removal.set(None);
         self.pool.reset();
         self.states.clear();
@@ -815,21 +841,12 @@ impl QueryCursor {
                 .resize(query.program.presence.len(), PresenceCache::default());
         }
 
-        self.error = if root.tables().language != query.compiled.view.language {
-            Some(QueryExecutionError::InvalidExecution)
-        } else {
-            None
-        };
         self.halted = self.error.is_some();
-        self.position = root.slot();
+        self.position = root.id();
         self.ascending = false;
-        self.exceeded_limit = false;
-        self.operations = 0;
         self.dirty_patterns = 0;
         self.states_need_sort = false;
         self.states_max_depth = 0;
-        self.next_state_id = MatchId::from_raw(0);
-        self.next_finished_id = 0;
         self.finished_heap_size = 0;
         self.first_capture_valid = false;
         self.scan_samples = 0;
@@ -842,6 +859,58 @@ impl QueryCursor {
         self.direct_position =
             root.data().groups() * crate::storage::GROUP_SIZE - 1 - root.slot().raw();
         self.direct_free = NONE;
+    }
+
+    /// Start a fresh execution, retaining the provider and borrowing this cursor
+    /// until dropped. Unavailable optimizations fall back to general execution.
+    pub fn execute<'cursor, 'query, 'tree, Provider, Chunk>(
+        &'cursor mut self,
+        query: &'query Query,
+        root: impl Into<QueryScope<'tree>>,
+        text_provider: Provider,
+    ) -> QueryExecution<'cursor, 'query, 'tree, 'static, Provider, Chunk>
+    where
+        Provider: TextProvider<Chunk>,
+        Chunk: AsRef<[u8]>,
+    {
+        self.execute_with_options(query, root, text_provider, QueryCursorOptions::new())
+    }
+
+    /// Start a fresh execution with a resumable progress callback.
+    pub fn execute_with_options<'cursor, 'query, 'tree, 'options, Provider, Chunk>(
+        &'cursor mut self,
+        query: &'query Query,
+        root: impl Into<QueryScope<'tree>>,
+        text_provider: Provider,
+        options: QueryCursorOptions<'options>,
+    ) -> QueryExecution<'cursor, 'query, 'tree, 'options, Provider, Chunk>
+    where
+        Provider: TextProvider<Chunk>,
+        Chunk: AsRef<[u8]>,
+    {
+        let (root, mut remaining) = match root.into().0 {
+            Scope::Node(root) => (root, None),
+            Scope::Region(region) => (
+                region.trees().next().unwrap().root_node(),
+                Some(RegionTrees::new(region, self.range)),
+            ),
+        };
+        self.error = (root.tables().language != query.compiled.view.language)
+            .then_some(QueryExecutionError::InvalidExecution);
+        self.exceeded_limit = false;
+        self.operations = 0;
+        self.next_state_id = MatchId::from_raw(0);
+        self.next_finished_id = 0;
+        let selected = if self.error.is_none() {
+            remaining.as_mut().map(|trees| trees.next_root(self.range))
+        } else {
+            None
+        };
+        let root = selected.flatten().unwrap_or(root);
+        self.start_tree(query, root);
+        if selected == Some(None) {
+            self.halted = true;
+        }
 
         // Root searches reuse word-wide comparisons across scanned groups.
         let byte_ids = root.data().layout.symbol_width == 1;
@@ -879,6 +948,7 @@ impl QueryCursor {
             root_has_error: root.has_error(),
             total_slots: root.data().groups() * crate::storage::GROUP_SIZE,
             root,
+            remaining,
             text_provider,
             options,
             text_buffers: Default::default(),
@@ -940,6 +1010,7 @@ where
     root_has_error: bool,
     total_slots: u32,
     root: Node<'tree>,
+    remaining: Option<RegionTrees<'tree>>,
     text_provider: Provider,
     options: QueryCursorOptions<'options>,
     text_buffers: [Vec<u8>; 2],
@@ -1001,6 +1072,9 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
                 self.next_match_output()
             };
             let Some(output) = output else {
+                if !self.stopped && self.cursor.halted && self.advance_tree() {
+                    continue;
+                }
                 self.stopped = false;
                 return None;
             };
@@ -1039,16 +1113,34 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
         }
     }
 
+    fn advance_tree(&mut self) -> bool {
+        let Some(root) = self
+            .remaining
+            .as_mut()
+            .and_then(|trees| trees.next_root(self.cursor.range))
+        else {
+            return false;
+        };
+        self.cursor.start_tree(self.query, root);
+        self.root = root;
+        self.root_has_error = root.has_error();
+        self.scan_resume = None;
+        true
+    }
+
     fn current(&self) -> Node<'tree> {
-        self.root.at(self.cursor.position)
+        Node::new(self.root.data(), self.cursor.position)
     }
 
     fn parent(&self) -> Option<Node<'tree>> {
-        self.cursor.parents.last().map(|slot| self.root.at(*slot))
+        self.cursor
+            .parents
+            .last()
+            .map(|&id| Node::new(self.root.data(), id))
     }
 
     fn poll(&mut self) -> bool {
-        self.poll_at(self.cursor.position)
+        self.poll_at(self.cursor.position.slot())
     }
 
     fn poll_at(&mut self, slot: SlotIx) -> bool {
@@ -1125,7 +1217,7 @@ impl QueryCursor {
     pub fn matches<'cursor, 'query, 'tree, Provider, Chunk>(
         &'cursor mut self,
         query: &'query Query,
-        root: Node<'tree>,
+        root: impl Into<QueryScope<'tree>>,
         text_provider: Provider,
     ) -> QueryMatches<'cursor, 'query, 'tree, 'static, Provider, Chunk>
     where
@@ -1138,7 +1230,7 @@ impl QueryCursor {
     pub fn matches_with_options<'cursor, 'query, 'tree, 'options, Provider, Chunk>(
         &'cursor mut self,
         query: &'query Query,
-        root: Node<'tree>,
+        root: impl Into<QueryScope<'tree>>,
         text_provider: Provider,
         options: QueryCursorOptions<'options>,
     ) -> QueryMatches<'cursor, 'query, 'tree, 'options, Provider, Chunk>
@@ -1216,7 +1308,7 @@ impl QueryCursor {
     pub fn captures<'cursor, 'query, 'tree, Provider, Chunk>(
         &'cursor mut self,
         query: &'query Query,
-        root: Node<'tree>,
+        root: impl Into<QueryScope<'tree>>,
         text_provider: Provider,
     ) -> QueryCaptures<'cursor, 'query, 'tree, 'static, Provider, Chunk>
     where
@@ -1229,7 +1321,7 @@ impl QueryCursor {
     pub fn captures_with_options<'cursor, 'query, 'tree, 'options, Provider, Chunk>(
         &'cursor mut self,
         query: &'query Query,
-        root: Node<'tree>,
+        root: impl Into<QueryScope<'tree>>,
         text_provider: Provider,
         options: QueryCursorOptions<'options>,
     ) -> QueryCaptures<'cursor, 'query, 'tree, 'options, Provider, Chunk>
@@ -1606,7 +1698,7 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
             return false;
         };
         self.cursor.parents.push(self.cursor.position);
-        self.cursor.position = child.slot();
+        self.cursor.position = child.id();
         true
     }
 
@@ -1617,7 +1709,7 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
         let Some(next) = self.current().next_sibling_including_empty() else {
             return false;
         };
-        self.cursor.position = next.slot();
+        self.cursor.position = next.id();
         true
     }
 
@@ -1635,15 +1727,20 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
 
     fn normalize_position(&self, position: u32) -> u32 {
         let total = self.total_slots();
-        if position >= total {
-            return total;
+        let limit = self.node_end(self.root);
+        if position >= limit {
+            return limit;
         }
         let slot = total - 1 - position;
         let end = self
             .root
             .data()
             .group_end(slot / crate::storage::GROUP_SIZE);
-        if slot >= end { total - end } else { position }
+        if slot >= end {
+            (total - end).min(limit)
+        } else {
+            position
+        }
     }
 
     fn position_node(&self, position: u32) -> Node<'tree> {
@@ -1808,7 +1905,7 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
     }
 
     fn scan_seek(&mut self) -> bool {
-        let current_position = self.total_slots() - 1 - self.cursor.position.raw();
+        let current_position = self.total_slots() - 1 - self.cursor.position.slot().raw();
         let end = self.node_end(self.root);
         let mut start = self.scan_resume.take().unwrap_or(current_position);
         let target = 'search: loop {
@@ -1827,7 +1924,7 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
 
             // With no partial states, skipped enter/exit events cannot affect a
             // match. Restore only the ancestor path needed by the next root.
-            while self.total_slots() - 1 - self.cursor.position.raw() != target {
+            while self.total_slots() - 1 - self.cursor.position.slot().raw() != target {
                 let node = self.current();
                 if target < self.node_end(node) {
                     // A symbol hit must not re-enter a subtree that ordinary
@@ -2104,7 +2201,7 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
             self.cursor.direct_position = self.normalize_position(position + 1);
             let node = self.position_node(position);
             // Shared capture bookkeeping polls the node currently being processed.
-            self.cursor.position = node.slot();
+            self.cursor.position = node.id();
             let symbol = node.data().symbol_index(node.slot().raw()).raw();
             let mut roots = self.direct_roots(node);
             while roots != 0 {

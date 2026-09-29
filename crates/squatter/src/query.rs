@@ -24,13 +24,53 @@
 //! duplicates; they do not promise Tree-sitter's event ordering or multiplicity.
 //! Use completed matches when provisional events are unsuitable. Ordinary ranges
 //! intersect matched nodes and allow structural context outside the range.
-//! Containing-range setters are not supported.
+//! Regions run their trees in physical order, without merging results by source position.
 
 pub use crate::query_exec::{QueryCaptures, QueryCursor, QueryExecution, QueryMatches};
-use crate::{CaptureIx, Language, MatchId, Node, PatternIx, types::QueryStringId};
+use crate::{
+    CaptureIx, ForestRegion, Language, MatchId, Node, PatternIx, Tree, types::QueryStringId,
+};
 use regex::bytes::Regex;
 use std::{cell::Cell, ops::ControlFlow};
 pub use tree_sitter::{CaptureQuantifier, QueryErrorKind, StreamingIterator};
+
+/// A node, borrowed tree, or homogeneous region. Whole forests and scans are
+/// intentionally excluded. Bounded region queries require the caller to establish
+/// a shared source and coordinate frame for all selected trees.
+#[derive(Clone, Copy)]
+pub struct QueryScope<'forest>(pub(crate) Scope<'forest>);
+
+#[derive(Clone, Copy)]
+pub(crate) enum Scope<'forest> {
+    Node(Node<'forest>),
+    Region(ForestRegion<'forest>),
+}
+
+impl<'forest> From<Node<'forest>> for QueryScope<'forest> {
+    fn from(node: Node<'forest>) -> Self {
+        Self(Scope::Node(node))
+    }
+}
+impl<'forest> From<Tree<'forest>> for QueryScope<'forest> {
+    fn from(tree: Tree<'forest>) -> Self {
+        tree.root_node().into()
+    }
+}
+impl<'forest> From<&Tree<'forest>> for QueryScope<'forest> {
+    fn from(tree: &Tree<'forest>) -> Self {
+        tree.root_node().into()
+    }
+}
+impl<'forest> From<ForestRegion<'forest>> for QueryScope<'forest> {
+    fn from(region: ForestRegion<'forest>) -> Self {
+        Self(Scope::Region(region))
+    }
+}
+impl<'forest> From<&ForestRegion<'forest>> for QueryScope<'forest> {
+    fn from(region: &ForestRegion<'forest>) -> Self {
+        (*region).into()
+    }
+}
 
 #[derive(Debug)]
 /// A query compilation or predicate-validation error, with byte-based coordinates.
@@ -608,6 +648,9 @@ pub struct QueryPredicate {
 
 /// Supplies a node's complete text in source order. Chunks may be borrowed or
 /// owned; boundaries, including boundaries inside UTF-8 sequences, are ignored.
+/// Use `node.id().tree()` to select caller-owned source bytes or chunks. Tree
+/// indices are forest-local, and providers resolve each tree's coordinate frame.
+/// A byte-slice provider must match every selected tree's byte frame.
 pub trait TextProvider<Chunk: AsRef<[u8]>> {
     type I: Iterator<Item = Chunk>;
     fn text(&mut self, node: Node<'_>) -> Self::I;
