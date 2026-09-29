@@ -4,7 +4,7 @@ use crate::{
     types::PackedPoint,
 };
 use smallvec::SmallVec;
-use std::ptr::NonNull;
+use std::{ops::ControlFlow, ptr::NonNull};
 
 const PRESENCE_FORMAT: u32 = slab_format(0xfe, 0);
 const ABSENT_PRESENCE_FORMAT: u32 = slab_format(0xfc, 0);
@@ -153,26 +153,48 @@ impl PresenceCache {
         forest: &Forest,
         select: impl Fn(ForestRegion<'_>) -> bool,
     ) -> Result<Self, SideDataError> {
-        Ok(Self::build_selected_inner(forest, select, false)?.unwrap())
+        Self::build_selected_with_cancellation(forest, select, || ControlFlow::Continue(()))
+    }
+
+    /// Checks cancellation between regions and groups. Canceled construction
+    /// returns `SideDataError::Core(Error::Canceled)` without changing the forest.
+    pub fn build_selected_with_cancellation(
+        forest: &Forest,
+        select: impl Fn(ForestRegion<'_>) -> bool,
+        cancellation_callback: impl FnMut() -> ControlFlow<()>,
+    ) -> Result<Self, SideDataError> {
+        Ok(Self::build_selected_inner(forest, select, cancellation_callback, false)?.unwrap())
     }
 
     pub(crate) fn build_for_packing(
         forest: &Forest,
         select: impl Fn(ForestRegion<'_>) -> bool,
+        cancellation_callback: Option<&dyn Fn() -> ControlFlow<()>>,
     ) -> Result<Option<Self>, SideDataError> {
-        Self::build_selected_inner(forest, select, true)
+        Self::build_selected_inner(
+            forest,
+            select,
+            || cancellation_callback.map_or(ControlFlow::Continue(()), |callback| callback()),
+            true,
+        )
     }
 
     fn build_selected_inner(
         forest: &Forest,
         select: impl Fn(ForestRegion<'_>) -> bool,
+        mut cancellation_callback: impl FnMut() -> ControlFlow<()>,
         omit_empty: bool,
     ) -> Result<Option<Self>, SideDataError> {
         let mut selected = SmallVec::<[bool; 1]>::new();
         selected
             .try_reserve(forest.data().regions.len())
             .map_err(|_| Error::Allocation)?;
-        selected.extend(forest.regions().map(select));
+        for region in forest.regions() {
+            if cancellation_callback().is_break() {
+                return Err(Error::Canceled.into());
+            }
+            selected.push(select(region));
+        }
         if omit_empty && !selected.iter().any(|&present| present) {
             return Ok(None);
         }
@@ -189,6 +211,9 @@ impl PresenceCache {
         let mut sidecar = Sidecar::zeroed(length)?;
         let mut offset = 0;
         for (region, present) in forest.regions().zip(selected) {
+            if cancellation_callback().is_break() {
+                return Err(Error::Canceled.into());
+            }
             let groups = region.group_count();
             let symbols = region.language().tables().kind_count + 2;
             sidecar.header(
@@ -205,6 +230,9 @@ impl PresenceCache {
                 let first_group = region.data().slots.start.raw() / GROUP_SIZE;
                 let words = (groups as usize).div_ceil(64);
                 for group in 0..groups {
+                    if cancellation_callback().is_break() {
+                        return Err(Error::Canceled.into());
+                    }
                     for slot in (first_group + group) * GROUP_SIZE
                         ..forest.data().group_end(first_group + group)
                     {

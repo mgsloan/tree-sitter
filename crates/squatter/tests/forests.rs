@@ -1,6 +1,6 @@
 mod support;
 
-use std::collections::HashSet;
+use std::{collections::HashSet, ops::ControlFlow};
 use tree_squatter::{
     Forest, Language, Node, PackOptions, PackRegion, Packer, PointsData, PresenceCache, StableSlab,
     TreeIx,
@@ -131,10 +131,46 @@ fn forest_packing_and_round_trip() {
     let core = forest.to_bytes().unwrap();
     let presence = forest.presence_cache().unwrap().as_bytes().to_vec();
     let points = forest.point_data().unwrap().as_bytes().to_vec();
+    let mut checks = 0;
+    let canceled = PresenceCache::build_selected_with_cancellation(
+        &forest,
+        |_| true,
+        || {
+            checks += 1;
+            if checks == forest.regions().count() + 2 {
+                ControlFlow::Break(())
+            } else {
+                ControlFlow::Continue(())
+            }
+        },
+    );
+    assert!(matches!(
+        canceled,
+        Err(tree_squatter::SideDataError::Core(
+            tree_squatter::Error::Canceled
+        ))
+    ));
+    assert_eq!(forest.presence_cache().unwrap().as_bytes(), presence);
+    assert!(matches!(
+        Packer::new().unwrap().pack_forest(
+            vec![PackRegion {
+                language: languages[0].clone(),
+                roots: vec![roots[0]],
+            }],
+            PackOptions {
+                cancellation_callback: Some(&|| ControlFlow::Break(())),
+                ..Default::default()
+            },
+        ),
+        Err(tree_squatter::Error::Canceled)
+    ));
     for mut loaded in [
         Forest::from_bytes(&languages, &core).unwrap(),
         Forest::from_retained(&languages, retain(&core)).unwrap(),
+        forest.detach().unwrap(),
+        forest.repack().unwrap(),
     ] {
+        loaded.drop_point_data();
         assert!(!loaded.has_points());
         loaded
             .set_presence_cache(PresenceCache::from_retained(retain(&presence)).unwrap())
@@ -268,10 +304,10 @@ fn region_queries_select_sources_by_tree() {
                 .trees()
                 .flat_map(|tree| matches(&mut cursor, &query, tree, &sources))
                 .collect();
-            assert_eq!(matches(&mut cursor, &query, &region, &sources), expected);
+            assert_eq!(matches(&mut cursor, &query, region, &sources), expected);
             assert!(!expected.is_empty());
         }
-        let mut wrong_language = cursor.execute(&query, &regions[1], sources[3]);
+        let mut wrong_language = cursor.execute(&query, regions[1], sources[3]);
         assert_eq!(
             wrong_language.error(),
             Some(QueryExecutionError::InvalidExecution)
@@ -282,7 +318,7 @@ fn region_queries_select_sources_by_tree() {
     let provider = |node: Node<'_>| {
         std::iter::once(&sources[node.id().tree().raw() as usize][node.byte_range()])
     };
-    let mut execution = cursor.execute(&query, &regions[0], provider);
+    let mut execution = cursor.execute(&query, regions[0], provider);
     let mut removed = None;
     let mut identities = HashSet::new();
     while let Some((found, _)) = execution.next_capture() {
@@ -370,7 +406,7 @@ fn bounded_region_queries_preserve_ordering_semantics() {
                         .flat_map(|tree| matches(&mut cursor, &query, tree, &sources))
                         .collect();
                     let region = forest.regions().next().unwrap();
-                    let actual = matches(&mut cursor, &query, &region, &sources);
+                    let actual = matches(&mut cursor, &query, region, &sources);
                     assert_eq!(actual, expected);
                     assert_eq!(
                         actual

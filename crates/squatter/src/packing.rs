@@ -5,6 +5,7 @@ use crate::{
     storage::*,
     types::{PackedPoint, SlabOffset, SquatterGrammarId, SquatterKindId},
 };
+use std::ops::ControlFlow;
 
 mod traversal;
 
@@ -18,6 +19,8 @@ pub struct PackOptions<'options> {
     /// Select coverage once per region after layout finalization. The default
     /// selects regions with at least 64 groups, an initial size heuristic.
     pub symbol_presence: &'options dyn Fn(ForestRegion<'_>) -> bool,
+    /// Checked between regions and groups while building presence data.
+    pub cancellation_callback: Option<&'options dyn Fn() -> ControlFlow<()>>,
     /// Store coordinates during construction; enabling points can change grouping.
     pub points: bool,
 }
@@ -28,6 +31,7 @@ impl Default for PackOptions<'_> {
             initial_group_capacity: 0,
             repack: false,
             symbol_presence: &|region| region.group_count() >= 64,
+            cancellation_callback: None,
             points: true,
         }
     }
@@ -559,9 +563,11 @@ impl Builder {
         };
         self.forest.finish_layout(capacity, self.optional)?;
         self.forest.classify_regions();
-        if let Some(cache) =
-            PresenceCache::build_for_packing(&self.forest, options.symbol_presence)?
-        {
+        if let Some(cache) = PresenceCache::build_for_packing(
+            &self.forest,
+            options.symbol_presence,
+            options.cancellation_callback,
+        )? {
             self.forest.set_presence_cache(cache)?;
         }
         if let Some(points) = self.points {

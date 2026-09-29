@@ -707,6 +707,7 @@ impl PendingLoad {
                     repack: self.repack,
                     symbol_presence: &|_| self.symbol_presence,
                     points: self.points,
+                    ..Default::default()
                 },
             },
         )?;
