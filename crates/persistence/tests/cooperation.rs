@@ -65,9 +65,10 @@ fn deferred_capture_survives_owner_death_and_source_change() {
     };
     fs::write(&path, "[2]").unwrap();
     drop(owner);
-    let mut converted = false;
+    let mut reports = 0;
     let mut progress = |state: &dyn ParseStateLike| {
-        converted |= state.is_converting();
+        assert!(!state.is_converting());
+        reports += 1;
         ControlFlow::Continue(())
     };
     let LoadStep::Ready(result) = pending
@@ -79,7 +80,7 @@ fn deferred_capture_survives_owner_death_and_source_change() {
     else {
         panic!("dead owner retained ownership")
     };
-    assert!(converted);
+    assert!(reports > 0);
     assert_eq!(result.file.source(), b"[1]");
     let current = load(&cache);
     assert_eq!(current.source(), b"[2]");

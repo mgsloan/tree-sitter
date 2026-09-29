@@ -150,12 +150,8 @@ fn callback_input_and_error_recovery() {
         packed.root_node().byte_range()
     );
 
-    let mut saw_error = false;
     let mut progress = |state: &dyn ParseStateLike| {
-        if state.is_converting() {
-            assert!(state.has_error());
-            saw_error = true;
-        }
+        assert!(!state.is_converting());
         ControlFlow::Continue(())
     };
     let recovered = parser
@@ -165,7 +161,6 @@ fn callback_input_and_error_recovery() {
         )
         .unwrap();
     assert!(recovered.root_node().has_error());
-    assert!(saw_error);
     parser
         .set_language(&Language::new(&c_language()).unwrap())
         .unwrap();
@@ -233,7 +228,7 @@ fn direct_callback_chunks_match_contiguous() {
     let mut parser = TreeFellerParser::new(&language).unwrap();
     let mut compatible = compatible(&language);
     for source in &sources {
-        for mut options in [
+        for options in [
             PackOptions::default(),
             PackOptions {
                 repack: true,
@@ -242,13 +237,12 @@ fn direct_callback_chunks_match_contiguous() {
                 ..Default::default()
             },
         ] {
-            let expected =
-                Tree::parse_direct_with_options(&language, source, options.reborrow()).unwrap();
+            let expected = Tree::parse_direct_with_options(&language, source, options).unwrap();
             let packed = compatible
                 .parse_with_options(
                     &mut |byte, _| &source.as_bytes()[byte..],
                     PackedParseOptions {
-                        pack: options.reborrow(),
+                        pack: options,
                         ..Default::default()
                     },
                 )
@@ -265,7 +259,7 @@ fn direct_callback_chunks_match_contiguous() {
                             source[byte..end].to_vec()
                         },
                         PackedParseOptions {
-                            pack: options.reborrow(),
+                            pack: options,
                             ..Default::default()
                         },
                     )
@@ -374,17 +368,12 @@ where
     for<'a> P: Parse<Options<'a> = PackedParseOptions<'a>>,
     P::Error: std::fmt::Debug,
 {
-    let mut offsets = Vec::new();
     let mut parsing = false;
     let mut progress = |state: &dyn ParseStateLike| {
         assert_eq!(state.is_converting(), state.current_byte_offset_descends());
         assert!(!state.has_error());
-        if state.is_converting() {
-            offsets.push(state.current_byte_offset());
-        } else {
-            assert!(offsets.is_empty());
-            parsing = true;
-        }
+        assert!(!state.is_converting());
+        parsing = true;
         ControlFlow::Continue(())
     };
     let mut options = PackedParseOptions {
@@ -402,8 +391,6 @@ where
         )
         .unwrap();
     assert!(parsing);
-    assert_eq!(offsets[0], 0);
-    assert!(offsets.windows(2).any(|pair| pair[0] > pair[1]));
     tree
 }
 
@@ -443,6 +430,7 @@ fn packed_options_progress_and_equivalence() {
         },
     };
     for source in ["int first;", "int second;"] {
+        let source = source.repeat(1000);
         let tree = parser
             .parse_with_options(
                 &mut |byte, _| &source.as_bytes()[byte..],
@@ -455,16 +443,11 @@ fn packed_options_progress_and_equivalence() {
     assert!(callbacks >= 2);
 }
 
-fn check_cancellation<P: Parse<Error = ParserError>>(
-    parser: &mut P,
-    source: &str,
-    converting: bool,
-) {
+fn check_cancellation<P: Parse<Error = ParserError>>(parser: &mut P, source: &str) {
     let mut reports = 0;
     let mut progress = |state: &dyn ParseStateLike| {
-        if state.is_converting() == converting {
-            reports += 1;
-        }
+        assert!(!state.is_converting());
+        reports += 1;
         ControlFlow::Continue(())
     };
     parser
@@ -477,11 +460,10 @@ fn check_cancellation<P: Parse<Error = ParserError>>(
     for stop_at in [1, reports / 2, reports - 1, reports] {
         let mut count = 0;
         let mut progress = |state: &dyn ParseStateLike| {
-            if state.is_converting() == converting {
-                count += 1;
-                if count == stop_at {
-                    return ControlFlow::Break(());
-                }
+            assert!(!state.is_converting());
+            count += 1;
+            if count == stop_at {
+                return ControlFlow::Break(());
             }
             ControlFlow::Continue(())
         };
@@ -506,12 +488,10 @@ fn cancellation_and_packing_failure_allow_reuse() {
     let language = Language::new(&c_language()).unwrap();
     let source = "int value = 123;\n".repeat(1000);
     let mut parser = compatible(&language);
-    for converting in [false, true] {
-        check_cancellation(&mut parser, &source, converting);
-    }
+    check_cancellation(&mut parser, &source);
     let mut native = tree_sitter::Parser::new();
     native.set_language(&c_language()).unwrap();
-    check_cancellation(&mut native, &source, false);
+    check_cancellation(&mut native, &source);
 
     let options = PackedParseOptions {
         pack: PackOptions {
@@ -547,127 +527,4 @@ fn native_trait_discards_previously_interrupted_parse() {
     let tree = Parse::parse(&mut parser, "int other;").unwrap();
     assert_eq!(tree.root_node().byte_range(), 0..10);
     assert!(!tree.root_node().has_error());
-}
-
-#[test]
-fn packing_callbacks_cancel_and_allow_reuse() {
-    let language = Language::new(&c_language()).unwrap();
-    let source = "int value = 123;\n".repeat(1000);
-    let mut native_parser = tree_sitter::Parser::new();
-    native_parser.set_language(&c_language()).unwrap();
-    let native = native_parser.parse(&source, None).unwrap();
-    let mut packer = tree_squatter::Packer::default();
-    let expected = packer.pack(&language, &native).unwrap();
-    let mut reports = 0;
-    let mut report = |byte| {
-        assert!(byte <= source.len() as u32);
-        reports += 1;
-        ControlFlow::Continue(())
-    };
-    let mut options = PackOptions::new().progress_callback(&mut report);
-    for _ in 0..2 {
-        let tree = packer
-            .pack_with_options(&language, &native, options.reborrow())
-            .unwrap();
-        assert_same_tree(&expected, &tree);
-    }
-    assert!(reports > 4);
-    for stop_at in [1, 2, reports / 2] {
-        let mut calls = 0;
-        let mut cancel = |_| {
-            calls += 1;
-            if calls == stop_at {
-                ControlFlow::Break(())
-            } else {
-                ControlFlow::Continue(())
-            }
-        };
-        assert_eq!(
-            packer
-                .pack_with_options(
-                    &language,
-                    &native,
-                    PackOptions::new().progress_callback(&mut cancel)
-                )
-                .unwrap_err(),
-            Error::Canceled,
-        );
-        assert_eq!(calls, stop_at);
-        assert_same_tree(&expected, &packer.pack(&language, &native).unwrap());
-    }
-}
-
-#[test]
-fn parser_combines_parse_and_pack_callbacks() {
-    let language = Language::new(&c_language()).unwrap();
-    let mut parser = compatible(&language);
-    let source = "int value;";
-    for shared in [false, true] {
-        let mut converting = 0;
-        let mut progress = |state: &dyn ParseStateLike| {
-            converting += usize::from(state.is_converting());
-            ControlFlow::Continue(())
-        };
-        let mut calls = 0;
-        let mut packing = |_| {
-            calls += 1;
-            ControlFlow::Continue(())
-        };
-        let mut options = PackedParseOptions {
-            parse: if shared {
-                ParseOptions::new().progress_callback(&mut progress)
-            } else {
-                ParseOptions::default()
-            },
-            pack: PackOptions::new().progress_callback(&mut packing),
-        };
-        for _ in 0..2 {
-            parser
-                .parse_with_options(
-                    &mut |byte, _| &source.as_bytes()[byte..],
-                    options.reborrow(),
-                )
-                .unwrap();
-        }
-        assert!(calls > 0);
-        assert_eq!(converting, if shared { calls } else { 0 });
-    }
-    let mut cancel = |_| ControlFlow::Break(());
-    assert!(matches!(
-        parser.parse_with_options(
-            &mut |byte, _| &source.as_bytes()[byte..],
-            PackedParseOptions {
-                pack: PackOptions::new().progress_callback(&mut cancel),
-                ..Default::default()
-            },
-        ),
-        Err(ParserError::Canceled)
-    ));
-    parser.parse(source).unwrap();
-    let source = source.repeat(1000);
-    let mut direct = TreeFellerParser::new(&language).unwrap();
-    let mut calls = 0;
-    let mut cancel = |_| {
-        calls += 1;
-        if calls == 2 {
-            ControlFlow::Break(())
-        } else {
-            ControlFlow::Continue(())
-        }
-    };
-    let error = direct
-        .parse_with_options(
-            &mut |byte, _| &source.as_bytes()[byte..],
-            PackedParseOptions {
-                pack: PackOptions::new().progress_callback(&mut cancel),
-                ..Default::default()
-            },
-        )
-        .unwrap_err();
-    assert_eq!(error.code, Error::Canceled);
-    assert_eq!(calls, 2);
-    assert_same_tree(
-        &parser.parse(&source).unwrap(),
-        &direct.parse(&source).unwrap(),
-    );
 }

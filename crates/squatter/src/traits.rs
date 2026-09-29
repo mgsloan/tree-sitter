@@ -41,12 +41,13 @@ pub trait Parse {
     }
 }
 
-/// Progress within parsing or conversion, valid only during the callback.
+/// Parsing progress, valid only during the callback.
 pub trait ParseStateLike {
     fn current_byte_offset(&self) -> usize;
     fn has_error(&self) -> bool;
+    /// Always false; packing does not report progress.
     fn is_converting(&self) -> bool;
-    /// Describes the phase's traversal direction, not monotonicity or completion.
+    /// Always false; parsing traverses input forward.
     fn current_byte_offset_descends(&self) -> bool;
 }
 

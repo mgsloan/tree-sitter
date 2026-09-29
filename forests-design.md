@@ -114,13 +114,6 @@ Discovery can append one-root inputs as parsing completes, including when gramma
 recur through injection nesting. Native trees must stay alive until `pack_forest`
 returns because the inputs contain borrowed nodes.
 
-`PackOptions::progress_callback` reports the current or last native byte offset
-and returns `ControlFlow::Break(())` to cancel. Offsets can decrease when packing
-moves to another tree and do not measure forest-wide work completed. Poll between
-roots and regions as well as during traversal; an empty forest polls once with
-offset zero. Cancellation returns `Error::Canceled` without publishing a
-partial forest.
-
 Each root packs the supplied node and its descendants as an independent tree;
 the node need not be a whole-tree root. Preserve its displayed kind/alias and
 subtree contents. Its packed root has no parent, siblings, parent field, or

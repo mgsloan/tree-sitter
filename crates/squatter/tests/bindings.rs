@@ -438,7 +438,7 @@ fn direct_parser_matches_mainline_packing() -> Result<(), Box<dyn Error>> {
         assert!(!native.root_node().has_error());
         for points in [false, true] {
             for symbol_presence in [false, true] {
-                let mut options = PackOptions {
+                let options = PackOptions {
                     initial_group_capacity: 1,
                     repack: true,
                     symbol_presence,
@@ -448,7 +448,7 @@ fn direct_parser_matches_mainline_packing() -> Result<(), Box<dyn Error>> {
                 let direct = direct_parser.parse_with_options(
                     &mut |byte, _| &source.as_bytes()[byte..],
                     PackedParseOptions {
-                        pack: options.reborrow(),
+                        pack: options,
                         ..Default::default()
                     },
                 )?;

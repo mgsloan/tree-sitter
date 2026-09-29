@@ -1,4 +1,4 @@
-use super::{Builder, InputNode, Progress};
+use super::{Builder, InputNode};
 use crate::{
     Error, FieldId,
     native::{GrammarView, Point, Range, Reduction},
@@ -382,7 +382,6 @@ impl Walk<'_> {
         subtree: Subtree,
         visible: bool,
         facts: &Facts,
-        progress: &mut Progress<'_>,
     ) -> Result<(), Error> {
         let position_mark = self.scratch.positions.len();
         let mask_mark = self.scratch.masks.len();
@@ -433,7 +432,6 @@ impl Walk<'_> {
             frame.child_mask = child_mask;
             let mut position = node.position;
             for index in 0..facts.children as usize {
-                progress.tick()?;
                 let child = Subtree(children.wrapping_add(index));
                 let extra = if self.points {
                     let (padding, size, extra) = child.lengths();
@@ -457,15 +455,8 @@ impl Walk<'_> {
     }
 
     #[inline(never)]
-    fn descend_hidden(
-        &self,
-        subtree: &mut Subtree,
-        node: &mut Node,
-        facts: &mut Facts,
-        progress: &mut Progress<'_>,
-    ) -> Result<(), Error> {
+    fn descend_hidden(&self, subtree: &mut Subtree, node: &mut Node, facts: &mut Facts) {
         while !facts.visible && node.alias == 0 && facts.children == 1 {
-            progress.visit(node.position.bytes)?;
             let (children, production, symbol) = subtree.branch();
             let child = Subtree(children);
             *facts = child.facts();
@@ -495,7 +486,6 @@ impl Walk<'_> {
             node.alias = alias;
             node.field = field;
         }
-        Ok(())
     }
 
     #[inline(always)]
@@ -654,7 +644,6 @@ pub(super) fn pack_reductions(
     scratch: &mut Traversal,
     nodes: &[Reduction],
     root: u32,
-    progress: &mut Progress<'_>,
 ) -> Result<(), Error> {
     let mut walk = Walk {
         scratch,
@@ -680,7 +669,6 @@ pub(super) fn pack_reductions(
     };
     walk.push_reduction(node, root, reduction, true)?;
     while let Some(frame) = walk.scratch.reductions.last_mut() {
-        progress.visit(frame.node.position.bytes)?;
         if frame.next_child == u32::MAX {
             let frame = walk.scratch.reductions.last().unwrap();
             if frame.visible {
@@ -706,7 +694,6 @@ pub(super) fn pack_reductions(
         if walk.words <= 1 {
             // Hidden reductions always have a child with visible output.
             while !child.visible && nodes[child.first_child as usize].next_sibling == u32::MAX {
-                progress.tick()?;
                 if walk.words == 1 {
                     let supertype = walk.supertype(child.symbol);
                     if supertype != 0 {
@@ -746,7 +733,6 @@ pub(super) fn pack(
     tables: &GrammarView,
     scratch: &mut Traversal,
     root: Root<'_>,
-    progress: &mut Progress<'_>,
 ) -> Result<(), Error> {
     let mut walk = Walk {
         scratch,
@@ -766,9 +752,8 @@ pub(super) fn pack(
         mask: Mask(0),
         boundary: builder.distance(),
     };
-    walk.push(node, root.subtree, true, &root.subtree.facts(), progress)?;
+    walk.push(node, root.subtree, true, &root.subtree.facts())?;
     while let Some(frame) = walk.scratch.stack.last_mut() {
-        progress.tick()?;
         if frame.remaining == 0 {
             let frame = walk.scratch.stack.last().unwrap();
             if frame.visible {
@@ -832,7 +817,6 @@ pub(super) fn pack(
                 point: Point::default(),
             }
         };
-        progress.visit(position.bytes)?;
         let mut node = Node {
             position,
             alias,
@@ -842,20 +826,14 @@ pub(super) fn pack(
             boundary: builder.distance(),
         };
         if facts.children == 1 && !facts.visible && alias == 0 && walk.words <= 1 {
-            walk.descend_hidden(&mut subtree, &mut node, &mut facts, progress)?;
+            walk.descend_hidden(&mut subtree, &mut node, &mut facts);
         }
         if facts.children == 0 {
             if facts.visible || node.alias != 0 {
                 walk.emit(builder, subtree, &node)?;
             }
         } else {
-            walk.push(
-                node,
-                subtree,
-                facts.visible || node.alias != 0,
-                &facts,
-                progress,
-            )?;
+            walk.push(node, subtree, facts.visible || node.alias != 0, &facts)?;
         }
     }
     Ok(())

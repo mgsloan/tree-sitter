@@ -100,7 +100,7 @@ fn packing_context_matches_fresh_packing_and_loading() {
                     for initial_group_capacity in [0, 1] {
                         let mut core = None;
                         for symbol_presence in [false, true] {
-                            let mut options = PackOptions {
+                            let options = PackOptions {
                                 initial_group_capacity,
                                 repack,
                                 symbol_presence,
@@ -108,11 +108,9 @@ fn packing_context_matches_fresh_packing_and_loading() {
                                 ..Default::default()
                             };
                             let expected =
-                                Tree::pack_with_options(&fresh_grammar, &tree, options.reborrow())
-                                    .unwrap();
-                            let actual = context
-                                .pack_with_options(&grammar, &tree, options.reborrow())
-                                .unwrap();
+                                Tree::pack_with_options(&fresh_grammar, &tree, options).unwrap();
+                            let actual =
+                                context.pack_with_options(&grammar, &tree, options).unwrap();
                             assert_eq!(actual.has_points(), points);
                             assert_eq!(actual.presence_cache().is_some(), symbol_presence);
                             assert_same_tree(&actual, &expected);

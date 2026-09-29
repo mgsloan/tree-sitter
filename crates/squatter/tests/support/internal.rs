@@ -91,57 +91,6 @@ fn compatible_parser_preserves_language_after_failed_selection() {
 }
 
 #[test]
-fn cancellation_during_packing_finalization() {
-    use std::ops::ControlFlow;
-
-    let fixture = Fixture::symbols(3);
-    let build = || {
-        let mut builder = Builder::new(&fixture.grammar, 2048, true).unwrap();
-        for index in 0..1024 * GROUP_SIZE {
-            builder
-                .emit(&leaf(1, 1, 0, u8::from(index == 0)), builder.distance())
-                .unwrap();
-        }
-        builder.emit(&leaf(1, 1, 0, 1), 0).unwrap();
-        builder
-    };
-    let mut options = PackOptions {
-        repack: true,
-        ..Default::default()
-    };
-    let mut reports = 0;
-    let mut report = |_| {
-        reports += 1;
-        ControlFlow::Continue(())
-    };
-    let tree = build()
-        .finish(options.reborrow(), &mut Progress::new(Some(&mut report)))
-        .unwrap();
-    assert!(tree.presence_cache().is_some());
-    assert!(tree.point_data().is_some());
-    assert!(reports > 10);
-
-    for stop_at in 1..=reports {
-        let mut count = 0;
-        let mut cancel = |_| {
-            count += 1;
-            if count == stop_at {
-                ControlFlow::Break(())
-            } else {
-                ControlFlow::Continue(())
-            }
-        };
-        assert_eq!(
-            build()
-                .finish(options.reborrow(), &mut Progress::new(Some(&mut cancel)))
-                .unwrap_err(),
-            Error::Canceled,
-        );
-        assert_eq!(count, stop_at);
-    }
-}
-
-#[test]
 fn callback_input_during_ambiguity_replay() {
     let native = unsafe { tree_sitter::Language::from_raw(sq_test_ambiguous_language().cast()) };
     let language = Language::new(&native).unwrap();
@@ -337,13 +286,10 @@ fn point_delta_limits_control_grouping() {
                 builder.emit(&second, builder.distance()).unwrap();
                 builder.emit(&root, 0).unwrap();
                 let tree = builder
-                    .finish(
-                        PackOptions {
-                            points,
-                            ..Default::default()
-                        },
-                        &mut Progress::default(),
-                    )
+                    .finish(PackOptions {
+                        points,
+                        ..Default::default()
+                    })
                     .unwrap();
                 assert_eq!(tree.group_count() == 1, !points || difference == 255);
                 let nodes: Vec<_> = tree.root_node().preorder().nodes().collect();
@@ -382,9 +328,7 @@ fn point_delta_limits_control_grouping() {
     };
     root.end_point = root.start_point;
     builder.emit(&root, 0).unwrap();
-    let tree = builder
-        .finish(PackOptions::default(), &mut Progress::default())
-        .unwrap();
+    let tree = builder.finish(PackOptions::default()).unwrap();
     let expected = tree_sitter::Point::new(u32::MAX as usize, u32::MAX as usize);
     assert_eq!(tree.root_node().start_position(), expected);
     assert_eq!(tree.root_node().end_position(), expected);
@@ -429,9 +373,7 @@ fn synthetic_supertype_emission_and_persistence() {
                 slots.push(SlotIx::from_raw(builder.distance() - 1));
             }
             builder.emit(&leaf(1, 1, 0, 1), 0).unwrap();
-            let mut tree = builder
-                .finish(PackOptions::default(), &mut Progress::default())
-                .unwrap();
+            let mut tree = builder.finish(PackOptions::default()).unwrap();
             let groups = tree.group_count();
             for capacity in [groups + 17, groups, groups + 1] {
                 tree.resize(capacity, tree.data().flags()).unwrap();
@@ -479,9 +421,7 @@ fn id_width_covers_all_grammars_and_reserved_errors() {
             .emit(&leaf(count + 1, count + 1, 0, 1 | 8), 0)
             .unwrap();
         builder.emit(&leaf(count, count, 0, 1 | 8), 0).unwrap();
-        let tree = builder
-            .finish(PackOptions::default(), &mut Progress::default())
-            .unwrap();
+        let tree = builder.finish(PackOptions::default()).unwrap();
         assert_eq!(
             tree.data().layout.symbol_width,
             if count == 254 { 1 } else { 2 }
@@ -547,13 +487,10 @@ fn compact_domains_preserve_aliases_with_independent_widths() {
         .emit(&leaf(display.raw(), default.raw(), 0, 1), 0)
         .unwrap();
     let tree = builder
-        .finish(
-            PackOptions {
-                repack: true,
-                ..Default::default()
-            },
-            &mut Progress::default(),
-        )
+        .finish(PackOptions {
+            repack: true,
+            ..Default::default()
+        })
         .unwrap();
     assert_eq!(tree.data().layout.symbol_width, 1);
     assert_eq!(tree.data().layout.grammar_width, 2);
@@ -594,9 +531,7 @@ fn compact_domains_preserve_aliases_with_independent_widths() {
     builder
         .emit(&leaf(display.raw(), default.raw(), 0, 1), 0)
         .unwrap();
-    let tree = builder
-        .finish(PackOptions::default(), &mut Progress::default())
-        .unwrap();
+    let tree = builder.finish(PackOptions::default()).unwrap();
     assert_eq!(tree.data().flags() & SEPARATE_GRAMMAR, 0);
     assert_eq!(tree.root_node().grammar_id(), GrammarId::from_raw(5));
     assert!(Tree::from_bytes(language, tree.as_bytes()).is_ok());
@@ -619,13 +554,10 @@ fn matching_ids_omit_grammar_before_flag_columns() {
                 }
                 builder.emit(&leaf(2, 2, 0, 1), 0).unwrap();
                 let tree = builder
-                    .finish(
-                        PackOptions {
-                            repack,
-                            ..Default::default()
-                        },
-                        &mut Progress::default(),
-                    )
+                    .finish(PackOptions {
+                        repack,
+                        ..Default::default()
+                    })
                     .unwrap();
                 assert_eq!(tree.data().flags() & SEPARATE_GRAMMAR, 0);
                 assert_eq!(tree.data().layout.grammar.0, tree.data().layout.extra.0);
@@ -671,13 +603,10 @@ fn synthetic_symbol_ids_and_optional_columns() {
                 }
                 builder.emit(&leaf(1, 1, 0, 1), 0).unwrap();
                 let mut tree = builder
-                    .finish(
-                        PackOptions {
-                            points,
-                            ..Default::default()
-                        },
-                        &mut Progress::default(),
-                    )
+                    .finish(PackOptions {
+                        points,
+                        ..Default::default()
+                    })
                     .unwrap();
                 if count == 16 && flags == 0 && !points {
                     let data = tree.data();
@@ -987,9 +916,7 @@ fn invalid_waste_and_absent_fields() {
                 .unwrap();
         }
         builder.emit(&leaf(1, 1, 0, 1), 0).unwrap();
-        let tree = builder
-            .finish(PackOptions::default(), &mut Progress::default())
-            .unwrap();
+        let tree = builder.finish(PackOptions::default()).unwrap();
         assert_eq!(
             tree.root_node().all().filter_field_ids([None]).count(),
             count as usize

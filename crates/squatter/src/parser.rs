@@ -40,8 +40,8 @@ impl<'a> ParseOptions<'a> {
 #[derive(Default)]
 pub struct PackedParseOptions<'a> {
     pub parse: ParseOptions<'a>,
-    /// Packing controls; its callback runs in addition to the parse callback.
-    pub pack: PackOptions<'a>,
+    /// Packed-tree storage options.
+    pub pack: PackOptions,
 }
 
 impl PackedParseOptions<'_> {
@@ -52,7 +52,7 @@ impl PackedParseOptions<'_> {
     pub fn reborrow(&mut self) -> PackedParseOptions<'_> {
         PackedParseOptions {
             parse: self.parse.reborrow(),
-            pack: self.pack.reborrow(),
+            pack: self.pack,
         }
     }
 }
@@ -66,12 +66,10 @@ impl<'a> From<ParseOptions<'a>> for PackedParseOptions<'a> {
     }
 }
 
-/// Progress through Tree-sitter parsing or packing.
-/// Offsets describe the current or last input node during conversion, not work completed.
+/// Progress through Tree-sitter parsing.
 pub struct ParseState {
     byte: usize,
     has_error: bool,
-    converting: bool,
 }
 
 impl ParseState {
@@ -84,11 +82,11 @@ impl ParseState {
     }
 
     pub fn is_converting(&self) -> bool {
-        self.converting
+        false
     }
 
     pub fn current_byte_offset_descends(&self) -> bool {
-        self.converting
+        false
     }
 }
 
@@ -231,34 +229,13 @@ impl Parse for Parser {
                 progress(&ParseState {
                     byte: state.current_byte_offset(),
                     has_error: state.has_error(),
-                    converting: false,
                 })
             };
             parse_native(&mut self.native, callback, Some(&mut report))?
         } else {
             parse_native(&mut self.native, callback, None)?
         };
-        if let Some(progress) = options.parse.progress_callback {
-            let has_error = tree.root_node().has_error();
-            let mut packing_progress = options.pack.progress_callback.take();
-            let mut report = |byte: u32| {
-                if let Some(callback) = &mut packing_progress {
-                    callback(byte)?;
-                }
-                progress(&ParseState {
-                    byte: byte as usize,
-                    has_error,
-                    converting: true,
-                })
-            };
-            Ok(self.pack.pack_with_options(
-                language,
-                &tree,
-                options.pack.reborrow().progress_callback(&mut report),
-            )?)
-        } else {
-            Ok(self.pack.pack_with_options(language, &tree, options.pack)?)
-        }
+        Ok(self.pack.pack_with_options(language, &tree, options.pack)?)
     }
 }
 
@@ -383,7 +360,7 @@ impl TreeFellerParser {
     /// the callback must expose the same document throughout the parse.
     /// Chunks may split UTF-8 characters and may be borrowed or owned.
     /// Input exceeding the 32-bit byte limit returns [`Error::Overflow`].
-    /// The parse progress callback is ignored; packing uses `PackOptions::progress_callback`.
+    /// The parse progress callback is ignored.
     pub fn parse_with_options<T: AsRef<[u8]>, F: FnMut(usize, Point) -> T>(
         &mut self,
         callback: &mut F,
@@ -400,7 +377,7 @@ impl TreeFellerParser {
 }
 
 /// The progress/cancellation callback in [`PackedParseOptions::parse`] is ignored
-/// and never called. Packing can be canceled through [`PackOptions::progress_callback`].
+/// and never called.
 impl Parse for TreeFellerParser {
     type Tree = Tree;
     type Error = ParseError;

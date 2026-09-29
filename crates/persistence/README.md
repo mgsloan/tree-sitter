@@ -72,8 +72,8 @@ Implemented:
 - Fresh whole-file parsing through `tree_squatter::Parser`. The parser-taking
   load methods accept this packed parser; `LoadContext` owns one for worker reuse.
 - `LoadOptions::parse` accepts shared `ParseOptions` and its
-  `FnMut(&dyn ParseStateLike) -> ControlFlow<()>` progress callback. Parsing and
-  packing forward parser states. Other checks report bytes captured while reading,
+  `FnMut(&dyn ParseStateLike) -> ControlFlow<()>` progress callback. Parsing forwards parser states. Other checks report bytes
+  captured while reading,
   zero while waiting or probing, and source length for a completed tree, with
   both phase flags false. Completed trees report their error flag.
   `Break(())` returns `LoadError::Cancelled` without returning a tree or publishing

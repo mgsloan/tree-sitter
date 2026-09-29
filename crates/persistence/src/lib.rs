@@ -95,15 +95,14 @@ pub enum WritePolicy {
     Disabled,
 }
 
-/// The shared callback covers parsing, packing, and load cancellation checks.
-/// Outside parsing and packing, both phase flags are false: offsets report bytes
-/// captured while reading, zero while waiting or probing, and source length when
-/// returning or publishing a completed tree. Only completed trees report errors.
+/// The shared callback covers parsing and load cancellation checks.
+/// Outside parsing, offsets report bytes captured while reading, zero while
+/// waiting or probing, and source length when returning or publishing a completed
+/// tree. Only completed trees report errors outside parsing.
 #[derive(Default)]
 pub struct LoadOptions<'a> {
-    /// Packing controls. Deferred work retains settings but not the callback;
-    /// use the parse callback passed to `PendingLoad::resume` for later progress.
-    pub pack: tree_squatter::PackOptions<'a>,
+    /// Packed-tree storage options.
+    pub pack: tree_squatter::PackOptions,
     pub write: WritePolicy,
     pub parse: ParseOptions<'a>,
 }
@@ -111,7 +110,7 @@ pub struct LoadOptions<'a> {
 impl LoadOptions<'_> {
     pub fn reborrow(&mut self) -> LoadOptions<'_> {
         LoadOptions {
-            pack: self.pack.reborrow(),
+            pack: self.pack,
             write: self.write,
             parse: self.parse.reborrow(),
         }
@@ -470,7 +469,7 @@ impl Persistence {
         let started = std::time::Instant::now();
         loop {
             let cooperate = started.elapsed() < self.options.cooperation_wait;
-            match pending.attempt(parser, &mut options.parse, &mut options.pack, cooperate)? {
+            match pending.attempt(parser, &mut options.parse, cooperate)? {
                 LoadStep::Ready(result) => return Ok(result),
                 LoadStep::Deferred(next) => {
                     pending = next;
@@ -493,12 +492,8 @@ impl Persistence {
         parser: &mut Parser,
         mut options: LoadOptions<'_>,
     ) -> Result<LoadStep, LoadError> {
-        self.capture(path, language, &mut options)?.attempt(
-            parser,
-            &mut options.parse,
-            &mut options.pack,
-            true,
-        )
+        self.capture(path, language, &mut options)?
+            .attempt(parser, &mut options.parse, true)
     }
 
     /// Nonblocking load using reusable worker scratch.
@@ -597,7 +592,7 @@ impl PendingLoad {
         parser: &mut Parser,
         mut options: ParseOptions<'_>,
     ) -> Result<LoadStep, LoadError> {
-        self.attempt(parser, &mut options, &mut Default::default(), true)
+        self.attempt(parser, &mut options, true)
     }
 
     /// Explicit escape hatch for callers whose wait budget has expired.
@@ -606,7 +601,7 @@ impl PendingLoad {
         parser: &mut Parser,
         mut options: ParseOptions<'_>,
     ) -> Result<LoadResult, LoadError> {
-        match self.attempt(parser, &mut options, &mut Default::default(), false)? {
+        match self.attempt(parser, &mut options, false)? {
             LoadStep::Ready(result) => Ok(result),
             LoadStep::Deferred(_) => unreachable!("cooperation disabled"),
         }
@@ -632,7 +627,6 @@ impl PendingLoad {
         self,
         parser: &mut Parser,
         options: &mut ParseOptions<'_>,
-        pack_options: &mut tree_squatter::PackOptions<'_>,
         cooperate: bool,
     ) -> Result<LoadStep, LoadError> {
         check(options, 0, false)?;
@@ -682,7 +676,6 @@ impl PendingLoad {
                     repack: self.repack,
                     symbol_presence: self.symbol_presence,
                     points: self.points,
-                    progress_callback: pack_options.reborrow().progress_callback,
                 },
             },
         )?;

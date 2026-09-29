@@ -490,7 +490,7 @@ fn measure_parses(
     context: &mut ParseContext,
     source: &[u8],
     mode: &str,
-    mut options: PackOptions,
+    options: PackOptions,
     rotation: usize,
     enabled: bool,
     meter: &mut Meter,
@@ -508,12 +508,12 @@ fn measure_parses(
             }
             1 => {
                 squat = Some(measured(enabled, meter, pressure, || {
-                    context.packed(source, mode, options.reborrow())
+                    context.packed(source, mode, options)
                 }))
             }
             2 => {
                 feller = Some(measured(enabled, meter, pressure, || {
-                    context.direct(source, mode, options.reborrow())
+                    context.direct(source, mode, options)
                 }))
             }
             _ => unreachable!(),
@@ -1251,7 +1251,7 @@ pub fn run(check_only: bool) -> Result<()> {
             for source in &sources {
                 let language = &grammars[&source.input.grammar].language;
                 let context = parse_contexts.get_mut(&source.input.grammar).unwrap();
-                let mut options = PackOptions {
+                let options = PackOptions {
                     repack: arguments.repack,
                     ..Default::default()
                 };
@@ -1267,7 +1267,7 @@ pub fn run(check_only: bool) -> Result<()> {
                             context,
                             &source.bytes,
                             parse_benchmark,
-                            options.reborrow(),
+                            options,
                             0,
                             false,
                             &mut meter,
@@ -1282,7 +1282,7 @@ pub fn run(check_only: bool) -> Result<()> {
                         context,
                         &source.bytes,
                         parse_benchmark,
-                        options.reborrow(),
+                        options,
                         batch_index + repeat,
                         !check_only,
                         &mut meter,

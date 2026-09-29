@@ -8,66 +8,11 @@ use crate::{
 
 mod traversal;
 
-#[derive(Default)]
-pub(crate) struct Progress<'a> {
-    callback: Option<&'a mut dyn FnMut(u32) -> std::ops::ControlFlow<()>>,
-    byte: u32,
-    operations: u32,
-}
-
-impl<'a> Progress<'a> {
-    fn new(callback: Option<&'a mut dyn FnMut(u32) -> std::ops::ControlFlow<()>>) -> Self {
-        Self {
-            callback,
-            ..Self::default()
-        }
-    }
-
-    pub fn enabled(&self) -> bool {
-        self.callback.is_some()
-    }
-
-    pub fn visit(&mut self, byte: u32) -> Result<(), Error> {
-        if self.enabled() {
-            self.byte = byte;
-            self.tick()?;
-        }
-        Ok(())
-    }
-
-    pub fn tick(&mut self) -> Result<(), Error> {
-        if self.enabled() {
-            self.operations += 1;
-            if self.operations == 256 {
-                self.operations = 0;
-                self.poll()?;
-            }
-        }
-        Ok(())
-    }
-
-    pub fn start(&mut self, byte: u32) -> Result<(), Error> {
-        self.byte = byte;
-        self.poll()
-    }
-
-    pub fn poll(&mut self) -> Result<(), Error> {
-        if let Some(callback) = &mut self.callback
-            && callback(self.byte).is_break()
-        {
-            return Err(Error::Canceled);
-        }
-        Ok(())
-    }
-}
-
-/// Controls packing progress, slab capacity, compaction, and optional presence/point data.
+/// Controls slab capacity, compaction, and optional presence/point data.
 ///
 /// **Not in Tree-sitter**
-pub struct PackOptions<'a> {
-    /// Reports the current or last source offset; return `Break` to cancel packing.
-    /// Offsets can decrease and do not measure work completed.
-    pub progress_callback: Option<&'a mut dyn FnMut(u32) -> std::ops::ControlFlow<()>>,
+#[derive(Clone, Copy)]
+pub struct PackOptions {
     pub initial_group_capacity: u32,
     pub repack: bool,
     pub symbol_presence: bool,
@@ -75,10 +20,9 @@ pub struct PackOptions<'a> {
     pub points: bool,
 }
 
-impl Default for PackOptions<'_> {
+impl Default for PackOptions {
     fn default() -> Self {
         Self {
-            progress_callback: None,
             initial_group_capacity: 0,
             repack: false,
             symbol_presence: true,
@@ -87,30 +31,9 @@ impl Default for PackOptions<'_> {
     }
 }
 
-impl<'a> PackOptions<'a> {
+impl PackOptions {
     pub fn new() -> Self {
         Self::default()
-    }
-
-    pub fn progress_callback<F: FnMut(u32) -> std::ops::ControlFlow<()>>(
-        mut self,
-        callback: &'a mut F,
-    ) -> Self {
-        self.progress_callback = Some(callback);
-        self
-    }
-
-    pub fn reborrow(&mut self) -> PackOptions<'_> {
-        PackOptions {
-            progress_callback: match &mut self.progress_callback {
-                Some(callback) => Some(*callback),
-                None => None,
-            },
-            initial_group_capacity: self.initial_group_capacity,
-            repack: self.repack,
-            symbol_presence: self.symbol_presence,
-            points: self.points,
-        }
     }
 }
 
@@ -152,20 +75,12 @@ impl Packer {
         &mut self,
         language: &Language,
         tree: &tree_sitter::Tree,
-        mut options: PackOptions<'_>,
+        options: PackOptions,
     ) -> Result<Tree, Error> {
-        let progress = &mut Progress::new(options.progress_callback.take());
         let root = traversal::Root::new(tree, language.tables())?;
-        progress.start(tree.root_node().start_byte() as u32)?;
         let mut builder = Builder::for_input(language, root.expected_nodes, &options)?;
-        traversal::pack(
-            &mut builder,
-            language.tables(),
-            &mut self.traversal,
-            root,
-            progress,
-        )?;
-        builder.finish(options, progress)
+        traversal::pack(&mut builder, language.tables(), &mut self.traversal, root)?;
+        builder.finish(options)
     }
 
     pub(crate) fn pack_reductions(
@@ -173,10 +88,8 @@ impl Packer {
         language: &Language,
         nodes: &[Reduction],
         root: u32,
-        mut options: PackOptions<'_>,
+        options: PackOptions,
     ) -> Result<Tree, Error> {
-        let progress = &mut Progress::new(options.progress_callback.take());
-        progress.start(nodes[root as usize].start_byte)?;
         let mut builder = Builder::for_input(
             language,
             nodes[root as usize].visible_descendant_count + 1,
@@ -188,9 +101,8 @@ impl Packer {
             &mut self.traversal,
             nodes,
             root,
-            progress,
         )?;
-        builder.finish(options, progress)
+        builder.finish(options)
     }
 
     /// Releases retained traversal scratch.
@@ -287,7 +199,7 @@ impl Builder {
     fn for_input(
         language: &Language,
         expected_nodes: u32,
-        options: &PackOptions<'_>,
+        options: &PackOptions,
     ) -> Result<Self, Error> {
         let capacity = if options.initial_group_capacity == 0 {
             expected_nodes / (GROUP_SIZE * 3 / 4) + 1
@@ -553,8 +465,7 @@ impl Builder {
         self.error = 0;
     }
 
-    fn finish(mut self, options: PackOptions, progress: &mut Progress<'_>) -> Result<Tree, Error> {
-        progress.poll()?;
+    fn finish(mut self, options: PackOptions) -> Result<Tree, Error> {
         self.close();
         let groups = self.tree.group_count();
         let capacity = if options.repack {
@@ -570,7 +481,6 @@ impl Builder {
         if let Some(points) = self.points {
             self.tree.set_point_data(points)?;
         }
-        progress.poll()?;
         Ok(self.tree)
     }
 }

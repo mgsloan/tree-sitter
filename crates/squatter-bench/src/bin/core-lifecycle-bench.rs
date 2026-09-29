@@ -51,7 +51,7 @@ struct Case<'input> {
     tree: Arc<Tree>,
     packer: Packer,
     compact: Vec<MaybeUninit<u8>>,
-    options: PackOptions<'static>,
+    options: PackOptions,
 }
 
 const WORKLOADS: &[&str] = &[
@@ -89,19 +89,18 @@ impl Case<'_> {
         match workload {
             "pack-cold" => {
                 measure!(
-                    Tree::pack_with_options(&self.language, self.native, self.options.reborrow())
-                        .unwrap()
+                    Tree::pack_with_options(&self.language, self.native, self.options).unwrap()
                 )
             }
             "pack-reuse" => measure!(
                 self.packer
-                    .pack_with_options(&self.language, self.native, self.options.reborrow())
+                    .pack_with_options(&self.language, self.native, self.options)
                     .unwrap()
             ),
             "pack-drop-scratch" => measure!({
                 self.packer.drop_scratch();
                 self.packer
-                    .pack_with_options(&self.language, self.native, self.options.reborrow())
+                    .pack_with_options(&self.language, self.native, self.options)
                     .unwrap()
             }),
             "point-access" => measure!({
@@ -196,17 +195,13 @@ fn main() -> Result<()> {
         parser.set_language(language)?;
         let native = parser.parse(&source, None).context("parse failed")?;
         let owner = Language::new(language)?;
-        let mut options = PackOptions {
+        let options = PackOptions {
             points: !arguments.no_points,
             symbol_presence: !arguments.no_presence,
             repack: arguments.repack,
             ..Default::default()
         };
-        let tree = Arc::new(Tree::pack_with_options(
-            &owner,
-            &native,
-            options.reborrow(),
-        )?);
+        let tree = Arc::new(Tree::pack_with_options(&owner, &native, options)?);
         let selected = grammar.queries.iter().find_map(|query| {
             if arguments
                 .query
