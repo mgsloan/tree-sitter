@@ -154,14 +154,15 @@ pub(super) struct Root<'tree> {
     subtree: Subtree,
     position: Position,
     alias: u16,
-    pub expected_nodes: u32,
     input: PhantomData<&'tree tree_sitter::Tree>,
 }
 
 impl<'tree> Root<'tree> {
-    pub fn new(tree: &'tree tree_sitter::Tree, tables: &GrammarView) -> Result<Self, Error> {
-        let root = tree.root_node();
-        let expected_nodes = root.descendant_count() as u32;
+    pub fn new(
+        root: tree_sitter::Node<'tree>,
+        tables: &GrammarView,
+        points: bool,
+    ) -> Result<Self, Error> {
         let raw = root.into_raw();
         unsafe extern "C" {
             fn ts_tree_language(tree: *const c_void) -> *const c_void;
@@ -169,8 +170,17 @@ impl<'tree> Root<'tree> {
         if unsafe { ts_tree_language(raw.tree.cast()) } != tables.language {
             return Err(Error::Language);
         }
+        let subtree = Subtree(raw.id.cast());
+        let (_, size, _) = subtree.lengths();
+        if u64::from(raw.context[0]) + u64::from(size.bytes) > u64::from(u32::MAX)
+            || (points
+                && (u64::from(raw.context[1]) + u64::from(size.point.row) > u64::from(u32::MAX)
+                    || u64::from(raw.context[2]) + u64::from(size.bytes) > u64::from(u32::MAX)))
+        {
+            return Err(Error::Overflow);
+        }
         Ok(Self {
-            subtree: Subtree(raw.id.cast()),
+            subtree,
             position: Position {
                 bytes: raw.context[0],
                 point: Point {
@@ -179,7 +189,6 @@ impl<'tree> Root<'tree> {
                 },
             },
             alias: raw.context[3] as u16,
-            expected_nodes,
             input: PhantomData,
         })
     }

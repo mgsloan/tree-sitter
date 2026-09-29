@@ -134,7 +134,7 @@ where
     assert_eq!(items.next(), None);
 }
 
-pub fn assert_same_tree(actual: &tree_squatter::Tree, expected: &tree_squatter::Tree) {
+pub fn assert_same_tree(actual: &tree_squatter::Forest, expected: &tree_squatter::Forest) {
     assert_eq!(actual.as_bytes(), expected.as_bytes());
     assert_eq!(
         actual.point_data().map(|points| points.as_bytes()),
@@ -150,9 +150,9 @@ pub fn pack_native(
     language: &Language,
     source: &str,
     options: tree_squatter::PackOptions,
-) -> (Tree, tree_squatter::Tree) {
+) -> (Tree, tree_squatter::Forest) {
     let native = parse_native(language, source);
-    let packed = tree_squatter::Tree::pack_with_options(
+    let packed = tree_squatter::Forest::pack_with_options(
         &tree_squatter::Language::new(language).unwrap(),
         &native,
         options,

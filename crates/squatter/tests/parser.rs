@@ -3,7 +3,7 @@ mod support;
 use std::ops::ControlFlow;
 use support::{assert_same_tree, c_language, json_language};
 use tree_squatter::{
-    Error, Language, PackOptions, PackedParseOptions, ParseOptions, Parser, ParserError, Tree,
+    Error, Forest, Language, PackOptions, PackedParseOptions, ParseOptions, Parser, ParserError,
     TreeFellerParser,
     traits::{NodeLike, Parse, ParseStateLike, TreeLike},
 };
@@ -85,7 +85,7 @@ fn direct_traits_ignore_progress_callbacks() {
         parse: ParseOptions::new().progress_callback(&mut cancel),
         pack: PackOptions {
             points: false,
-            symbol_presence: false,
+            symbol_presence: &|_| false,
             ..Default::default()
         },
     };
@@ -175,13 +175,13 @@ fn callback_input_and_error_recovery() {
     let mut native = tree_sitter::Parser::new();
     native.set_language(&c_language()).unwrap();
     assert!(
-        Tree::parse(grammar, &mut native, "int broken = ;")
+        Forest::parse(grammar, &mut native, "int broken = ;")
             .unwrap()
             .root_node()
             .has_error()
     );
     assert_eq!(
-        Tree::parse_direct(grammar, "int broken = ;")
+        Forest::parse_direct(grammar, "int broken = ;")
             .unwrap_err()
             .code,
         Error::Parse
@@ -233,11 +233,11 @@ fn direct_callback_chunks_match_contiguous() {
             PackOptions {
                 repack: true,
                 points: false,
-                symbol_presence: false,
+                symbol_presence: &|_| false,
                 ..Default::default()
             },
         ] {
-            let expected = Tree::parse_direct_with_options(&language, source, options).unwrap();
+            let expected = Forest::parse_direct_with_options(&language, source, options).unwrap();
             let packed = compatible
                 .parse_with_options(
                     &mut |byte, _| &source.as_bytes()[byte..],
@@ -362,9 +362,9 @@ fn direct_callback_failures_and_reuse() {
     );
 }
 
-fn check_packed<P>(parser: &mut P, source: &str) -> Tree
+fn check_packed<P>(parser: &mut P, source: &str) -> Forest
 where
-    P: Parse<Tree = Tree>,
+    P: Parse<Tree = Forest>,
     for<'a> P: Parse<Options<'a> = PackedParseOptions<'a>>,
     P::Error: std::fmt::Debug,
 {
@@ -425,7 +425,7 @@ fn packed_options_progress_and_equivalence() {
         parse: ParseOptions::new().progress_callback(&mut progress),
         pack: PackOptions {
             points: false,
-            symbol_presence: false,
+            symbol_presence: &|_| false,
             ..Default::default()
         },
     };

@@ -25,7 +25,7 @@
 //! Scans and returned groups borrow the tree, not the iterator:
 //!
 //! ```compile_fail
-//! # fn example(tree: tree_squatter::Tree) {
+//! # fn example(tree: tree_squatter::Forest) {
 //! let group = tree.root_node().all().groups().next().unwrap();
 //! drop(tree);
 //! let _ = group.nodes().next();
@@ -35,7 +35,7 @@ use crate::{
     FieldId, FieldSet, GrammarId, KindId, KindSet, Node, SlotIx,
     native::GrammarView,
     simd::{self, WordMask, load_words},
-    storage::{ColumnPointer, GROUP_SIZE, Layout, TreeData},
+    storage::{ColumnPointer, ForestData, GROUP_SIZE, Layout},
     types::{GroupIx, GroupSlotIx, PackedPoint, SquatterKindId},
 };
 use std::{
@@ -159,7 +159,7 @@ impl<'tree> Columns<'tree> {
     }
 
     #[inline]
-    fn tree(self) -> &'tree TreeData {
+    fn tree(self) -> &'tree ForestData {
         self.root.data()
     }
 
@@ -170,7 +170,7 @@ impl<'tree> Columns<'tree> {
 
     #[inline]
     fn tables(self) -> &'tree GrammarView {
-        self.tree().tables()
+        self.root.tables()
     }
 
     #[inline]
@@ -234,7 +234,7 @@ struct SymbolIndex {
 impl SymbolIndex {
     fn new(group: &GroupRef<'_>, mut targets: impl Iterator<Item = SquatterKindId>) -> Self {
         Self {
-            enabled: group.columns.tree().presence_cache.is_some() && targets.next().is_some(),
+            enabled: group.columns.root.presence().is_some() && targets.next().is_some(),
         }
     }
     fn enabled(self) -> bool {
@@ -247,15 +247,10 @@ impl SymbolIndex {
         groups: Range<u32>,
         reverse: bool,
     ) -> Option<u32> {
-        let cache = group.columns.tree().presence_cache.as_ref()?;
+        let cache = group.columns.root.presence()?;
         targets
             .filter_map(|target| {
-                cache.find_matching_group(
-                    groups.clone(),
-                    target.raw() as usize,
-                    group.columns.tree().groups(),
-                    reverse,
-                )
+                cache.find_matching_group(groups.clone(), target.raw() as usize, reverse)
             })
             .reduce(|previous, candidate| {
                 if reverse {
@@ -760,7 +755,7 @@ fn count_groups<'tree, S: GroupScan<'tree>, P: Predicate>(
 /// **Not in Tree-sitter**
 pub struct Scan<'tree, S> {
     source: S,
-    lifetime: PhantomData<&'tree crate::Tree>,
+    lifetime: PhantomData<&'tree crate::Forest>,
 }
 impl<'tree, S> Scan<'tree, S> {
     fn new(source: S) -> Self {
@@ -880,7 +875,7 @@ impl<'tree, S: GroupScan<'tree>> IntoIterator for Scan<'tree, S> {
     }
 }
 
-pub struct Groups<'tree, S>(S, PhantomData<&'tree crate::Tree>);
+pub struct Groups<'tree, S>(S, PhantomData<&'tree crate::Forest>);
 impl<'tree, S: GroupScan<'tree>> Iterator for Groups<'tree, S> {
     type Item = GroupMatches<'tree>;
     #[inline]
@@ -899,7 +894,7 @@ pub struct Nodes<'tree, S: GroupScan<'tree>> {
     source: S,
     base: u32,
     slots: S::Slots,
-    lifetime: PhantomData<&'tree crate::Tree>,
+    lifetime: PhantomData<&'tree crate::Forest>,
 }
 impl<'tree, S: GroupScan<'tree>> Iterator for Nodes<'tree, S> {
     type Item = Node<'tree>;
@@ -3312,7 +3307,7 @@ mod tests {
         let source = format!("[{}0]", "0,".repeat(4096));
         let native = parser.parse(&source, None).unwrap();
         let grammar = crate::Language::new(&language).unwrap();
-        let tree = crate::Tree::pack(&grammar, &native).unwrap();
+        let tree = crate::Forest::pack(&grammar, &native).unwrap();
         let root = tree.root_node();
         let columns = Columns::new(root);
         let group = columns.group(GroupIx(0));

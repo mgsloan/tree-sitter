@@ -49,8 +49,8 @@ struct Capture {
 
 impl PartialEq for Capture {
     fn eq(&self, other: &Self) -> bool {
-        self.node.tree == other.node.tree
-            && self.node.slot == other.node.slot
+        self.node.forest == other.node.forest
+            && self.node.id == other.node.id
             && self.index == other.index
     }
 }
@@ -126,7 +126,7 @@ impl CaptureList {
     }
 
     fn hash_capture(&mut self, capture: Capture) {
-        let identity = (capture.node.slot.raw() as u64)
+        let identity = (capture.node.id.slot().raw() as u64)
             .wrapping_mul(0x9e37_79b1_85eb_ca87)
             .wrapping_add(capture.index.raw() as u64);
         self.hash = self
@@ -420,8 +420,8 @@ impl CapturePool {
                 return (false, false);
             }
 
-            let first = root.at(first.node.slot);
-            let second = root.at(second.node.slot);
+            let first = root.at(first.node.id.slot());
+            let second = root.at(second.node.id.slot());
             let order = first
                 .start_byte()
                 .cmp(&second.start_byte())
@@ -815,7 +815,7 @@ impl QueryCursor {
                 .resize(query.program.presence.len(), PresenceCache::default());
         }
 
-        self.error = if root.data().tables().language != query.compiled.view.language {
+        self.error = if root.tables().language != query.compiled.view.language {
             Some(QueryExecutionError::InvalidExecution)
         } else {
             None
@@ -1314,7 +1314,7 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
                 self.cursor.pool.list(state.captures).first_byte
             } else {
                 self.root
-                    .at(captures[state.consumed as usize].node.slot)
+                    .at(captures[state.consumed as usize].node.id.slot())
                     .start_byte() as u32
             };
             state.set_capture_byte(byte);
@@ -1389,10 +1389,10 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
             }
             let captures = self.cursor.pool.get(state.captures);
             while (state.consumed as usize) < captures.len()
-                && self
-                    .cursor
-                    .range
-                    .precedes(self.root.at(captures[state.consumed as usize].node.slot))
+                && self.cursor.range.precedes(
+                    self.root
+                        .at(captures[state.consumed as usize].node.id.slot()),
+                )
             {
                 state.consumed += 1;
             }
@@ -1400,7 +1400,7 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
             let Some(capture) = captures.get(state.consumed as usize) else {
                 continue;
             };
-            let byte = self.root.at(capture.node.slot).start_byte() as u32;
+            let byte = self.root.at(capture.node.id.slot()).start_byte() as u32;
             if result.is_none_or(|first| (byte, state.pattern) < (first.byte, first.pattern)) {
                 let step = self.step(state.step);
                 if eviction && step.has(ROOT_PATTERN_GUARANTEED) {
@@ -1434,7 +1434,7 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
                     self.cursor.erase_finished(0);
                     continue;
                 };
-                let node = self.root.at(capture.node.slot);
+                let node = self.root.at(capture.node.id.slot());
                 if self.cursor.range.precedes(node) || self.cursor.range.follows(node) {
                     state.consumed += 1;
                     self.update_key(&mut state);
@@ -1705,7 +1705,6 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
         use crate::scan::GroupRef;
         use crate::storage::GROUP_SIZE;
 
-        let data = self.root.data();
         let total = self.total_slots();
         let groups = GroupRef::new(self.root);
 
@@ -1715,10 +1714,10 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
             }
             let index = (total - 1 - start) / GROUP_SIZE;
             let group_end = ((start / GROUP_SIZE + 1) * GROUP_SIZE).min(end);
-            if data.presence_cache.as_ref().is_none_or(|cache| {
+            if self.root.presence().is_none_or(|cache| {
                 targets
                     .iter()
-                    .any(|symbol| cache.has(index, symbol.raw() as usize, data.groups()))
+                    .any(|symbol| cache.has(index, symbol.raw() as usize))
             }) {
                 let group = groups.at_group(GroupIx(index));
                 let base = group.first_slot().raw();
@@ -1761,10 +1760,10 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
             let group_end = ((start / GROUP_SIZE + 1) * GROUP_SIZE).min(end);
             if !targets.is_empty()
                 && targets.len() <= 4
-                && data.presence_cache.as_ref().is_some_and(|cache| {
+                && self.root.presence().is_some_and(|cache| {
                     !targets
                         .iter()
-                        .any(|symbol| cache.has(group, *symbol as usize, data.groups()))
+                        .any(|symbol| cache.has(group, *symbol as usize))
                 })
             {
                 start = self.normalize_position(group_end);
@@ -1892,14 +1891,17 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
         let data = root.data();
         let group_size = crate::storage::GROUP_SIZE;
         if requirement.symbol != 0 {
-            if let Some(presence) = &data.presence_cache {
+            if let Some(presence) = root.presence() {
                 let slot = root.slot().raw();
                 let group = slot / group_size;
                 let maximum = data.word(data.layout.span_max, group);
                 // The maximum covers this subtree without loading its span delta.
-                let groups = slot.saturating_sub(maximum) / group_size..group + 1;
+                let first = slot
+                    .saturating_sub(maximum)
+                    .max(root.tree_data().slots.start.raw());
+                let groups = first / group_size..group + 1;
                 let found = presence
-                    .find_matching_group(groups, requirement.symbol as usize, data.groups(), false)
+                    .find_matching_group(groups, requirement.symbol as usize, false)
                     .is_some();
                 if !found {
                     cache.rejections += 1;
@@ -2353,7 +2355,7 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
         let query = self.query;
         let depth = self.cursor.parents.len() as u32;
         let symbol = node.data().symbol_index(node.slot().raw());
-        let named = node.data().tables().named_index(symbol);
+        let named = node.tables().named_index(symbol);
         let symbol = symbol.raw();
         let is_error = symbol as u32 == query.compiled.view.symbol_count;
         let field = if query.program.needs_fields && depth != 0 {
@@ -2803,7 +2805,7 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
         if captures.last_end != NONE {
             return captures.last_end;
         }
-        let slot = self.cursor.pool.get(id).last().unwrap().node.slot;
+        let slot = self.cursor.pool.get(id).last().unwrap().node.id.slot();
         let end = self.root.at(slot).end_byte() as u32;
         self.cursor.pool.lists[id as usize].last_end = end;
         end
@@ -2999,7 +3001,7 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
 }
 
 fn equal_column(
-    data: &crate::storage::TreeData,
+    data: &crate::storage::ForestData,
     address: ColumnPointer,
     group: u32,
     value: u16,
@@ -3036,7 +3038,7 @@ fn equal_column(
 #[cfg(test)]
 mod scan_tests {
     use super::*;
-    use crate::{Language, PackOptions, Tree};
+    use crate::{Forest, Language, PackOptions};
 
     fn collect_plan_results(
         cursor: &mut QueryCursor,
@@ -3085,7 +3087,7 @@ mod scan_tests {
         parser.set_language(&language).unwrap();
 
         for source in ["x", "[\n1, ?,\n2]", "{\"key\":}", "[1,"] {
-            let tree = Tree::parse(&grammar, &mut parser, source).unwrap();
+            let tree = Forest::parse(&grammar, &mut parser, source).unwrap();
             assert!(tree.root_node().has_error());
             for pattern in [
                 "(ERROR) @error",
@@ -3152,11 +3154,11 @@ mod scan_tests {
         };
 
         for symbol_presence in [false, true] {
-            let tree = Tree::pack_with_options(
+            let tree = Forest::pack_with_options(
                 &grammar,
                 &native,
                 PackOptions {
-                    symbol_presence,
+                    symbol_presence: &|_| symbol_presence,
                     ..Default::default()
                 },
             )
@@ -3254,11 +3256,11 @@ mod scan_tests {
         assert!(!native.root_node().has_error());
 
         for symbol_presence in [false, true] {
-            let tree = Tree::pack_with_options(
+            let tree = Forest::pack_with_options(
                 &grammar,
                 &native,
                 PackOptions {
-                    symbol_presence,
+                    symbol_presence: &|_| symbol_presence,
                     ..Default::default()
                 },
             )

@@ -3,7 +3,7 @@ mod support;
 use std::collections::HashSet;
 use tree_sitter::Point;
 use tree_squatter::{
-    FieldId, FieldSet, GrammarId, KindId, KindSet, Language, Node, PackOptions, Tree,
+    FieldId, FieldSet, Forest, GrammarId, KindId, KindSet, Language, Node, PackOptions,
     scan::{GroupScan, Scan},
 };
 
@@ -156,7 +156,7 @@ fn orders_subtrees_groups_and_directions() {
 }
 
 #[allow(clippy::reversed_empty_ranges)] // Intentionally exercise reversed bounds.
-fn check_ranges(tree: &Tree, source_len: usize) {
+fn check_ranges(tree: &Forest, source_len: usize) {
     let all = reference_preorder(tree.root_node());
     let kinds = KindSet::new(all.iter().step_by(3).map(|node| node.kind_id()));
     let roots = all.iter().copied().step_by((all.len() / 15).max(1));
@@ -275,7 +275,7 @@ fn ranges_filters_waste_and_storage_variants() {
                 &source,
                 PackOptions {
                     points,
-                    symbol_presence,
+                    symbol_presence: &|_| symbol_presence,
                     initial_group_capacity: 1,
                     ..Default::default()
                 },
@@ -283,7 +283,9 @@ fn ranges_filters_waste_and_storage_variants() {
             check_ranges(&tree, source.len());
             let compact = tree.repack().unwrap();
             let grammar = Language::new(&language).unwrap();
-            let borrowed = Tree::from_bytes_borrowed(&grammar, compact.as_bytes()).unwrap();
+            let borrowed =
+                Forest::from_bytes_borrowed(std::slice::from_ref(&grammar), compact.as_bytes())
+                    .unwrap();
             check_ranges(&borrowed, source.len());
         }
     }
@@ -671,7 +673,9 @@ fn range_and_position_relations() {
             );
             let compact = tree.repack().unwrap();
             let grammar = Language::new(&language).unwrap();
-            let borrowed = Tree::from_bytes_borrowed(&grammar, compact.as_bytes()).unwrap();
+            let borrowed =
+                Forest::from_bytes_borrowed(std::slice::from_ref(&grammar), compact.as_bytes())
+                    .unwrap();
             for tree in [&tree, &borrowed] {
                 let roots = reference_preorder(tree.root_node());
                 for root in [roots[0], roots[roots.len() / 2], roots[roots.len() - 1]]
@@ -805,7 +809,7 @@ fn sparse_cursor_pipelines() {
             &language,
             &source,
             PackOptions {
-                symbol_presence,
+                symbol_presence: &|_| symbol_presence,
                 ..Default::default()
             },
         );
@@ -920,7 +924,7 @@ fn prepared_kind_sets() {
             &language,
             &source,
             PackOptions {
-                symbol_presence,
+                symbol_presence: &|_| symbol_presence,
                 ..Default::default()
             },
         );
@@ -998,12 +1002,13 @@ fn indexed_kind_filters() {
             &language,
             &source,
             PackOptions {
-                symbol_presence,
+                symbol_presence: &|_| symbol_presence,
                 ..Default::default()
             },
         );
         assert!(packed.group_count() > 32);
-        let borrowed = Tree::from_bytes_borrowed(&grammar, packed.as_bytes()).unwrap();
+        let borrowed =
+            Forest::from_bytes_borrowed(std::slice::from_ref(&grammar), packed.as_bytes()).unwrap();
         for tree in [&packed, &borrowed] {
             let nodes = reference_preorder(tree.root_node());
             let subtree = nodes

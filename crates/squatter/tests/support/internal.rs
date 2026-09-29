@@ -33,7 +33,18 @@ struct Fixture {
     _owner: LanguageOwner,
 }
 
-fn put_span_delta(data: &mut TreeData, slot: u32, value: u16) {
+fn synthetic_forest(language: &Language, groups: u32) -> Result<Forest, Error> {
+    let mut forest = Forest::empty(std::slice::from_ref(language), groups)?;
+    forest.data_mut().trees.push(TreeData {
+        region: RegionIx(0),
+        slots: SlotIx(0)..SlotIx(groups * GROUP_SIZE),
+    });
+    forest.data_mut().regions[0].slots.end = SlotIx(groups * GROUP_SIZE);
+    forest.data_mut().regions[0].trees.end = TreeIx(1);
+    Ok(forest)
+}
+
+fn put_span_delta(data: &mut ForestData, slot: u32, value: u16) {
     if SPAN_BITS == 16 {
         data.put_short(data.layout.span_delta, slot, value);
     } else {
@@ -152,7 +163,7 @@ fn external_scanners_preserve_state_across_branches_and_replay() {
             .unwrap();
         let native = mainline.parse(source, None).unwrap();
         assert!(!native.root_node().has_error());
-        let expected = Tree::pack(&fixture.grammar, &native).unwrap();
+        let expected = Forest::pack(&fixture.grammar, &native).unwrap();
         let mut parser = TreeFellerParser::new(&fixture.grammar).unwrap();
         for chunk_size in 1..=8 {
             let mut maximum = 0;
@@ -202,7 +213,7 @@ fn lexer_fallback_and_concurrent_parser_preparation() {
         repack: true,
         ..Default::default()
     };
-    let expected = Tree::pack_with_options(&grammar, &native, options).unwrap();
+    let expected = Forest::pack_with_options(&grammar, &native, options).unwrap();
     let barrier = std::sync::Barrier::new(4);
     std::thread::scope(|scope| {
         for _ in 0..4 {
@@ -341,7 +352,7 @@ fn point_delta_limits_control_grouping() {
     );
 }
 
-fn check_masks(tree: &Tree, slots: &[SlotIx], bits: u32) {
+fn check_masks(tree: &Forest, slots: &[SlotIx], bits: u32) {
     for (mask, &slot) in slots.iter().enumerate() {
         let node = tree.node_at_slot(slot).unwrap();
         for bit in 0..bits {
@@ -378,8 +389,11 @@ fn synthetic_supertype_emission_and_persistence() {
             for capacity in [groups + 17, groups, groups + 1] {
                 tree.resize(capacity, tree.data().flags()).unwrap();
                 check_masks(&tree, &slots, bits);
-                let loaded = Tree::from_bytes(grammar, tree.as_bytes()).unwrap();
-                let borrowed = Tree::from_bytes_borrowed(grammar, tree.as_bytes()).unwrap();
+                let loaded =
+                    Forest::from_bytes(std::slice::from_ref(grammar), tree.as_bytes()).unwrap();
+                let borrowed =
+                    Forest::from_bytes_borrowed(std::slice::from_ref(grammar), tree.as_bytes())
+                        .unwrap();
                 check_masks(&loaded, &slots, bits);
                 check_masks(&borrowed, &slots, bits);
                 let restored = Language::from_cache(
@@ -388,7 +402,7 @@ fn synthetic_supertype_emission_and_persistence() {
                 )
                 .unwrap();
                 check_masks(
-                    &Tree::from_bytes(&restored, tree.as_bytes()).unwrap(),
+                    &Forest::from_bytes(std::slice::from_ref(&restored), tree.as_bytes()).unwrap(),
                     &slots,
                     bits,
                 );
@@ -396,8 +410,11 @@ fn synthetic_supertype_emission_and_persistence() {
             for (offset, mask) in [(0, 1), (14, 1)] {
                 let mut bytes = tree.as_bytes().to_vec();
                 bytes[offset] ^= mask;
-                assert!(Tree::from_bytes(grammar, &bytes).is_err());
-                assert!(Tree::from_bytes_safety_checked(grammar, &bytes).is_err());
+                assert!(Forest::from_bytes(std::slice::from_ref(grammar), &bytes).is_err());
+                assert!(
+                    Forest::from_bytes_safety_checked(std::slice::from_ref(grammar), &bytes)
+                        .is_err()
+                );
             }
         }
     }
@@ -426,7 +443,8 @@ fn id_width_covers_all_grammars_and_reserved_errors() {
             tree.data().layout.symbol_width,
             if count == 254 { 1 } else { 2 }
         );
-        let tree = Tree::from_bytes(&fixture.grammar, tree.as_bytes()).unwrap();
+        let tree =
+            Forest::from_bytes(std::slice::from_ref(&fixture.grammar), tree.as_bytes()).unwrap();
         assert_eq!(tree.data().symbol_index(0).raw(), count + 1);
         assert_eq!(tree.data().grammar_index(0).raw(), count + 1);
         assert_eq!(tree.data().symbol_index(1).raw(), count);
@@ -435,7 +453,7 @@ fn id_width_covers_all_grammars_and_reserved_errors() {
 }
 
 #[test]
-fn compact_domains_preserve_aliases_with_independent_widths() {
+fn compact_domains_preserve_aliases_with_shared_width() {
     use crate::{KindId, SquatterGrammarId, SquatterKindId};
 
     let fixture = unsafe { Fixture::new(sq_test_compact_symbols(400), sq_test_symbols_delete) };
@@ -446,7 +464,7 @@ fn compact_domains_preserve_aliases_with_independent_widths() {
         .unwrap();
     assert_eq!(language.squatter_kind_count(), 5);
     assert!(language.squatter_grammar_count() > 256);
-    assert_eq!(id_width_flags([language]), BYTE_IDS);
+    assert_eq!(id_width_flags([language]), 0);
     assert_eq!(language.squatter_kind_id(KindId::from_raw(2)), None);
     assert_eq!(language.squatter_kind_id(KindId::from_raw(4)), None);
     assert_eq!(language.squatter_grammar_id(GrammarId::from_raw(3)), None);
@@ -489,14 +507,15 @@ fn compact_domains_preserve_aliases_with_independent_widths() {
     let tree = builder
         .finish(PackOptions {
             repack: true,
+            symbol_presence: &|_| true,
             ..Default::default()
         })
         .unwrap();
-    assert_eq!(tree.data().layout.symbol_width, 1);
+    assert_eq!(tree.data().layout.symbol_width, 2);
     assert_eq!(tree.data().layout.grammar_width, 2);
     let restored =
         Language::from_cache(&language.tree_sitter_language(), &language.cache().unwrap()).unwrap();
-    let loaded = Tree::from_bytes(&restored, tree.as_bytes()).unwrap();
+    let loaded = Forest::from_bytes(std::slice::from_ref(&restored), tree.as_bytes()).unwrap();
     assert_eq!(loaded.as_bytes(), tree.as_bytes());
     for node in loaded.root_node().preorder().nodes().skip(1) {
         assert_eq!(node.kind_id(), KindId::from_raw(1));
@@ -532,9 +551,9 @@ fn compact_domains_preserve_aliases_with_independent_widths() {
         .emit(&leaf(display.raw(), default.raw(), 0, 1), 0)
         .unwrap();
     let tree = builder.finish(PackOptions::default()).unwrap();
-    assert_eq!(tree.data().flags() & SEPARATE_GRAMMAR, 0);
+    assert_eq!(tree.data().flags() & SEPARATE_GRAMMAR, SEPARATE_GRAMMAR);
     assert_eq!(tree.root_node().grammar_id(), GrammarId::from_raw(5));
-    assert!(Tree::from_bytes(language, tree.as_bytes()).is_ok());
+    assert!(Forest::from_bytes(std::slice::from_ref(language), tree.as_bytes()).is_ok());
 }
 
 #[test]
@@ -561,7 +580,9 @@ fn matching_ids_omit_grammar_before_flag_columns() {
                     .unwrap();
                 assert_eq!(tree.data().flags() & SEPARATE_GRAMMAR, 0);
                 assert_eq!(tree.data().layout.grammar.0, tree.data().layout.extra.0);
-                let tree = Tree::from_bytes(&fixture.grammar, tree.as_bytes()).unwrap();
+                let tree =
+                    Forest::from_bytes(std::slice::from_ref(&fixture.grammar), tree.as_bytes())
+                        .unwrap();
                 for node in tree.root_node().preorder().nodes().skip(1) {
                     assert_eq!(node.kind_id().raw(), 2);
                     assert_eq!(node.grammar_id().raw(), 2);
@@ -611,11 +632,19 @@ fn synthetic_symbol_ids_and_optional_columns() {
                 if count == 16 && flags == 0 && !points {
                     let data = tree.data();
                     assert_ne!(data.flags() & SEPARATE_GRAMMAR, 0);
-                    let symbols = data.layout.symbol.offset(data.bytes);
-                    let originals = data.layout.grammar.offset(data.bytes);
+                    let symbols = data
+                        .layout
+                        .symbol
+                        .offset(std::ptr::NonNull::from(data.slice()).cast());
+                    let originals = data
+                        .layout
+                        .grammar
+                        .offset(std::ptr::NonNull::from(data.slice()).cast());
                     assert_eq!(
                         originals,
-                        data.layout.last.offset(data.bytes)
+                        data.layout
+                            .last
+                            .offset(std::ptr::NonNull::from(data.slice()).cast())
                             + bit_bytes(tree.group_capacity() * GROUP_SIZE) as usize
                     );
                     for slot in 0..3 * GROUP_SIZE {
@@ -642,12 +671,15 @@ fn synthetic_symbol_ids_and_optional_columns() {
                     );
                     let mut bytes = tree.as_bytes().to_vec();
                     bytes[..4].copy_from_slice(&(data.flags() & !SEPARATE_GRAMMAR).to_le_bytes());
-                    assert!(Tree::from_bytes(grammar, &bytes).is_err());
-                    assert!(Tree::from_bytes_safety_checked(grammar, &bytes).is_err());
+                    assert!(Forest::from_bytes(std::slice::from_ref(grammar), &bytes).is_err());
+                    assert!(
+                        Forest::from_bytes_safety_checked(std::slice::from_ref(grammar), &bytes)
+                            .is_err()
+                    );
                     for column in [symbols, originals] {
                         let mut bytes = tree.as_bytes().to_vec();
                         bytes[column] = u8::MAX;
-                        assert!(Tree::from_bytes(grammar, &bytes).is_err());
+                        assert!(Forest::from_bytes(std::slice::from_ref(grammar), &bytes).is_err());
                     }
                 }
                 for pass in 0..3 {
@@ -673,8 +705,14 @@ fn synthetic_symbol_ids_and_optional_columns() {
                         );
                     }
                     let compact = tree.repack().unwrap();
-                    let copy = Tree::from_bytes(grammar, compact.as_bytes()).unwrap();
-                    let borrowed = Tree::from_bytes_borrowed(grammar, compact.as_bytes()).unwrap();
+                    let copy =
+                        Forest::from_bytes(std::slice::from_ref(grammar), compact.as_bytes())
+                            .unwrap();
+                    let borrowed = Forest::from_bytes_borrowed(
+                        std::slice::from_ref(grammar),
+                        compact.as_bytes(),
+                    )
+                    .unwrap();
                     assert_eq!(copy.as_bytes(), borrowed.as_bytes());
                     assert_eq!(compact.group_capacity(), compact.group_count());
                     tree = copy;
@@ -690,15 +728,18 @@ fn synthetic_symbol_ids_and_optional_columns() {
                 } else {
                     tree.data().layout.symbol
                 };
-                let offset = offset.offset(tree.data().bytes);
+                let offset = offset.offset(std::ptr::NonNull::from(tree.data().slice()).cast());
                 if tree.data().layout.symbol_width == 1 {
                     // Zero is reserved and cannot be stored on a node.
                     invalid[offset] = 0;
                 } else {
                     invalid[offset..offset + 2].copy_from_slice(&u16::MAX.to_le_bytes());
                 }
-                assert!(Tree::from_bytes(grammar, &invalid).is_err());
-                assert!(Tree::from_bytes_safety_checked(grammar, &invalid).is_err());
+                assert!(Forest::from_bytes(std::slice::from_ref(grammar), &invalid).is_err());
+                assert!(
+                    Forest::from_bytes_safety_checked(std::slice::from_ref(grammar), &invalid)
+                        .is_err()
+                );
             }
         }
     }
@@ -713,9 +754,9 @@ fn maximum_spans_roundtrip_and_reject_delta_underflow() {
     parser.set_language(&language).unwrap();
 
     let source = format!("[{}0]", "0,".repeat(33000));
-    let tree = Tree::parse(&grammar, &mut parser, &source).unwrap();
+    let tree = Forest::parse(&grammar, &mut parser, &source).unwrap();
     assert!(tree.root_node().slot().raw() > u16::MAX as u32);
-    let loaded = Tree::from_bytes(&grammar, tree.as_bytes()).unwrap();
+    let loaded = Forest::from_bytes(std::slice::from_ref(&grammar), tree.as_bytes()).unwrap();
     let array = loaded
         .root_node()
         .named_child(crate::NamedChildIx::new(0))
@@ -727,18 +768,21 @@ fn maximum_spans_roundtrip_and_reject_delta_underflow() {
         assert_eq!(child.start_byte(), 1 + index as usize * 2);
     }
 
-    let mut small = Tree::parse(&grammar, &mut parser, "0").unwrap();
+    let mut small = Forest::parse(&grammar, &mut parser, "0").unwrap();
     let data = small.data_mut();
     let maximum = data.word(data.layout.span_max, 0);
     put_span_delta(data, 0, (maximum + 1) as u16);
-    assert!(Tree::from_bytes(&grammar, small.as_bytes()).is_err());
-    assert!(Tree::from_bytes_safety_checked(&grammar, small.as_bytes()).is_err());
+    assert!(Forest::from_bytes(std::slice::from_ref(&grammar), small.as_bytes()).is_err());
+    assert!(
+        Forest::from_bytes_safety_checked(std::slice::from_ref(&grammar), small.as_bytes())
+            .is_err()
+    );
 }
 
 #[test]
 fn navigation_across_every_waste_boundary() {
     let fixture = Fixture::symbols(16);
-    let mut tree = Tree::empty(&fixture.grammar, 3).unwrap();
+    let mut tree = synthetic_forest(&fixture.grammar, 3).unwrap();
     tree.data_mut().put_word(SlabOffset(0), 1, 3);
     for first in 0..GROUP_SIZE {
         for second in 0..GROUP_SIZE {
@@ -813,7 +857,7 @@ fn navigation_across_every_waste_boundary() {
     }
 }
 
-fn exercise_columns(tree: &mut Tree, fill: bool) {
+fn exercise_columns(tree: &mut Forest, fill: bool) {
     let capacity = tree.group_capacity();
     let data = tree.data_mut();
     let layout = data.layout;
@@ -867,7 +911,8 @@ fn exercise_columns(tree: &mut Tree, fill: bool) {
             };
             assert_eq!(actual, expected, "column {tag}, index {index}");
             if bits > 1 {
-                let start = offset.offset(data.bytes) + index as usize * (bits / 8);
+                let start = offset.offset(std::ptr::NonNull::from(data.slice()).cast())
+                    + index as usize * (bits / 8);
                 assert_eq!(
                     &data.slice()[start..start + bits / 8],
                     &expected.to_le_bytes()[..bits / 8]
@@ -881,7 +926,7 @@ fn exercise_columns(tree: &mut Tree, fill: bool) {
 fn column_growth_compaction_and_little_endian_encoding() {
     for count in [16, 32767] {
         let fixture = Fixture::symbols(count);
-        let mut tree = Tree::empty(&fixture.grammar, 3).unwrap();
+        let mut tree = synthetic_forest(&fixture.grammar, 3).unwrap();
         assert_eq!(
             tree.data().flags(),
             TREE_FORMAT | OPTIONAL | id_width_flags([&fixture.grammar])
@@ -930,11 +975,21 @@ fn invalid_waste_and_absent_fields() {
         );
         for waste in [GROUP_SIZE, GROUP_SIZE + 1, u16::MAX as u32] {
             let mut bytes = tree.as_bytes().to_vec();
-            let start = tree.data().layout.waste.offset(tree.data().bytes);
+            let start = tree
+                .data()
+                .layout
+                .waste
+                .offset(std::ptr::NonNull::from(tree.data().slice()).cast());
             bytes[start..start + 2].copy_from_slice(&(waste as u16).to_le_bytes());
-            assert!(Tree::from_bytes(&fixture.grammar, &bytes).is_err());
-            assert!(Tree::from_bytes_borrowed(&fixture.grammar, &bytes).is_err());
-            assert!(Tree::from_bytes_safety_checked(&fixture.grammar, &bytes).is_err());
+            assert!(Forest::from_bytes(std::slice::from_ref(&fixture.grammar), &bytes).is_err());
+            assert!(
+                Forest::from_bytes_borrowed(std::slice::from_ref(&fixture.grammar), &bytes)
+                    .is_err()
+            );
+            assert!(
+                Forest::from_bytes_safety_checked(std::slice::from_ref(&fixture.grammar), &bytes)
+                    .is_err()
+            );
         }
     }
 }
@@ -944,7 +999,7 @@ fn presence_ignores_waste_and_invalid_symbols() {
     for count in [16, 300, 32766, 32767] {
         let fixture = Fixture::symbols(count);
         let grammar = &fixture.grammar;
-        let mut tree = Tree::empty(grammar, 33).unwrap();
+        let mut tree = synthetic_forest(grammar, 33).unwrap();
         tree.data_mut().put_word(SlabOffset(0), 1, 33);
         for group in 0..33 {
             let data = tree.data_mut();

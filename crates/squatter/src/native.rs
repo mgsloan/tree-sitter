@@ -188,11 +188,6 @@ impl GrammarView {
         }
     }
 
-    #[inline]
-    pub fn default_grammar(&self, symbol: SquatterKindId) -> SquatterGrammarId {
-        SquatterGrammarId(unsafe { *self.default_grammar.add(symbol.raw() as usize) })
-    }
-
     pub fn symbol_name(&self, symbol: u16) -> &str {
         match symbol {
             u16::MAX => "ERROR",

@@ -2591,6 +2591,7 @@ dependencies = [
  "cc",
  "fearless_simd",
  "regex",
+ "smallvec",
  "tree-sitter",
  "tree-sitter-c",
  "tree-sitter-c-sharp",

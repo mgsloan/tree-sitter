@@ -1,5 +1,5 @@
 use crate::{
-    ChildIx, FieldId, GrammarId, KindId, NamedChildIx, SlotIx, Tree,
+    ChildIx, FieldId, Forest, GrammarId, KindId, NamedChildIx, NodeId, SlotIx,
     scan::{self, Postorder, Preorder, Scan},
     storage::*,
     traits,
@@ -15,20 +15,20 @@ use fearless_simd::{dispatch, prelude::*, u8x32};
 pub(crate) struct RawNode {
     // Every node borrows a live descriptor. Encoding that invariant also lets
     // Option<Node> use null for None without a separate discriminant.
-    pub tree: NonNull<TreeData>,
-    pub slot: SlotIx,
+    pub forest: NonNull<ForestData>,
+    pub id: NodeId,
 }
 
-/// A single node within a syntax [`Tree`].
+/// A single node within a packed forest.
 ///
 /// **Different than Tree-sitter:** Shared methods borrow the handle. Equality and hashing
-/// include both tree descriptor and slot, so nodes from simultaneously live trees can be
+/// include both forest identity and node ID, so nodes from simultaneously live trees can be
 /// used together as keys. An ID alone does not retain the tree.
 #[derive(Clone, Copy)]
 #[repr(transparent)]
 pub struct Node<'tree> {
     pub(crate) raw: RawNode,
-    pub(crate) lifetime: PhantomData<&'tree Tree>,
+    pub(crate) lifetime: PhantomData<&'tree Forest>,
 }
 
 unsafe impl Send for Node<'_> {}
@@ -36,7 +36,7 @@ unsafe impl Sync for Node<'_> {}
 
 impl PartialEq for Node<'_> {
     fn eq(&self, other: &Self) -> bool {
-        self.raw.tree == other.raw.tree && self.raw.slot == other.raw.slot
+        self.raw.forest == other.raw.forest && self.raw.id == other.raw.id
     }
 }
 
@@ -44,8 +44,8 @@ impl Eq for Node<'_> {}
 
 impl std::hash::Hash for Node<'_> {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.raw.tree.hash(state);
-        self.raw.slot.hash(state);
+        self.raw.forest.hash(state);
+        self.raw.id.hash(state);
     }
 }
 
@@ -60,51 +60,71 @@ impl std::fmt::Debug for Node<'_> {
     }
 }
 
-impl Tree {
-    /// Create a new [`TreeCursor`] starting from the root of the tree.
-    pub fn walk(&self) -> TreeCursor<'_> {
-        self.root_node().walk()
-    }
-
-    /// Get the language that was used to parse the syntax tree.
-    ///
-    /// **Different than Tree-sitter:** Borrows the prepared grammar wrapper.
-    pub fn language(&self) -> &crate::Language {
-        &self.data().language
-    }
-
-    /// Get the root node of the syntax tree.
-    pub fn root_node(&self) -> Node<'_> {
-        Node {
+impl<'tree> Node<'tree> {
+    pub(crate) fn new(forest: &'tree ForestData, id: NodeId) -> Self {
+        Self {
             raw: RawNode {
-                tree: self.0,
-                slot: SlotIx::from_raw(self.data().group_end(self.group_count() - 1) - 1),
+                forest: NonNull::from(forest),
+                id,
             },
             lifetime: PhantomData,
         }
     }
 
-    /// Returns a node at a live physical slot; returns `None` for
-    /// waste or out-of-range slots.
-    ///
-    /// **Not in Tree-sitter**
-    pub fn node_at_slot(&self, slot: SlotIx) -> Option<Node<'_>> {
-        (slot.raw() < self.slot_count() && slot.raw() < self.data().group_end(slot.group().raw()))
-            .then(|| self.root_node().at(slot))
+    pub fn id(&self) -> NodeId {
+        self.raw.id
     }
-}
 
-impl<'tree> Node<'tree> {
+    pub(crate) fn tree_data(self) -> &'tree TreeData {
+        &self.data().trees[self.id().tree().raw() as usize]
+    }
+
+    pub(crate) fn region_data(self) -> &'tree RegionData {
+        &self.data().regions[self.tree_data().region.raw() as usize]
+    }
+
+    pub(crate) fn tables(self) -> &'tree crate::native::GrammarView {
+        self.language().tables()
+    }
+
+    pub(crate) fn presence(self) -> Option<crate::side_data::PresenceView> {
+        self.region_data().presence
+    }
+
+    pub(crate) fn node_at_slot(self, slot: SlotIx) -> Option<Self> {
+        (self.tree_data().slots.contains(&slot)
+            && slot.raw() < self.data().group_end(slot.group().raw()))
+        .then(|| self.at(slot))
+    }
+
+    pub(crate) fn group_has_symbol(self, group: u32, symbol: KindId) -> bool {
+        let Some(symbol) = self.tables().remap_kind(symbol) else {
+            return false;
+        };
+        let slots = &self.tree_data().slots;
+        if group < slots.start.raw() / GROUP_SIZE || group >= slots.end.raw() / GROUP_SIZE {
+            return false;
+        }
+        if let Some(presence) = self.presence() {
+            return presence.has(group, symbol.raw() as usize);
+        }
+        (group * GROUP_SIZE..self.data().group_end(group))
+            .any(|slot| self.data().symbol_index(slot) == symbol)
+    }
+
     #[inline]
-    pub(crate) fn data(self) -> &'tree TreeData {
+    pub(crate) fn data(self) -> &'tree ForestData {
         // Node construction is restricted to live slots in a retained tree.
-        unsafe { self.raw.tree.as_ref() }
+        unsafe { self.raw.forest.as_ref() }
     }
 
     #[inline]
     pub(crate) fn at(self, slot: SlotIx) -> Self {
         Self {
-            raw: RawNode { slot, ..self.raw },
+            raw: RawNode {
+                id: NodeId::new(self.id().tree(), slot),
+                ..self.raw
+            },
             lifetime: PhantomData,
         }
     }
@@ -117,18 +137,18 @@ impl<'tree> Node<'tree> {
     /// Physical slot in reverse preorder; decreasing slots advance preorder.
     ///
     /// **Not in Tree-sitter**. Returns a physical slot scoped to this immutable tree
-    /// snapshot. Slots from different trees are unrelated; repacking may change slots. Use
-    /// `NodeLike::id` through [`crate::traits::NodeLike`] for generic identity.
+    /// snapshot. Slots are forest-global; repacking may change them. Use [`Self::id`]
+    /// for identity including the tree context.
     #[inline]
     pub fn slot(self) -> SlotIx {
-        self.raw.slot
+        self.raw.id.slot()
     }
 
     /// Get the [`crate::Language`] that was used to parse this node's syntax tree.
     ///
     /// **Different than Tree-sitter:** Borrows the prepared grammar wrapper.
     pub fn language(&self) -> &'tree crate::Language {
-        &self.data().language
+        &self.region_data().language
     }
 
     /// Get the range of source code that this node represents, both in terms of
@@ -204,8 +224,7 @@ impl<'tree> Node<'tree> {
     /// Use this to compare kinds with Tree-sitter nodes or language APIs.
     /// [`Self::squatter_kind_id`] provides cheaper access for use within Squatter.
     pub fn kind_id(&self) -> KindId {
-        self.data()
-            .tables()
+        self.tables()
             .decode_kind(self.data().symbol_index(self.slot().raw()))
     }
 
@@ -230,20 +249,19 @@ impl<'tree> Node<'tree> {
     /// Use this to compare original symbols with Tree-sitter nodes or grammar tables.
     /// [`Self::squatter_grammar_id`] provides cheaper access for use within Squatter.
     pub fn grammar_id(&self) -> GrammarId {
-        self.data()
-            .tables()
+        self.tables()
             .decode_grammar_kind(self.data().grammar_index(self.slot().raw()))
     }
 
     /// Get this node's type as a string.
     pub fn kind(&self) -> &'tree str {
-        self.data().tables().symbol_name(self.kind_id().raw())
+        self.tables().symbol_name(self.kind_id().raw())
     }
 
     /// Get this node's symbol name as it appears in the grammar ignoring
     /// aliases as a string.
     pub fn grammar_name(&self) -> &'tree str {
-        self.data().tables().symbol_name(self.grammar_id().raw())
+        self.tables().symbol_name(self.grammar_id().raw())
     }
 
     /// Get the byte offset where this node starts.
@@ -312,8 +330,7 @@ impl<'tree> Node<'tree> {
     /// *anonymous* nodes correspond to string literals in the grammar.
     #[inline]
     pub fn is_named(&self) -> bool {
-        self.data()
-            .tables()
+        self.tables()
             .named_index(self.data().symbol_index(self.slot().raw()))
     }
 
@@ -342,7 +359,7 @@ impl<'tree> Node<'tree> {
     /// Syntax errors represent parts of the code that could not be incorporated
     /// into a valid syntax tree.
     pub fn is_error(&self) -> bool {
-        self.data().symbol_index(self.slot().raw()).raw() as u32 == self.data().tables().kind_count
+        self.data().symbol_index(self.slot().raw()).raw() as u32 == self.tables().kind_count
     }
 
     /// Check if this node represents a syntax error or contains any syntax
@@ -368,7 +385,7 @@ impl<'tree> Node<'tree> {
     ///
     /// **Not in Tree-sitter**
     pub fn field_name(self) -> Option<&'tree str> {
-        self.data().tables().field_name(self.field_id()?.raw())
+        self.tables().field_name(self.field_id()?.raw())
     }
 
     /// Tests membership using an original grammar symbol ID.
@@ -376,7 +393,7 @@ impl<'tree> Node<'tree> {
     /// **Not in Tree-sitter**
     pub fn has_supertype(self, symbol: GrammarId) -> bool {
         let data = self.data();
-        let tables = data.tables();
+        let tables = self.tables();
         if tables.supertype_count == 0 {
             return false;
         }
@@ -413,6 +430,7 @@ impl<'tree> Node<'tree> {
     pub fn next_preorder(self) -> Option<Self> {
         self.data()
             .previous_slot(self.slot().raw())
+            .filter(|&slot| slot >= self.tree_data().slots.start.raw())
             .map(|slot| self.at(SlotIx::from_raw(slot)))
     }
 
@@ -422,7 +440,7 @@ impl<'tree> Node<'tree> {
     /// **Not in Tree-sitter**
     pub fn prev_preorder(self) -> Option<Self> {
         let slot = self.previous_preorder_slot();
-        (slot < self.data().groups() * GROUP_SIZE).then(|| self.at(SlotIx::from_raw(slot)))
+        (slot < self.tree_data().slots.end.raw()).then(|| self.at(SlotIx::from_raw(slot)))
     }
 
     fn previous_preorder_slot(self) -> u32 {
@@ -457,7 +475,7 @@ impl<'tree> Node<'tree> {
     pub fn parent(&self) -> Option<Self> {
         let data = self.data();
         let mut slot = self.slot().raw() + 1;
-        while slot < data.groups() * GROUP_SIZE {
+        while slot < self.tree_data().slots.end.raw() {
             let group = slot / GROUP_SIZE;
             let end = data.group_end(group);
             let maximum = data.word(data.layout.span_max, group) as u64;
@@ -488,7 +506,7 @@ impl<'tree> Node<'tree> {
     /// Iterate over this node's children.
     ///
     /// A [`TreeCursor`] is used to retrieve the children efficiently. Obtain
-    /// a [`TreeCursor`] by calling [`Tree::walk`] or [`Node::walk`]. To avoid
+    /// a [`TreeCursor`] by calling [`crate::Tree::walk`] or [`Node::walk`]. To avoid
     /// unnecessary allocations, you should reuse the same cursor for
     /// subsequent calls to this method.
     ///
@@ -576,7 +594,7 @@ impl<'tree> Node<'tree> {
         name: &str,
         cursor: &'cursor mut TreeCursor<'tree>,
     ) -> impl Iterator<Item = Self> + 'cursor {
-        let field = self.data().language.field_id_for_name(name);
+        let field = self.language().field_id_for_name(name);
         let mut ready = false;
         if field.is_some() {
             cursor.reset(*self);
@@ -686,7 +704,7 @@ impl<'tree> Node<'tree> {
     /// If multiple children may have the same field name, access them using
     /// [`children_by_field_name`](Node::children_by_field_name)
     pub fn child_by_field_name(&self, field: impl AsRef<[u8]>) -> Option<Self> {
-        let tables = self.data().tables();
+        let tables = self.tables();
         let field = (1..=tables.field_count as u16)
             .find(|index| tables.field_name(*index).map(str::as_bytes) == Some(field.as_ref()))?;
         self.child_by_field_id(FieldId::from_raw(field)?)
@@ -696,7 +714,8 @@ impl<'tree> Node<'tree> {
     ///
     /// Note that this can return `descendant` itself.
     pub fn child_with_descendant(&self, descendant: Self) -> Option<Self> {
-        if self.raw.tree != descendant.raw.tree
+        if self.raw.forest != descendant.raw.forest
+            || self.id().tree() != descendant.id().tree()
             || descendant.slot() >= self.slot()
             || descendant.slot().raw() < self.first_slot()
         {
@@ -965,7 +984,7 @@ impl<'tree> Node<'tree> {
             if candidate_end >= end && candidate_end > start && (!named || candidate.is_named()) {
                 return Some(candidate);
             }
-            candidate.raw.slot = SlotIx::from_raw(candidate.raw.slot.raw() + 1);
+            candidate = candidate.at(SlotIx::from_raw(candidate.slot().raw() + 1));
         }
 
         // Earlier preorder siblings end before the range. The first qualifying
@@ -986,13 +1005,13 @@ impl<'tree> Node<'tree> {
                 }
                 first = offset + 1;
             }
-            candidate.raw.slot = SlotIx::from_raw((group + 1) * GROUP_SIZE);
+            candidate = candidate.at(SlotIx::from_raw((group + 1) * GROUP_SIZE));
         }
         Some(self)
     }
 }
 
-fn start_mask(data: &TreeData, group: u32, threshold: u8) -> u64 {
+fn start_mask(data: &ForestData, group: u32, threshold: u8) -> u64 {
     let deltas = data.column_slice(
         data.layout.start_byte_delta,
         (group * GROUP_SIZE) as usize,
@@ -1054,7 +1073,7 @@ impl<'tree> TreeCursor<'tree> {
     /// full tree.
     pub fn field_name(&self) -> Option<&'tree str> {
         self.field_id()
-            .and_then(|field| self.node.data().tables().field_name(field.raw()))
+            .and_then(|field| self.node.tables().field_name(field.raw()))
     }
 
     /// Re-initialize a tree cursor to the same position as another cursor.
@@ -1259,3 +1278,9 @@ mod tests {
         }
     }
 }
+
+#[cfg(target_pointer_width = "64")]
+const _: () = {
+    assert!(size_of::<Node<'_>>() == 16);
+    assert!(size_of::<Option<Node<'_>>>() == 16);
+};

@@ -1,10 +1,12 @@
 use crate::{
-    Error, Tree,
-    storage::{GROUP_SIZE, StableSlab, slab_format},
+    Error, Forest, ForestRegion,
+    storage::{GROUP_SIZE, Slab, StableSlab, slab_format},
     types::PackedPoint,
 };
+use std::ptr::NonNull;
 
 const PRESENCE_FORMAT: u32 = slab_format(0xfe, 0);
+const ABSENT_PRESENCE_FORMAT: u32 = slab_format(0xfc, 0);
 const POINT_FORMAT: u32 = slab_format(0xfd, 0);
 const HEADER_BYTES: usize = 16;
 
@@ -38,65 +40,17 @@ impl std::fmt::Display for SideDataError {
 }
 impl std::error::Error for SideDataError {}
 
-enum Storage {
-    Owned(Vec<u64>),
-    Retained(Box<dyn StableSlab>),
-}
-
-impl Storage {
-    fn bytes(&self) -> &[u8] {
-        match self {
-            Self::Owned(words) => unsafe {
-                std::slice::from_raw_parts(words.as_ptr().cast(), words.len() * 8)
-            },
-            Self::Retained(owner) => owner.bytes(),
-        }
-    }
-}
-
-struct Sidecar {
-    storage: Storage,
-}
+struct Sidecar(Slab);
 
 impl Sidecar {
-    fn new(
-        format: u32,
-        groups: u32,
-        symbols: u32,
-        payload_bytes: usize,
-    ) -> Result<Self, SideDataError> {
-        let length = HEADER_BYTES
-            .checked_add(payload_bytes)
-            .ok_or(Error::Overflow)?;
-        let words = length.checked_add(7).ok_or(Error::Overflow)? / 8;
-        let mut buffer = Vec::new();
-        buffer
-            .try_reserve_exact(words)
-            .map_err(|_| Error::Allocation)?;
-        buffer.resize(words, 0);
-        let mut result = Self {
-            storage: Storage::Owned(buffer),
-        };
-        let bytes = result.bytes_mut();
-        bytes[0..4].copy_from_slice(&format.to_le_bytes());
-        bytes[4..8].copy_from_slice(&groups.to_le_bytes());
-        bytes[8..12].copy_from_slice(
-            &(groups.checked_mul(GROUP_SIZE).ok_or(Error::Overflow)?).to_le_bytes(),
-        );
-        bytes[12..16].copy_from_slice(&symbols.to_le_bytes());
-        Ok(result)
+    fn zeroed(length: usize) -> Result<Self, SideDataError> {
+        Ok(Self(Slab::zeroed(length)?))
     }
-
     fn bytes(&self) -> &[u8] {
-        self.storage.bytes()
+        self.0.bytes()
     }
     fn bytes_mut(&mut self) -> &mut [u8] {
-        match &mut self.storage {
-            Storage::Owned(words) => unsafe {
-                std::slice::from_raw_parts_mut(words.as_mut_ptr().cast(), words.len() * 8)
-            },
-            Storage::Retained(_) => unreachable!(),
-        }
+        self.0.bytes_mut()
     }
     fn word(&self, byte: usize) -> u64 {
         u64::from_le_bytes(self.bytes()[byte..byte + 8].try_into().unwrap())
@@ -104,141 +58,245 @@ impl Sidecar {
     fn put_word(&mut self, byte: usize, value: u64) {
         self.bytes_mut()[byte..byte + 8].copy_from_slice(&value.to_le_bytes());
     }
-    fn validate(&self, tree: &Tree, format: u32, length: usize) -> Result<(), SideDataError> {
-        Self::validate_bytes(self.bytes(), tree, format, length)
-    }
-    fn validate_bytes(
-        bytes: &[u8],
-        tree: &Tree,
+    fn header(
+        &mut self,
+        offset: usize,
         format: u32,
-        length: usize,
+        groups: u32,
+        dimension: u32,
     ) -> Result<(), SideDataError> {
-        if bytes.len() != length || bytes.len() < HEADER_BYTES {
-            return Err(SideDataError::InvalidTarget);
-        }
-        let header = |offset| u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap());
-        if header(0) != format
-            || header(4) != tree.group_count()
-            || header(8) != tree.slot_count()
-            || header(12) != tree.data().tables().kind_count + 2
-        {
-            return Err(SideDataError::InvalidTarget);
+        let slots = groups.checked_mul(GROUP_SIZE).ok_or(Error::Overflow)?;
+        for (index, word) in [format, groups, slots, dimension].into_iter().enumerate() {
+            self.bytes_mut()[offset + index * 4..offset + index * 4 + 4]
+                .copy_from_slice(&word.to_le_bytes());
         }
         Ok(())
     }
-    fn from_retained(owner: impl StableSlab) -> Result<Self, SideDataError> {
-        if owner.bytes().as_ptr() as usize % 8 != 0 {
-            return Err(SideDataError::InvalidTarget);
-        }
-        Ok(Self {
-            storage: Storage::Retained(Box::new(owner)),
-        })
-    }
-    fn copy_from_bytes(bytes: &[u8]) -> Result<Self, SideDataError> {
-        if bytes.len() % 8 != 0 {
-            return Err(SideDataError::InvalidTarget);
-        }
-        let mut words = Vec::<u64>::new();
-        words
-            .try_reserve_exact(bytes.len() / 8)
-            .map_err(|_| Error::Allocation)?;
-        unsafe {
-            std::ptr::copy_nonoverlapping(bytes.as_ptr(), words.as_mut_ptr().cast(), bytes.len());
-            words.set_len(bytes.len() / 8);
-        }
-        Ok(Self {
-            storage: Storage::Owned(words),
-        })
-    }
 }
 
-fn presence_length(tree: &Tree) -> Result<usize, SideDataError> {
-    let symbols = tree.data().tables().kind_count as usize + 2;
-    let words = (tree.group_count() as usize).div_ceil(64);
-    HEADER_BYTES
-        .checked_add(
-            symbols
-                .checked_mul(words)
-                .and_then(|count| count.checked_mul(8))
-                .ok_or(Error::Overflow)?,
-        )
+#[derive(Clone, Copy)]
+struct Header {
+    format: u32,
+    groups: u32,
+    dimension: u32,
+}
+
+fn header(bytes: &[u8]) -> Result<Header, SideDataError> {
+    if bytes.len() < HEADER_BYTES {
+        return Err(SideDataError::InvalidTarget);
+    }
+    let word = |offset| u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap());
+    let groups = word(4);
+    if groups.checked_mul(GROUP_SIZE) != Some(word(8)) {
+        return Err(SideDataError::InvalidTarget);
+    }
+    Ok(Header {
+        format: word(0),
+        groups,
+        dimension: word(12),
+    })
+}
+
+fn presence_length(groups: u32, symbols: u32, present: bool) -> Result<usize, SideDataError> {
+    let words = if present {
+        (groups as usize).div_ceil(64)
+    } else {
+        0
+    };
+    words
+        .checked_mul(symbols as usize)
+        .and_then(|words| words.checked_mul(8))
+        .and_then(|bytes| bytes.checked_add(HEADER_BYTES))
         .ok_or(Error::Overflow.into())
 }
 
-/// Optional per-group symbol membership data. Persist separately
-/// from the tree slab; removing it affects cost, not scan results.
-///
-/// **Not in Tree-sitter**
-pub struct PresenceCache(Sidecar);
-impl PresenceCache {
-    /// Builds symbol membership from the tree.
-    pub fn build(tree: &Tree) -> Result<Self, SideDataError> {
-        let symbols = tree.data().tables().kind_count + 2;
-        let mut sidecar = Sidecar::new(
-            PRESENCE_FORMAT,
-            tree.group_count(),
-            symbols,
-            presence_length(tree)? - HEADER_BYTES,
+fn presence_records(bytes: &[u8]) -> Result<Vec<(usize, Header)>, SideDataError> {
+    let mut records = Vec::new();
+    let mut offset = 0;
+    while offset < bytes.len() {
+        let record = header(&bytes[offset..])?;
+        if !matches!(record.format, PRESENCE_FORMAT | ABSENT_PRESENCE_FORMAT)
+            || record.groups == 0
+            || record.dimension < 2
+            || record.dimension > 65536
+        {
+            return Err(SideDataError::InvalidTarget);
+        }
+        let length = presence_length(
+            record.groups,
+            record.dimension,
+            record.format == PRESENCE_FORMAT,
         )?;
-        let words = (tree.group_count() as usize).div_ceil(64);
-        let data = tree.data();
-        for group in 0..tree.group_count() {
-            for slot in group * GROUP_SIZE..data.group_end(group) {
-                let symbol = data.symbol_index(slot).raw() as usize;
-                let offset = HEADER_BYTES + (symbol * words + group as usize / 64) * 8;
-                sidecar.put_word(offset, sidecar.word(offset) | 1 << (group % 64));
+        let end = offset
+            .checked_add(length)
+            .filter(|&end| end <= bytes.len())
+            .ok_or(SideDataError::InvalidTarget)?;
+        records.try_reserve(1).map_err(|_| Error::Allocation)?;
+        records.push((offset, record));
+        offset = end;
+    }
+    Ok(records)
+}
+
+/// Separately owned symbol membership data for selected forest regions.
+/// Coverage changes scan cost, never results.
+pub struct PresenceCache(Sidecar);
+
+impl PresenceCache {
+    pub fn build(forest: &Forest) -> Result<Self, SideDataError> {
+        Self::build_selected(forest, |_| true)
+    }
+
+    /// Evaluates the predicate once per region, in physical order.
+    pub fn build_selected(
+        forest: &Forest,
+        select: impl Fn(ForestRegion<'_>) -> bool,
+    ) -> Result<Self, SideDataError> {
+        let selected: Vec<_> = forest.regions().map(select).collect();
+        let mut length = 0usize;
+        for (region, &present) in forest.regions().zip(&selected) {
+            length = length
+                .checked_add(presence_length(
+                    region.group_count(),
+                    region.language().tables().kind_count + 2,
+                    present,
+                )?)
+                .ok_or(Error::Overflow)?;
+        }
+        let mut sidecar = Sidecar::zeroed(length)?;
+        let mut offset = 0;
+        for (region, present) in forest.regions().zip(selected) {
+            let groups = region.group_count();
+            let symbols = region.language().tables().kind_count + 2;
+            sidecar.header(
+                offset,
+                if present {
+                    PRESENCE_FORMAT
+                } else {
+                    ABSENT_PRESENCE_FORMAT
+                },
+                groups,
+                symbols,
+            )?;
+            if present {
+                let first_group = region.data().slots.start.raw() / GROUP_SIZE;
+                let words = (groups as usize).div_ceil(64);
+                for group in 0..groups {
+                    for slot in (first_group + group) * GROUP_SIZE
+                        ..forest.data().group_end(first_group + group)
+                    {
+                        let symbol = forest.data().symbol_index(slot).raw() as usize;
+                        let byte =
+                            offset + HEADER_BYTES + (symbol * words + group as usize / 64) * 8;
+                        sidecar.put_word(byte, sidecar.word(byte) | 1 << (group % 64));
+                    }
+                }
             }
+            offset += presence_length(groups, symbols, present)?;
         }
         Ok(Self(sidecar))
     }
-    /// Borrows separately serializable side-data bytes.
+
     pub fn as_bytes(&self) -> &[u8] {
         self.0.bytes()
     }
-    /// Validates and retains stable storage bytes for this tree.
-    /// Use data persisted for this exact snapshot; structural checks do not establish
-    /// source identity.
-    pub fn from_retained(tree: &Tree, owner: impl StableSlab) -> Result<Self, SideDataError> {
-        let result = Self(Sidecar::from_retained(owner)?);
-        result.validate_loaded(tree)?;
-        Ok(result)
+
+    /// Validates the record layout without a forest. Attachment checks dimensions
+    /// and, in debug builds, contents against the destination forest.
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, SideDataError> {
+        presence_records(bytes)?;
+        Ok(Self(Sidecar(Slab::copy(bytes)?)))
     }
-    /// Validates and copies side-data bytes for this tree. Use data
-    /// persisted for this exact snapshot; structural checks do not establish source
-    /// identity.
-    pub fn copy_from_bytes(tree: &Tree, bytes: &[u8]) -> Result<Self, SideDataError> {
-        Sidecar::validate_bytes(bytes, tree, PRESENCE_FORMAT, presence_length(tree)?)?;
-        let result = Self(Sidecar::copy_from_bytes(bytes)?);
-        result.validate_loaded(tree)?;
-        Ok(result)
+
+    pub fn copy_from_bytes(forest: &Forest, bytes: &[u8]) -> Result<Self, SideDataError> {
+        let cache = Self::from_bytes(bytes)?;
+        cache.views(forest)?;
+        Ok(cache)
     }
-    fn validate_loaded(&self, tree: &Tree) -> Result<(), SideDataError> {
-        self.0
-            .validate(tree, PRESENCE_FORMAT, presence_length(tree)?)?;
+
+    pub fn from_retained(owner: impl StableSlab) -> Result<Self, SideDataError> {
+        let sidecar = Sidecar(Slab::retained(owner)?);
+        presence_records(sidecar.bytes())?;
+        Ok(Self(sidecar))
+    }
+
+    pub(crate) fn has_selected_regions(&self) -> bool {
+        presence_records(self.as_bytes())
+            .unwrap()
+            .iter()
+            .any(|(_, header)| header.format == PRESENCE_FORMAT)
+    }
+
+    fn views(&self, forest: &Forest) -> Result<Vec<Option<PresenceView>>, SideDataError> {
+        let records = presence_records(self.as_bytes())?;
+        if records.len() != forest.data().regions.len() {
+            return Err(SideDataError::InvalidTarget);
+        }
+        let mut views = Vec::new();
+        views
+            .try_reserve_exact(records.len())
+            .map_err(|_| Error::Allocation)?;
+        for (region, (offset, header)) in forest.regions().zip(&records) {
+            if header.groups != region.group_count()
+                || header.dimension != region.language().tables().kind_count + 2
+            {
+                return Err(SideDataError::InvalidTarget);
+            }
+            views.push((header.format == PRESENCE_FORMAT).then(|| PresenceView {
+                payload: NonNull::from(&self.as_bytes()[offset + HEADER_BYTES..]).cast(),
+                first_group: region.data().slots.start.raw() / GROUP_SIZE,
+                groups: region.group_count(),
+            }));
+        }
         #[cfg(debug_assertions)]
         {
-            let expected = Self::build(tree)?;
-            if self.as_bytes() != expected.as_bytes() {
+            let expected = Self::build_selected(forest, |region| {
+                records[region.index().raw() as usize].1.format == PRESENCE_FORMAT
+            })?;
+            if expected.as_bytes() != self.as_bytes() {
                 return Err(SideDataError::InvalidTarget);
             }
         }
-        Ok(())
+        Ok(views)
     }
-    pub(crate) fn has(&self, group: u32, symbol: usize, groups: u32) -> bool {
-        let words = (groups as usize).div_ceil(64);
-        self.0
-            .word(HEADER_BYTES + (symbol * words + group as usize / 64) * 8)
-            & (1 << (group % 64))
-            != 0
+}
+
+// Resolved once on attachment, with group indices relative to this region.
+#[derive(Clone, Copy)]
+pub(crate) struct PresenceView {
+    payload: NonNull<u8>,
+    first_group: u32,
+    groups: u32,
+}
+unsafe impl Send for PresenceView {}
+unsafe impl Sync for PresenceView {}
+
+impl PresenceView {
+    #[inline]
+    fn word(self, offset: usize) -> u64 {
+        u64::from_le(unsafe {
+            self.payload
+                .as_ptr()
+                .add(offset)
+                .cast::<u64>()
+                .read_unaligned()
+        })
+    }
+
+    pub(crate) fn has(self, group: u32, symbol: usize) -> bool {
+        let group = group - self.first_group;
+        let words = (self.groups as usize).div_ceil(64);
+        self.word((symbol * words + group as usize / 64) * 8) & (1 << (group % 64)) != 0
     }
     pub(crate) fn find_matching_group(
         &self,
         mut range: std::ops::Range<u32>,
         symbol: usize,
-        groups: u32,
         reverse: bool,
     ) -> Option<u32> {
-        let words = (groups as usize).div_ceil(64);
+        let words = (self.groups as usize).div_ceil(64);
+        range.start -= self.first_group;
+        range.end -= self.first_group;
         while !range.is_empty() {
             let word_index = if reverse {
                 range.start / 64
@@ -247,13 +305,12 @@ impl PresenceCache {
             };
             let start = range.start.saturating_sub(word_index * 64);
             let end = (range.end - word_index * 64).min(64);
-            let word = self
-                .0
-                .word(HEADER_BYTES + (symbol * words + word_index as usize) * 8);
+            let word = self.word((symbol * words + word_index as usize) * 8);
             let bits = word & (u64::MAX << start) & (u64::MAX >> (64 - end));
             if bits != 0 {
                 return Some(
-                    word_index * 64
+                    self.first_group
+                        + word_index * 64
                         + if reverse {
                             bits.trailing_zeros()
                         } else {
@@ -273,11 +330,22 @@ impl PresenceCache {
 
 const POINT_GROUP_BYTES: usize = 16 + GROUP_SIZE as usize * 4;
 
-fn point_length(tree: &Tree) -> Result<usize, SideDataError> {
-    (tree.group_count() as usize)
+fn point_length(groups: u32) -> Result<usize, SideDataError> {
+    (groups as usize)
         .checked_mul(POINT_GROUP_BYTES)
-        .and_then(|length| length.checked_add(HEADER_BYTES))
+        .and_then(|bytes| bytes.checked_add(HEADER_BYTES))
         .ok_or(Error::Overflow.into())
+}
+
+fn validate_points(bytes: &[u8]) -> Result<Header, SideDataError> {
+    let header = header(bytes)?;
+    if header.format != POINT_FORMAT
+        || bytes.len() != point_length(header.groups)?
+        || (header.groups == 0) != (header.dimension == 0)
+    {
+        return Err(SideDataError::InvalidTarget);
+    }
+    Ok(header)
 }
 
 /// Optional row/column coordinates created while parsing or packing with
@@ -287,32 +355,21 @@ fn point_length(tree: &Tree) -> Result<usize, SideDataError> {
 /// **Not in Tree-sitter**
 pub struct PointsData(Sidecar);
 impl PointsData {
-    pub(crate) fn empty(tree: &Tree) -> Result<Self, SideDataError> {
-        Ok(Self(Sidecar::new(
+    pub(crate) fn empty(forest: &Forest) -> Result<Self, SideDataError> {
+        let mut sidecar = Sidecar::zeroed(point_length(forest.group_count())?)?;
+        sidecar.header(
+            0,
             POINT_FORMAT,
-            tree.group_count(),
-            tree.data().tables().kind_count + 2,
-            point_length(tree)? - HEADER_BYTES,
-        )?))
+            forest.group_count(),
+            forest.data().regions.len() as u32,
+        )?;
+        Ok(Self(sidecar))
     }
+
     pub(crate) fn grow(&mut self, groups: u32) -> Result<(), SideDataError> {
-        let slots = groups.checked_mul(GROUP_SIZE).ok_or(Error::Overflow)?;
-        let length = (groups as usize)
-            .checked_mul(POINT_GROUP_BYTES / 8)
-            .and_then(|words| words.checked_add(HEADER_BYTES / 8))
-            .ok_or(Error::Overflow)?;
-        let Storage::Owned(words) = &mut self.0.storage else {
-            unreachable!();
-        };
-        debug_assert!(length >= words.len());
-        words
-            .try_reserve(length - words.len())
-            .map_err(|_| Error::Allocation)?;
-        words.resize(length, 0);
-        let bytes = self.0.bytes_mut();
-        bytes[4..8].copy_from_slice(&groups.to_le_bytes());
-        bytes[8..12].copy_from_slice(&slots.to_le_bytes());
-        Ok(())
+        self.0.0.grow(point_length(groups)?)?;
+        let regions = u32::from_le_bytes(self.as_bytes()[12..16].try_into().unwrap());
+        self.0.header(0, POINT_FORMAT, groups, regions)
     }
 
     pub(crate) fn put_bases(&mut self, group: u32, start: PackedPoint, end: PackedPoint) {
@@ -356,25 +413,30 @@ impl PointsData {
     pub fn as_bytes(&self) -> &[u8] {
         self.0.bytes()
     }
-    /// Validates and retains stable storage bytes for this tree.
-    /// Use data persisted for this exact snapshot; structural checks do not establish
-    /// source identity.
-    pub fn from_retained(tree: &Tree, owner: impl StableSlab) -> Result<Self, SideDataError> {
-        let result = Self(Sidecar::from_retained(owner)?);
-        result.validate_loaded(tree)?;
-        Ok(result)
+    pub fn copy_from_bytes(forest: &Forest, bytes: &[u8]) -> Result<Self, SideDataError> {
+        let points = Self::from_bytes(bytes)?;
+        points.validate_loaded(forest)?;
+        Ok(points)
     }
-    /// Validates and copies side-data bytes for this tree. Use data
-    /// persisted for this exact snapshot; structural checks do not establish source
-    /// identity.
-    pub fn copy_from_bytes(tree: &Tree, bytes: &[u8]) -> Result<Self, SideDataError> {
-        Sidecar::validate_bytes(bytes, tree, POINT_FORMAT, point_length(tree)?)?;
-        let result = Self(Sidecar::copy_from_bytes(bytes)?);
-        result.validate_loaded(tree)?;
-        Ok(result)
+
+    pub fn from_retained(owner: impl StableSlab) -> Result<Self, SideDataError> {
+        let sidecar = Sidecar(Slab::retained(owner)?);
+        validate_points(sidecar.bytes())?;
+        Ok(Self(sidecar))
     }
-    fn validate_loaded(&self, tree: &Tree) -> Result<(), SideDataError> {
-        self.0.validate(tree, POINT_FORMAT, point_length(tree)?)?;
+
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, SideDataError> {
+        validate_points(bytes)?;
+        Ok(Self(Sidecar(Slab::copy(bytes)?)))
+    }
+
+    fn validate_loaded(&self, tree: &Forest) -> Result<(), SideDataError> {
+        let header = validate_points(self.as_bytes())?;
+        if header.groups != tree.group_count()
+            || header.dimension != tree.data().regions.len() as u32
+        {
+            return Err(SideDataError::InvalidTarget);
+        }
         for group in 0..tree.group_count() {
             let used = (tree.data().group_end(group) - group * GROUP_SIZE) as usize;
             for (end, (base, deltas)) in [
@@ -410,7 +472,7 @@ impl PointsData {
     }
 }
 
-impl Tree {
+impl Forest {
     /// Borrows the attached symbol-presence cache, if any.
     ///
     /// **Not in Tree-sitter**
@@ -428,7 +490,10 @@ impl Tree {
     ///
     /// **Not in Tree-sitter**
     pub fn set_presence_cache(&mut self, cache: PresenceCache) -> Result<(), SideDataError> {
-        cache.validate_loaded(self)?;
+        let views = cache.views(self)?;
+        for (region, view) in self.data_mut().regions.iter_mut().zip(views) {
+            region.presence = view;
+        }
         self.data_mut().presence_cache = Some(cache);
         Ok(())
     }
@@ -446,6 +511,9 @@ impl Tree {
     ///
     /// **Not in Tree-sitter**
     pub fn drop_presence_cache(&mut self) {
+        for region in &mut self.data_mut().regions {
+            region.presence = None;
+        }
         self.data_mut().presence_cache = None;
     }
     /// Drops point data. Point-dependent APIs then use row zero and

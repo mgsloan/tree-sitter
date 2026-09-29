@@ -8,7 +8,7 @@ use support::{c_language, json_language};
 
 use std::ops::ControlFlow;
 use tree_squatter::QueryCursorOptions;
-use tree_squatter::{Language, Query, QueryCursor, Tree};
+use tree_squatter::{Forest, Language, Query, QueryCursor};
 
 macro_rules! matches {
     ($cursor:expr, $query:expr, $tree:expr, $source:expr) => {{
@@ -60,7 +60,7 @@ fn queries_match_with_and_without_plans() {
     // Three ambiguous capture runs create enough states to exercise indexed deduplication.
     let source = "// before\nint alpha(int x, int y) { int a = 1; if (x) return beta(x, y, a, b, c, d, e, f, g, h, i, j, k, l, m, n, o, p, q, r, s, t, u, v, w, x, y, z); return y; }\n// after\nint bravo = 2;\nint other() { return beta(a, b); }";
     let native = parser.parse(source, None).unwrap();
-    let tree = Tree::pack(&grammar, &native).unwrap();
+    let tree = Forest::pack(&grammar, &native).unwrap();
 
     for pattern in [
         "(identifier) @identifier",
@@ -130,7 +130,7 @@ fn error_queries_survive_native_mutations() {
         let mut parser = tree_sitter::Parser::new();
         parser.set_language(&language).unwrap();
         let native = parser.parse(source, None).unwrap();
-        let tree = Tree::pack(&grammar, &native).unwrap();
+        let tree = Forest::pack(&grammar, &native).unwrap();
         assert!(tree.root_node().has_error());
 
         for pattern in [
@@ -213,7 +213,7 @@ fn malformed_queries_match_with_and_without_plans() {
         parser.set_language(&language).unwrap();
         let native = parser.parse(source, None).unwrap();
         assert!(!native.root_node().has_error());
-        let tree = Tree::pack(&grammar, &native).unwrap();
+        let tree = Forest::pack(&grammar, &native).unwrap();
         let mut patterns = [
             "(ERROR) @error",
             "(MISSING) @missing",
@@ -285,7 +285,7 @@ fn malformed_queries_match_with_and_without_plans() {
                 continue;
             }
             errors += 1;
-            let tree = Tree::pack(&grammar, &native).unwrap();
+            let tree = Forest::pack(&grammar, &native).unwrap();
             let capturable_slots = tree
                 .root_node()
                 .preorder()
@@ -358,7 +358,7 @@ fn presence_scans_across_groups() {
                     .collect::<Vec<_>>()
                     .join(",")
             );
-            let tree = Tree::parse(&grammar, &mut parser, &source).unwrap();
+            let tree = Forest::parse(&grammar, &mut parser, &source).unwrap();
             assert_eq!(tree.root_node().has_error(), errors);
             for pattern in [
                 "(object (pair value: (array (false) @value)))",
@@ -431,7 +431,7 @@ fn cancellation_with_match_limit() {
     let mut parser = tree_sitter::Parser::new();
     parser.set_language(&language).unwrap();
     let source = "int f() { return call(a, b, c, d, e, f, g, h); }\n".repeat(1000);
-    let tree = Tree::parse(&grammar, &mut parser, &source).unwrap();
+    let tree = Forest::parse(&grammar, &mut parser, &source).unwrap();
     let query = Query::new(
         &grammar,
         "(argument_list (identifier)* @before (identifier)* @after)",
@@ -465,7 +465,7 @@ fn switching_between_matches_and_captures_preserves_finished_order() {
     let source = "int alpha(int beta) { return gamma(beta); }\n".repeat(20);
     let native = support::parse_native(&language, &source);
     let grammar = Language::new(&language).unwrap();
-    let tree = Tree::pack(&grammar, &native).unwrap();
+    let tree = Forest::pack(&grammar, &native).unwrap();
     let pattern = "(identifier) @first (identifier) @second (identifier) @third";
     let query = Query::new(&grammar, pattern).unwrap();
 
@@ -584,7 +584,7 @@ fn query_edge_cases_match_tree_sitter() {
             "[\n  1, 2,\n  3, true,\n  [4, 5]\n]\n",
         ] {
             let native = parser.parse(source, None).unwrap();
-            let tree = Tree::pack(&grammar, &native).unwrap();
+            let tree = Forest::pack(&grammar, &native).unwrap();
             for pattern in &patterns {
                 let expected = tree_sitter::Query::new(&language, pattern);
                 let actual = Query::new(&grammar, pattern);
@@ -800,7 +800,7 @@ fn containing_ranges_include_missing_nodes_at_the_end() {
     parser.set_language(&language).unwrap();
     let source = "int f() { return 1 }";
     let native = parser.parse(source, None).unwrap();
-    let tree = Tree::pack(&grammar, &native).unwrap();
+    let tree = Forest::pack(&grammar, &native).unwrap();
     let missing = tree
         .root_node()
         .preorder()
@@ -849,14 +849,14 @@ fn containing_ranges_finish_deferred_matches_in_error_subtrees() {
     let mut parser = tree_sitter::Parser::new();
     parser.set_language(&language).unwrap();
     let source = "[\n  1, 2,\n  3, true,\n  [4, 5]\n]\n";
-    let tree = Tree::parse(&grammar, &mut parser, source).unwrap();
+    let tree = Forest::parse(&grammar, &mut parser, source).unwrap();
     let query = Query::new(&grammar, "(_ (_)* @children) @parent").unwrap();
     for optimized in [false, true] {
         let mut cursor = QueryCursor::new();
         cursor.set_optimized(optimized);
         cursor.set_containing_byte_range(1..12).set_byte_range(4..5);
         let mut matches = cursor.matches(&query, tree.root_node(), source.as_bytes());
-        // Tree-sitter drops this deferred match when hidden traversal skips the
+        // Forest-sitter drops this deferred match when hidden traversal skips the
         // enclosing exit events. Squatter finishes it when exiting the parent.
         assert_eq!(
             matches.next().unwrap().captures()[0].node.byte_range(),
@@ -876,7 +876,7 @@ fn quantified_roots_with_ranges_match_tree_sitter() {
     parser.set_language(&language).unwrap();
     let source = "[1,2,3]";
     let native = parser.parse(source, None).unwrap();
-    let tree = Tree::pack(&grammar, &native).unwrap();
+    let tree = Forest::pack(&grammar, &native).unwrap();
 
     for pattern in [
         "(_)? @node",
@@ -1005,21 +1005,21 @@ fn disabled_rootless_and_branching_patterns_with_ranges() {
     }
 }
 
-fn query_tree(language: tree_sitter::Language, source: &str) -> (Language, Tree) {
+fn query_tree(language: tree_sitter::Language, source: &str) -> (Language, Forest) {
     let grammar = Language::new(&language).unwrap();
     let mut parser = tree_sitter::Parser::new();
     parser.set_language(&language).unwrap();
-    let tree = Tree::parse(&grammar, &mut parser, source).unwrap();
+    let tree = Forest::parse(&grammar, &mut parser, source).unwrap();
     (grammar, tree)
 }
 
-fn json_query_tree(source: &str) -> (Language, Tree) {
+fn json_query_tree(source: &str) -> (Language, Forest) {
     query_tree(json_language(), source)
 }
 
 fn provider_results<Provider, Chunk>(
     query: &Query,
-    tree: &Tree,
+    tree: &Forest,
     provider: Provider,
     mode: usize,
     optimized: bool,

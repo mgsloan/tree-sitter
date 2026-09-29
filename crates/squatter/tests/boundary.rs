@@ -2,7 +2,7 @@ mod support;
 
 use support::{c_sharp_language, json_language};
 
-use tree_squatter::{Language, Tree};
+use tree_squatter::{Forest, Language};
 
 #[test]
 fn language_cache_round_trips_and_outlives_tree_sitter_language() {
@@ -23,7 +23,7 @@ fn shared_coordinates_narrow_like_tree_sitter() {
     let language = json_language();
     let grammar = Language::new(&language).unwrap();
     let native = support::parse_native(&language, "[1,\n2]");
-    let tree = Tree::pack(&grammar, &native).unwrap();
+    let tree = Forest::pack(&grammar, &native).unwrap();
     let root = tree.root_node();
     let expected = native.root_node();
     let wrap = 1usize << 32;

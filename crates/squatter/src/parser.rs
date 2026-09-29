@@ -2,7 +2,7 @@ use std::ops::ControlFlow;
 use tree_sitter::Point;
 
 use crate::{
-    Error, Language, PackOptions, Packer, Tree,
+    Error, Forest, Language, PackOptions, Packer,
     native::NativeParser,
     traits::{Parse, ParseStateLike},
 };
@@ -41,7 +41,7 @@ impl<'a> ParseOptions<'a> {
 pub struct PackedParseOptions<'a> {
     pub parse: ParseOptions<'a>,
     /// Packed-tree storage options.
-    pub pack: PackOptions,
+    pub pack: PackOptions<'a>,
 }
 
 impl PackedParseOptions<'_> {
@@ -184,7 +184,7 @@ impl Parser {
         self.native.reset();
     }
 
-    pub fn parse(&mut self, source: impl AsRef<[u8]>) -> Result<Tree, ParserError> {
+    pub fn parse(&mut self, source: impl AsRef<[u8]>) -> Result<Forest, ParserError> {
         Parse::parse(self, source)
     }
 
@@ -195,7 +195,7 @@ impl Parser {
         &mut self,
         callback: &mut F,
         options: PackedParseOptions<'_>,
-    ) -> Result<Tree, ParserError> {
+    ) -> Result<Forest, ParserError> {
         Parse::parse_with_options(self, callback, options)
     }
 
@@ -206,11 +206,11 @@ impl Parser {
 }
 
 impl Parse for Parser {
-    type Tree = Tree;
+    type Tree = Forest;
     type Error = ParserError;
     type Options<'a> = PackedParseOptions<'a>;
 
-    fn parse(&mut self, source: impl AsRef<[u8]>) -> Result<Tree, ParserError> {
+    fn parse(&mut self, source: impl AsRef<[u8]>) -> Result<Forest, ParserError> {
         let source = source.as_ref();
         if source.len() > u32::MAX as usize {
             return Err(ParserError::Pack(Error::Overflow));
@@ -222,7 +222,7 @@ impl Parse for Parser {
         &mut self,
         callback: &mut F,
         mut options: PackedParseOptions<'_>,
-    ) -> Result<Tree, ParserError> {
+    ) -> Result<Forest, ParserError> {
         let language = self.language.as_ref().ok_or(ParserError::NoLanguage)?;
         let tree = if let Some(progress) = &mut options.parse.progress_callback {
             let mut report = |state: &tree_sitter::ParseState| {
@@ -339,15 +339,15 @@ impl TreeFellerParser {
         self.native.language()
     }
 
-    pub fn parse(&mut self, source: impl AsRef<[u8]>) -> Result<Tree, ParseError> {
+    pub fn parse(&mut self, source: impl AsRef<[u8]>) -> Result<Forest, ParseError> {
         Parse::parse(self, source)
     }
 
     fn parse_contiguous(
         &mut self,
         source: impl AsRef<[u8]>,
-        options: PackOptions,
-    ) -> Result<Tree, ParseError> {
+        options: PackOptions<'_>,
+    ) -> Result<Forest, ParseError> {
         let reductions = self.native.parse(source.as_ref())?;
         let (nodes, root) = reductions.nodes();
         Ok(self
@@ -365,7 +365,7 @@ impl TreeFellerParser {
         &mut self,
         callback: &mut F,
         options: PackedParseOptions<'_>,
-    ) -> Result<Tree, ParseError> {
+    ) -> Result<Forest, ParseError> {
         Parse::parse_with_options(self, callback, options)
     }
 
@@ -379,11 +379,11 @@ impl TreeFellerParser {
 /// The progress/cancellation callback in [`PackedParseOptions::parse`] is ignored
 /// and never called.
 impl Parse for TreeFellerParser {
-    type Tree = Tree;
+    type Tree = Forest;
     type Error = ParseError;
     type Options<'a> = PackedParseOptions<'a>;
 
-    fn parse(&mut self, source: impl AsRef<[u8]>) -> Result<Tree, ParseError> {
+    fn parse(&mut self, source: impl AsRef<[u8]>) -> Result<Forest, ParseError> {
         self.parse_contiguous(source, PackOptions::default())
     }
 
@@ -391,7 +391,7 @@ impl Parse for TreeFellerParser {
         &mut self,
         callback: &mut F,
         options: PackedParseOptions<'_>,
-    ) -> Result<Tree, ParseError> {
+    ) -> Result<Forest, ParseError> {
         let reductions = self.native.parse_chunks(callback)?;
         let (nodes, root) = reductions.nodes();
         Ok(self
@@ -400,7 +400,7 @@ impl Parse for TreeFellerParser {
     }
 }
 
-impl Tree {
+impl Forest {
     /// Parses directly without constructing a mainline tree.
     /// Use [`TreeFellerParser`] to reuse scratch across documents.
     pub fn parse_direct(language: &Language, source: impl AsRef<[u8]>) -> Result<Self, ParseError> {
@@ -410,7 +410,7 @@ impl Tree {
     pub fn parse_direct_with_options(
         language: &Language,
         source: impl AsRef<[u8]>,
-        options: PackOptions,
+        options: PackOptions<'_>,
     ) -> Result<Self, ParseError> {
         TreeFellerParser::new(language)?.parse_contiguous(source, options)
     }

@@ -1,7 +1,7 @@
 use std::{env, fs, mem::MaybeUninit};
-use tree_squatter::{Language, PackOptions, PointsData, PresenceCache, SlotIx, Tree};
+use tree_squatter::{Forest, Language, PackOptions, PointsData, PresenceCache, SlotIx};
 
-fn compare(expected: &Tree, actual: &Tree) {
+fn compare(expected: &Forest, actual: &Forest) {
     assert_eq!(expected.slot_count(), actual.slot_count());
     assert_eq!(expected.has_points(), actual.has_points());
     for slot in 0..expected.slot_count() {
@@ -43,14 +43,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     parser.set_language(&tree_sitter_language)?;
     let parsed = parser.parse(&source, None).unwrap();
     for variant in 0..16 {
-        let tree = Tree::pack_with_options(
+        let tree = Forest::pack_with_options(
             &language,
             &parsed,
             PackOptions {
                 initial_group_capacity: variant & 1,
                 repack: variant & 2 != 0,
                 points: variant & 4 == 0,
-                symbol_presence: variant & 8 == 0,
+                symbol_presence: &|_| variant & 8 == 0,
                 ..Default::default()
             },
         )?;
@@ -73,9 +73,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 bytes == tree.as_bytes(),
                 "different bytes for variant {variant}"
             );
-            let mut copied = Tree::from_bytes(&language, &bytes)?;
-            let borrowed = Tree::from_bytes_borrowed(&language, copied.as_bytes())?;
-            let mut checked = Tree::from_bytes_safety_checked(&language, &bytes)?;
+            let mut copied = Forest::from_bytes(std::slice::from_ref(&language), &bytes)?;
+            let borrowed =
+                Forest::from_bytes_borrowed(std::slice::from_ref(&language), copied.as_bytes())?;
+            let mut checked =
+                Forest::from_bytes_safety_checked(std::slice::from_ref(&language), &bytes)?;
             assert!(!copied.has_points());
             assert!(copied.presence_cache().is_none());
             compare(&copied, &borrowed);

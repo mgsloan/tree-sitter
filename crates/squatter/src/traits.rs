@@ -11,7 +11,7 @@
 //! }
 //! ```
 use crate::{
-    ChildIx, FieldId, GrammarId, KindId, NamedChildIx, Node, SlotIx, Tree, TreeCursor,
+    ChildIx, FieldId, Forest, GrammarId, KindId, NamedChildIx, Node, NodeId, Tree, TreeCursor,
     scan::IdSelection,
 };
 use std::ops::Range;
@@ -439,7 +439,16 @@ pub trait CursorLike<'tree>: Clone {
     fn goto_parent(&mut self) -> bool;
 }
 
-impl TreeLike for Tree {
+impl TreeLike for Tree<'_> {
+    type Node<'tree>
+        = Node<'tree>
+    where
+        Self: 'tree;
+    fn root_node(&self) -> Self::Node<'_> {
+        self.root_node()
+    }
+}
+impl TreeLike for Forest {
     type Node<'tree> = Node<'tree>;
     fn root_node(&self) -> Self::Node<'_> {
         self.root_node()
@@ -735,9 +744,9 @@ impl<'tree> NodeLike<'tree> for Node<'tree> {
     fn descendant_count(&self) -> usize {
         Node::descendant_count(self)
     }
-    type Id = SlotIx;
+    type Id = NodeId;
     fn id(&self) -> Self::Id {
-        self.slot()
+        self.id()
     }
     fn attributes(self) -> Attributes<'tree> {
         Node::attributes(self)

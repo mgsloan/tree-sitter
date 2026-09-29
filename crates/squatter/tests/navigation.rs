@@ -2,7 +2,7 @@ mod support;
 
 use support::{c_language, json_language};
 
-use tree_squatter::{Language, PackOptions, Tree};
+use tree_squatter::{Forest, Language, PackOptions};
 
 macro_rules! compare_attributes {
     ($actual:expr, $expected:expr; $($method:ident),* $(,)?) => {
@@ -17,7 +17,7 @@ fn navigation_and_indexed_ranges_survive_loading() {
     let source = "// π\ntypedef int T; T value;\nint f(int x) { /* extra */ return x + ; }\nint g() { return 1 }";
     let native = support::parse_native(&language, source);
     for points in [false, true] {
-        let actual = Tree::pack_with_options(
+        let actual = Forest::pack_with_options(
             &grammar,
             &native,
             PackOptions {
@@ -26,7 +26,8 @@ fn navigation_and_indexed_ranges_survive_loading() {
             },
         )
         .unwrap();
-        let mut expected = Tree::from_bytes(&grammar, actual.as_bytes()).unwrap();
+        let mut expected =
+            Forest::from_bytes(std::slice::from_ref(&grammar), actual.as_bytes()).unwrap();
         assert_eq!(actual.as_bytes(), expected.as_bytes());
         if let Some(points) = actual.point_data() {
             let points =
@@ -201,7 +202,7 @@ fn indexed_points_follow_attachment_across_wide_trees() {
         let row = line_starts.partition_point(|&start| start <= byte) - 1;
         Point::new(row, byte - line_starts[row])
     };
-    let mut tree = Tree::pack_with_options(
+    let mut tree = Forest::pack_with_options(
         &grammar,
         &native,
         PackOptions {
@@ -377,7 +378,7 @@ fn child_iterators_preserve_cursor_state() {
         "int f(){ /*comment*/ }",
     ] {
         let native = parser.parse(source, None).unwrap();
-        let tree = Tree::pack(&grammar, &native).unwrap();
+        let tree = Forest::pack(&grammar, &native).unwrap();
         for (actual, expected) in tree
             .root_node()
             .preorder()

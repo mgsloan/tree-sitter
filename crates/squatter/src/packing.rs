@@ -1,5 +1,5 @@
 use crate::{
-    Error, FieldId, Language, Tree,
+    Error, FieldId, Forest, ForestRegion, Language, RegionIx, SlotIx, TreeIx,
     native::{Point, Reduction},
     side_data::{PointsData, PresenceCache},
     storage::*,
@@ -12,29 +12,37 @@ mod traversal;
 ///
 /// **Not in Tree-sitter**
 #[derive(Clone, Copy)]
-pub struct PackOptions {
+pub struct PackOptions<'options> {
     pub initial_group_capacity: u32,
     pub repack: bool,
-    pub symbol_presence: bool,
+    pub symbol_presence: &'options dyn Fn(ForestRegion<'_>) -> bool,
     /// Store coordinates during construction; enabling points can change grouping.
     pub points: bool,
 }
 
-impl Default for PackOptions {
+impl Default for PackOptions<'_> {
     fn default() -> Self {
         Self {
             initial_group_capacity: 0,
             repack: false,
-            symbol_presence: true,
+            symbol_presence: &|region| region.group_count() >= 64,
             points: true,
         }
     }
 }
 
-impl PackOptions {
+impl PackOptions<'_> {
     pub fn new() -> Self {
         Self::default()
     }
+}
+
+/// A nonempty run of roots sharing an exact grammar. Packing preserves order.
+/// Sorting roots by start byte accelerates bounded queries; nonoverlapping roots
+/// also allow seeking to the first relevant tree. Neither establishes a shared source.
+pub struct PackRegion<'tree> {
+    pub language: Language,
+    pub roots: Vec<tree_sitter::Node<'tree>>,
 }
 
 struct InputNode {
@@ -65,7 +73,7 @@ impl Packer {
     }
 
     /// Packs a tree with default options while reusing scratch.
-    pub fn pack(&mut self, language: &Language, tree: &tree_sitter::Tree) -> Result<Tree, Error> {
+    pub fn pack(&mut self, language: &Language, tree: &tree_sitter::Tree) -> Result<Forest, Error> {
         self.pack_with_options(language, tree, PackOptions::default())
     }
 
@@ -75,12 +83,59 @@ impl Packer {
         &mut self,
         language: &Language,
         tree: &tree_sitter::Tree,
-        options: PackOptions,
-    ) -> Result<Tree, Error> {
-        let root = traversal::Root::new(tree, language.tables())?;
-        let mut builder = Builder::for_input(language, root.expected_nodes, &options)?;
-        traversal::pack(&mut builder, language.tables(), &mut self.traversal, root)?;
-        builder.finish(options)
+        options: PackOptions<'_>,
+    ) -> Result<Forest, Error> {
+        let (forest, _) = self.pack_forest(
+            vec![PackRegion {
+                language: language.clone(),
+                roots: vec![tree.root_node()],
+            }],
+            options,
+        )?;
+        Ok(forest)
+    }
+
+    /// Packs caller-defined regions without merging inputs or coordinate frames.
+    pub fn pack_forest(
+        &mut self,
+        inputs: Vec<PackRegion<'_>>,
+        options: PackOptions<'_>,
+    ) -> Result<(Forest, Vec<TreeIx>), Error> {
+        if inputs.iter().any(|input| input.roots.is_empty()) {
+            return Err(Error::InvalidArgument);
+        }
+        let languages: Vec<_> = inputs.iter().map(|input| input.language.clone()).collect();
+        let mut expected_nodes = 0u64;
+        for input in &inputs {
+            for root in &input.roots {
+                expected_nodes += root.descendant_count() as u64;
+            }
+        }
+        let expected_nodes = u32::try_from(expected_nodes).map_err(|_| Error::Overflow)?;
+        let capacity = if inputs.is_empty() {
+            0
+        } else {
+            initial_capacity(expected_nodes, &options)
+        };
+        let mut builder = Builder::new_forest(&languages, capacity, options.points)?;
+        let mut mapping = Vec::new();
+        for (index, input) in inputs.into_iter().enumerate() {
+            let region = RegionIx(index as u32);
+            for node in input.roots {
+                let root = traversal::Root::new(node, input.language.tables(), options.points)?;
+                let start = builder.distance();
+                traversal::pack(
+                    &mut builder,
+                    input.language.tables(),
+                    &mut self.traversal,
+                    root,
+                )?;
+                let tree = builder.finish_root(start, region)?;
+                mapping.try_reserve(1).map_err(|_| Error::Allocation)?;
+                mapping.push(tree);
+            }
+        }
+        Ok((builder.finish(options)?, mapping))
     }
 
     pub(crate) fn pack_reductions(
@@ -88,8 +143,8 @@ impl Packer {
         language: &Language,
         nodes: &[Reduction],
         root: u32,
-        options: PackOptions,
-    ) -> Result<Tree, Error> {
+        options: PackOptions<'_>,
+    ) -> Result<Forest, Error> {
         let mut builder = Builder::for_input(
             language,
             nodes[root as usize].visible_descendant_count + 1,
@@ -111,7 +166,7 @@ impl Packer {
     }
 }
 
-impl Tree {
+impl Forest {
     /// Packs a tree-sitter snapshot with default options.
     ///
     /// **Not in Tree-sitter**
@@ -126,7 +181,7 @@ impl Tree {
     pub fn pack_with_options(
         language: &Language,
         tree: &tree_sitter::Tree,
-        options: PackOptions,
+        options: PackOptions<'_>,
     ) -> Result<Self, Error> {
         Packer::new()?.pack_with_options(language, tree, options)
     }
@@ -152,7 +207,7 @@ impl Tree {
         language: &Language,
         parser: &mut tree_sitter::Parser,
         source: impl AsRef<[u8]>,
-        options: PackOptions,
+        options: PackOptions<'_>,
     ) -> Result<Self, Error> {
         let source = source.as_ref();
         if source.len() > u32::MAX as usize {
@@ -181,7 +236,7 @@ struct Pending {
 }
 
 struct Builder {
-    tree: Tree,
+    tree: Forest,
     pending: [Pending; GROUP_SIZE as usize],
     count: u32,
     slot_base: u32,
@@ -199,18 +254,21 @@ impl Builder {
     fn for_input(
         language: &Language,
         expected_nodes: u32,
-        options: &PackOptions,
+        options: &PackOptions<'_>,
     ) -> Result<Self, Error> {
-        let capacity = if options.initial_group_capacity == 0 {
-            expected_nodes / (GROUP_SIZE * 3 / 4) + 1
-        } else {
-            options.initial_group_capacity
-        };
-        Self::new(language, capacity, options.points)
+        Self::new(
+            language,
+            initial_capacity(expected_nodes, options),
+            options.points,
+        )
     }
 
     fn new(language: &Language, capacity: u32, points: bool) -> Result<Self, Error> {
-        let tree = Tree::empty(language, capacity)?;
+        Self::new_forest(std::slice::from_ref(language), capacity, points)
+    }
+
+    fn new_forest(languages: &[Language], capacity: u32, points: bool) -> Result<Self, Error> {
+        let tree = Forest::empty(languages, capacity)?;
         let points = points.then(|| PointsData::empty(&tree)).transpose()?;
         Ok(Self {
             tree,
@@ -301,7 +359,7 @@ impl Builder {
             if self.count == GROUP_SIZE {
                 self.close();
             }
-            if self.distance() >= u32::MAX - GROUP_SIZE {
+            if self.count == 0 && self.slot_base > u32::MAX - GROUP_SIZE {
                 return Err(Error::Overflow);
             }
 
@@ -338,7 +396,6 @@ impl Builder {
             }
             let data = self.tree.data_mut();
             let layout = data.layout;
-            let default_grammar = data.tables().default_grammar(event.symbol);
             let mut writer = data.writer();
             if layout.symbol_width == 1 {
                 writer.put_byte(layout.symbol, slot, event.symbol.raw() as u8);
@@ -351,7 +408,7 @@ impl Builder {
                 writer.put_short(layout.grammar, slot, event.grammar.raw());
             }
             writer.put_short(layout.field, slot, event.field.map_or(0, FieldId::raw));
-            if event.grammar != default_grammar {
+            if event.grammar.raw() != event.symbol.raw() {
                 self.optional |= SEPARATE_GRAMMAR;
             }
 
@@ -465,8 +522,31 @@ impl Builder {
         self.error = 0;
     }
 
-    fn finish(mut self, options: PackOptions) -> Result<Tree, Error> {
+    fn finish_root(&mut self, start: u32, region: RegionIx) -> Result<TreeIx, Error> {
         self.close();
+        let data = self.tree.data_mut();
+        let index = TreeIx::from_raw(u32::try_from(data.trees.len()).map_err(|_| Error::Overflow)?);
+        let end = TreeIx::from_raw(index.raw().checked_add(1).ok_or(Error::Overflow)?);
+        data.trees.try_reserve(1).map_err(|_| Error::Allocation)?;
+        data.trees.push(TreeData {
+            region,
+            slots: SlotIx(start)..SlotIx(self.slot_base),
+        });
+        let region = &mut data.regions[region.raw() as usize];
+        if region.trees.is_empty() {
+            region.trees.start = index;
+            region.slots.start = SlotIx(start);
+        }
+        region.trees.end = end;
+        region.slots.end = SlotIx(self.slot_base);
+        Ok(index)
+    }
+
+    fn finish(mut self, options: PackOptions<'_>) -> Result<Forest, Error> {
+        self.close();
+        if self.tree.data().trees.is_empty() && self.tree.group_count() != 0 {
+            self.finish_root(0, RegionIx(0))?;
+        }
         let groups = self.tree.group_count();
         let capacity = if options.repack {
             groups
@@ -474,14 +554,23 @@ impl Builder {
             self.tree.group_capacity()
         };
         self.tree.finish_layout(capacity, self.optional)?;
-        if options.symbol_presence {
-            let cache = PresenceCache::build(&self.tree)?;
+        self.tree.classify_regions();
+        let cache = PresenceCache::build_selected(&self.tree, options.symbol_presence)?;
+        if cache.has_selected_regions() {
             self.tree.set_presence_cache(cache)?;
         }
         if let Some(points) = self.points {
             self.tree.set_point_data(points)?;
         }
         Ok(self.tree)
+    }
+}
+
+fn initial_capacity(expected_nodes: u32, options: &PackOptions<'_>) -> u32 {
+    if options.initial_group_capacity == 0 {
+        expected_nodes / (GROUP_SIZE * 3 / 4) + 1
+    } else {
+        options.initial_group_capacity
     }
 }
 

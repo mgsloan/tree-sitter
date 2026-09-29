@@ -3,7 +3,7 @@ mod support;
 use std::error::Error;
 use tree_squatter::{FieldId, GrammarId, KindId, SquatterGrammarId, SquatterKindId};
 use tree_squatter::{
-    KindSet, PackOptions, Tree,
+    Forest, KindSet, PackOptions,
     traits::{CursorLike, NodeLike},
 };
 
@@ -33,7 +33,7 @@ fn error_flags_match_each_native_node() -> Result<(), Box<dyn Error>> {
         assert!(expected.iter().any(|node| !node.2));
         let grammar = tree_squatter::Language::new(&language)?;
         for points in [false, true] {
-            let mut tree = Tree::pack_with_options(
+            let mut tree = Forest::pack_with_options(
                 &grammar,
                 &native,
                 PackOptions {
@@ -44,8 +44,9 @@ fn error_flags_match_each_native_node() -> Result<(), Box<dyn Error>> {
             )?;
             tree.repack_in_place()?;
             let compact = tree.repack()?;
-            let copy = Tree::from_bytes(&grammar, compact.as_bytes())?;
-            let borrowed = Tree::from_bytes_borrowed(&grammar, compact.as_bytes())?;
+            let copy = Forest::from_bytes(std::slice::from_ref(&grammar), compact.as_bytes())?;
+            let borrowed =
+                Forest::from_bytes_borrowed(std::slice::from_ref(&grammar), compact.as_bytes())?;
             for tree in [&tree, &compact, &copy, &*borrowed] {
                 let actual: Vec<_> = tree
                     .root_node()
@@ -209,7 +210,7 @@ fn check_queries(
     language: &tree_sitter::Language,
     source: &[u8],
     mainline: &tree_sitter::Tree,
-    packed: &Tree,
+    packed: &Forest,
 ) -> Result<(), Box<dyn Error>> {
     let grammar = tree_squatter::Language::new(language)?;
     for source_query in [
@@ -264,14 +265,14 @@ fn check_cursor_reuse(
     let grammar = tree_squatter::Language::new(language)?;
     let mut cursor = QueryCursor::new();
     for _ in 0..3 {
-        let packed = Tree::pack(&grammar, tree)?;
+        let packed = Forest::pack(&grammar, tree)?;
         let query = Query::new(&grammar, "(_) @node")?;
         let mut execution = cursor.execute(&query, packed.root_node(), b"".as_slice());
         assert!(execution.next_capture().is_some());
     }
     // This checkout's mainline disable_pattern leaves the wildcard-root count
     // stale and asserts. Verify the intended behavior directly for this case.
-    let packed = Tree::pack(&grammar, tree)?;
+    let packed = Forest::pack(&grammar, tree)?;
     let mut query = Query::new(&grammar, "(_) @a (_) @b")?;
     query.disable_pattern(tree_squatter::PatternIx(0));
     {
@@ -316,11 +317,11 @@ fn check_cursor_reuse(
 
 const SOURCE: &str = "{\"a\": [1, true, null], \"b\": 2}";
 
-fn fixture() -> Result<(tree_sitter::Language, tree_sitter::Tree, Tree), Box<dyn Error>> {
+fn fixture() -> Result<(tree_sitter::Language, tree_sitter::Tree, Forest), Box<dyn Error>> {
     let language = json_language();
     let grammar = tree_squatter::Language::new(&language)?;
     let native = parse_native(&language, SOURCE);
-    let packed = Tree::pack_with_options(
+    let packed = Forest::pack_with_options(
         &grammar,
         &native,
         PackOptions {
@@ -344,12 +345,12 @@ fn shared_navigation() -> Result<(), Box<dyn Error>> {
     let native = parse_native(&language, &source);
     for points in [false, true] {
         for symbol_presence in [false, true] {
-            let packed = Tree::pack_with_options(
+            let packed = Forest::pack_with_options(
                 &grammar,
                 &native,
                 PackOptions {
                     points,
-                    symbol_presence,
+                    symbol_presence: &|_| symbol_presence,
                     ..Default::default()
                 },
             )?;
@@ -372,8 +373,8 @@ fn owned_and_borrowed_storage() -> Result<(), Box<dyn Error>> {
     let (language, native, packed) = fixture()?;
     let grammar = tree_squatter::Language::new(&language)?;
     let compact = packed.repack()?;
-    let decoded = Tree::from_bytes(&grammar, compact.as_bytes())?;
-    let borrowed = Tree::from_bytes_borrowed(&grammar, compact.as_bytes())?;
+    let decoded = Forest::from_bytes(std::slice::from_ref(&grammar), compact.as_bytes())?;
+    let borrowed = Forest::from_bytes_borrowed(std::slice::from_ref(&grammar), compact.as_bytes())?;
     assert_eq!(borrowed.as_bytes().as_ptr(), compact.as_bytes().as_ptr());
     assert_eq!(
         borrowed.root_node().byte_range(),
@@ -441,7 +442,7 @@ fn direct_parser_matches_mainline_packing() -> Result<(), Box<dyn Error>> {
                 let options = PackOptions {
                     initial_group_capacity: 1,
                     repack: true,
-                    symbol_presence,
+                    symbol_presence: &|_| symbol_presence,
                     points,
                     ..Default::default()
                 };
@@ -452,14 +453,14 @@ fn direct_parser_matches_mainline_packing() -> Result<(), Box<dyn Error>> {
                         ..Default::default()
                     },
                 )?;
-                let expected = Tree::pack_with_options(&grammar, &native, options)?;
+                let expected = Forest::pack_with_options(&grammar, &native, options)?;
                 assert_same_tree(&direct, &expected);
             }
         }
     }
-    let tree = Tree::parse_direct(&grammar, "int direct;")?;
+    let tree = Forest::parse_direct(&grammar, "int direct;")?;
     assert_eq!(tree.root_node().byte_range(), 0..11);
-    Tree::from_bytes(&grammar, tree.as_bytes())?;
+    Forest::from_bytes(std::slice::from_ref(&grammar), tree.as_bytes())?;
     Ok(())
 }
 
@@ -490,7 +491,7 @@ fn direct_parser_external_scanner_matches_python() -> Result<(), Box<dyn Error>>
     ] {
         let native = mainline.parse(source, None).ok_or("parse failed")?;
         assert!(!native.root_node().has_error(), "{source}");
-        let expected = Tree::pack(&grammar, &native)?;
+        let expected = Forest::pack(&grammar, &native)?;
         let actual = parser.parse(source)?;
         for (left, right) in actual
             .root_node()
@@ -533,7 +534,7 @@ fn direct_parser_rejects_unsupported_grammar() -> Result<(), Box<dyn Error>> {
         .ok_or("accepted ABI 14")?;
     assert_eq!(failure.code, SquatError::Language);
     assert_eq!(
-        Tree::parse_direct(&grammar, SOURCE).unwrap_err().code,
+        Forest::parse_direct(&grammar, SOURCE).unwrap_err().code,
         SquatError::Language
     );
     Ok(())
@@ -645,7 +646,7 @@ fn compact_ids_roundtrip_native_kinds_and_scans() -> Result<(), Box<dyn Error>> 
     ] {
         let language = tree_squatter::Language::new(&native)?;
         let parsed = parse_native(&native, source);
-        let tree = Tree::pack(&language, &parsed)?;
+        let tree = Forest::pack(&language, &parsed)?;
         assert!(language.squatter_kind_count() < language.node_kind_count() + 2);
         for raw in 1..language.squatter_kind_count() as u16 {
             let compact = SquatterKindId::from_raw(raw);
@@ -719,7 +720,7 @@ fn tree_views_and_text_access() {
     parser.set_language(&language).unwrap();
     let native = parser.parse_utf16_le(&source, None).unwrap();
     for points in [false, true] {
-        let tree = Tree::pack_with_options(
+        let tree = Forest::pack_with_options(
             &grammar,
             &native,
             PackOptions {

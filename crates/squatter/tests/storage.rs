@@ -3,7 +3,7 @@ mod support;
 use support::assert_same_tree;
 use support::{c_language, c_sharp_language, json_language};
 
-use tree_squatter::{Language, PackOptions, Packer, Tree};
+use tree_squatter::{Forest, Language, PackOptions, Packer};
 
 #[test]
 fn slab_headers_reject_incompatible_formats() {
@@ -12,7 +12,15 @@ fn slab_headers_reject_incompatible_formats() {
     let language = json_language();
     let grammar = Language::new(&language).unwrap();
     let native = support::parse_native(&language, "[1]");
-    let tree = Tree::pack(&grammar, &native).unwrap();
+    let tree = Forest::pack_with_options(
+        &grammar,
+        &native,
+        PackOptions {
+            symbol_presence: &|_| true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
     let presence = tree.presence_cache().unwrap();
     let points = tree.point_data().unwrap();
 
@@ -31,8 +39,11 @@ fn slab_headers_reject_incompatible_formats() {
             invalid[..4].copy_from_slice(&(header ^ (1 << bit)).to_le_bytes());
             let rejected = match expected {
                 0xff00_0000 => {
-                    assert!(Tree::from_bytes_safety_checked(&grammar, &invalid).is_err());
-                    Tree::from_bytes(&grammar, &invalid).is_err()
+                    assert!(
+                        Forest::from_bytes_safety_checked(std::slice::from_ref(&grammar), &invalid)
+                            .is_err()
+                    );
+                    Forest::from_bytes(std::slice::from_ref(&grammar), &invalid).is_err()
                 }
                 0xfe00_0000 => PresenceCache::copy_from_bytes(&tree, &invalid).is_err(),
                 _ => PointsData::copy_from_bytes(&tree, &invalid).is_err(),
@@ -103,12 +114,12 @@ fn packing_context_matches_fresh_packing_and_loading() {
                             let options = PackOptions {
                                 initial_group_capacity,
                                 repack,
-                                symbol_presence,
+                                symbol_presence: &|_| symbol_presence,
                                 points,
                                 ..Default::default()
                             };
                             let expected =
-                                Tree::pack_with_options(&fresh_grammar, &tree, options).unwrap();
+                                Forest::pack_with_options(&fresh_grammar, &tree, options).unwrap();
                             let actual =
                                 context.pack_with_options(&grammar, &tree, options).unwrap();
                             assert_eq!(actual.has_points(), points);
@@ -120,14 +131,24 @@ fn packing_context_matches_fresh_packing_and_loading() {
                                 core = Some(actual.as_bytes().to_vec());
                             }
 
-                            let loaded = Tree::from_bytes(&grammar, expected.as_bytes()).unwrap();
+                            let loaded = Forest::from_bytes(
+                                std::slice::from_ref(&grammar),
+                                expected.as_bytes(),
+                            )
+                            .unwrap();
                             assert!(!loaded.has_points());
                             assert!(loaded.presence_cache().is_none());
-                            let borrowed =
-                                Tree::from_bytes_borrowed(&grammar, expected.as_bytes()).unwrap();
+                            let borrowed = Forest::from_bytes_borrowed(
+                                std::slice::from_ref(&grammar),
+                                expected.as_bytes(),
+                            )
+                            .unwrap();
                             assert_eq!(loaded.as_bytes(), borrowed.as_bytes());
-                            tree_squatter::Tree::from_bytes(&fresh_grammar, actual.as_bytes())
-                                .unwrap();
+                            tree_squatter::Forest::from_bytes(
+                                std::slice::from_ref(&fresh_grammar),
+                                actual.as_bytes(),
+                            )
+                            .unwrap();
 
                             let compact = actual.repack().unwrap();
                             assert_eq!(compact.has_points(), points);
@@ -152,12 +173,12 @@ fn side_data_changes_only_attached_coordinates() {
 
     for source in ["", "[\n1,\n2]", "[\r\n\"é\"]\n", "[1,"] {
         let native = parser.parse(source, None).unwrap();
-        let mut tree = Tree::pack_with_options(
+        let mut tree = Forest::pack_with_options(
             &grammar,
             &native,
             PackOptions {
                 points: true,
-                symbol_presence: false,
+                symbol_presence: &|_| false,
                 ..PackOptions::default()
             },
         )
@@ -251,12 +272,12 @@ fn sidecar_mapping_copy_and_failed_replacement() {
     let mut parser = tree_sitter::Parser::new();
     parser.set_language(&language).unwrap();
     let native = parser.parse(source, None).unwrap();
-    let mut tree = Tree::pack_with_options(
+    let mut tree = Forest::pack_with_options(
         &grammar,
         &native,
         PackOptions {
             points: true,
-            symbol_presence: false,
+            symbol_presence: &|_| false,
             ..PackOptions::default()
         },
     )
@@ -267,17 +288,14 @@ fn sidecar_mapping_copy_and_failed_replacement() {
     let drops = Arc::new(AtomicUsize::new(0));
     let mapped_owner = slab_owner(points.as_bytes(), drops.clone());
     let mapped_address = mapped_owner.bytes().as_ptr();
-    let mapped = PointsData::from_retained(&tree, mapped_owner).unwrap();
+    let mapped = PointsData::from_retained(mapped_owner).unwrap();
     assert_eq!(mapped.as_bytes().as_ptr(), mapped_address);
     tree.set_point_data(mapped).unwrap();
     assert!(
-        PointsData::from_retained(
-            &tree,
-            MisalignedSlab(
-                vec![0; points.as_bytes().len() / 8 + 1].into_boxed_slice(),
-                points.as_bytes().len()
-            )
-        )
+        PointsData::from_retained(MisalignedSlab(
+            vec![0; points.as_bytes().len() / 8 + 1].into_boxed_slice(),
+            points.as_bytes().len()
+        ))
         .is_err()
     );
     let copied = PresenceCache::copy_from_bytes(&tree, presence.as_bytes()).unwrap();
@@ -285,7 +303,7 @@ fn sidecar_mapping_copy_and_failed_replacement() {
     let presence_drops = Arc::new(AtomicUsize::new(0));
     let mapped_owner = slab_owner(presence.as_bytes(), presence_drops.clone());
     let mapped_address = mapped_owner.bytes().as_ptr();
-    let mapped = PresenceCache::from_retained(&tree, mapped_owner).unwrap();
+    let mapped = PresenceCache::from_retained(mapped_owner).unwrap();
     assert_eq!(mapped.as_bytes().as_ptr(), mapped_address);
     tree.set_presence_cache(mapped).unwrap();
     let original_point = tree.root_node().start_position();
@@ -295,7 +313,7 @@ fn sidecar_mapping_copy_and_failed_replacement() {
     let presence_address = tree.presence_cache().unwrap().as_bytes().as_ptr();
     let other_source = format!("[{}0]", "1,".repeat(500));
     let other_native = parser.parse(&other_source, None).unwrap();
-    let other = Tree::pack(&grammar, &other_native).unwrap();
+    let other = Forest::pack(&grammar, &other_native).unwrap();
     assert_ne!(tree.group_count(), other.group_count());
     assert!(
         tree.set_presence_cache(PresenceCache::build(&other).unwrap())
@@ -340,7 +358,7 @@ fn sidecar_mapping_copy_and_failed_replacement() {
     let core_drops = Arc::new(AtomicUsize::new(0));
     let owner = slab_owner(tree.as_bytes(), core_drops.clone());
     let core_address = owner.bytes().as_ptr();
-    let mut retained = Tree::from_retained(&grammar, owner).unwrap();
+    let mut retained = Forest::from_retained(std::slice::from_ref(&grammar), owner).unwrap();
     retained
         .set_presence_cache(PresenceCache::build(&retained).unwrap())
         .unwrap();
@@ -365,7 +383,7 @@ fn point_bounded_queries_follow_attachment() {
     let grammar = Language::new(&language).unwrap();
     let source = b"[\n1,\n2]";
     let native = support::parse_native(&language, source);
-    let mut tree = Tree::pack_with_options(
+    let mut tree = Forest::pack_with_options(
         &grammar,
         &native,
         PackOptions {
@@ -376,7 +394,7 @@ fn point_bounded_queries_follow_attachment() {
     .unwrap();
     let query = Query::new(&grammar, "(number) @number").unwrap();
     let mut cursor = QueryCursor::new();
-    let mut count = |tree: &Tree, containing| {
+    let mut count = |tree: &Forest, containing| {
         let range = tree_sitter::Point::new(1, 0)..tree_sitter::Point::new(2, 0);
         let unbounded = tree_sitter::Point::new(0, 0)..tree_sitter::Point::new(0, 0);
         if containing {
@@ -412,11 +430,12 @@ fn repacking_in_place_preserves_nodes_and_side_data() {
     let language = json_language();
     let grammar = Language::new(&language).unwrap();
     let native = support::parse_native(&language, "[1,\n2, 3]");
-    let mut tree = Tree::pack_with_options(
+    let mut tree = Forest::pack_with_options(
         &grammar,
         &native,
         PackOptions {
             initial_group_capacity: 32,
+            symbol_presence: &|_| true,
             ..Default::default()
         },
     )
@@ -440,6 +459,6 @@ fn repacking_in_place_preserves_nodes_and_side_data() {
         assert_eq!(actual.start_position(), expected.start_position());
         assert_eq!(actual.end_position(), expected.end_position());
     }
-    Tree::from_bytes(&grammar, tree.as_bytes()).unwrap();
+    Forest::from_bytes(std::slice::from_ref(&grammar), tree.as_bytes()).unwrap();
     tree.repack_in_place().unwrap();
 }

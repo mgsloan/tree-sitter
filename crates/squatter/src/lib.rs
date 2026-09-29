@@ -15,12 +15,12 @@ mod side_data;
 mod simd;
 mod storage;
 pub mod traits;
-pub use packing::{PackOptions, Packer};
+pub use packing::{PackOptions, PackRegion, Packer};
 pub use parser::{
     PackedParseOptions, ParseError, ParseOptions, ParseState, Parser, ParserError, TreeFellerParser,
 };
 pub use side_data::{PointsData, PresenceCache, SideDataError};
-pub use storage::{BorrowedTree, RetainedTree, StableSlab, Tree, representation_id};
+pub use storage::{BorrowedForest, Forest, ForestRegion, StableSlab, Tree, representation_id};
 pub mod query;
 mod query_exec;
 mod query_plan;

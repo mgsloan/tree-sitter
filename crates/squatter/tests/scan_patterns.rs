@@ -3,17 +3,17 @@ mod support;
 
 use std::{hint::black_box, ops::Range};
 use tree_sitter::Point;
-use tree_squatter::{FieldId, GrammarId, KindId, KindSet, Language, Node, SlotIx, Tree};
+use tree_squatter::{FieldId, Forest, GrammarId, KindId, KindSet, Language, Node, SlotIx};
 
 use support::{json_language, parse_native};
 
 const SOURCE: &str = r#"{"a": [1, 2], "b": {"c": 3}, "d": 4}"#;
 
-fn fixture() -> (Language, Tree) {
+fn fixture() -> (Language, Forest) {
     let language = json_language();
     let grammar = Language::new(&language).unwrap();
     let native = parse_native(&language, SOURCE);
-    let tree = Tree::pack(&grammar, &native).unwrap();
+    let tree = Forest::pack(&grammar, &native).unwrap();
     (grammar, tree)
 }
 
