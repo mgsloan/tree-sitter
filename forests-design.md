@@ -42,15 +42,15 @@ pub struct ForestRegion<'forest> {
     index: RegionIx,
 }
 
-pub struct PackInput<'tree> {
-    pub language: &'tree Language,
-    pub root: tree_sitter::Node<'tree>,
+pub struct ForestRegionToPack<'tree> {
+    pub language: Language,
+    pub roots: Vec<tree_sitter::Node<'tree>>,
 }
 
 impl Packer {
     pub fn pack_forest(
         &mut self,
-        inputs: &[PackInput<'_>],
+        inputs: Vec<ForestRegionToPack<'_>,
         options: PackOptions,
         cancel: Option<&AtomicBool>,
     ) -> Result<(Forest, Vec<TreeIx>), ForestError>;
