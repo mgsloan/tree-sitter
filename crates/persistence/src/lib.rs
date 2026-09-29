@@ -17,7 +17,7 @@ pub use maintenance::{
 };
 pub use store::{CacheError, WriteOutcome};
 
-use identity::Request;
+use identity::{Request, SourceIdentity};
 use std::{
     fs::OpenOptions,
     io::{self, Read},
@@ -26,7 +26,7 @@ use std::{
 };
 use store::Store;
 use tree_squatter::{
-    PackedParseOptions, ParseOptions, Parser, ParserError, traits::ParseStateLike,
+    PackOptions, PackedParseOptions, ParseOptions, Parser, ParserError, traits::ParseStateLike,
 };
 
 /// Cache directory path for the target's native byte order.
@@ -105,27 +105,6 @@ pub enum WritePolicy {
     Disabled,
 }
 
-/// Owned packing configuration for deferred per-file requests. Presence coverage
-/// is all-or-none for the file's single region.
-#[derive(Clone, Copy, Debug)]
-pub struct LoadPackOptions {
-    pub initial_group_capacity: u32,
-    pub repack: bool,
-    pub symbol_presence: bool,
-    pub points: bool,
-}
-
-impl Default for LoadPackOptions {
-    fn default() -> Self {
-        Self {
-            initial_group_capacity: 0,
-            repack: false,
-            symbol_presence: true,
-            points: true,
-        }
-    }
-}
-
 /// The shared callback covers parsing and load cancellation checks.
 /// Outside parsing, offsets report bytes captured while reading, zero while
 /// waiting or probing, and source length when returning or publishing a completed
@@ -133,7 +112,7 @@ impl Default for LoadPackOptions {
 #[derive(Default)]
 pub struct LoadOptions<'a> {
     /// Packed-tree storage options.
-    pub pack: LoadPackOptions,
+    pub pack: PackOptions<'a>,
     pub write: WritePolicy,
     pub parse: ParseOptions<'a>,
 }
@@ -181,6 +160,23 @@ fn check(options: &mut ParseOptions<'_>, byte: usize, has_error: bool) -> Result
     } else {
         Ok(())
     }
+}
+
+fn build_presence_cache(
+    forest: &tree_squatter::Forest,
+    options: PackOptions<'_>,
+) -> Result<tree_squatter::PresenceCache, tree_squatter::Error> {
+    use std::ops::ControlFlow;
+    tree_squatter::PresenceCache::build_selected_with_cancellation(
+        forest,
+        |_| true,
+        || {
+            options
+                .cancellation_callback
+                .map_or(ControlFlow::Continue(()), |callback| callback())
+        },
+    )
+    .map_err(tree_squatter::Error::from)
 }
 
 #[derive(Debug)]
@@ -272,16 +268,13 @@ pub enum LoadStep {
     Deferred(PendingLoad),
 }
 
+/// Captured input, independent of execution options. Resuming uses the options
+/// supplied to that attempt, including its packing and publication policies.
 pub struct PendingLoad {
-    request: Arc<Request>,
+    source_identity: SourceIdentity,
     source: Arc<[u8]>,
     language: IdentifiedLanguage,
     store: Option<Arc<Store>>,
-    initial_group_capacity: u32,
-    repack: bool,
-    symbol_presence: bool,
-    points: bool,
-    write: WritePolicy,
     read: ReadPolicy,
     persistable: bool,
 }
@@ -457,10 +450,10 @@ impl Persistence {
         parser: &mut Parser,
     ) -> Result<LoadedFile, LoadError> {
         let options = LoadOptions {
-            pack: LoadPackOptions {
-                symbol_presence: self.options.symbol_presence,
+            pack: PackOptions {
+                symbol_presence: &|_| self.options.symbol_presence,
                 points: self.options.points,
-                ..LoadPackOptions::default()
+                ..PackOptions::default()
             },
             ..LoadOptions::default()
         };
@@ -496,11 +489,11 @@ impl Persistence {
         parser: &mut Parser,
         mut options: LoadOptions<'_>,
     ) -> Result<LoadResult, LoadError> {
-        let mut pending = self.capture(path, language, &mut options)?;
+        let mut pending = self.capture(path, language, &mut options.parse)?;
         let started = std::time::Instant::now();
         loop {
             let cooperate = started.elapsed() < self.options.cooperation_wait;
-            match pending.attempt(parser, &mut options.parse, cooperate)? {
+            match pending.attempt(parser, &mut options, cooperate)? {
                 LoadStep::Ready(result) => return Ok(result),
                 LoadStep::Deferred(next) => {
                     pending = next;
@@ -523,8 +516,8 @@ impl Persistence {
         parser: &mut Parser,
         mut options: LoadOptions<'_>,
     ) -> Result<LoadStep, LoadError> {
-        self.capture(path, language, &mut options)?
-            .attempt(parser, &mut options.parse, true)
+        self.capture(path, language, &mut options.parse)?
+            .attempt(parser, &mut options, true)
     }
 
     /// Nonblocking load using reusable worker scratch.
@@ -542,10 +535,10 @@ impl Persistence {
         &self,
         path: &Path,
         language: &IdentifiedLanguage,
-        options: &mut LoadOptions<'_>,
+        options: &mut ParseOptions<'_>,
     ) -> Result<PendingLoad, LoadError> {
         let (path, encoded) = identity::path(path)?;
-        check(&mut options.parse, 0, false)?;
+        check(options, 0, false)?;
         let source_path = self.root.join(path);
         let mut open = OpenOptions::new();
         open.read(true);
@@ -570,7 +563,7 @@ impl Persistence {
         let mut source = Vec::new();
         let mut chunk = [0; 64 * 1024];
         loop {
-            check(&mut options.parse, source.len(), false)?;
+            check(options, source.len(), false)?;
             let count = input.read(&mut chunk)?;
             if count == 0 {
                 break;
@@ -585,32 +578,20 @@ impl Persistence {
             source.extend_from_slice(&chunk[..count]);
         }
         let source: Arc<[u8]> = source.into();
-        let pack = &options.pack;
-        let mut request = Request::new(
-            encoded,
-            &source,
-            language,
-            pack.symbol_presence,
-            pack.points,
-        );
+        let mut identity = SourceIdentity::new(encoded, &source);
         // Symlinked files outside the project can be read but are not persisted.
         let persistable = source_path
             .canonicalize()
             .is_ok_and(|p| p.starts_with(&self.root));
         let store = self.store.as_ref().filter(|_| persistable);
         if let Some(store) = store {
-            request.current_guard = store.current_guard(&request);
+            identity.current_guard = store.current_guard(&identity.key);
         }
         Ok(PendingLoad {
-            request: Arc::new(request),
+            source_identity: identity,
             source,
             language: language.clone(),
             store: store.cloned(),
-            initial_group_capacity: pack.initial_group_capacity,
-            repack: pack.repack,
-            symbol_presence: pack.symbol_presence,
-            points: pack.points,
-            write: options.write,
             read: self.options.read,
             persistable,
         })
@@ -621,7 +602,7 @@ impl PendingLoad {
     pub fn resume(
         self,
         parser: &mut Parser,
-        mut options: ParseOptions<'_>,
+        mut options: LoadOptions<'_>,
     ) -> Result<LoadStep, LoadError> {
         self.attempt(parser, &mut options, true)
     }
@@ -630,7 +611,7 @@ impl PendingLoad {
     pub fn parse_now(
         self,
         parser: &mut Parser,
-        mut options: ParseOptions<'_>,
+        mut options: LoadOptions<'_>,
     ) -> Result<LoadResult, LoadError> {
         match self.attempt(parser, &mut options, false)? {
             LoadStep::Ready(result) => Ok(result),
@@ -641,7 +622,7 @@ impl PendingLoad {
     pub fn resume_with_context(
         self,
         context: &mut LoadContext,
-        options: ParseOptions<'_>,
+        options: LoadOptions<'_>,
     ) -> Result<LoadStep, LoadError> {
         self.resume(&mut context.parser, options)
     }
@@ -649,7 +630,7 @@ impl PendingLoad {
     pub fn parse_now_with_context(
         self,
         context: &mut LoadContext,
-        options: ParseOptions<'_>,
+        options: LoadOptions<'_>,
     ) -> Result<LoadResult, LoadError> {
         self.parse_now(&mut context.parser, options)
     }
@@ -657,31 +638,40 @@ impl PendingLoad {
     fn attempt(
         self,
         parser: &mut Parser,
-        options: &mut ParseOptions<'_>,
+        options: &mut LoadOptions<'_>,
         cooperate: bool,
     ) -> Result<LoadStep, LoadError> {
-        check(options, 0, false)?;
+        check(&mut options.parse, 0, false)?;
+        let request = Request::from_source(
+            &self.source_identity,
+            &self.language,
+            false,
+            options.pack.points,
+        );
         let store = self.store.clone();
         let hit = || {
-            store.as_ref().and_then(|store| {
-                if self.read == ReadPolicy::PreferRetained
-                    && let Some((tree, complete)) =
-                        snapshot::get(store, &self.request, &self.source, &self.language)
-                {
-                    return Some((LoadedTree::retained(Arc::new(tree)), complete));
-                }
-                store
-                    .get(&self.request, &self.source, &self.language)
-                    .map(|(tree, complete)| (LoadedTree::owned(Arc::new(tree)), complete))
-            })
+            let Some(store) = &store else {
+                return Ok(None);
+            };
+            if self.read == ReadPolicy::PreferRetained
+                && let Some((tree, complete)) =
+                    snapshot::get(store, &request, &self.source, &self.language, options.pack)?
+            {
+                return Ok(Some((LoadedTree::retained(Arc::new(tree)), complete)));
+            }
+            store
+                .get(&request, &self.source, &self.language, options.pack)
+                .map(|loaded| {
+                    loaded.map(|(tree, complete)| (LoadedTree::owned(Arc::new(tree)), complete))
+                })
         };
-        if let Some((tree, complete)) = hit() {
-            return self.finish(tree, true, complete, options);
+        if let Some((tree, complete)) = hit().map_err(ParserError::from)? {
+            return self.finish(request, tree, true, complete, options);
         }
         // Errors disable this optimization. A busy owner instead defers work.
         let _work = if cooperate {
             if let Some(store) = &store {
-                match store.work(&self.request) {
+                match store.work(&request) {
                     Ok(Some(guard)) => Some(guard),
                     Ok(None) => return Ok(LoadStep::Deferred(self)),
                     Err(_) => None,
@@ -692,8 +682,8 @@ impl PendingLoad {
         } else {
             None
         };
-        if let Some((tree, complete)) = hit() {
-            return self.finish(tree, true, complete, options);
+        if let Some((tree, complete)) = hit().map_err(ParserError::from)? {
+            return self.finish(request, tree, true, complete, options);
         }
         parser
             .set_language(&self.language.prepared)
@@ -701,31 +691,34 @@ impl PendingLoad {
         let tree = parser.parse_with_options(
             &mut |byte, _| &self.source[byte..],
             PackedParseOptions {
-                parse: options.reborrow(),
-                pack: tree_squatter::PackOptions {
-                    initial_group_capacity: self.initial_group_capacity,
-                    repack: self.repack,
-                    symbol_presence: &|_| self.symbol_presence,
-                    points: self.points,
-                    ..Default::default()
-                },
+                parse: options.parse.reborrow(),
+                pack: options.pack,
             },
         )?;
-        self.finish(LoadedTree::owned(Arc::new(tree)), false, false, options)
+        self.finish(
+            request,
+            LoadedTree::owned(Arc::new(tree)),
+            false,
+            false,
+            options,
+        )
     }
 
     fn finish(
         self,
+        mut request: Request,
         tree: LoadedTree,
         hit: bool,
         complete: bool,
-        options: &mut ParseOptions<'_>,
+        options: &mut LoadOptions<'_>,
     ) -> Result<LoadStep, LoadError> {
         check(
-            options,
+            &mut options.parse,
             self.source.len(),
             tree.tree().root_node().has_error(),
         )?;
+        request.presence = tree.tree().presence_cache().is_some();
+        let request = Arc::new(request);
         let file = LoadedFile {
             source: self.source,
             tree,
@@ -733,23 +726,23 @@ impl PendingLoad {
             cleanup: self
                 .store
                 .as_ref()
-                .map(|store| (store.clone(), self.request.clone())),
+                .map(|store| (store.clone(), request.clone())),
         };
-        let mut pending_write = match (self.write, self.store.as_ref()) {
+        let mut pending_write = match (options.write, self.store.as_ref()) {
             (WritePolicy::Disabled, _) => None,
             (_, _) if complete || !self.persistable => None,
             (WritePolicy::Transfer, _) | (_, Some(_)) => Some(PendingWrite {
                 store: self.store,
-                request: self.request,
+                request,
                 language: self.language,
                 file: file.clone(),
             }),
             (_, None) => None,
         };
-        if self.write == WritePolicy::Inline
+        if options.write == WritePolicy::Inline
             && let Some(write) = pending_write.take()
             && matches!(
-                write.publish_with_options(options.reborrow()),
+                write.publish_with_options(options.parse.reborrow()),
                 Err(CacheError::Cancelled)
             )
         {

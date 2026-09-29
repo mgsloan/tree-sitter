@@ -11,7 +11,10 @@ fn load(cache: &Persistence, write: WritePolicy) -> LoadResult {
             &language(42),
             &mut tree_squatter::Parser::new(),
             LoadOptions {
-                pack: tree_squatter_persistence::LoadPackOptions::default(),
+                pack: tree_squatter::PackOptions {
+                    symbol_presence: &|_| true,
+                    ..Default::default()
+                },
                 write,
                 parse: Default::default(),
             },
@@ -166,7 +169,7 @@ fn transfer_preserves_points_policy() {
                 &language(42),
                 &mut tree_squatter::Parser::new(),
                 LoadOptions {
-                    pack: tree_squatter_persistence::LoadPackOptions {
+                    pack: tree_squatter::PackOptions {
                         points,
                         ..Default::default()
                     },

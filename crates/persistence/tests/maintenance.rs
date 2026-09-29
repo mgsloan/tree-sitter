@@ -69,7 +69,10 @@ fn stale_cleanup_stops_and_late_writer_cannot_restore_retired_records() {
             &language(),
             &mut tree_squatter::Parser::new(),
             LoadOptions {
-                pack: tree_squatter_persistence::LoadPackOptions::default(),
+                pack: tree_squatter::PackOptions {
+                    symbol_presence: &|_| true,
+                    ..Default::default()
+                },
                 write: WritePolicy::Deferred,
                 parse: Default::default(),
             },
@@ -223,8 +226,8 @@ fn sidecars_can_be_evicted_independently_of_core_and_readers() {
                     &language(),
                     &mut tree_squatter::Parser::new(),
                     LoadOptions {
-                        pack: tree_squatter_persistence::LoadPackOptions {
-                            symbol_presence: kind != SidecarKind::Presence,
+                        pack: tree_squatter::PackOptions {
+                            symbol_presence: &|_| kind != SidecarKind::Presence,
                             points: kind != SidecarKind::Points,
                             ..Default::default()
                         },

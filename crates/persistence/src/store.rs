@@ -137,14 +137,40 @@ mod tests {
             .unwrap();
         tx.commit().unwrap();
         drop(guard);
-        assert!(store.get(&request, b"[1]", &language).is_none());
+        assert!(
+            store
+                .get(
+                    &request,
+                    b"[1]",
+                    &language,
+                    tree_squatter::PackOptions {
+                        symbol_presence: &|_| true,
+                        ..Default::default()
+                    }
+                )
+                .unwrap()
+                .is_none()
+        );
         assert_eq!(
             store
                 .publish(&request, b"[1]", &tree, &language, || false)
                 .unwrap(),
             WriteOutcome::Published
         );
-        assert!(store.get(&request, b"[1]", &language).is_some());
+        assert!(
+            store
+                .get(
+                    &request,
+                    b"[1]",
+                    &language,
+                    tree_squatter::PackOptions {
+                        symbol_presence: &|_| true,
+                        ..Default::default()
+                    }
+                )
+                .unwrap()
+                .is_some()
+        );
 
         let guard = gate(&store.writer).unwrap().unwrap();
         assert_eq!(
@@ -217,7 +243,17 @@ mod tests {
             .prepare_language(&tree_sitter_language, language.identity.hash)
             .unwrap();
         assert_eq!(restored.cache().unwrap(), expected);
-        assert!(store.get(&request, b"class C {}", &language).is_some());
+        assert!(
+            store
+                .get(
+                    &request,
+                    b"class C {}",
+                    &language,
+                    tree_squatter::PackOptions::default()
+                )
+                .unwrap()
+                .is_some()
+        );
         let mut tx = store.env.write_txn().unwrap();
         store
             .grammars
@@ -485,11 +521,11 @@ impl Store {
         self.work.acquire(&request.tree_key)
     }
 
-    pub fn current_guard(&self, request: &Request) -> CurrentGuard {
+    pub fn current_guard(&self, source_key: &[u8; 72]) -> CurrentGuard {
         let Ok(tx) = self.env.read_txn() else {
             return CurrentGuard::Unchecked;
         };
-        match self.current.get(&tx, &request.source_key[..32]) {
+        match self.current.get(&tx, &source_key[..32]) {
             Ok(Some(bytes)) if bytes.len() == 8 => CurrentGuard::Retired(bytes.try_into().unwrap()),
             Ok(Some(bytes)) => bytes
                 .try_into()
@@ -505,31 +541,40 @@ impl Store {
         request: &Request,
         source: &[u8],
         language: &IdentifiedLanguage,
-    ) -> Option<(tree_squatter::Forest, bool)> {
-        let tx = self.env.read_txn().ok()?;
-        if self.paths.get(&tx, &request.source_key[..32]).ok()?? != request.path
-            || self.sources.get(&tx, &request.source_key).ok()?? != source
-        {
-            return None;
-        }
-        let value = self.trees.get(&tx, &request.tree_key).ok()??;
-        let slab = request.decode(value)?;
-        // Core validation is independent of optional sidecar contents.
-        let mut tree = tree_squatter::Forest::from_bytes_safety_checked(
-            std::slice::from_ref(&language.prepared),
-            slab,
-        )
-        .ok()?;
-        if tree
-            .root_node()
-            .preorder()
-            .nodes()
-            .any(|node| node.end_byte() > source.len())
-        {
-            return None;
-        }
+        options: tree_squatter::PackOptions<'_>,
+    ) -> Result<Option<(tree_squatter::Forest, bool)>, tree_squatter::Error> {
+        let Ok(tx) = self.env.read_txn() else {
+            return Ok(None);
+        };
+        let loaded = (|| {
+            if self.paths.get(&tx, &request.source_key[..32]).ok()?? != request.path
+                || self.sources.get(&tx, &request.source_key).ok()?? != source
+            {
+                return None;
+            }
+            let value = self.trees.get(&tx, &request.tree_key).ok()??;
+            let slab = request.decode(value)?;
+            // Core validation is independent of optional sidecar contents.
+            let tree = tree_squatter::Forest::from_bytes_safety_checked(
+                std::slice::from_ref(&language.prepared),
+                slab,
+            )
+            .ok()?;
+            if tree
+                .root_node()
+                .preorder()
+                .nodes()
+                .any(|node| node.end_byte() > source.len())
+            {
+                return None;
+            }
+            Some(tree)
+        })();
+        let Some(mut tree) = loaded else {
+            return Ok(None);
+        };
         let mut complete = true;
-        if request.presence {
+        if (options.symbol_presence)(tree.regions().next().unwrap()) {
             let loaded = self
                 .presence
                 .get(&tx, &request.tree_key)
@@ -537,8 +582,13 @@ impl Store {
                 .flatten()
                 .and_then(|bytes| tree_squatter::PresenceCache::copy_from_bytes(&tree, bytes).ok());
             complete &= loaded.is_some();
-            let cache = loaded.or_else(|| tree_squatter::PresenceCache::build(&tree).ok())?;
-            tree.set_presence_cache(cache).ok()?;
+            let cache = match loaded {
+                Some(cache) => cache,
+                None => crate::build_presence_cache(&tree, options)?,
+            };
+            if tree.set_presence_cache(cache).is_err() {
+                return Ok(None);
+            }
         }
         if request.points {
             let points = self
@@ -546,10 +596,15 @@ impl Store {
                 .get(&tx, &request.tree_key)
                 .ok()
                 .flatten()
-                .and_then(|bytes| tree_squatter::PointsData::copy_from_bytes(&tree, bytes).ok())?;
-            tree.set_point_data(points).ok()?;
+                .and_then(|bytes| tree_squatter::PointsData::copy_from_bytes(&tree, bytes).ok());
+            let Some(points) = points else {
+                return Ok(None);
+            };
+            if tree.set_point_data(points).is_err() {
+                return Ok(None);
+            }
         }
-        Some((tree, complete))
+        Ok(Some((tree, complete)))
     }
 
     pub fn prepare_language(

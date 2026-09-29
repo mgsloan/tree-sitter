@@ -54,7 +54,9 @@ Implemented:
 - `LoadedFile::evict_sidecar` deletes presence or points independently, preserving
   the core, other sidecar, and existing readers. Subsequent loads or publishers
   can rebuild evicted presence data; missing requested points require reparsing.
-- `LoadOptions::pack` uses owned `LoadPackOptions` to select side data on both cache hits and misses. The simple
+- `LoadOptions::pack` uses `tree_squatter::PackOptions` on both cache hits and
+  misses, including borrowed region predicates and presence cancellation.
+  Its default presence policy selects regions with at least 64 groups. The simple
   `load` method uses the side-data defaults in `Options`. Points affect grouping,
   so point-enabled and point-free trees use separate cache variants.
 - Publication compacts used columns directly into heed `put_reserved` storage,
@@ -78,8 +80,11 @@ Implemented:
   both phase flags false. Completed trees report their error flag.
   `Break(())` returns `LoadError::Cancelled` without returning a tree or publishing
   partial work. `LoadOptions::reborrow` reuses a callback across calls.
-- Deferred load resume/parse methods and `PendingWrite::publish_with_options`
-  take shared `ParseOptions`; queued work retains no callback. Publication polls
+- Deferred load resume/parse methods take fresh `LoadOptions` for each attempt;
+  queued loads retain captured input and its publication guard, with no packing
+  settings or callbacks. Supplied options determine the cache variant, presence
+  coverage, and write policy for that attempt. `PendingWrite::publish_with_options`
+  takes shared `ParseOptions`. Publication polls
   before writing and immediately before commit. Cancellation before commit
   rolls back the transaction; completed commits are not revoked.
 - Inline, deferred, and disabled writes. Deferred work retains no transaction.

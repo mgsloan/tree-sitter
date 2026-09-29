@@ -114,6 +114,26 @@ pub(crate) fn language_key(hash: LanguageHash) -> [u8; 40] {
     key
 }
 
+pub(crate) struct SourceIdentity {
+    pub path: Vec<u8>,
+    pub key: [u8; 72],
+    pub current_guard: CurrentGuard,
+}
+
+impl SourceIdentity {
+    pub fn new(path: Vec<u8>, source: &[u8]) -> Self {
+        let mut key = [0; 72];
+        key[..32].copy_from_slice(&digest("tree-squatter path v0", &path));
+        key[32..40].copy_from_slice(&(source.len() as u64).to_le_bytes());
+        key[40..].copy_from_slice(blake3::hash(source).as_bytes());
+        Self {
+            path,
+            key,
+            current_guard: CurrentGuard::Unchecked,
+        }
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct Request {
     pub path: Vec<u8>,
@@ -141,11 +161,21 @@ impl Request {
         presence: bool,
         points: bool,
     ) -> Self {
-        let path_id = digest("tree-squatter path v0", &path);
-        let mut source_key = [0; 72];
-        source_key[..32].copy_from_slice(&path_id);
-        source_key[32..40].copy_from_slice(&(source.len() as u64).to_le_bytes());
-        source_key[40..].copy_from_slice(blake3::hash(source).as_bytes());
+        Self::from_source(
+            &SourceIdentity::new(path, source),
+            language,
+            presence,
+            points,
+        )
+    }
+
+    pub fn from_source(
+        source: &SourceIdentity,
+        language: &IdentifiedLanguage,
+        presence: bool,
+        points: bool,
+    ) -> Self {
+        let source_key = source.key;
         let mut identity = Vec::new();
         identity.extend_from_slice(&language.identity.hash.raw().to_le_bytes());
         identity.extend_from_slice(&runtime());
@@ -161,13 +191,13 @@ impl Request {
         header.extend_from_slice(&identity);
         header.extend_from_slice(&variant);
         Self {
-            path,
+            path: source.path.clone(),
             source_key,
             tree_key,
             header,
             presence,
             points,
-            current_guard: CurrentGuard::Unchecked,
+            current_guard: source.current_guard.clone(),
         }
     }
 

@@ -71,42 +71,52 @@ pub(crate) fn get(
     request: &Request,
     source: &[u8],
     language: &IdentifiedLanguage,
-) -> Option<(Forest, bool)> {
-    let snapshot = Arc::new(Snapshot::open(store)?);
-    if store
-        .paths
-        .get(&snapshot.tx, &request.source_key[..32])
-        .ok()??
-        != request.path
-        || store
-            .sources
-            .get(&snapshot.tx, &request.source_key)
-            .ok()??
-            != source
-    {
-        return None;
-    }
-    let slab = request.decode(store.trees.get(&snapshot.tx, &request.tree_key).ok()??)?;
-    let pointer = NonNull::new(slab.as_ptr().cast_mut())?;
-    let length = slab.len();
-    let owner = SnapshotSlab {
-        pointer,
-        length,
-        _snapshot: snapshot.clone(),
+    options: tree_squatter::PackOptions<'_>,
+) -> Result<Option<(Forest, bool)>, tree_squatter::Error> {
+    let Some(snapshot) = Snapshot::open(store) else {
+        return Ok(None);
     };
-    // The native loader checks the actual address, not merely the envelope's
-    // offset. Misaligned values release their snapshot and use the owned path.
-    let mut tree = Forest::from_retained(std::slice::from_ref(&language.prepared), owner).ok()?;
-    if tree
-        .root_node()
-        .preorder()
-        .nodes()
-        .any(|node| node.end_byte() > source.len())
-    {
-        return None;
-    }
+    let snapshot = Arc::new(snapshot);
+    let loaded = (|| {
+        if store
+            .paths
+            .get(&snapshot.tx, &request.source_key[..32])
+            .ok()??
+            != request.path
+            || store
+                .sources
+                .get(&snapshot.tx, &request.source_key)
+                .ok()??
+                != source
+        {
+            return None;
+        }
+        let slab = request.decode(store.trees.get(&snapshot.tx, &request.tree_key).ok()??)?;
+        let pointer = NonNull::new(slab.as_ptr().cast_mut())?;
+        let length = slab.len();
+        let owner = SnapshotSlab {
+            pointer,
+            length,
+            _snapshot: snapshot.clone(),
+        };
+        // The native loader checks the actual address, not merely the envelope's
+        // offset. Misaligned values release their snapshot and use the owned path.
+        let tree = Forest::from_retained(std::slice::from_ref(&language.prepared), owner).ok()?;
+        if tree
+            .root_node()
+            .preorder()
+            .nodes()
+            .any(|node| node.end_byte() > source.len())
+        {
+            return None;
+        }
+        Some(tree)
+    })();
+    let Some(mut tree) = loaded else {
+        return Ok(None);
+    };
     let mut complete = true;
-    if request.presence {
+    if (options.symbol_presence)(tree.regions().next().unwrap()) {
         let loaded = store
             .presence
             .get(&snapshot.tx, &request.tree_key)
@@ -123,8 +133,13 @@ pub(crate) fn get(
                     .or_else(|| tree_squatter::PresenceCache::copy_from_bytes(&tree, bytes).ok())
             });
         complete &= loaded.is_some();
-        let cache = loaded.or_else(|| tree_squatter::PresenceCache::build(&tree).ok())?;
-        tree.set_presence_cache(cache).ok()?;
+        let cache = match loaded {
+            Some(cache) => cache,
+            None => crate::build_presence_cache(&tree, options)?,
+        };
+        if tree.set_presence_cache(cache).is_err() {
+            return Ok(None);
+        }
     }
     if request.points {
         let points = store
@@ -141,8 +156,13 @@ pub(crate) fn get(
                 tree_squatter::PointsData::from_retained(owner)
                     .ok()
                     .or_else(|| tree_squatter::PointsData::copy_from_bytes(&tree, bytes).ok())
-            })?;
-        tree.set_point_data(points).ok()?;
+            });
+        let Some(points) = points else {
+            return Ok(None);
+        };
+        if tree.set_point_data(points).is_err() {
+            return Ok(None);
+        }
     }
-    Some((tree, complete))
+    Ok(Some((tree, complete)))
 }

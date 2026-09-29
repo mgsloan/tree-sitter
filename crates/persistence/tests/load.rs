@@ -18,8 +18,9 @@ fn miss_hit_and_old_reader_survives_update() {
             &language(),
             &mut tree_squatter::Parser::new(),
             LoadOptions {
-                pack: tree_squatter_persistence::LoadPackOptions {
+                pack: tree_squatter::PackOptions {
                     initial_group_capacity: 128,
+                    symbol_presence: &|_| true,
                     ..Default::default()
                 },
                 ..Default::default()
@@ -81,7 +82,10 @@ fn deferred_disabled_and_cancelled_publication() {
             &language(),
             &mut parser,
             LoadOptions {
-                pack: tree_squatter_persistence::LoadPackOptions::default(),
+                pack: tree_squatter::PackOptions {
+                    symbol_presence: &|_| true,
+                    ..Default::default()
+                },
                 write: WritePolicy::Deferred,
                 parse: Default::default(),
             },
@@ -95,7 +99,10 @@ fn deferred_disabled_and_cancelled_publication() {
                 &language(),
                 &mut tree_squatter::Parser::new(),
                 LoadOptions {
-                    pack: tree_squatter_persistence::LoadPackOptions::default(),
+                    pack: tree_squatter::PackOptions {
+                        symbol_presence: &|_| true,
+                        ..Default::default()
+                    },
                     write: WritePolicy::Disabled,
                     parse: Default::default(),
                 },
@@ -140,7 +147,10 @@ fn stale_deferred_writer_cannot_create_wrong_hit() {
             &language(),
             &mut tree_squatter::Parser::new(),
             LoadOptions {
-                pack: tree_squatter_persistence::LoadPackOptions::default(),
+                pack: tree_squatter::PackOptions {
+                    symbol_presence: &|_| true,
+                    ..Default::default()
+                },
                 write: WritePolicy::Deferred,
                 parse: Default::default(),
             },
@@ -202,7 +212,10 @@ fn cancellation_never_creates_entry() {
         &language(),
         &mut tree_squatter::Parser::new(),
         LoadOptions {
-            pack: tree_squatter_persistence::LoadPackOptions::default(),
+            pack: tree_squatter::PackOptions {
+                symbol_presence: &|_| true,
+                ..Default::default()
+            },
             write: WritePolicy::Inline,
             parse: ParseOptions::new().progress_callback(&mut cancel),
         },
@@ -276,7 +289,10 @@ fn unavailable_cache_and_full_map_fall_back() {
             &language(),
             &mut tree_squatter::Parser::new(),
             LoadOptions {
-                pack: tree_squatter_persistence::LoadPackOptions::default(),
+                pack: tree_squatter::PackOptions {
+                    symbol_presence: &|_| true,
+                    ..Default::default()
+                },
                 write: WritePolicy::Deferred,
                 parse: Default::default(),
             },
@@ -423,7 +439,10 @@ fn writer_death_releases_admission_without_stale_files() {
             &language(),
             &mut tree_squatter::Parser::new(),
             LoadOptions {
-                pack: tree_squatter_persistence::LoadPackOptions::default(),
+                pack: tree_squatter::PackOptions {
+                    symbol_presence: &|_| true,
+                    ..Default::default()
+                },
                 write: WritePolicy::Deferred,
                 parse: Default::default(),
             },
@@ -471,7 +490,10 @@ fn worker_context_switches_grammars_and_loads_restored_dictionary() {
                     language,
                     &mut context,
                     LoadOptions {
-                        pack: tree_squatter_persistence::LoadPackOptions::default(),
+                        pack: tree_squatter::PackOptions {
+                            symbol_presence: &|_| true,
+                            ..Default::default()
+                        },
                         write: WritePolicy::Disabled,
                         ..Default::default()
                     },
@@ -519,10 +541,10 @@ fn side_data_policy_applies_to_hits_and_late_publication() {
                 &language(),
                 parser,
                 LoadOptions {
-                    pack: tree_squatter_persistence::LoadPackOptions {
-                        symbol_presence: presence,
+                    pack: tree_squatter::PackOptions {
+                        symbol_presence: &|_| presence,
                         points,
-                        ..tree_squatter_persistence::LoadPackOptions::default()
+                        ..Default::default()
                     },
                     write,
                     parse: Default::default(),
@@ -733,4 +755,72 @@ fn inline_publication_cancellation_rolls_back_and_reuses_worker() {
         .unwrap();
     assert!(!result.file.cache_hit());
     assert!(load(&cache).cache_hit());
+}
+
+#[test]
+fn borrowed_presence_policy_and_cancellation_apply_to_cache_hits() {
+    use std::cell::Cell;
+    use tree_squatter::{ForestRegion, PackOptions};
+    use tree_squatter_persistence::{ReadPolicy, SidecarKind};
+
+    for read in [ReadPolicy::Owned, ReadPolicy::PreferRetained] {
+        let root = tempfile::tempdir().unwrap();
+        fs::write(root.path().join("file.json"), "[1]").unwrap();
+        let cache = Persistence::open(
+            root.path(),
+            Options {
+                read,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(load(&cache).tree().presence_cache().is_some());
+        let mut parser = tree_squatter::Parser::new();
+        let default = cache
+            .load_with_options(
+                Path::new("file.json"),
+                &language(),
+                &mut parser,
+                LoadOptions::default(),
+            )
+            .unwrap();
+        assert!(default.file.cache_hit());
+        assert!(default.file.tree().presence_cache().is_none());
+
+        let visits = Cell::new(0);
+        let select = |region: ForestRegion<'_>| {
+            visits.set(visits.get() + 1);
+            region.group_count() == 1
+        };
+        let mut options = LoadOptions {
+            pack: PackOptions {
+                symbol_presence: &select,
+                ..Default::default()
+            },
+            write: WritePolicy::Deferred,
+            ..Default::default()
+        };
+        let result = cache
+            .load_with_options(
+                Path::new("file.json"),
+                &language(),
+                &mut parser,
+                options.reborrow(),
+            )
+            .unwrap();
+        assert!(result.file.cache_hit());
+        assert!(result.file.tree().presence_cache().is_some());
+        assert!(result.pending_write.is_none());
+        assert_eq!(visits.get(), 1);
+        result.file.evict_sidecar(SidecarKind::Presence).unwrap();
+
+        options.pack.cancellation_callback = Some(&|| ControlFlow::Break(()));
+        assert!(matches!(
+            cache.load_with_options(Path::new("file.json"), &language(), &mut parser, options),
+            Err(LoadError::Cancelled)
+        ));
+        assert_eq!(visits.get(), 2);
+        assert!(parser.language().is_none());
+        assert!(load(&cache).cache_hit());
+    }
 }

@@ -58,7 +58,7 @@ fn deferred_capture_survives_owner_death_and_source_change() {
         panic!("expected deferral")
     };
     let LoadStep::Deferred(pending) = pending
-        .resume_with_context(&mut context, ParseOptions::default())
+        .resume_with_context(&mut context, LoadOptions::default())
         .unwrap()
     else {
         panic!("owner is still live")
@@ -74,7 +74,10 @@ fn deferred_capture_survives_owner_death_and_source_change() {
     let LoadStep::Ready(result) = pending
         .resume_with_context(
             &mut context,
-            ParseOptions::new().progress_callback(&mut progress),
+            LoadOptions {
+                parse: ParseOptions::new().progress_callback(&mut progress),
+                ..Default::default()
+            },
         )
         .unwrap()
     else {
@@ -114,8 +117,11 @@ fn wait_budget_bypasses_live_owner_and_cancellation_stops_deferred_work() {
     assert!(matches!(
         pending.resume(
             &mut tree_squatter::Parser::new(),
-            ParseOptions::new()
-                .progress_callback(&mut |_: &dyn ParseStateLike| ControlFlow::Break(()))
+            LoadOptions {
+                parse: ParseOptions::new()
+                    .progress_callback(&mut |_: &dyn ParseStateLike| ControlFlow::Break(())),
+                ..Default::default()
+            }
         ),
         Err(LoadError::Cancelled)
     ));
@@ -194,7 +200,7 @@ fn deferred_contender_reuses_winner_publication() {
         !winner
             .parse_now_with_context(
                 &mut tree_squatter_persistence::LoadContext::default(),
-                ParseOptions::default()
+                LoadOptions::default()
             )
             .unwrap()
             .file
@@ -203,7 +209,7 @@ fn deferred_contender_reuses_winner_publication() {
     // No language is installed: a hit must not need to initialize this parser.
     let mut parser = tree_squatter::Parser::new();
     let LoadStep::Ready(result) = contender
-        .resume(&mut parser, ParseOptions::default())
+        .resume(&mut parser, LoadOptions::default())
         .unwrap()
     else {
         panic!("publication must take precedence over the busy work lock")
@@ -211,4 +217,131 @@ fn deferred_contender_reuses_winner_publication() {
     assert!(result.file.cache_hit());
     assert_eq!(result.file.source(), b"[42]");
     assert!(parser.language().is_none());
+}
+
+#[test]
+fn deferred_attempts_use_fresh_options() {
+    use std::{cell::Cell, rc::Rc};
+    use tree_squatter::PackOptions;
+
+    let root = tempfile::tempdir().unwrap();
+    fs::write(root.path().join("file.json"), "[1]").unwrap();
+    let cache = Persistence::open(root.path(), Options::default()).unwrap();
+    let owner = owner(root.path());
+    let mut context = LoadContext::default();
+    let pending = {
+        let selected = Rc::new(Cell::new(false));
+        let LoadStep::Deferred(pending) = cache
+            .load_step_with_context(
+                Path::new("file.json"),
+                &language(),
+                &mut context,
+                LoadOptions {
+                    pack: PackOptions {
+                        symbol_presence: &|_| selected.get(),
+                        ..Default::default()
+                    },
+                    write: WritePolicy::Disabled,
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+        else {
+            panic!("expected deferral")
+        };
+        pending
+    };
+    fn assert_send<T: Send>(_: &T) {}
+    assert_send(&pending);
+    let LoadStep::Deferred(pending) = pending
+        .resume_with_context(&mut context, LoadOptions::default())
+        .unwrap()
+    else {
+        panic!("owner is still live")
+    };
+    drop(owner);
+
+    let visits = Cell::new(0);
+    let select = |region: tree_squatter::ForestRegion<'_>| {
+        visits.set(visits.get() + 1);
+        region.group_count() == 1
+    };
+    let mut options = LoadOptions {
+        pack: PackOptions {
+            initial_group_capacity: 128,
+            points: false,
+            symbol_presence: &select,
+            ..Default::default()
+        },
+        write: WritePolicy::Deferred,
+        ..Default::default()
+    };
+    let result = pending
+        .parse_now_with_context(&mut context, options.reborrow())
+        .unwrap();
+    assert_eq!(visits.get(), 1);
+    assert!(!result.file.cache_hit());
+    assert!(!result.file.tree().has_points());
+    assert_eq!(result.file.tree().group_capacity(), 128);
+    assert!(result.file.tree().presence_cache().is_some());
+    assert_eq!(
+        result.pending_write.unwrap().publish().unwrap(),
+        WriteOutcome::Published
+    );
+    let result = cache
+        .load_with_context(Path::new("file.json"), &language(), &mut context, options)
+        .unwrap();
+    assert!(result.file.cache_hit());
+    assert!(!result.file.tree().has_points());
+    assert!(result.file.tree().presence_cache().is_some());
+    assert!(result.pending_write.is_none());
+    assert_eq!(visits.get(), 2);
+}
+
+#[test]
+fn changed_options_preserve_the_capture_guard() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("file.json");
+    fs::write(&path, "[1]").unwrap();
+    let cache = Persistence::open(root.path(), Options::default()).unwrap();
+    let owner = owner(root.path());
+    let mut context = LoadContext::default();
+    let LoadStep::Deferred(pending) = cache
+        .load_step_with_context(
+            Path::new("file.json"),
+            &language(),
+            &mut context,
+            LoadOptions::default(),
+        )
+        .unwrap()
+    else {
+        panic!("expected deferral")
+    };
+    drop(owner);
+    fs::write(&path, "[2]").unwrap();
+    assert_eq!(load(&cache).source(), b"[2]");
+
+    let LoadStep::Ready(result) = pending
+        .resume_with_context(
+            &mut context,
+            LoadOptions {
+                pack: tree_squatter::PackOptions {
+                    points: false,
+                    ..Default::default()
+                },
+                write: WritePolicy::Deferred,
+                ..Default::default()
+            },
+        )
+        .unwrap()
+    else {
+        panic!("owner released")
+    };
+    assert_eq!(result.file.source(), b"[1]");
+    assert!(!result.file.tree().has_points());
+    assert_eq!(
+        result.pending_write.unwrap().publish().unwrap(),
+        WriteOutcome::AlreadyPresent
+    );
+    assert!(load(&cache).cache_hit());
 }

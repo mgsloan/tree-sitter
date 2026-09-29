@@ -154,7 +154,7 @@ impl Persistence {
             .store
             .clone()
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "cache unavailable"))?;
-        request.current_guard = store.current_guard(&request);
+        request.current_guard = store.current_guard(&request.source_key);
         let request = Arc::new(request);
         Ok(PendingWrite {
             store: Some(store.clone()),
