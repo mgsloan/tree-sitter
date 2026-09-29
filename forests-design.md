@@ -42,7 +42,7 @@ pub struct ForestRegion<'forest> {
     index: RegionIx,
 }
 
-pub struct ForestRegionToPack<'tree> {
+pub struct PackRegion<'tree> {
     pub language: Language,
     pub roots: Vec<tree_sitter::Node<'tree>>,
 }
@@ -50,14 +50,9 @@ pub struct ForestRegionToPack<'tree> {
 impl Packer {
     pub fn pack_forest(
         &mut self,
-        inputs: Vec<ForestRegionToPack<'_>>,
+        inputs: Vec<PackRegion<'_>>,
         options: PackOptions,
-    ) -> Result<(Forest, Vec<TreeIx>), ForestError>;
-}
-
-pub enum ForestError {
-    Cancelled,
-    Core(Error),
+    ) -> Result<(Forest, Vec<TreeIx>), Error>;
 }
 
 impl Forest {
@@ -110,7 +105,7 @@ byte-order sorting or index is required by the initial forest representation.
 and returns `ControlFlow::Break(())` to cancel. Offsets can decrease when packing
 moves to another tree and do not measure forest-wide work completed. Poll between
 roots and regions as well as during traversal; an empty forest polls once with
-offset zero. Cancellation returns `ForestError::Cancelled` without publishing a
+offset zero. Cancellation returns `Error::Canceled` without publishing a
 partial forest.
 
 Each root packs the supplied node and its descendants as an independent tree;
@@ -150,9 +145,9 @@ physical order makes no tree the document root.
 let positioned_second = second.root_node_with_offset(second_origin, second_point);
 let third_subtree = third.root_node().named_child(0).unwrap();
 let inputs = vec![
-    ForestRegionToPack { language: language_a.clone(), roots: vec![first.root_node()] },
-    ForestRegionToPack { language: language_b, roots: vec![positioned_second] },
-    ForestRegionToPack { language: language_a, roots: vec![third_subtree] },
+    PackRegion { language: language_a.clone(), roots: vec![first.root_node()] },
+    PackRegion { language: language_b, roots: vec![positioned_second] },
+    PackRegion { language: language_a, roots: vec![third_subtree] },
 ];
 let options = PackOptions {
     symbol_presence: false,
