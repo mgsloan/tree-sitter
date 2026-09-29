@@ -97,21 +97,6 @@ impl<'tree> Node<'tree> {
         .then(|| self.at(slot))
     }
 
-    pub(crate) fn group_has_symbol(self, group: u32, symbol: KindId) -> bool {
-        let Some(symbol) = self.tables().remap_kind(symbol) else {
-            return false;
-        };
-        let slots = &self.tree_data().slots;
-        if group < slots.start.raw() / GROUP_SIZE || group >= slots.end.raw() / GROUP_SIZE {
-            return false;
-        }
-        if let Some(presence) = self.presence() {
-            return presence.has(group, symbol.raw() as usize);
-        }
-        (group * GROUP_SIZE..self.data().group_end(group))
-            .any(|slot| self.data().symbol_index(slot) == symbol)
-    }
-
     #[inline]
     pub(crate) fn data(self) -> &'tree ForestData {
         // Node construction is restricted to live slots in a retained tree.

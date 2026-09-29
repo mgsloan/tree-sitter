@@ -1,5 +1,5 @@
 use crate::{
-    Error, KindId, Language, Node, NodeId, RegionIx, SlotIx, TreeCursor, TreeIx,
+    Error, Language, Node, NodeId, RegionIx, SlotIx, TreeCursor, TreeIx,
     side_data::{PointsData, PresenceCache},
     types::{SlabOffset, SquatterGrammarId, SquatterKindId},
 };
@@ -703,9 +703,6 @@ impl Forest {
     }
     pub fn node_at_slot(&self, slot: SlotIx) -> Option<Node<'_>> {
         self.root_node().node_at_slot(slot)
-    }
-    pub fn group_has_symbol(&self, group: u32, symbol: KindId) -> bool {
-        self.root_node().group_has_symbol(group, symbol)
     }
     pub fn language_cache(&self) -> Result<Vec<u8>, Error> {
         self.language().cache()

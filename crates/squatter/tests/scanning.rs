@@ -318,10 +318,6 @@ fn empty_missing_and_error_nodes() {
                 || tree.root_node().preorder().filter_kind_ids(&kinds),
                 &expected,
             );
-            assert_eq!(
-                (0..tree.group_count()).any(|group| tree.group_has_symbol(group, KindId::ERROR)),
-                !expected.is_empty()
-            );
             // Encoded error IDs occupy otherwise invalid public kind IDs.
             for kind in [
                 language.node_kind_count() as u16,
@@ -333,9 +329,6 @@ fn empty_missing_and_error_nodes() {
             {
                 let kinds = KindSet::new([kind]);
                 check_pipeline(|| tree.root_node().preorder().filter_kind_ids(&kinds), &[]);
-                for group in 0..tree.group_count() {
-                    assert!(!tree.group_has_symbol(group, kind));
-                }
             }
         }
     }
