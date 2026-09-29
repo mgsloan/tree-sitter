@@ -23,7 +23,7 @@ fn error_flags_match_each_native_node() -> Result<(), Box<dyn Error>> {
         let expected: Vec<_> = NodeLike::preorder(native.root_node())
             .map(|node| {
                 (
-                    KindId::from(node.kind_id()),
+                    KindId::from_raw(node.kind_id()),
                     node.byte_range(),
                     node.has_error(),
                 )
@@ -51,13 +51,7 @@ fn error_flags_match_each_native_node() -> Result<(), Box<dyn Error>> {
                     .root_node()
                     .preorder()
                     .nodes()
-                    .map(|node| {
-                        (
-                            KindId::from(node.kind_id()),
-                            node.byte_range(),
-                            node.has_error(),
-                        )
-                    })
+                    .map(|node| (node.kind_id(), node.byte_range(), node.has_error()))
                     .collect();
                 assert_eq!(actual, expected, "{source}");
             }
@@ -116,10 +110,10 @@ fn check_shared_navigation<'tree, N: NodeLike<'tree>>(
         assert_eq!(node.is_missing(), attributes.is_missing);
         assert_eq!(node.is_error(), attributes.is_error);
         assert_eq!(node.has_error(), attributes.has_error);
-        assert_eq!(node.has_children(), node.child_count().get() != 0);
+        assert_eq!(node.has_children(), node.child_count().get_raw() != 0);
         assert_eq!(
             node.has_named_children(),
-            node.named_child_count().get() != 0
+            node.named_child_count().get_raw() != 0
         );
     }
     for &node in expected.iter().take(16) {
@@ -155,7 +149,7 @@ fn check_shared_navigation<'tree, N: NodeLike<'tree>>(
                     .collect::<Vec<_>>()
         );
         for field in 1..=fields {
-            let field = FieldId::new(field).unwrap();
+            let field = FieldId::from_raw(field).unwrap();
             let filtered: Vec<_> = children
                 .iter()
                 .zip(&child_fields)
@@ -177,7 +171,7 @@ fn check_shared_navigation<'tree, N: NodeLike<'tree>>(
                 assert_eq!(
                     cursor
                         .goto_first_child_for_byte(byte)
-                        .map(|index| index.get() as usize),
+                        .map(|index| index.get_raw() as usize),
                     expected_index
                 );
                 assert!(cursor.node() == expected_index.map_or(node, |index| children[index]));
@@ -195,7 +189,7 @@ fn check_shared_navigation<'tree, N: NodeLike<'tree>>(
                 assert_eq!(
                     cursor
                         .goto_first_child_for_point(point)
-                        .map(|index| index.get() as usize),
+                        .map(|index| index.get_raw() as usize),
                     expected_index
                 );
                 assert!(cursor.node() == expected_index.map_or(node, |index| children[index]));
@@ -570,7 +564,7 @@ fn language_inspection_matches_native() {
             language
                 .supertypes()
                 .iter()
-                .map(|id| id.get())
+                .map(|id| id.get_raw())
                 .collect::<Vec<_>>(),
             native.supertypes()
         );
@@ -579,13 +573,13 @@ fn language_inspection_matches_native() {
                 language
                     .subtypes_for_supertype(supertype)
                     .iter()
-                    .map(|id| id.get())
+                    .map(|id| id.get_raw())
                     .collect::<Vec<_>>(),
-                native.subtypes_for_supertype(supertype.get())
+                native.subtypes_for_supertype(supertype.get_raw())
             );
         }
         for raw in (0..native.node_kind_count() as u16).chain([u16::MAX - 1, u16::MAX]) {
-            let id = KindId::new(raw);
+            let id = KindId::from_raw(raw);
             assert_eq!(language.node_kind_for_id(id), native.node_kind_for_id(raw));
             assert_eq!(
                 language.node_kind_is_named(id),
@@ -602,7 +596,7 @@ fn language_inspection_matches_native() {
             if let Some(name) = native.node_kind_for_id(raw) {
                 for named in [false, true] {
                     assert_eq!(
-                        language.id_for_node_kind(name, named).get(),
+                        language.id_for_node_kind(name, named).get_raw(),
                         native.id_for_node_kind(name, named)
                     );
                 }
@@ -610,17 +604,17 @@ fn language_inspection_matches_native() {
         }
         assert_eq!(
             language.id_for_node_kind("unknown-kind", true),
-            KindId::new(0)
+            KindId::from_raw(0)
         );
         assert_eq!(language.kind_id_for_name("unknown-kind", true), None);
         for raw in 1..=native.field_count() as u16 {
-            let id = FieldId::new(raw).unwrap();
+            let id = FieldId::from_raw(raw).unwrap();
             let name = language.field_name_for_id(id).unwrap();
             assert_eq!(Some(name), native.field_name_for_id(raw));
             assert_eq!(language.field_id_for_name(name.as_bytes()), Some(id));
         }
         assert_eq!(language.field_id_for_name([255]), None);
-        assert_eq!(FieldId::new(0), None);
+        assert_eq!(FieldId::from_raw(0), None);
         assert_eq!(language.field_id_for_name("unknown"), None);
         assert_eq!(
             language.kind_id_for_name("ERROR", true),
@@ -628,7 +622,10 @@ fn language_inspection_matches_native() {
         );
         assert_eq!(language.grammar_id_for_name("unknown", true), None);
         assert_eq!(
-            language.grammar_id_for_name("ERROR", true).unwrap().get(),
+            language
+                .grammar_id_for_name("ERROR", true)
+                .unwrap()
+                .get_raw(),
             u16::MAX
         );
         if native == json_language() {
@@ -654,12 +651,12 @@ fn compact_ids_roundtrip_native_kinds_and_scans() -> Result<(), Box<dyn Error>> 
         let tree = Tree::pack(&language, &parsed)?;
         assert!(language.squatter_kind_count() < language.node_kind_count() + 2);
         for raw in 1..language.squatter_kind_count() as u16 {
-            let compact = SquatterKindId::new(raw);
+            let compact = SquatterKindId::from_raw(raw);
             let native = language.kind_id(compact).unwrap();
             assert_eq!(language.squatter_kind_id(native), Some(compact));
         }
         for raw in 1..language.squatter_grammar_count() as u16 {
-            let compact = SquatterGrammarId::new(raw);
+            let compact = SquatterGrammarId::from_raw(raw);
             let native = language.grammar_id(compact).unwrap();
             assert_eq!(language.squatter_grammar_id(native), Some(compact));
         }
@@ -680,11 +677,11 @@ fn compact_ids_roundtrip_native_kinds_and_scans() -> Result<(), Box<dyn Error>> 
             let grammar = node.squatter_grammar_id();
             assert_eq!(
                 language.kind_id(kind),
-                Some(KindId::new(expected.kind_id()))
+                Some(KindId::from_raw(expected.kind_id()))
             );
             assert_eq!(
                 language.grammar_id(grammar),
-                Some(GrammarId::new(expected.grammar_id()))
+                Some(GrammarId::from_raw(expected.grammar_id()))
             );
             assert_eq!(
                 language.squatter_kind_id_for_name(node.kind(), node.is_named()),
@@ -695,8 +692,8 @@ fn compact_ids_roundtrip_native_kinds_and_scans() -> Result<(), Box<dyn Error>> 
                     .all()
                     .filter_squatter_kind_ids([
                         kind,
-                        SquatterKindId::new(0),
-                        SquatterKindId::new(u16::MAX)
+                        SquatterKindId::from_raw(0),
+                        SquatterKindId::from_raw(u16::MAX)
                     ])
                     .nodes()
                     .collect::<Vec<_>>(),

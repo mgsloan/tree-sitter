@@ -126,9 +126,9 @@ impl CaptureList {
     }
 
     fn hash_capture(&mut self, capture: Capture) {
-        let identity = (capture.node.slot.get() as u64)
+        let identity = (capture.node.slot.get_raw() as u64)
             .wrapping_mul(0x9e37_79b1_85eb_ca87)
-            .wrapping_add(capture.index.get() as u64);
+            .wrapping_add(capture.index.get_raw() as u64);
         self.hash = self
             .hash
             .wrapping_mul(0xc2b2_ae3d_27d4_eb4f)
@@ -692,7 +692,7 @@ impl QueryCursor {
             finished: Vec::with_capacity(8),
             finished_heap_size: 0,
             parents: Vec::new(),
-            position: SlotIx::new(0),
+            position: SlotIx::from_raw(0),
             ascending: false,
             halted: false,
             error: None,
@@ -701,7 +701,7 @@ impl QueryCursor {
             dirty_patterns: 0,
             states_need_sort: false,
             states_max_depth: 0,
-            next_state_id: MatchId(0),
+            next_state_id: MatchId::from_raw(0),
             next_finished_id: 0,
             first_capture: None,
             first_capture_valid: false,
@@ -828,7 +828,7 @@ impl QueryCursor {
         self.dirty_patterns = 0;
         self.states_need_sort = false;
         self.states_max_depth = 0;
-        self.next_state_id = MatchId(0);
+        self.next_state_id = MatchId::from_raw(0);
         self.next_finished_id = 0;
         self.finished_heap_size = 0;
         self.first_capture_valid = false;
@@ -840,7 +840,7 @@ impl QueryCursor {
             && self.max_start_depth == NONE
             && !self.halted;
         self.direct_position =
-            root.data().groups() * crate::storage::GROUP_SIZE - 1 - root.slot().get();
+            root.data().groups() * crate::storage::GROUP_SIZE - 1 - root.slot().get_raw();
         self.direct_free = NONE;
 
         // Root searches reuse word-wide comparisons across scanned groups.
@@ -1018,7 +1018,7 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
             };
             let result = QueryMatch {
                 id: output.id,
-                pattern_index: PatternIx(output.pattern.get() as usize),
+                pattern_index: PatternIx(output.pattern.get_raw() as usize),
                 captures,
                 removal: &self.cursor.removal,
             };
@@ -1030,7 +1030,7 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
                         captures,
                         removal: &self.cursor.removal,
                     },
-                    MatchCaptureIx(output.index as u32),
+                    MatchCaptureIx::from_raw(output.index as u32),
                 ));
             }
             if capture {
@@ -1341,9 +1341,10 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
     }
 
     fn snapshot(&mut self, state: &mut State) -> Output {
-        if state.id == MatchId(NONE) {
+        if state.id == MatchId::from_raw(NONE) {
             state.id = self.cursor.next_state_id;
-            self.cursor.next_state_id = MatchId(self.cursor.next_state_id.get().wrapping_add(1));
+            self.cursor.next_state_id =
+                MatchId::from_raw(self.cursor.next_state_id.get_raw().wrapping_add(1));
         }
         let captures = self.cursor.pool.get(state.captures);
         Output {
@@ -1471,7 +1472,7 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
                     if self.cursor.direct {
                         self.release_direct(state.order);
                     }
-                    self.cursor.dirty_patterns |= 1 << (state.pattern.get() % 64);
+                    self.cursor.dirty_patterns |= 1 << (state.pattern.get_raw() % 64);
                 }
             }
             if !self.advance(true) && (self.stopped || self.cursor.finished.is_empty()) {
@@ -1497,7 +1498,7 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
             if self.cursor.direct {
                 self.release_direct(state.order);
             }
-            self.cursor.dirty_patterns |= 1 << (state.pattern.get() % 64);
+            self.cursor.dirty_patterns |= 1 << (state.pattern.get_raw() % 64);
             self.cursor.first_capture_valid = false;
         }
     }
@@ -1522,7 +1523,7 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
         state.captures = other.captures;
         other.captures = NONE;
         other.flags |= DEAD;
-        self.cursor.dirty_patterns |= 1 << (other.pattern.get() % 64);
+        self.cursor.dirty_patterns |= 1 << (other.pattern.get_raw() % 64);
         self.cursor.states_need_sort = true;
         self.cursor.pool.clear(state.captures);
         true
@@ -1573,12 +1574,12 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
             index -= 1;
         }
 
-        self.cursor.dirty_patterns |= 1 << (entry.pattern_index.get() % 64);
+        self.cursor.dirty_patterns |= 1 << (entry.pattern_index.get_raw() % 64);
         self.cursor.states_need_sort = true;
         self.cursor.states.insert(
             index,
             State {
-                id: MatchId(NONE),
+                id: MatchId::from_raw(NONE),
                 captures: NONE,
                 order: NONE,
                 start_depth: depth as u16,
@@ -1646,7 +1647,8 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
     }
 
     fn position_node(&self, position: u32) -> Node<'tree> {
-        self.root.at(SlotIx::new(self.total_slots() - 1 - position))
+        self.root
+            .at(SlotIx::from_raw(self.total_slots() - 1 - position))
     }
 
     fn node_end(&self, node: Node<'tree>) -> u32 {
@@ -1708,7 +1710,7 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
         let groups = GroupRef::new(self.root);
 
         while start < end {
-            if self.poll_at(SlotIx::new(total - 1 - start)) {
+            if self.poll_at(SlotIx::from_raw(total - 1 - start)) {
                 return start;
             }
             let index = (total - 1 - start) / GROUP_SIZE;
@@ -1716,10 +1718,10 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
             if data.presence_cache.as_ref().is_none_or(|cache| {
                 targets
                     .iter()
-                    .any(|symbol| cache.has(index, symbol.get() as usize, data.groups()))
+                    .any(|symbol| cache.has(index, symbol.get_raw() as usize, data.groups()))
             }) {
                 let group = groups.at_group(GroupIx(index));
-                let base = group.first_slot().get();
+                let base = group.first_slot().get_raw();
                 let mut hits = group.equal_kind_ids(&targets, group.valid_mask()).bits();
                 let first = total - group_end - base;
                 let last = total - start - base;
@@ -1752,7 +1754,7 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
         };
 
         while start < end {
-            if self.poll_at(SlotIx::new(total - 1 - start)) {
+            if self.poll_at(SlotIx::from_raw(total - 1 - start)) {
                 return start;
             }
             let group = (total - 1 - start) / GROUP_SIZE;
@@ -1771,7 +1773,7 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
 
             if filter.is_empty() {
                 while start < group_end {
-                    let symbol = data.symbol_index(total - 1 - start).get();
+                    let symbol = data.symbol_index(total - 1 - start).get_raw();
                     if query.program.scan_symbols[symbol as usize / 64] & (1 << (symbol % 64)) != 0
                     {
                         return start;
@@ -1807,7 +1809,7 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
     }
 
     fn scan_seek(&mut self) -> bool {
-        let current_position = self.total_slots() - 1 - self.cursor.position.get();
+        let current_position = self.total_slots() - 1 - self.cursor.position.get_raw();
         let end = self.node_end(self.root);
         let mut start = self.scan_resume.take().unwrap_or(current_position);
         let target = 'search: loop {
@@ -1826,7 +1828,7 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
 
             // With no partial states, skipped enter/exit events cannot affect a
             // match. Restore only the ancestor path needed by the next root.
-            while self.total_slots() - 1 - self.cursor.position.get() != target {
+            while self.total_slots() - 1 - self.cursor.position.get_raw() != target {
                 let node = self.current();
                 if target < self.node_end(node) {
                     // A symbol hit must not re-enter a subtree that ordinary
@@ -1891,7 +1893,7 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
         let group_size = crate::storage::GROUP_SIZE;
         if requirement.symbol != 0 {
             if let Some(presence) = &data.presence_cache {
-                let slot = root.slot().get();
+                let slot = root.slot().get_raw();
                 let group = slot / group_size;
                 let maximum = data.word(data.layout.span_max, group);
                 // The maximum covers this subtree without loading its span delta.
@@ -1907,7 +1909,7 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
             }
         }
 
-        let mut begin = self.normalize_position(self.total_slots() - root.slot().get());
+        let mut begin = self.normalize_position(self.total_slots() - root.slot().get_raw());
         let limit = self.node_end(root);
         if begin >= cache.start && begin <= cache.next {
             if cache.next >= limit {
@@ -2010,7 +2012,7 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
 
     fn direct_roots(&self, node: Node<'tree>) -> u64 {
         let plan = self.query.program.direct.as_ref().unwrap();
-        let roots = plan.roots[node.data().symbol_index(node.slot().get()).get() as usize];
+        let roots = plan.roots[node.data().symbol_index(node.slot().get_raw()).get_raw() as usize];
         if roots == 0 || (self.unrestricted && self.containing_unrestricted) {
             return roots;
         }
@@ -2053,7 +2055,7 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
                 .unwrap_or(root_end);
             let mut position = self.normalize_position(self.cursor.direct_position);
             while position < next {
-                if self.poll_at(SlotIx::new(self.total_slots - 1 - position)) {
+                if self.poll_at(SlotIx::from_raw(self.total_slots - 1 - position)) {
                     self.cursor.direct_position = position;
                     return false;
                 }
@@ -2092,7 +2094,7 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
                 self.cursor.halted = true;
                 return false;
             }
-            if self.poll_at(SlotIx::new(self.total_slots - 1 - position)) {
+            if self.poll_at(SlotIx::from_raw(self.total_slots - 1 - position)) {
                 self.cursor.direct_position = position;
                 return false;
             }
@@ -2101,7 +2103,7 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
             let node = self.position_node(position);
             // Shared capture bookkeeping polls the node currently being processed.
             self.cursor.position = node.slot();
-            let symbol = node.data().symbol_index(node.slot().get()).get();
+            let symbol = node.data().symbol_index(node.slot().get_raw()).get_raw();
             let mut roots = self.direct_roots(node);
             while roots != 0 {
                 let pattern = roots.trailing_zeros() as usize;
@@ -2112,7 +2114,7 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
                     end: self.node_end(node),
                 });
                 self.cursor.states.push(State {
-                    id: MatchId(NONE),
+                    id: MatchId::from_raw(NONE),
                     captures: NONE,
                     order,
                     start_depth: 0,
@@ -2146,7 +2148,8 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
                 let symbol_matches =
                     symbol.wrapping_sub(operation.symbol_start) <= operation.symbol_span;
                 let matches = symbol_matches
-                    && (operation.field == 0 || FieldId::new(operation.field) == node.field_id())
+                    && (operation.field == 0
+                        || FieldId::from_raw(operation.field) == node.field_id())
                     && (!operation.last_named_child
                         || self.named_child_position(sibling, current.end) == current.end);
                 if !matches {
@@ -2164,8 +2167,8 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
                     continue;
                 }
 
-                state.step = if plan.local_patterns & (1 << state.pattern.get()) != 0 {
-                    plan.end_steps[state.pattern.get() as usize]
+                state.step = if plan.local_patterns & (1 << state.pattern.get_raw()) != 0 {
+                    plan.end_steps[state.pattern.get_raw() as usize]
                 } else {
                     state.step + 1
                 };
@@ -2220,7 +2223,7 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
         }
         let mut next = self.current().next_sibling_including_empty();
         while let Some(node) = next {
-            if node.field_id() == FieldId::new(field) {
+            if node.field_id() == FieldId::from_raw(field) {
                 return true;
             }
             next = node.next_sibling_including_empty();
@@ -2288,13 +2291,13 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
                         let step = self.step(state.step);
                         if step.depth == DONE && (state.start_depth as u32 > depth || depth == 0) {
                             self.finish(state);
-                            self.cursor.dirty_patterns |= 1 << (state.pattern.get() % 64);
+                            self.cursor.dirty_patterns |= 1 << (state.pattern.get_raw() % 64);
                             did_match = true;
                         } else if step.depth != DONE
                             && state.start_depth as u32 + step.depth as u32 > depth
                         {
                             self.cursor.pool.release(state.captures);
-                            self.cursor.dirty_patterns |= 1 << (state.pattern.get() % 64);
+                            self.cursor.dirty_patterns |= 1 << (state.pattern.get_raw() % 64);
                         } else {
                             if retained != index {
                                 self.cursor.states[retained] = state;
@@ -2349,12 +2352,12 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
     ) -> bool {
         let query = self.query;
         let depth = self.cursor.parents.len() as u32;
-        let symbol = node.data().symbol_index(node.slot().get());
+        let symbol = node.data().symbol_index(node.slot().get_raw());
         let named = node.data().tables().named_index(symbol);
-        let symbol = symbol.get();
+        let symbol = symbol.get_raw();
         let is_error = symbol as u32 == query.compiled.view.symbol_count;
         let field = if query.program.needs_fields && depth != 0 {
-            node.field_id().map_or(0, FieldId::get)
+            node.field_id().map_or(0, FieldId::get_raw)
         } else {
             0
         };
@@ -2465,11 +2468,12 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
                 && state.has(SEEKING_IMMEDIATE)
                 && symbol_matches
             {
-                self.cursor.dirty_patterns |= 1 << (state.pattern.get() % 64);
+                self.cursor.dirty_patterns |= 1 << (state.pattern.get_raw() % 64);
                 if step.capture_ids[0] != DONE {
                     self.capture(&mut state, node, step);
                 }
-                state.step = (self.patterns[state.pattern.get() as usize].steps.end() - 1) as u16;
+                state.step =
+                    (self.patterns[state.pattern.get_raw() as usize].steps.end() - 1) as u16;
                 state.flags &= !(SEEKING_IMMEDIATE | SKIPPED_QUANTIFIER);
                 did_match |= stop_on_definite && self.step(state.step).has(ROOT_PATTERN_GUARANTEED);
                 self.cursor.states[index] = state;
@@ -2486,7 +2490,7 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
                 matches = false;
             }
             if step.supertype_symbol != 0
-                && !node.has_supertype(GrammarId::new(step.supertype_symbol))
+                && !node.has_supertype(GrammarId::from_raw(step.supertype_symbol))
             {
                 matches = false;
             }
@@ -2507,7 +2511,7 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
                     .take_while(|field| *field != 0)
                 {
                     if node
-                        .child_by_field_id(FieldId::new(field).unwrap())
+                        .child_by_field_id(FieldId::from_raw(field).unwrap())
                         .is_some()
                     {
                         matches = false;
@@ -2519,7 +2523,7 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
             if !matches {
                 if !later_can_match {
                     self.cursor.pool.release(state.captures);
-                    self.cursor.dirty_patterns |= 1 << (state.pattern.get() % 64);
+                    self.cursor.dirty_patterns |= 1 << (state.pattern.get_raw() % 64);
                     self.stage_remaining(index);
                     self.cursor.states.remove(index);
                 } else {
@@ -2527,7 +2531,7 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
                 }
                 continue;
             }
-            self.cursor.dirty_patterns |= 1 << (state.pattern.get() % 64);
+            self.cursor.dirty_patterns |= 1 << (state.pattern.get_raw() % 64);
             self.stage_remaining(index);
             let mut copies = 0;
             if later_can_match
@@ -2784,10 +2788,13 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
                 capture_id = Some(capture.index);
                 let quantifiers = unsafe {
                     self.query.compiled.view.capture_quantifiers.as_slice()
-                        [state.pattern.get() as usize]
+                        [state.pattern.get_raw() as usize]
                         .as_slice()
                 };
-                if !matches!(quantifiers.get(capture.index.get() as usize), Some(1 | 2)) {
+                if !matches!(
+                    quantifiers.get(capture.index.get_raw() as usize),
+                    Some(1 | 2)
+                ) {
                     return false;
                 }
             }
@@ -2815,7 +2822,7 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
         }
         self.cursor.dirty_patterns = 0;
         for state in &mut self.cursor.states {
-            if dirty & (1 << (state.pattern.get() % 64)) != 0 {
+            if dirty & (1 << (state.pattern.get_raw() % 64)) != 0 {
                 state.flags &= !HAS_ALTERNATIVES;
             }
         }
@@ -2840,13 +2847,13 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
         for index in 0..self.cursor.states.len() {
             self.poll();
             let mut state = self.cursor.states[index];
-            if state.has(REMOVED) || dirty & (1 << (state.pattern.get() % 64)) == 0 {
+            if state.has(REMOVED) || dirty & (1 << (state.pattern.get_raw() % 64)) == 0 {
                 continue;
             }
             if state.has(DEAD) {
                 self.cursor.pool.release(state.captures);
                 self.cursor.states[index].flags |= REMOVED;
-                self.cursor.dirty_patterns |= 1 << (state.pattern.get() % 64);
+                self.cursor.dirty_patterns |= 1 << (state.pattern.get_raw() % 64);
                 continue;
             }
             if group != Some((state.start_depth, state.pattern)) {
@@ -2937,7 +2944,7 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
                     {
                         self.cursor.pool.release(other.captures);
                         self.cursor.states[other_index].flags |= REMOVED;
-                        self.cursor.dirty_patterns |= 1 << (state.pattern.get() % 64);
+                        self.cursor.dirty_patterns |= 1 << (state.pattern.get_raw() % 64);
                         other_index += 1;
                         continue;
                     }
@@ -2950,7 +2957,7 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
                     {
                         self.cursor.pool.release(state.captures);
                         state.flags |= REMOVED;
-                        self.cursor.dirty_patterns |= 1 << (state.pattern.get() % 64);
+                        self.cursor.dirty_patterns |= 1 << (state.pattern.get_raw() % 64);
                         break;
                     }
                     state.flags |= HAS_ALTERNATIVES;
@@ -2964,7 +2971,7 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
             {
                 self.finish(state);
                 state.flags |= REMOVED;
-                self.cursor.dirty_patterns |= 1 << (state.pattern.get() % 64);
+                self.cursor.dirty_patterns |= 1 << (state.pattern.get_raw() % 64);
                 did_match = true;
             }
             self.cursor.states[index].flags = state.flags;
@@ -3056,13 +3063,13 @@ mod scan_tests {
             };
             let Some((result, index)) = next else { break };
             let captures = index.map_or(result.captures(), |index| {
-                &result.captures()[index.0 as usize..index.0 as usize + 1]
+                &result.captures()[index.get_raw() as usize..index.get_raw() as usize + 1]
             });
             results.push((
                 result.pattern_index,
                 captures
                     .iter()
-                    .map(|capture| (capture.node.slot().get(), capture.index))
+                    .map(|capture| (capture.node.slot().get_raw(), capture.index))
                     .collect(),
             ));
             assert!(results.len() < 10_000);
@@ -3279,7 +3286,7 @@ mod scan_tests {
                             .find(|&position| {
                                 execution.normalize_position(position) == position
                                     && query.program.scan_targets.contains(
-                                        &tree.data().symbol_index(total - 1 - position).get(),
+                                        &tree.data().symbol_index(total - 1 - position).get_raw(),
                                     )
                             })
                             .unwrap_or(end);

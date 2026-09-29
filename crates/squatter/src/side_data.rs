@@ -193,7 +193,7 @@ impl PresenceCache {
         for group in 0..tree.group_count() {
             progress.tick()?;
             for slot in group * GROUP_SIZE..data.group_end(group) {
-                let symbol = data.symbol_index(slot).get() as usize;
+                let symbol = data.symbol_index(slot).get_raw() as usize;
                 let offset = HEADER_BYTES + (symbol * words + group as usize / 64) * 8;
                 sidecar.put_word(offset, sidecar.word(offset) | 1 << (group % 64));
             }
@@ -326,8 +326,8 @@ impl PointsData {
 
     pub(crate) fn put_bases(&mut self, group: u32, start: PackedPoint, end: PackedPoint) {
         let offset = HEADER_BYTES + group as usize * POINT_GROUP_BYTES;
-        self.0.put_word(offset, start.get());
-        self.0.put_word(offset + 8, end.get());
+        self.0.put_word(offset, start.get_raw());
+        self.0.put_word(offset + 8, end.get_raw());
     }
     pub(crate) fn put_deltas(&mut self, slot: u32, start: u16, end: u16) {
         let offset = HEADER_BYTES

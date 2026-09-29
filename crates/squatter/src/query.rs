@@ -347,7 +347,7 @@ impl Query {
     }
 
     fn string_value(&self, id: QueryStringId) -> String {
-        self.string(&self.compiled.view.predicate_values, id.get() as usize)
+        self.string(&self.compiled.view.predicate_values, id.get_raw() as usize)
     }
 
     fn string(&self, table: &crate::native::StringTable, index: usize) -> String {
@@ -408,7 +408,7 @@ impl Query {
         self.compiled
             .entries()
             .iter()
-            .filter(|entry| entry.pattern_index.get() as usize == index.0)
+            .filter(|entry| entry.pattern_index.get_raw() as usize == index.0)
             .all(|entry| entry.flags & 1 != 0)
     }
 

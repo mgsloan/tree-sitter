@@ -1,15 +1,28 @@
 use std::num::NonZeroU16;
 
 macro_rules! integer_type {
+    ($(#[$attribute:meta])* $visibility:vis $name:ident(pub $integer:ty)) => {
+        $(#[$attribute])*
+        #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+        #[repr(transparent)]
+        $visibility struct $name(pub $integer);
+
+        impl $name {
+            #[inline]
+            pub const fn get_raw(self) -> $integer {
+                self.0
+            }
+        }
+    };
     ($(#[$attribute:meta])* $visibility:vis $name:ident($integer:ty)) => {
         $(#[$attribute])*
-        #[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
+        #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
         #[repr(transparent)]
         $visibility struct $name(pub(crate) $integer);
 
         impl $name {
             #[inline]
-            pub const fn get(self) -> $integer {
+            pub const fn get_raw(self) -> $integer {
                 self.0
             }
         }
@@ -54,7 +67,7 @@ pub struct FieldId(NonZeroU16);
 impl FieldId {
     /// Rejects zero; membership in a grammar is not checked.
     #[inline]
-    pub const fn new(value: u16) -> Option<Self> {
+    pub const fn from_raw(value: u16) -> Option<Self> {
         match NonZeroU16::new(value) {
             Some(value) => Some(Self(value)),
             None => None,
@@ -62,7 +75,7 @@ impl FieldId {
     }
 
     #[inline]
-    pub const fn get(self) -> u16 {
+    pub const fn get_raw(self) -> u16 {
         self.0.get()
     }
 }
@@ -76,6 +89,12 @@ impl From<NonZeroU16> for FieldId {
 integer_type!(pub(crate) GroupIx(u32));
 integer_type!(pub(crate) GroupSlotIx(u32));
 integer_type!(pub(crate) SlabOffset(u32));
+
+impl Default for SlabOffset {
+    fn default() -> Self {
+        Self(0)
+    }
+}
 integer_type!(
     /// A compact displayed kind in one prepared language. Zero is reserved;
     /// error IDs follow the concrete kinds. Convert through [`crate::Language`].
@@ -133,19 +152,9 @@ impl PackedPoint {
     }
 }
 
-impl From<u16> for KindId {
-    fn from(value: u16) -> Self {
-        Self(value)
-    }
-}
-impl From<u16> for GrammarId {
-    fn from(value: u16) -> Self {
-        Self(value)
-    }
-}
 impl From<FieldId> for u16 {
     fn from(value: FieldId) -> Self {
-        value.get()
+        value.get_raw()
     }
 }
 
@@ -183,23 +192,23 @@ impl GroupIx {
         SlotIx(self.0 * crate::storage::GROUP_SIZE)
     }
     pub(crate) fn slot(self, slot: GroupSlotIx) -> SlotIx {
-        SlotIx(self.first_slot().get() + slot.get())
+        SlotIx(self.first_slot().get_raw() + slot.get_raw())
     }
 }
 
 impl From<KindId> for u16 {
     fn from(value: KindId) -> Self {
-        value.get()
+        value.get_raw()
     }
 }
 impl From<GrammarId> for u16 {
     fn from(value: GrammarId) -> Self {
-        value.get()
+        value.get_raw()
     }
 }
 impl From<SlotIx> for u32 {
     fn from(value: SlotIx) -> Self {
-        value.get()
+        value.get_raw()
     }
 }
 
@@ -209,7 +218,7 @@ impl KindId {
 
     /// Wrap a raw ID without checking membership in a grammar.
     #[inline]
-    pub const fn new(value: u16) -> Self {
+    pub const fn from_raw(value: u16) -> Self {
         Self(value)
     }
 }
@@ -221,7 +230,7 @@ impl GrammarId {
 
     /// Wrap a raw ID without checking membership in a grammar.
     #[inline]
-    pub const fn new(value: u16) -> Self {
+    pub const fn from_raw(value: u16) -> Self {
         Self(value)
     }
 }
@@ -229,7 +238,7 @@ impl GrammarId {
 impl SquatterKindId {
     /// Wrap an ID without checking membership in a prepared language.
     #[inline]
-    pub const fn new(value: u16) -> Self {
+    pub const fn from_raw(value: u16) -> Self {
         Self(value)
     }
 }
@@ -237,14 +246,14 @@ impl SquatterKindId {
 impl SquatterGrammarId {
     /// Wrap an ID without checking membership in a prepared language.
     #[inline]
-    pub const fn new(value: u16) -> Self {
+    pub const fn from_raw(value: u16) -> Self {
         Self(value)
     }
 }
 impl SlotIx {
     /// Wrap a raw slot without checking whether it holds a node.
     #[inline]
-    pub const fn new(value: u32) -> Self {
+    pub const fn from_raw(value: u32) -> Self {
         Self(value)
     }
 }
@@ -258,10 +267,10 @@ integer_type!(
     ///
     /// ```compile_fail
     /// # fn example(node: tree_squatter::Node<'_>) {
-    /// node.child(tree_squatter::NamedChildIx::new(0));
+    /// node.child(tree_squatter::NamedChildIx(0));
     /// # }
     /// ```
-    pub ChildIx(u32));
+    pub ChildIx(pub u32));
 impl ChildIx {
     /// Wrap a position or count without checking whether a child exists.
     #[inline]
@@ -276,7 +285,7 @@ integer_type!(
     /// from all-child indices and physical slots.
     ///
     /// **Not in Tree-sitter:** it uses `u32` indices and `usize` counts instead.
-    pub NamedChildIx(u32));
+    pub NamedChildIx(pub u32));
 impl NamedChildIx {
     /// Wrap a position or count without checking whether a child exists.
     #[inline]
@@ -286,45 +295,53 @@ impl NamedChildIx {
 }
 
 /// A query-global pattern index.
-#[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 #[repr(transparent)]
 pub struct PatternIx(pub usize);
 
 impl PatternIx {
-    pub const fn get(self) -> usize {
+    pub const fn get_raw(self) -> usize {
         self.0
     }
 }
 
 /// A query-global capture-name index.
-#[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 #[repr(transparent)]
 pub struct CaptureIx(pub u32);
 
 impl CaptureIx {
-    pub const fn get(self) -> u32 {
+    pub const fn get_raw(self) -> u32 {
         self.0
     }
 }
 
 /// A match identity within one execution.
-#[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 #[repr(transparent)]
-pub struct MatchId(pub u32);
+pub struct MatchId(u32);
 
 impl MatchId {
-    pub const fn get(self) -> u32 {
+    pub(crate) const fn from_raw(value: u32) -> Self {
+        Self(value)
+    }
+
+    pub const fn get_raw(self) -> u32 {
         self.0
     }
 }
 
 /// A position within a match’s capture slice.
-#[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 #[repr(transparent)]
-pub struct MatchCaptureIx(pub u32);
+pub struct MatchCaptureIx(u32);
 
 impl MatchCaptureIx {
-    pub const fn get(self) -> u32 {
+    pub(crate) const fn from_raw(value: u32) -> Self {
+        Self(value)
+    }
+
+    pub const fn get_raw(self) -> u32 {
         self.0
     }
 }

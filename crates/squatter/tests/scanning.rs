@@ -71,7 +71,7 @@ fn check_pipeline<'tree, S: GroupScan<'tree>>(
         for node in fragment.nodes() {
             assert!(seen.insert(node.slot()));
             assert_eq!(
-                group.node(node.slot().get() - group.first_slot().get()),
+                group.node(node.slot().get_raw() - group.first_slot().get_raw()),
                 Some(node)
             );
         }
@@ -203,7 +203,7 @@ fn check_ranges(tree: &Tree, source_len: usize) {
                 || root.postorder().overlapping_bytes(range.clone()),
                 &expected,
             );
-            for field in [0, 1, 2, u16::MAX].map(FieldId::new) {
+            for field in [0, 1, 2, u16::MAX].map(FieldId::from_raw) {
                 let expected = preorder
                     .iter()
                     .filter(overlaps)
@@ -327,7 +327,7 @@ fn empty_missing_and_error_nodes() {
                 32768,
                 u16::MAX - 2,
             ]
-            .map(KindId::new)
+            .map(KindId::from_raw)
             {
                 let kinds = KindSet::new([kind]);
                 check_pipeline(|| tree.root_node().preorder().filter_kind_ids(&kinds), &[]);
@@ -707,12 +707,12 @@ fn id_set_intersection() {
         ),
     ];
     for &(first, second, expected) in cases {
-        let first = KindSet::new(first.iter().copied().map(KindId::new));
-        let second = KindSet::new(second.iter().copied().map(KindId::new));
+        let first = KindSet::new(first.iter().copied().map(KindId::from_raw));
+        let second = KindSet::new(second.iter().copied().map(KindId::from_raw));
         for intersection in [first.intersection(&second), second.intersection(&first)] {
             assert_eq!(intersection.is_empty(), expected.is_empty());
             let actual = (0..=u16::MAX)
-                .filter(|&id| intersection.contains(KindId::new(id)))
+                .filter(|&id| intersection.contains(KindId::from_raw(id)))
                 .collect::<Vec<_>>();
             assert_eq!(actual, expected);
         }
@@ -740,7 +740,7 @@ fn dense_id_filters() {
         .collect::<HashSet<_>>();
     for kind in kinds
         .into_iter()
-        .chain([KindId::new(u16::MAX - 1), KindId::new(32768)])
+        .chain([KindId::from_raw(u16::MAX - 1), KindId::from_raw(32768)])
     {
         let kinds = KindSet::new([kind]);
         let expected = nodes
@@ -750,7 +750,7 @@ fn dense_id_filters() {
             .collect::<Vec<_>>();
         check_pipeline(|| root.preorder().filter_kind_ids(&kinds), &expected);
     }
-    for field in [0, 1, 2, 32768, u16::MAX].map(FieldId::new) {
+    for field in [0, 1, 2, 32768, u16::MAX].map(FieldId::from_raw) {
         let expected = nodes
             .iter()
             .copied()
@@ -761,21 +761,21 @@ fn dense_id_filters() {
     let number = grammar.kind_id_for_name("number", true).unwrap();
     for ids in [
         vec![number, KindId::ERROR],
-        vec![number, KindId::ERROR, KindId::new(u16::MAX - 1)],
+        vec![number, KindId::ERROR, KindId::from_raw(u16::MAX - 1)],
         vec![
             number,
             KindId::ERROR,
-            KindId::new(language.node_kind_count() as u16),
-            KindId::new(32768),
+            KindId::from_raw(language.node_kind_count() as u16),
+            KindId::from_raw(32768),
         ],
         vec![
             number,
             KindId::ERROR,
-            KindId::new(u16::MAX - 1),
-            KindId::new(32768),
-            KindId::new(32769),
+            KindId::from_raw(u16::MAX - 1),
+            KindId::from_raw(32768),
+            KindId::from_raw(32769),
         ],
-        vec![KindId::new(32768), KindId::new(32769)],
+        vec![KindId::from_raw(32768), KindId::from_raw(32769)],
     ] {
         let kinds = KindSet::new(ids);
         let expected = nodes
@@ -816,7 +816,7 @@ fn sparse_cursor_pipelines() {
             let kinds = KindSet::new(
                 (0..language.node_kind_count() as u16)
                     .chain([32768, u16::MAX])
-                    .map(KindId::new),
+                    .map(KindId::from_raw),
             );
             let nodes = reference_preorder(root);
             let expected = nodes
@@ -932,9 +932,9 @@ fn prepared_kind_sets() {
                 let kinds = KindSet::new(
                     (start..start + length)
                         .chain([u16::MAX, u16::MAX - 1])
-                        .map(KindId::new),
+                        .map(KindId::from_raw),
                 );
-                let plain = KindSet::new((start..start + length).map(KindId::new));
+                let plain = KindSet::new((start..start + length).map(KindId::from_raw));
                 for kinds in [&plain, &kinds] {
                     let expected = nodes
                         .iter()
@@ -1013,15 +1013,15 @@ fn indexed_kind_filters() {
                 .unwrap();
             for root in [tree.root_node(), subtree] {
                 for ids in [
-                    [truth, falsity, absent, KindId::new(32768)],
+                    [truth, falsity, absent, KindId::from_raw(32768)],
                     [string, truth, absent, KindId::ERROR],
                     [
                         number,
                         number,
-                        KindId::new(u16::MAX - 1),
-                        KindId::new(32768),
+                        KindId::from_raw(u16::MAX - 1),
+                        KindId::from_raw(32768),
                     ],
-                    [absent, absent, KindId::new(32768), KindId::ERROR],
+                    [absent, absent, KindId::from_raw(32768), KindId::ERROR],
                 ] {
                     check_array_kinds(root, ids);
                     let kinds = KindSet::new(ids);
@@ -1159,11 +1159,11 @@ fn fixed_kind_sets() {
     for root in roots {
         check_array_kinds(root, []);
         check_array_kinds(root, [number]);
-        check_array_kinds(root, [KindId::new(32768)]);
+        check_array_kinds(root, [KindId::from_raw(32768)]);
         check_array_kinds(root, [KindId::ERROR]);
-        check_array_kinds(root, [KindId::new(u16::MAX - 1)]);
-        check_array_kinds(root, [KindId::new(32768), number]);
-        check_array_kinds(root, [number, array, KindId::new(32768)]);
+        check_array_kinds(root, [KindId::from_raw(u16::MAX - 1)]);
+        check_array_kinds(root, [KindId::from_raw(32768), number]);
+        check_array_kinds(root, [number, array, KindId::from_raw(32768)]);
         check_array_kinds(root, [number, array, number, KindId::ERROR]);
         check_array_kinds(
             root,
@@ -1171,15 +1171,15 @@ fn fixed_kind_sets() {
                 number,
                 array,
                 KindId::ERROR,
-                KindId::new(u16::MAX - 1),
-                KindId::new(32768),
-                KindId::new(32769),
+                KindId::from_raw(u16::MAX - 1),
+                KindId::from_raw(32768),
+                KindId::from_raw(32769),
                 number,
                 array,
             ],
         );
         check_array_kinds(root, [number; 16]);
-        check_array_kinds(root, [KindId::new(32768); 16]);
+        check_array_kinds(root, [KindId::from_raw(32768); 16]);
     }
     use tree_squatter::traits::NodeLike;
     let kinds = [number, array];
@@ -1216,7 +1216,7 @@ fn check_field_set<const N: usize>(root: Node<'_>, fields: [Option<FieldId>; N])
         root.kind_id(),
         expected
             .first()
-            .map_or(KindId::new(0), |node| node.kind_id()),
+            .map_or(KindId::from_raw(0), |node| node.kind_id()),
     ];
     let range = root.start_byte()..root.end_byte();
     let combined = expected
@@ -1272,18 +1272,18 @@ fn field_sets() {
         check_field_set(root, [None, key]);
         check_field_set(root, [key, value]);
         check_field_set(root, [None, key, value]);
-        check_field_set(root, [key, value, key, FieldId::new(32768)]);
+        check_field_set(root, [key, value, key, FieldId::from_raw(32768)]);
         check_field_set(
             root,
             [
                 None,
                 key,
                 value,
-                FieldId::new(32768),
-                FieldId::new(u16::MAX),
+                FieldId::from_raw(32768),
+                FieldId::from_raw(u16::MAX),
             ],
         );
-        check_field_set(root, [FieldId::new(u16::MAX); 8]);
+        check_field_set(root, [FieldId::from_raw(u16::MAX); 8]);
     }
 }
 
@@ -1309,7 +1309,11 @@ fn supertype_membership() {
         exercised_direct |= !supertypes.is_empty() && supertypes.len() <= 8;
         exercised_dictionary |= supertypes.len() > 8;
         let mut matches = 0;
-        for supertype in supertypes.into_iter().chain([u16::MAX]).map(GrammarId::new) {
+        for supertype in supertypes
+            .into_iter()
+            .chain([u16::MAX])
+            .map(GrammarId::from_raw)
+        {
             let expected = nodes
                 .iter()
                 .copied()

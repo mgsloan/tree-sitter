@@ -5,8 +5,8 @@ fn compare(expected: &Tree, actual: &Tree) {
     assert_eq!(expected.slot_count(), actual.slot_count());
     assert_eq!(expected.has_points(), actual.has_points());
     for slot in 0..expected.slot_count() {
-        let left = expected.node_at_slot(SlotIx::new(slot));
-        let right = actual.node_at_slot(SlotIx::new(slot));
+        let left = expected.node_at_slot(SlotIx::from_raw(slot));
+        let right = actual.node_at_slot(SlotIx::from_raw(slot));
         assert_eq!(left.is_some(), right.is_some());
         if let (Some(left), Some(right)) = (left, right) {
             assert_eq!(left.attributes(), right.attributes());

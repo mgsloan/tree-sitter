@@ -479,7 +479,7 @@ impl Walk<'_> {
                 field = node.field;
                 let fields = self.fields(production);
                 if fields.length != 0 {
-                    field = FieldId::new(unsafe {
+                    field = FieldId::from_raw(unsafe {
                         *self.tables.direct_fields.add(fields.offset as usize)
                     })
                     .or(field);
@@ -810,7 +810,7 @@ pub(super) fn pack(
             frame.node.field
         };
         if !facts.extra && frame.structural < frame.fields.length {
-            field = FieldId::new(unsafe {
+            field = FieldId::from_raw(unsafe {
                 *tables
                     .direct_fields
                     .add(frame.fields.offset as usize + frame.structural as usize)

@@ -270,7 +270,7 @@ impl Queries {
                 if let Some(index) = capture {
                     result
                         .captures()
-                        .get(index.0 as usize)
+                        .get(index.get_raw() as usize)
                         .context("invalid capture index")?;
                 }
                 ensure!(
@@ -300,7 +300,7 @@ impl Queries {
                 output.push(Record {
                     query: query_index,
                     pattern: result.pattern_index.0,
-                    capture: capture.map(|index| index.0 as usize),
+                    capture: capture.map(|index| index.get_raw() as usize),
                     nodes,
                 });
             }

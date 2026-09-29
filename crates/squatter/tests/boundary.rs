@@ -57,7 +57,7 @@ fn shared_coordinates_narrow_like_tree_sitter() {
         assert_eq!(
             cursor
                 .goto_first_child_for_byte(start)
-                .map(|index| index.get() as usize),
+                .map(|index| index.get_raw() as usize),
             native_cursor.goto_first_child_for_byte(start)
         );
         let point = tree_sitter::Point::new(wrap, start);
@@ -66,7 +66,7 @@ fn shared_coordinates_narrow_like_tree_sitter() {
         assert_eq!(
             cursor
                 .goto_first_child_for_point(point)
-                .map(|index| index.get() as usize),
+                .map(|index| index.get_raw() as usize),
             native_cursor.goto_first_child_for_point(point)
         );
     }

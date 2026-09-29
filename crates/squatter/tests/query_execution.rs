@@ -16,11 +16,11 @@ macro_rules! matches {
         let mut results = Vec::new();
         while let Some(result) = execution.next_match() {
             results.push((
-                result.pattern_index.0,
+                result.pattern_index.get_raw(),
                 result
                     .captures()
                     .iter()
-                    .map(|capture| (u32::from(capture.node.slot()), capture.index.0))
+                    .map(|capture| (u32::from(capture.node.slot()), capture.index.get_raw()))
                     .collect::<Vec<_>>(),
             ));
             assert!(results.len() < 100_000, "unexpected match explosion");
@@ -36,11 +36,11 @@ macro_rules! captures {
         let mut execution = $cursor.execute($query, $tree.root_node(), $source.as_bytes());
         let mut results = Vec::new();
         while let Some((result, index)) = execution.next_capture() {
-            let capture = result.captures()[index.0 as usize];
+            let capture = result.captures()[index.get_raw() as usize];
             results.push((
-                result.pattern_index.0,
+                result.pattern_index.get_raw(),
                 u32::from(capture.node.slot()),
-                capture.index.0,
+                capture.index.get_raw(),
             ));
             assert!(results.len() < 100_000, "unexpected capture explosion");
         }
@@ -241,7 +241,7 @@ fn malformed_queries_match_with_and_without_plans() {
                 ));
                 patterns.insert(format!("({} . ({}) @child)", parent.kind(), child.kind()));
                 if let Some(field) = child.field_id() {
-                    let field = language.field_name_for_id(field.get()).unwrap();
+                    let field = language.field_name_for_id(field.get_raw()).unwrap();
                     patterns.insert(format!(
                         "({} {field}: ({}) @child) @parent",
                         parent.kind(),
@@ -291,7 +291,7 @@ fn malformed_queries_match_with_and_without_plans() {
                 .preorder()
                 .nodes()
                 .filter(|node| node.end_byte() > 0)
-                .map(|node| node.slot().get())
+                .map(|node| node.slot().get_raw())
                 .collect::<BTreeSet<_>>();
             for (pattern, query) in &queries {
                 for bounded in [false, true] {
@@ -408,9 +408,12 @@ fn disabling_non_rooted_pattern_preserves_ranges() {
             vec![
                 (
                     0,
-                    vec![(identifier.slot().get(), 0), (number.slot().get(), 1)]
+                    vec![
+                        (identifier.slot().get_raw(), 0),
+                        (number.slot().get_raw(), 1)
+                    ]
                 ),
-                (1, vec![(identifier.slot().get(), 2)]),
+                (1, vec![(identifier.slot().get_raw(), 2)]),
             ],
         );
 
@@ -418,7 +421,7 @@ fn disabling_non_rooted_pattern_preserves_ranges() {
             query.disable_pattern(tree_squatter::PatternIx(0));
             assert_eq!(
                 matches!(&mut cursor, &query, tree, source),
-                vec![(1, vec![(identifier.slot().get(), 2)])],
+                vec![(1, vec![(identifier.slot().get_raw(), 2)])],
             );
         }
     }
@@ -760,7 +763,7 @@ fn containing_ranges_combine_with_intersecting_ranges() {
                 let mut captures = cursor.captures(&query, tree.root_node(), source.as_bytes());
                 let (found, index) = captures.next().unwrap();
                 assert_eq!(
-                    &source[found.captures()[index.0 as usize].node.byte_range()],
+                    &source[found.captures()[index.get_raw() as usize].node.byte_range()],
                     "30"
                 );
                 assert!(captures.next().is_none());
@@ -987,8 +990,13 @@ fn disabled_rootless_and_branching_patterns_with_ranges() {
                                 execution.next_match()
                             };
                             let Some(result) = result else { break };
-                            assert!(!disabled || result.pattern_index.0 != 0);
-                            assert!(result.captures().iter().all(|capture| capture.index.0 != 0));
+                            assert!(!disabled || result.pattern_index.get_raw() != 0);
+                            assert!(
+                                result
+                                    .captures()
+                                    .iter()
+                                    .all(|capture| capture.index.get_raw() != 0)
+                            );
                             found = true;
                         }
                         assert!(found);
@@ -1649,7 +1657,7 @@ fn optimized_capture_progress_tracks_later_subtrees() {
         let mut stops = 0;
         loop {
             if let Some((found, index)) = execution.next_capture() {
-                let node = found.captures()[index.0 as usize].node;
+                let node = found.captures()[index.get_raw() as usize].node;
                 if node.start_byte() >= second_start {
                     reached_second.set(true);
                 }
@@ -1786,11 +1794,17 @@ fn cursor_and_iterator_ranges_narrow_validate_and_persist() {
         {
             let mut captures = cursor.captures(&query, tree.root_node(), source.as_bytes());
             let (found, index) = captures.next().unwrap();
-            assert_eq!(found.captures()[index.0 as usize].node.start_byte(), 5);
+            assert_eq!(
+                found.captures()[index.get_raw() as usize].node.start_byte(),
+                5
+            );
             captures.set_byte_range(7..8);
             captures.set_point_range(Point::new(0, 7)..Point::new(0, 8));
             let (found, index) = captures.next().unwrap();
-            assert_eq!(found.captures()[index.0 as usize].node.start_byte(), 7);
+            assert_eq!(
+                found.captures()[index.get_raw() as usize].node.start_byte(),
+                7
+            );
             assert!(captures.next().is_none());
         }
         let found = cursor

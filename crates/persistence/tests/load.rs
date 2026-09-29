@@ -312,7 +312,7 @@ fn multiple_owned_readers() {
                             .named_child(tree_squatter::NamedChildIx::new(0))
                             .unwrap()
                             .named_child_count()
-                            .get(),
+                            .get_raw(),
                         3
                     );
                 }

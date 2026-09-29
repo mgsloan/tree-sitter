@@ -16,7 +16,17 @@ use xxhash_rust::xxh3::Xxh3;
 /// This does not hash the generated lexer functions or external scanner code.
 /// Changes to either can change parse results without changing this hash.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct LanguageHash(pub u64);
+pub struct LanguageHash(u64);
+
+impl LanguageHash {
+    pub const fn from_raw_digest(value: u64) -> Self {
+        Self(value)
+    }
+
+    pub const fn get_raw(self) -> u64 {
+        self.0
+    }
+}
 
 /// Hash the generated grammar tables and identity metadata.
 pub fn language_hash(
@@ -70,7 +80,7 @@ pub fn language_hash(
         }
         None => hasher.update(&[0]),
     }
-    LanguageHash(hasher.digest())
+    LanguageHash::from_raw_digest(hasher.digest())
 }
 
 #[repr(C)]
@@ -139,10 +149,10 @@ impl GrammarView {
 
     #[inline]
     pub fn remap_kind(&self, symbol: KindId) -> Option<SquatterKindId> {
-        if u32::from(symbol.get()) >= self.symbol_count && symbol.get() < u16::MAX - 1 {
+        if u32::from(symbol.get_raw()) >= self.symbol_count && symbol.get_raw() < u16::MAX - 1 {
             return None;
         }
-        let index = self.native_index(symbol.get());
+        let index = self.native_index(symbol.get_raw());
         if index >= self.symbol_count + 2 {
             return None;
         }
@@ -151,10 +161,10 @@ impl GrammarView {
     }
 
     pub fn remap_grammar(&self, symbol: GrammarId) -> Option<SquatterGrammarId> {
-        if u32::from(symbol.get()) >= self.symbol_count && symbol.get() < u16::MAX - 1 {
+        if u32::from(symbol.get_raw()) >= self.symbol_count && symbol.get_raw() < u16::MAX - 1 {
             return None;
         }
-        let index = self.native_index(symbol.get());
+        let index = self.native_index(symbol.get_raw());
         if index >= self.symbol_count + 2 {
             return None;
         }
@@ -163,11 +173,11 @@ impl GrammarView {
     }
 
     pub fn decode_kind(&self, symbol: SquatterKindId) -> KindId {
-        KindId::new(unsafe { *self.kind_to_native.add(symbol.get() as usize) })
+        KindId::from_raw(unsafe { *self.kind_to_native.add(symbol.get_raw() as usize) })
     }
 
     pub fn decode_grammar_kind(&self, symbol: SquatterGrammarId) -> GrammarId {
-        GrammarId::new(unsafe { *self.grammar_to_native.add(symbol.get() as usize) })
+        GrammarId::from_raw(unsafe { *self.grammar_to_native.add(symbol.get_raw() as usize) })
     }
 
     fn native_index(&self, symbol: u16) -> u32 {
@@ -180,7 +190,7 @@ impl GrammarView {
 
     #[inline]
     pub fn default_grammar(&self, symbol: SquatterKindId) -> SquatterGrammarId {
-        SquatterGrammarId(unsafe { *self.default_grammar.add(symbol.get() as usize) })
+        SquatterGrammarId(unsafe { *self.default_grammar.add(symbol.get_raw() as usize) })
     }
 
     pub fn symbol_name(&self, symbol: u16) -> &str {
@@ -213,7 +223,7 @@ impl GrammarView {
 
     #[inline]
     pub fn named_index(&self, symbol: SquatterKindId) -> bool {
-        unsafe { *self.kind_flags.add(symbol.get() as usize) & 1 != 0 }
+        unsafe { *self.kind_flags.add(symbol.get_raw() as usize) & 1 != 0 }
     }
 }
 
@@ -357,36 +367,36 @@ impl Language {
 
     /// Get the name of the node kind for the given numerical id.
     pub fn node_kind_for_id(&self, id: KindId) -> Option<&str> {
-        self.language.node_kind_for_id(id.get())
+        self.language.node_kind_for_id(id.get_raw())
     }
 
     /// Check if the node type for the given numerical id is named (as opposed
     /// to an anonymous node type).
     pub fn node_kind_is_named(&self, id: KindId) -> bool {
-        self.language.node_kind_is_named(id.get())
+        self.language.node_kind_is_named(id.get_raw())
     }
 
     /// Check if the node type for the given numerical id is visible (as opposed
     /// to a hidden node type).
     pub fn node_kind_is_visible(&self, id: KindId) -> bool {
-        self.language.node_kind_is_visible(id.get())
+        self.language.node_kind_is_visible(id.get_raw())
     }
 
     /// Check if the node type for the given numerical id is a supertype.
     pub fn node_kind_is_supertype(&self, id: KindId) -> bool {
-        self.language.node_kind_is_supertype(id.get())
+        self.language.node_kind_is_supertype(id.get_raw())
     }
 
     /// Get the field name for the given numerical id.
     pub fn field_name_for_id(&self, id: FieldId) -> Option<&str> {
-        self.language.field_name_for_id(id.get())
+        self.language.field_name_for_id(id.get_raw())
     }
 
     /// Get the numeric id for the given node kind.
     ///
-    /// An unsuccessful lookup returns `KindId::new(0)`.
+    /// An unsuccessful lookup returns `KindId::from_raw(0)`.
     pub fn id_for_node_kind(&self, kind: &str, named: bool) -> KindId {
-        KindId::new(self.language.id_for_node_kind(kind, named))
+        KindId::from_raw(self.language.id_for_node_kind(kind, named))
     }
 
     /// Get a list of all supertype symbols for the language.
@@ -400,7 +410,7 @@ impl Language {
     ///
     /// Borrows the original grammar symbols without allocating or remapping hidden symbols.
     pub fn subtypes_for_supertype(&self, supertype: GrammarId) -> &[GrammarId] {
-        GrammarId::from_slice(self.language.subtypes_for_supertype(supertype.get()))
+        GrammarId::from_slice(self.language.subtypes_for_supertype(supertype.get_raw()))
     }
 
     /// Resolve a displayed kind name in this grammar.
@@ -411,7 +421,7 @@ impl Language {
         let language = self.tree_sitter_language();
         let id = language.id_for_node_kind(name, named);
         (language.node_kind_for_id(id) == Some(name) && self.tables().named(id) == named)
-            .then_some(KindId::new(id))
+            .then_some(KindId::from_raw(id))
     }
 
     /// Resolve an original grammar kind, including kinds hidden by aliases.
@@ -424,7 +434,7 @@ impl Language {
             .chain([u16::MAX, u16::MAX - 1])
             .find_map(|id| {
                 (tables.symbol_name(id) == name && tables.named(id) == named)
-                    .then_some(GrammarId::new(id))
+                    .then_some(GrammarId::from_raw(id))
             })
     }
 
@@ -451,7 +461,7 @@ impl Language {
     /// Use this when sharing a Squatter kind ID with Tree-sitter.
     /// Zero and out-of-range IDs return `None`.
     pub fn kind_id(&self, id: SquatterKindId) -> Option<KindId> {
-        (id.get() != 0 && u32::from(id.get()) < self.tables().kind_count + 2)
+        (id.get_raw() != 0 && u32::from(id.get_raw()) < self.tables().kind_count + 2)
             .then(|| self.tables().decode_kind(id))
     }
 
@@ -460,7 +470,7 @@ impl Language {
     /// Use this when sharing a Squatter grammar ID with Tree-sitter.
     /// Zero and out-of-range IDs return `None`.
     pub fn grammar_id(&self, id: SquatterGrammarId) -> Option<GrammarId> {
-        (id.get() != 0 && u32::from(id.get()) < self.tables().compact_grammar_count + 2)
+        (id.get_raw() != 0 && u32::from(id.get_raw()) < self.tables().compact_grammar_count + 2)
             .then(|| self.tables().decode_grammar_kind(id))
     }
 
@@ -704,7 +714,7 @@ impl CompiledQuery {
         for step in result.steps_mut() {
             if step.symbol != 0 {
                 step.symbol = tables
-                    .remap_kind(KindId::new(step.symbol))
+                    .remap_kind(KindId::from_raw(step.symbol))
                     .ok_or_else(|| QueryError {
                         row: 0,
                         column: 0,
@@ -712,7 +722,7 @@ impl CompiledQuery {
                         kind: tree_sitter::QueryErrorKind::Structure,
                         message: "query kind cannot occur in packed storage".into(),
                     })?
-                    .get();
+                    .get_raw();
             }
         }
         #[cfg(debug_assertions)]
@@ -827,7 +837,7 @@ impl CompiledQuery {
         }
         for entry in self.entries() {
             assert!((entry.step_index as usize) < steps.len());
-            assert!((entry.pattern_index.get() as usize) < self.patterns().len());
+            assert!((entry.pattern_index.get_raw() as usize) < self.patterns().len());
             assert_eq!(entry.flags & !1, 0);
         }
         for pattern in self.patterns() {

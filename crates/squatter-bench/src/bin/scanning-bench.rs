@@ -63,7 +63,7 @@ struct Arguments {
 use tree_squatter::{FieldSet, GrammarId, KindId};
 type FieldSelection = Option<tree_squatter::FieldId>;
 fn raw_field(field: FieldSelection) -> u16 {
-    field.map_or(0, tree_squatter::FieldId::get)
+    field.map_or(0, tree_squatter::FieldId::get_raw)
 }
 
 #[derive(Deserialize, Serialize)]
@@ -990,7 +990,7 @@ fn main() -> Result<()> {
         }
         let selected_kinds = if matches!(arguments.kind_selection, KindSelection::Absent) {
             let mut absent = (0..language.node_kind_count())
-                .filter_map(|kind| u16::try_from(kind).ok().map(KindId::from))
+                .filter_map(|kind| u16::try_from(kind).ok().map(KindId::from_raw))
                 .filter(|kind| !present_kinds.contains(kind))
                 .collect::<Vec<_>>();
             absent.sort_by_key(|&kind| (!language.node_kind_is_named(u16::from(kind)), kind));
@@ -1084,7 +1084,8 @@ fn main() -> Result<()> {
                 }
             }
         }
-        let supertype = GrammarId::from(language.supertypes().first().copied().unwrap_or(u16::MAX));
+        let supertype =
+            GrammarId::from_raw(language.supertypes().first().copied().unwrap_or(u16::MAX));
         let supertype_matches = scalar_preorder(&tree)
             .filter(|node| node.has_supertype(supertype))
             .count();

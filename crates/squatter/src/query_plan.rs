@@ -180,7 +180,7 @@ impl Program {
 
 fn local_alternative(compiled: &CompiledQuery, entry: PatternEntry) -> bool {
     let step = compiled.steps()[entry.step_index as usize];
-    let pattern = compiled.patterns()[entry.pattern_index.get() as usize];
+    let pattern = compiled.patterns()[entry.pattern_index.get_raw() as usize];
     let end = pattern.steps.end() - 1;
     if step.depth != 0
         || step.field != 0
@@ -221,7 +221,7 @@ fn presence_requirement(
     }
 
     let mut required = None;
-    let pattern = compiled.patterns()[entry.pattern_index.get() as usize];
+    let pattern = compiled.patterns()[entry.pattern_index.get_raw() as usize];
     for step in &compiled.steps()[entry.step_index as usize + 1..pattern.steps.end()] {
         if step.depth == 0
             || step.depth == u16::MAX
@@ -267,16 +267,16 @@ impl DirectPlan {
             if entry.flags & 1 == 0 {
                 return None;
             }
-            let pattern = compiled.patterns()[entry.pattern_index.get() as usize];
-            let bit = 1 << entry.pattern_index.get();
+            let pattern = compiled.patterns()[entry.pattern_index.get_raw() as usize];
+            let bit = 1 << entry.pattern_index.get_raw();
             let end = pattern.steps.end() - 1;
-            plan.end_steps[entry.pattern_index.get() as usize] = end as u16;
+            plan.end_steps[entry.pattern_index.get_raw() as usize] = end as u16;
 
             let root = compiled.steps()[entry.step_index as usize];
             if root.symbol != 0 && local_alternative(compiled, entry) {
                 if patterns & bit != 0 {
                     let first = compiled.steps()
-                        [plan.start_steps[entry.pattern_index.get() as usize] as usize];
+                        [plan.start_steps[entry.pattern_index.get_raw() as usize] as usize];
                     if plan.local_patterns & bit == 0
                         || first.capture_ids != root.capture_ids
                         || compiled.entries()[..index].iter().any(|other| {
@@ -287,7 +287,7 @@ impl DirectPlan {
                         return None;
                     }
                 } else {
-                    plan.start_steps[entry.pattern_index.get() as usize] = entry.step_index;
+                    plan.start_steps[entry.pattern_index.get_raw() as usize] = entry.step_index;
                 }
                 patterns |= bit;
                 plan.local_patterns |= bit;
@@ -302,7 +302,7 @@ impl DirectPlan {
                 return None;
             }
             patterns |= bit;
-            plan.start_steps[entry.pattern_index.get() as usize] = entry.step_index;
+            plan.start_steps[entry.pattern_index.get_raw() as usize] = entry.step_index;
 
             for step_index in pattern.steps.offset as usize..end {
                 let step = compiled.steps()[step_index];
@@ -375,7 +375,7 @@ impl DirectPlan {
                         && (!step.has(IS_NAMED)
                             || tables.named_index(crate::SquatterKindId(symbol as u16)))
                 } {
-                    plan.roots[symbol] |= 1 << entry.pattern_index.get();
+                    plan.roots[symbol] |= 1 << entry.pattern_index.get_raw();
                 }
             }
         }

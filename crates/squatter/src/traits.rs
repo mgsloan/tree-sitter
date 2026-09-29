@@ -488,10 +488,10 @@ macro_rules! node_navigation {
 macro_rules! node_attributes {
     ($node:ty) => {
         fn kind_id(&self) -> KindId {
-            <$node>::kind_id(self).into()
+            KindId::from_raw(<$node>::kind_id(self).into())
         }
         fn grammar_id(&self) -> GrammarId {
-            <$node>::grammar_id(self).into()
+            GrammarId::from_raw(<$node>::grammar_id(self).into())
         }
         fn kind(&self) -> &'tree str {
             <$node>::kind(self)
@@ -548,8 +548,8 @@ macro_rules! attributes {
         Attributes {
             kind: $node.kind(),
             grammar_name: $node.grammar_name(),
-            kind_id: $node.kind_id().into(),
-            grammar_id: $node.grammar_id().into(),
+            kind_id: KindId::from_raw($node.kind_id().into()),
+            grammar_id: GrammarId::from_raw($node.grammar_id().into()),
             start_byte: $node.start_byte(),
             end_byte: $node.end_byte(),
             start_position: $node.start_position(),
@@ -576,7 +576,7 @@ impl<'tree> NodeLike<'tree> for tree_sitter::Node<'tree> {
         let empty = kinds.is_empty();
         NativePreorder::new(self)
             .take_while(move |_| !empty)
-            .filter(move |node| kinds.contains_id(node.kind_id().into()))
+            .filter(move |node| kinds.contains_id(KindId::from_raw(node.kind_id())))
     }
     fn children<'cursor>(
         &self,
@@ -608,7 +608,7 @@ impl<'tree> NodeLike<'tree> for tree_sitter::Node<'tree> {
     {
         let mut children = tree_sitter::Node::children_by_field_id(
             self,
-            std::num::NonZeroU16::new(field.get()).unwrap(),
+            std::num::NonZeroU16::new(field.get_raw()).unwrap(),
             cursor,
         );
         std::iter::from_fn(move || children.next())
@@ -625,10 +625,10 @@ impl<'tree> NodeLike<'tree> for tree_sitter::Node<'tree> {
         std::iter::from_fn(move || children.next())
     }
     fn field_name_for_child(&self, index: ChildIx) -> Option<&'tree str> {
-        tree_sitter::Node::field_name_for_child(self, index.get())
+        tree_sitter::Node::field_name_for_child(self, index.get_raw())
     }
     fn field_name_for_named_child(&self, index: NamedChildIx) -> Option<&'tree str> {
-        tree_sitter::Node::field_name_for_named_child(self, index.get())
+        tree_sitter::Node::field_name_for_named_child(self, index.get_raw())
     }
     fn has_children(self) -> bool {
         tree_sitter::Node::child_count(&self) != 0
@@ -656,10 +656,10 @@ impl<'tree> NodeLike<'tree> for tree_sitter::Node<'tree> {
         self.walk()
     }
     fn child(&self, index: ChildIx) -> Option<Self> {
-        tree_sitter::Node::child(self, index.get())
+        tree_sitter::Node::child(self, index.get_raw())
     }
     fn named_child(&self, index: NamedChildIx) -> Option<Self> {
-        tree_sitter::Node::named_child(self, index.get())
+        tree_sitter::Node::named_child(self, index.get_raw())
     }
     node_navigation!(tree_sitter::Node<'tree>);
 }

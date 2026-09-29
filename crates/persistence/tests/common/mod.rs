@@ -18,7 +18,7 @@ pub fn grammar_with_identity(identity: u8) -> IdentifiedLanguage {
     let tree_sitter_language =
         unsafe { tree_sitter::Language::from_raw(tree_sitter_json::LANGUAGE.into_raw()().cast()) };
     let mut language_identity = LanguageIdentity::new(&tree_sitter_language, "json");
-    language_identity.hash = LanguageHash(identity as u64);
+    language_identity.hash = LanguageHash::from_raw_digest(identity as u64);
     IdentifiedLanguage::new(
         tree_squatter::Language::new(&tree_sitter_language).unwrap(),
         language_identity,

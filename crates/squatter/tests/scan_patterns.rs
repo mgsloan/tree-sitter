@@ -78,7 +78,7 @@ mod patterns {
         root.all()
             .overlapping_bytes(range)
             .nodes()
-            .map(|node| u64::from(node.slot().get()))
+            .map(|node| u64::from(node.slot().get_raw()))
             .sum()
     }
     #[inline(never)]
@@ -86,7 +86,7 @@ mod patterns {
         root.all()
             .overlapping_points(range)
             .nodes()
-            .map(|node| u64::from(node.slot().get()))
+            .map(|node| u64::from(node.slot().get_raw()))
             .sum()
     }
     #[inline(never)]
@@ -112,7 +112,7 @@ mod patterns {
     pub fn preorder_slots(root: Node<'_>) -> u64 {
         root.preorder()
             .nodes()
-            .map(|node| u64::from(node.slot().get()))
+            .map(|node| u64::from(node.slot().get_raw()))
             .sum()
     }
     #[inline(never)]
@@ -120,14 +120,14 @@ mod patterns {
         root.preorder()
             .rev()
             .nodes()
-            .map(|node| u64::from(node.slot().get()))
+            .map(|node| u64::from(node.slot().get_raw()))
             .sum()
     }
     #[inline(never)]
     pub fn postorder_slots(root: Node<'_>) -> u64 {
         root.postorder()
             .nodes()
-            .map(|node| u64::from(node.slot().get()))
+            .map(|node| u64::from(node.slot().get_raw()))
             .sum()
     }
     #[inline(never)]
@@ -135,7 +135,7 @@ mod patterns {
         root.postorder()
             .rev()
             .nodes()
-            .map(|node| u64::from(node.slot().get()))
+            .map(|node| u64::from(node.slot().get_raw()))
             .sum()
     }
     #[inline(never)]
@@ -145,7 +145,7 @@ mod patterns {
             .map(|group| {
                 group
                     .nodes()
-                    .map(|node| u64::from(node.slot().get()))
+                    .map(|node| u64::from(node.slot().get_raw()))
                     .sum::<u64>()
             })
             .sum()
@@ -218,7 +218,7 @@ fn assembly_patterns_are_callable() {
         2
     );
     assert_eq!(
-        patterns::supertype_count(root, black_box(GrammarId::new(0))),
+        patterns::supertype_count(root, black_box(GrammarId::from_raw(0))),
         0
     );
 }

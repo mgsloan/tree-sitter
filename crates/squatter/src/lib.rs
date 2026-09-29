@@ -90,21 +90,21 @@ impl private::Id for types::SquatterKindId {}
 impl Id for types::SquatterKindId {
     #[inline]
     fn raw(self) -> u16 {
-        self.get()
+        self.get_raw()
     }
 }
 impl private::Id for KindId {}
 impl Id for KindId {
     #[inline]
     fn raw(self) -> u16 {
-        self.get()
+        self.get_raw()
     }
 }
 impl private::Id for Option<FieldId> {}
 impl Id for Option<FieldId> {
     #[inline]
     fn raw(self) -> u16 {
-        self.map_or(0, FieldId::get)
+        self.map_or(0, FieldId::get_raw)
     }
 }
 

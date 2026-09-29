@@ -250,7 +250,7 @@ fn indexed_points_follow_attachment_across_wide_trees() {
                             reference.descendant_for_byte_range(start, end)
                         };
                         assert_eq!(
-                            actual.map(|node| (node.byte_range(), node.kind_id().get())),
+                            actual.map(|node| (node.byte_range(), node.kind_id().get_raw())),
                             expected.map(|node| (node.byte_range(), node.kind_id())),
                             "stored={stored} named={named} {start}..{end}",
                         );
@@ -272,9 +272,9 @@ fn child_iterators_preserve_cursor_state() {
     fn check<'tree, A: NodeLike<'tree>, B: NodeLike<'tree>>(actual: A, expected: B) {
         let mut actual_cursor = actual.walk();
         let mut expected_cursor = expected.walk();
-        for limit in 0..=actual.child_count().get() as usize + 1 {
+        for limit in 0..=actual.child_count().get_raw() as usize + 1 {
             for mode in 0..4 {
-                let field = FieldId::new(1).unwrap();
+                let field = FieldId::from_raw(1).unwrap();
                 let actual_nodes: Vec<_> = match mode {
                     0 => actual.children(&mut actual_cursor).take(limit).collect(),
                     1 => actual
@@ -337,13 +337,13 @@ fn child_iterators_preserve_cursor_state() {
         );
         assert!(actual_cursor.node() == before);
 
-        for index in 0..=actual.child_count().get() {
+        for index in 0..=actual.child_count().get_raw() {
             assert_eq!(
                 actual.field_name_for_child(ChildIx::new(index)),
                 expected.field_name_for_child(ChildIx::new(index))
             );
         }
-        for index in 0..=actual.named_child_count().get() {
+        for index in 0..=actual.named_child_count().get_raw() {
             assert_eq!(
                 actual.field_name_for_named_child(NamedChildIx::new(index)),
                 expected.field_name_for_named_child(NamedChildIx::new(index))
