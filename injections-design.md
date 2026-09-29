@@ -213,12 +213,13 @@ populate parsed layer states; never infer logical order from physical IDs. Each
 input defines a region, including when adjacent regions use the same grammar. Nested
 injections may create further regions for a grammar already present. All these
 regions remain in the same injection forest.
-Forward `pack_options` to forest packing so callers choose initial presence and
-point sidecars. Wrap its progress callback to check `cancel` and return
-`ControlFlow::Break(())` when set. Points are captured during packing and their
+Forward `pack_options` to forest packing so callers choose initial presence
+coverage with a region predicate and request point data. The default presence
+predicate selects regions with 64 or more groups. Wrap its progress callback to
+check `cancel` and return `ControlFlow::Break(())` when set. Points are captured during packing and their
 delta limits affect core grouping. The engine uses captured source for coordinate
 conversion.
-Side-data flags do not affect native parse requests. Map cancelled packing to
+Side-data options do not affect native parse requests. Map cancelled packing to
 `InjectionError::Cancelled`.
 
 Discovery must not rely on packed point accessors: a host loaded without point
@@ -234,10 +235,11 @@ data persisted for the exact matching forest. Do not expose
 `&mut Forest`: replacing it could invalidate every tree index in the
 manifest. Workers can build presence data from `forest()` without mutable access;
 set/drop requires exclusive access to `Injections` and preserves the mapping.
-The presence sidecar concatenates all injection-region caches into one allocation;
-setting or dropping it affects the whole injection forest, independently of the
-host's presence cache. Presence changes only performance; point data changes
-coordinates and point-bounded query behavior.
+The presence sidecar concatenates selected injection-region caches and absent-region
+records into one allocation. Setting or dropping it replaces the whole cache,
+independently of the host's cache; uncached regions use ordinary symbol scanning.
+Presence changes only performance; point data changes coordinates and
+point-bounded query behavior.
 
 ## Persistence composition
 

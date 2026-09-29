@@ -75,6 +75,7 @@ impl Forest {
 impl<'forest> ForestRegion<'forest> {
     pub fn index(&self) -> RegionIx;
     pub fn language(&self) -> &'forest Language;
+    pub fn group_count(&self) -> u32;
     pub fn trees(&self) -> impl Iterator<Item = Tree<'forest>>;
 }
 
@@ -121,12 +122,16 @@ supertype context inherited from excluded ancestors. Relationships and supertype
 context within the subtree remain intact. Queries on the detached tree need not
 match queries that depended on its original ancestors.
 
-`PackOptions::symbol_presence` requests one completed cache containing every
-region's presence data; `points` requests completed point data for the forest.
-Both default to true as in step 1. Presence and points each use their own
-allocation, even when filled during forest packing. Failure to construct
-requested side data fails the operation. Points must be requested during packing: their
-delta limits affect core grouping and physical IDs. Presence does not affect grouping.
+`PackOptions::symbol_presence` is a region predicate, evaluated after the core
+layout is finalized. It defaults to `|region| region.group_count() >= 64`;
+`points` continues to default to true. The group threshold is an initial heuristic,
+not a measured break-even point. Callers can select by language, size, or workload,
+or use `|_| true` / `|_| false` for all / no regions.
+
+Presence uses one separate allocation covering selected regions; points uses one
+covering the entire forest. Failure to construct requested side data fails packing.
+Points must be requested during packing: their delta limits affect core grouping
+and physical IDs. Presence does not affect grouping.
 
 Packing preserves the supplied node's coordinate frame. The core stores its
 byte coordinates; requested point data preserves its native point coordinates.
@@ -165,7 +170,7 @@ let inputs = vec![
     },
 ];
 let options = PackOptions {
-    symbol_presence: false,
+    symbol_presence: &|_| false,
     points: false,
     ..PackOptions::default()
 };
@@ -409,10 +414,10 @@ own. Sidecar handles live in the owner descriptor, outside the core slab.
 Presence and point data have independently loadable allocations. Set/drop requires
 exclusive access to the forest and leaves core columns, descriptors, groups, and
 IDs intact. Built/copied sidecars never share allocations with the core or each
-other; mapped sidecars retain storage owners as in step 1. Region presence views
-borrow slices of the forest cache. Attaching or dropping presence operates on the
-whole forest; dropping clears those views and releases the cache independently
-of point data.
+other; mapped sidecars retain storage owners as in step 1. Cached regions borrow
+slices of the forest cache; uncached regions have no presence pointer. Attaching
+or dropping presence replaces the whole cache; dropping clears its region views
+and releases its allocation independently of point data.
 
 ## Navigation
 
@@ -550,8 +555,17 @@ Generalize step 1's presence builder and side-data set/drop methods to forests,
 using the same owned side-data types. Single-tree forests use these same APIs:
 
 ```rust
+pub struct PackOptions<'options> {
+    pub symbol_presence: &'options dyn Fn(ForestRegion<'_>) -> bool,
+    // remaining fields omitted
+}
+
 impl PresenceCache {
     pub fn build(forest: &Forest) -> Result<Self, SideDataError>;
+    pub fn build_selected(
+        forest: &Forest,
+        select: impl Fn(ForestRegion<'_>) -> bool,
+    ) -> Result<Self, SideDataError>;
 
     pub fn from_retained(owner: impl StableSlab) -> Result<Self, SideDataError>;
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, SideDataError>;
@@ -572,38 +586,72 @@ impl Forest {
 }
 ```
 
-`build` derives new data from an immutable forest borrow. `from_bytes` copies
-serialized data into owned storage, matching `Forest::from_bytes`;
+`build` caches every region; `build_selected` caches only regions accepted by the
+predicate. Both derive new data from an immutable forest borrow. Packing uses
+the same selection/build path, with `PackOptions::symbol_presence` defaulting to
+the group-count threshold above. Predicates may borrow caller configuration;
+neither the forest nor the cache retains them.
+
+```rust
+let queried_language = language.tree_sitter_language();
+let select_presence = |region: ForestRegion<'_>| {
+    region.language().tree_sitter_language() == queried_language
+        && region.group_count() >= 64
+};
+let options = PackOptions {
+    symbol_presence: &select_presence,
+    ..PackOptions::default()
+};
+let (mut forest, input_trees) = packer.pack_forest(inputs, options)?;
+
+// the same predicate can rebuild coverage on an existing forest
+let cache = PresenceCache::build_selected(&forest, &select_presence)?;
+forest.set_presence_cache(cache)?;
+```
+
+After finalizing the core layout, evaluate the predicate exactly once per region
+in physical order, using its actual group count. Retain those decisions, compute
+the checked payload size, allocate one zeroed buffer, and fill selected regions
+directly. Visit each occupied slot in selected regions and set its group's bit
+for that symbol; skip waste slots and unselected regions. This is a separate pass
+over packed symbols, as in the existing single-tree builder. Construction remains
+cancellable between regions and groups. If packing selects no regions, leave the
+forest's cache absent. An explicit `build_selected` selecting none produces a
+valid cache containing only absent-region records.
+
+`from_bytes` copies serialized data into owned storage, matching `Forest::from_bytes`;
 `from_retained` retains immutable storage without copying. Both loaders validate
 the serialized format without a forest. Setters check compatibility with the
 destination forest and perform forest-dependent debug validation before attachment.
 
-The forest presence cache concatenates the serialized region caches in region
-order into one allocation. Each segment retains the existing region header and
-bitmap layout, including alignment; no outer header or offset table is needed.
-A one-region forest uses the same bytes as a standalone region cache. An empty
-forest has an empty concatenation.
+The forest presence cache concatenates one record per region in physical order
+into one allocation. Present records retain the existing region header and bitmap
+layout. Absent records use a distinct format tag, retain the region dimensions,
+and have no bitmap payload. Both preserve alignment; no outer header or offset
+table is needed. A cached one-region forest uses the same bytes as a standalone
+region cache. An empty forest has an empty concatenation.
 
 ```text
 presence cache
-  [region 0 header + bitmaps][region 1 header + bitmaps][region 2 header + bitmaps]
+  [region 0 header + bitmaps][region 1 absent header][region 2 header + bitmaps]
 ```
 
-Each segment's size follows from its group count and grammar symbol count.
-Construction computes the checked total size, allocates once, and fills each
-segment directly. Loading walks the serialized segments, checks each header,
-dimensions, and segment extent, and requires the concatenation to consume the
-input exactly. Attachment checks segment counts and dimensions against the forest's
-regions, rejecting extra, missing, or incompatible segments. Resolve region payload
-pointers once on attachment; reads do not walk earlier segments.
+Each record's size follows from its presence tag, group count, and grammar symbol
+count. Loading checks tags, dimensions, and record extents, and requires records
+to consume the input exactly. Attachment checks record counts and dimensions
+against the forest's regions, including absent records; reject extra, missing,
+or incompatible records. Resolve present-region payload pointers once on
+attachment and clear absent-region pointers. Reads do not walk earlier records.
 Mapped loading retains one storage owner; copied loading uses one aligned
 allocation and copies the concatenation without rebuilding bitmaps.
 
 Bitmaps have one bit per physical group within their region; tree views use a
 region-relative group offset. Regions with the same grammar share grammar
-handles and prepared tables but have separate bitmap segments. All segments
-are attached or dropped together. Without a forest presence cache, every region
-uses ordinary symbol scanning.
+handles and prepared tables but have separate bitmap segments. Each uncached
+region uses ordinary symbol scanning; absence never means that a symbol is absent.
+All records are attached or dropped together. Changing coverage requires building
+and replacing the whole cache. Loading preserves recorded coverage without
+rerunning the default policy. Presence coverage changes performance only.
 
 Point data covers the entire forest, preserving a separate coordinate frame for
 each tree. Sources need not match, even within a region. Ignore wasted slots.
@@ -766,8 +814,9 @@ without introducing another forest owning type.
    accept native subtree nodes with per-root coordinate and per-group slot bounds.
 2. Add compact forest/`NodeId` nodes with descriptor lookups through `SmallVec`s
    with inline capacity one for trees and regions.
-3. Add concatenated forest presence caches and point data with independent
-   per-tree sources.
+3. Add forest presence caches with selective region coverage, a shared region
+   predicate for packing/building, and a default packing threshold of
+   64 or more groups. Add point data with independent per-tree sources.
 4. Add checked serialization, retained grammar bindings, and storage-independent
    read paths for allocated and retained storage. Serialize only region
    descriptors and reconstruct runtime tree metadata from root spans.
@@ -854,12 +903,20 @@ with checking every root, including roots at viewport boundaries and early roots
 that extend into the viewport. Check point-only restrictions without assuming
 byte order implies point order.
 
-Verify presence serialization is exactly the concatenation of region encodings,
+Verify presence serialization concatenates present/absent region records,
 including empty, single-region, repeated-grammar, and differently sized regions.
+Cover all, none, and partial coverage, with cached and uncached regions sharing
+one grammar. Compare packing and explicit building with the same predicate;
+check one predicate call per region in physical order and no symbol scans of
+unselected regions. Check the default at 63 and 64 groups, explicit all/none
+predicates, and language-based selection. Query results must agree for every
+coverage choice. Loading must preserve coverage, and replacing a cache with
+different coverage must clear old pointers.
+
 Check one allocation for the owned bitmap payload and one storage owner for
-mapped payloads. Exercise truncated segments, trailing bytes, extent overflow,
-and whole-cache replacement/removal without stale region views. Release loading
-may walk region headers but must not scan bitmap contents.
+mapped payloads. Exercise invalid tags, truncated records, trailing bytes, extent
+overflow, and whole-cache replacement/removal without stale region views. Release
+loading may walk region headers but must not scan bitmap contents.
 Load sidecars without a forest, then attach them to compatible and incompatible
 forests; rejected attachment must preserve existing side data.
 
