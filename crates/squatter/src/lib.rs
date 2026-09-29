@@ -1,7 +1,7 @@
 mod types;
 pub use types::{
-    CaptureIx, ChildIx, FieldId, GrammarId, KindId, MatchCaptureIx, MatchId, NamedChildIx,
-    PatternIx, SlotIx, SquatterGrammarId, SquatterKindId,
+    CaptureIx, ChildIx, FieldId, GrammarId, KindId, MatchCaptureIx, MatchId, NamedChildIx, NodeId,
+    PatternIx, RegionIx, SlotIx, SquatterGrammarId, SquatterKindId, TreeIx,
 };
 mod node;
 use node::RawNode;

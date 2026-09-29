@@ -46,10 +46,47 @@ integer_type!(
     /// **Not in Tree-sitter:** it uses `u16` instead.
     pub GrammarId(u16));
 integer_type!(
-    /// An absolute physical slot in a particular tree's reverse-preorder storage.
+    /// An absolute physical slot in a forest's reverse-preorder storage.
     ///
     /// **Not in Tree-sitter**
     pub SlotIx(u32));
+
+integer_type!(
+    /// A physical tree index, local to one forest.
+    pub TreeIx(u32));
+integer_type!(
+    /// A region index, local to one forest.
+    pub RegionIx(u32));
+
+impl TreeIx {
+    pub const fn from_raw(value: u32) -> Self {
+        Self(value)
+    }
+}
+
+/// A tree index in the upper 32 bits and a forest-global slot in the lower 32 bits.
+/// Rebuilding or reordering a forest can change both indices.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[repr(transparent)]
+pub struct NodeId(u64);
+
+impl NodeId {
+    pub const fn new(tree: TreeIx, slot: SlotIx) -> Self {
+        Self(((tree.raw() as u64) << 32) | slot.raw() as u64)
+    }
+
+    pub const fn tree(self) -> TreeIx {
+        TreeIx::from_raw((self.0 >> 32) as u32)
+    }
+
+    pub const fn slot(self) -> SlotIx {
+        SlotIx::from_raw(self.0 as u32)
+    }
+
+    pub const fn raw(self) -> u64 {
+        self.0
+    }
+}
 
 /// A nonzero field identifier in a particular grammar. Absence is `None`.
 ///
