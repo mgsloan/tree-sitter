@@ -1,6 +1,6 @@
 use std::mem::MaybeUninit;
 use tree_sitter::{Language, Point};
-use tree_squatter::{PackOptions, Query, QueryCursor, Tree};
+use tree_squatter::{Forest, PackOptions, Query, QueryCursor};
 
 fn tree_sitter_language() -> Language {
     unsafe { Language::from_raw(tree_sitter_json::LANGUAGE.into_raw()().cast()) }
@@ -20,13 +20,13 @@ fn compact_copy_matches_repack_for_padded_and_compact_trees() {
         let native = parser.parse(&source, None).unwrap();
         for presence in [false, true] {
             for (repack, points) in [(false, false), (false, true), (true, false), (true, true)] {
-                let tree = Tree::pack_with_options(
+                let tree = Forest::pack_with_options(
                     &language,
                     &native,
                     PackOptions {
                         initial_group_capacity: 1024,
                         repack,
-                        symbol_presence: presence,
+                        symbol_presence: &|_| presence,
                         points,
                         ..Default::default()
                     },
@@ -44,7 +44,7 @@ fn compact_copy_matches_repack_for_padded_and_compact_trees() {
                         .copy_compact_into(&mut storage[offset..offset + tree.compact_size()])
                         .unwrap();
                     assert_eq!(actual, expected.as_bytes());
-                    Tree::from_bytes(&language, actual).unwrap();
+                    Forest::from_bytes(std::slice::from_ref(&language), actual).unwrap();
                     for byte in storage[..offset]
                         .iter()
                         .chain(&storage[offset + tree.compact_size()..])
@@ -78,7 +78,7 @@ fn point_free_trees_use_byte_offsets_as_single_line_points() {
     let mut parser = tree_sitter::Parser::new();
     parser.set_language(&tree_sitter_language).unwrap();
     let native = parser.parse(source, None).unwrap();
-    let tree = Tree::pack_with_options(
+    let tree = Forest::pack_with_options(
         &language,
         &native,
         PackOptions {
@@ -114,7 +114,7 @@ fn point_free_trees_use_byte_offsets_as_single_line_points() {
     assert_eq!(captures(&mut byte_cursor), captures(&mut point_cursor));
 
     let compact = tree.repack().unwrap();
-    let loaded = Tree::from_bytes(&language, compact.as_bytes()).unwrap();
+    let loaded = Forest::from_bytes(std::slice::from_ref(&language), compact.as_bytes()).unwrap();
     assert!(!loaded.has_points());
     assert_eq!(
         loaded.root_node().end_position(),

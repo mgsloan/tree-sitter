@@ -122,8 +122,8 @@ impl Persistence {
         if request.header.as_slice() != &prefix[40..] {
             return Err(invalid().into());
         }
-        let mut tree = tree_squatter::Tree::from_bytes_safety_checked(
-            &language.prepared,
+        let mut tree = tree_squatter::Forest::from_bytes_safety_checked(
+            std::slice::from_ref(&language.prepared),
             &bytes[path_len + source_len..path_len + source_len + tree_len],
         )
         .map_err(io::Error::other)?;
@@ -161,7 +161,7 @@ impl Persistence {
             language: language.clone(),
             file: LoadedFile {
                 source,
-                tree: LoadedTree::Owned(Arc::new(tree)),
+                tree: LoadedTree::owned(Arc::new(tree)),
                 hit: false,
                 cleanup: Some((store, request.clone())),
             },

@@ -8,7 +8,7 @@ use std::{
     ptr::NonNull,
     sync::{Arc, atomic::Ordering},
 };
-use tree_squatter::{RetainedTree, StableSlab, Tree};
+use tree_squatter::{Forest, StableSlab};
 
 // Leave most of the 256 environment reader slots available for short operations.
 pub(crate) const MAX_RETAINED_READERS: usize = 32;
@@ -71,7 +71,7 @@ pub(crate) fn get(
     request: &Request,
     source: &[u8],
     language: &IdentifiedLanguage,
-) -> Option<(RetainedTree, bool)> {
+) -> Option<(Forest, bool)> {
     let snapshot = Arc::new(Snapshot::open(store)?);
     if store
         .paths
@@ -96,7 +96,7 @@ pub(crate) fn get(
     };
     // The native loader checks the actual address, not merely the envelope's
     // offset. Misaligned values release their snapshot and use the owned path.
-    let mut tree = Tree::from_retained(&language.prepared, owner).ok()?;
+    let mut tree = Forest::from_retained(std::slice::from_ref(&language.prepared), owner).ok()?;
     if tree
         .root_node()
         .preorder()
@@ -118,7 +118,7 @@ pub(crate) fn get(
                     length: bytes.len(),
                     _snapshot: snapshot.clone(),
                 };
-                tree_squatter::PresenceCache::from_retained(&tree, owner)
+                tree_squatter::PresenceCache::from_retained(owner)
                     .ok()
                     .or_else(|| tree_squatter::PresenceCache::copy_from_bytes(&tree, bytes).ok())
             });
@@ -138,7 +138,7 @@ pub(crate) fn get(
                     length: bytes.len(),
                     _snapshot: snapshot.clone(),
                 };
-                tree_squatter::PointsData::from_retained(&tree, owner)
+                tree_squatter::PointsData::from_retained(owner)
                     .ok()
                     .or_else(|| tree_squatter::PointsData::copy_from_bytes(&tree, bytes).ok())
             })?;

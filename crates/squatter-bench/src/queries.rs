@@ -223,7 +223,7 @@ impl Queries {
     pub fn squat(
         &self,
         root: tree_squatter::Node<'_>,
-        ids: Option<&Identities<tree_squatter::SlotIx>>,
+        ids: Option<&Identities<tree_squatter::NodeId>>,
         source: &[u8],
         captures: bool,
         optimized: bool,
@@ -283,13 +283,7 @@ impl Queries {
                 let nodes: Vec<_> = result
                     .captures()
                     .iter()
-                    .map(|entry| {
-                        (
-                            entry.index.0,
-                            ids[&entry.node.slot()],
-                            entry.node.end_byte(),
-                        )
-                    })
+                    .map(|entry| (entry.index.0, ids[&entry.node.id()], entry.node.end_byte()))
                     .collect();
                 total_captures += nodes.len();
                 ensure!(

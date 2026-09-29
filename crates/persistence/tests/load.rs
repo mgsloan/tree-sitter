@@ -18,7 +18,7 @@ fn miss_hit_and_old_reader_survives_update() {
             &language(),
             &mut tree_squatter::Parser::new(),
             LoadOptions {
-                pack: tree_squatter::PackOptions {
+                pack: tree_squatter_persistence::LoadPackOptions {
                     initial_group_capacity: 128,
                     ..Default::default()
                 },
@@ -81,7 +81,7 @@ fn deferred_disabled_and_cancelled_publication() {
             &language(),
             &mut parser,
             LoadOptions {
-                pack: tree_squatter::PackOptions::default(),
+                pack: tree_squatter_persistence::LoadPackOptions::default(),
                 write: WritePolicy::Deferred,
                 parse: Default::default(),
             },
@@ -95,7 +95,7 @@ fn deferred_disabled_and_cancelled_publication() {
                 &language(),
                 &mut tree_squatter::Parser::new(),
                 LoadOptions {
-                    pack: tree_squatter::PackOptions::default(),
+                    pack: tree_squatter_persistence::LoadPackOptions::default(),
                     write: WritePolicy::Disabled,
                     parse: Default::default(),
                 },
@@ -140,7 +140,7 @@ fn stale_deferred_writer_cannot_create_wrong_hit() {
             &language(),
             &mut tree_squatter::Parser::new(),
             LoadOptions {
-                pack: tree_squatter::PackOptions::default(),
+                pack: tree_squatter_persistence::LoadPackOptions::default(),
                 write: WritePolicy::Deferred,
                 parse: Default::default(),
             },
@@ -202,7 +202,7 @@ fn cancellation_never_creates_entry() {
         &language(),
         &mut tree_squatter::Parser::new(),
         LoadOptions {
-            pack: tree_squatter::PackOptions::default(),
+            pack: tree_squatter_persistence::LoadPackOptions::default(),
             write: WritePolicy::Inline,
             parse: ParseOptions::new().progress_callback(&mut cancel),
         },
@@ -276,7 +276,7 @@ fn unavailable_cache_and_full_map_fall_back() {
             &language(),
             &mut tree_squatter::Parser::new(),
             LoadOptions {
-                pack: tree_squatter::PackOptions::default(),
+                pack: tree_squatter_persistence::LoadPackOptions::default(),
                 write: WritePolicy::Deferred,
                 parse: Default::default(),
             },
@@ -423,7 +423,7 @@ fn writer_death_releases_admission_without_stale_files() {
             &language(),
             &mut tree_squatter::Parser::new(),
             LoadOptions {
-                pack: tree_squatter::PackOptions::default(),
+                pack: tree_squatter_persistence::LoadPackOptions::default(),
                 write: WritePolicy::Deferred,
                 parse: Default::default(),
             },
@@ -471,7 +471,7 @@ fn worker_context_switches_grammars_and_loads_restored_dictionary() {
                     language,
                     &mut context,
                     LoadOptions {
-                        pack: tree_squatter::PackOptions::default(),
+                        pack: tree_squatter_persistence::LoadPackOptions::default(),
                         write: WritePolicy::Disabled,
                         ..Default::default()
                     },
@@ -519,10 +519,10 @@ fn side_data_policy_applies_to_hits_and_late_publication() {
                 &language(),
                 parser,
                 LoadOptions {
-                    pack: tree_squatter::PackOptions {
+                    pack: tree_squatter_persistence::LoadPackOptions {
                         symbol_presence: presence,
                         points,
-                        ..tree_squatter::PackOptions::default()
+                        ..tree_squatter_persistence::LoadPackOptions::default()
                     },
                     write,
                     parse: Default::default(),

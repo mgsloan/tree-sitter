@@ -3,7 +3,7 @@ use anyhow::{Context, Result, ensure};
 use clap::Parser;
 use corpus_analysis::{LoadedGrammar, Registry, digest, digest_file};
 use std::{fs, hint::black_box, mem::MaybeUninit, path::PathBuf, sync::Arc, time::Instant};
-use tree_squatter::{Language, PackOptions, Packer, Query, StableSlab, Tree};
+use tree_squatter::{Forest, Language, PackOptions, Packer, Query, StableSlab};
 
 #[derive(Parser, serde::Serialize)]
 struct Arguments {
@@ -32,7 +32,7 @@ struct Arguments {
     repack: bool,
 }
 
-struct Slab(Arc<Tree>);
+struct Slab(Arc<Forest>);
 
 // Trees publish immutable, aligned slabs whose address survives Arc moves.
 unsafe impl StableSlab for Slab {
@@ -48,10 +48,10 @@ struct Case<'input> {
     capture: Option<String>,
     language: Language,
     cache: Vec<u8>,
-    tree: Arc<Tree>,
+    tree: Arc<Forest>,
     packer: Packer,
     compact: Vec<MaybeUninit<u8>>,
-    options: PackOptions,
+    options: PackOptions<'input>,
 }
 
 const WORKLOADS: &[&str] = &[
@@ -89,7 +89,7 @@ impl Case<'_> {
         match workload {
             "pack-cold" => {
                 measure!(
-                    Tree::pack_with_options(&self.language, self.native, self.options).unwrap()
+                    Forest::pack_with_options(&self.language, self.native, self.options).unwrap()
                 )
             }
             "pack-reuse" => measure!(
@@ -109,16 +109,35 @@ impl Case<'_> {
                 }
             }),
             "load-full" => {
-                measure!(Tree::from_bytes(&self.language, self.tree.as_bytes()).unwrap())
+                measure!(
+                    Forest::from_bytes(std::slice::from_ref(&self.language), self.tree.as_bytes())
+                        .unwrap()
+                )
             }
             "load-safety" => measure!(
-                Tree::from_bytes_safety_checked(&self.language, self.tree.as_bytes()).unwrap()
+                Forest::from_bytes_safety_checked(
+                    std::slice::from_ref(&self.language),
+                    self.tree.as_bytes()
+                )
+                .unwrap()
             ),
             "load-borrowed" => {
-                measure!(Tree::from_bytes_borrowed(&self.language, self.tree.as_bytes()).unwrap())
+                measure!(
+                    Forest::from_bytes_borrowed(
+                        std::slice::from_ref(&self.language),
+                        self.tree.as_bytes()
+                    )
+                    .unwrap()
+                )
             }
             "load-retained" => {
-                measure!(Tree::from_retained(&self.language, Slab(self.tree.clone())).unwrap())
+                measure!(
+                    Forest::from_retained(
+                        std::slice::from_ref(&self.language),
+                        Slab(self.tree.clone())
+                    )
+                    .unwrap()
+                )
             }
             "compact-copy" => measure!(self.tree.copy_compact_into(&mut self.compact).unwrap()),
             "repack" => measure!(self.tree.repack().unwrap()),
@@ -197,11 +216,11 @@ fn main() -> Result<()> {
         let owner = Language::new(language)?;
         let options = PackOptions {
             points: !arguments.no_points,
-            symbol_presence: !arguments.no_presence,
+            symbol_presence: &|_| !arguments.no_presence,
             repack: arguments.repack,
             ..Default::default()
         };
-        let tree = Arc::new(Tree::pack_with_options(&owner, &native, options)?);
+        let tree = Arc::new(Forest::pack_with_options(&owner, &native, options)?);
         let selected = grammar.queries.iter().find_map(|query| {
             if arguments
                 .query

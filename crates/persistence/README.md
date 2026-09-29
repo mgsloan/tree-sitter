@@ -54,7 +54,7 @@ Implemented:
 - `LoadedFile::evict_sidecar` deletes presence or points independently, preserving
   the core, other sidecar, and existing readers. Subsequent loads or publishers
   can rebuild evicted presence data; missing requested points require reparsing.
-- `LoadOptions::pack` selects side data on both cache hits and misses. The simple
+- `LoadOptions::pack` uses owned `LoadPackOptions` to select side data on both cache hits and misses. The simple
   `load` method uses the side-data defaults in `Options`. Points affect grouping,
   so point-enabled and point-free trees use separate cache variants.
 - Publication compacts used columns directly into heed `put_reserved` storage,
@@ -66,8 +66,8 @@ Implemented:
   snapshot for aligned cache slabs. Misaligned hits and local reader pressure use
   owned copies. `LoadedFile::retains_transaction` reports the actual storage mode;
   `detach` copies without invalidating aliases. Sources remain owned disk captures.
-- Structural safety loading of the core, with cheap sidecar dimension checks
-  and point-delta overflow checks, plus debug content checks; no slab checksum. Node source bounds are checked
+- Core header, extent, and root-span checks, with sidecar dimension checks
+  and point-delta overflow checks, plus debug topology and content checks; no slab checksum. Node source bounds are checked
   before returning the pair. See [the validator audit](validation.md).
 - Fresh whole-file parsing through `tree_squatter::Parser`. The parser-taking
   load methods accept this packed parser; `LoadContext` owns one for worker reuse.

@@ -12,7 +12,7 @@ use std::{
     time::{Duration, Instant},
 };
 use tree_sitter::Point;
-use tree_squatter::{KindSet, Language, Node, PackOptions, Tree, traits::NodeLike};
+use tree_squatter::{Forest, KindSet, Language, Node, PackOptions, traits::NodeLike};
 
 #[derive(Clone, Copy, Serialize, ValueEnum)]
 enum KindSelection {
@@ -73,7 +73,7 @@ struct Input {
     sha256: String,
 }
 struct Case {
-    tree: Tree,
+    tree: Forest,
     native: tree_sitter::Tree,
     kinds: KindSet,
     multiple_kinds: KindSet,
@@ -133,7 +133,7 @@ fn consume_fold<T>(nodes: impl Iterator<Item = T>) -> usize {
         count + 1
     })
 }
-fn scalar_preorder(tree: &Tree) -> impl Iterator<Item = Node<'_>> {
+fn scalar_preorder(tree: &Forest) -> impl Iterator<Item = Node<'_>> {
     std::iter::successors(Some(tree.root_node()), |node| node.next_preorder())
 }
 fn overlaps(node: Node<'_>, range: &Range<usize>) -> bool {
@@ -950,11 +950,11 @@ fn main() -> Result<()> {
         let mut parser = tree_sitter::Parser::new();
         parser.set_language(language)?;
         let native = parse(&mut parser, &source, Duration::from_secs(10))?;
-        let tree = Tree::pack_with_options(
+        let tree = Forest::pack_with_options(
             &grammar,
             &native,
             PackOptions {
-                symbol_presence: !arguments.no_symbol_index,
+                symbol_presence: &|_| !arguments.no_symbol_index,
                 ..Default::default()
             },
         )?;

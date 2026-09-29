@@ -1,53 +1,42 @@
 # Cache validation boundary
 
-Persistence defaults to Squatter's copied `from_bytes_safety_checked` loader.
-Opt-in retained hits use `from_retained` with the same validation.
-The existing `from_bytes` and `from_bytes_borrowed` retain their stricter behavior. Both policies require
-the exact matching grammar; persistence separately checks full implementation,
-representation, path, and captured-source identities. Neither loader reparses the
-source or proves tree correctness. There is no serialized-tree integrity checksum.
+Copied and retained forest loaders use the same checks. The
+`from_bytes_safety_checked` entry point delegates to `from_bytes`; borrowed loading
+uses the same validator. Persistence separately checks implementation,
+representation, path, and captured-source identities. Loading does not reparse
+source or prove that a slab belongs to the supplied grammar bindings.
 
-## Checks retained
+## Core checks
 
-- Header/version/layout compatibility, exact section extents, bounded allocation,
-  and native alignment of owned storage.
-- Node span/topology and traversal termination prerequisites; symbol, grammar,
-  field, and supertype dictionary indexes.
-- Coordinate overflow and range ordering. These conservative structural invariants
-  remain shared with the strict loader rather than weakening native traversal's
-  assumptions. Persistence additionally checks each node's end byte against the
-  captured source length before exposing the source/tree pair.
+Release loading checks header/version/layout compatibility, section sizes,
+region extents, and grammar bindings. Retained storage must be eight-byte aligned.
+Tree metadata is reconstructed backward from root spans, checking root accesses,
+span arithmetic, and strict progress within each region. Root byte bounds also
+establish the region's ordering classification.
 
-## Semantic checks omitted
+Full descendant topology, symbols, fields, supertypes, coordinates, and boundary
+alignment are checked in debug builds. Release readers rely on those content
+invariants. Persistence additionally walks nodes to check their end bytes against
+the captured source length before returning the pair.
 
-`crates/squatter/src/storage.rs::validate_presence` reconstructs per-symbol occurrences and
-checks exact sparse-list order, bitmap membership/cardinality, mode selection,
-sentinels, and padding. Cache loading skips this reconstruction. Section extents
-are still checked before any access. Its consumer, `Tree::group_has_symbol`,
-checks the group and symbol indexes; bitmap accesses use those bounded indexes.
-Sparse entries are read in a fixed-length loop and compared, never dereferenced
-as node slots. Query planning calls that accessor rather than reading the section
-directly. Incorrect membership can therefore change query results, intentionally
-without causing a cache-integrity rejection.
+## Separate side data
 
-Unused high bits in supertype dictionary words are also ignored. Node dictionary
-indexes remain checked; `Node::has_supertype` reads only words/bits selected by
-the grammar's bounded supertype enumeration. The bits outside that enumeration do
-not control addressing. Actual membership is not reconstructed in either loader.
+Presence loading validates the concatenated region records and bitmap extents.
+Attachment checks region counts and grammar dimensions; debug attachment also
+checks bitmap contents against the core. Absent records select ordinary symbol
+scanning. Incorrect bitmap contents can change query results in release builds.
 
-This is a scoped separation of known semantic checks, not a claim that every
-remaining rejection is a mathematically minimal safety prerequisite. Do not
-remove additional topology/coordinate checks without auditing every downstream
-node, iterator, cursor, seek, and query consumer.
+Point loading validates its header and payload size. Attachment checks forest
+dimensions and occupied-slot delta overflow in all builds; content ordering and
+unused-slot checks remain debug-only. Neither sidecar reconstructs core groups.
+Failed attachment preserves the previous side data.
 
 ## Verification and remaining work
 
-Tests exercise invalid/truncated headers and sections, deterministic slab bit
-mutations followed by traversal, and corrupted presence sections followed by
-group lookups and query execution. The synthetic slab tests also check strict and safety loader rejection boundaries. Broader
-coverage-guided fuzzing, multi-grammar dictionary fixtures, and platform/layout
-qualification remain required. This validation is not a defense against another
-process maliciously modifying a live LMDB mapping; cache directories are trusted.
+Tests cover truncated headers and sections, deterministic slab mutations,
+sidecar attachment, retained-owner lifetimes, and forest round trips.
+Broader property tests, coverage-guided fuzzing, and platform/layout qualification
+remain planned. Cache directories and their immutable slabs are trusted.
 
 ## Retained transaction ownership
 
@@ -60,7 +49,7 @@ snapshot. The slab pointer and length are sealed in a `StableSlab` owner. There
 are no subsequent get/cursor/reset/renew calls; heed's final drop aborts the transaction
 before releasing the environment/admission permit.
 
-Squatter's `RetainedTree` drops the native descriptor before its storage owner.
+Squatter's `Forest` retains the slab owner and caches its byte address and length.
 `StableSlab` is an unsafe implementation contract: its slice must remain at the
 same address and be immutable until drop, including across owner moves. The LMDB
 implementation relies on normal copy-on-write operation, retained environment

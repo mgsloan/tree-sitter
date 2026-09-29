@@ -71,16 +71,26 @@ pub enum ReadPolicy {
 }
 
 #[derive(Clone)]
-enum LoadedTree {
-    Owned(Arc<tree_squatter::Tree>),
-    Retained(Arc<tree_squatter::RetainedTree>),
+struct LoadedTree {
+    forest: Arc<tree_squatter::Forest>,
+    retained: bool,
 }
+
 impl LoadedTree {
-    fn tree(&self) -> &tree_squatter::Tree {
-        match self {
-            Self::Owned(tree) => tree,
-            Self::Retained(tree) => tree,
+    fn owned(forest: Arc<tree_squatter::Forest>) -> Self {
+        Self {
+            forest,
+            retained: false,
         }
+    }
+    fn retained(forest: Arc<tree_squatter::Forest>) -> Self {
+        Self {
+            forest,
+            retained: true,
+        }
+    }
+    fn tree(&self) -> &tree_squatter::Forest {
+        &self.forest
     }
 }
 
@@ -95,6 +105,27 @@ pub enum WritePolicy {
     Disabled,
 }
 
+/// Owned packing configuration for deferred per-file requests. Presence coverage
+/// is all-or-none for the file's single region.
+#[derive(Clone, Copy, Debug)]
+pub struct LoadPackOptions {
+    pub initial_group_capacity: u32,
+    pub repack: bool,
+    pub symbol_presence: bool,
+    pub points: bool,
+}
+
+impl Default for LoadPackOptions {
+    fn default() -> Self {
+        Self {
+            initial_group_capacity: 0,
+            repack: false,
+            symbol_presence: true,
+            points: true,
+        }
+    }
+}
+
 /// The shared callback covers parsing and load cancellation checks.
 /// Outside parsing, offsets report bytes captured while reading, zero while
 /// waiting or probing, and source length when returning or publishing a completed
@@ -102,7 +133,7 @@ pub enum WritePolicy {
 #[derive(Default)]
 pub struct LoadOptions<'a> {
     /// Packed-tree storage options.
-    pub pack: tree_squatter::PackOptions,
+    pub pack: LoadPackOptions,
     pub write: WritePolicy,
     pub parse: ParseOptions<'a>,
 }
@@ -195,21 +226,21 @@ impl LoadedFile {
     pub fn source(&self) -> &[u8] {
         &self.source
     }
-    pub fn tree(&self) -> &tree_squatter::Tree {
+    pub fn tree(&self) -> &tree_squatter::Forest {
         self.tree.tree()
     }
     pub fn retains_transaction(&self) -> bool {
-        matches!(self.tree, LoadedTree::Retained(_))
+        self.tree.retained
     }
     /// Return an owned copy. Existing aliases keep their snapshots until dropped.
     /// Auxiliary semantics are not revalidated while detaching.
     pub fn detach(&self) -> Result<Self, tree_squatter::Error> {
-        let LoadedTree::Retained(tree) = &self.tree else {
+        if !self.tree.retained {
             return Ok(self.clone());
-        };
-        let tree = tree.detach()?;
+        }
+        let tree = self.tree.forest.detach()?;
         Ok(Self {
-            tree: LoadedTree::Owned(Arc::new(tree)),
+            tree: LoadedTree::owned(Arc::new(tree)),
             ..self.clone()
         })
     }
@@ -426,10 +457,10 @@ impl Persistence {
         parser: &mut Parser,
     ) -> Result<LoadedFile, LoadError> {
         let options = LoadOptions {
-            pack: tree_squatter::PackOptions {
+            pack: LoadPackOptions {
                 symbol_presence: self.options.symbol_presence,
                 points: self.options.points,
-                ..tree_squatter::PackOptions::default()
+                ..LoadPackOptions::default()
             },
             ..LoadOptions::default()
         };
@@ -637,11 +668,11 @@ impl PendingLoad {
                     && let Some((tree, complete)) =
                         snapshot::get(store, &self.request, &self.source, &self.language)
                 {
-                    return Some((LoadedTree::Retained(Arc::new(tree)), complete));
+                    return Some((LoadedTree::retained(Arc::new(tree)), complete));
                 }
                 store
                     .get(&self.request, &self.source, &self.language)
-                    .map(|(tree, complete)| (LoadedTree::Owned(Arc::new(tree)), complete))
+                    .map(|(tree, complete)| (LoadedTree::owned(Arc::new(tree)), complete))
             })
         };
         if let Some((tree, complete)) = hit() {
@@ -674,12 +705,12 @@ impl PendingLoad {
                 pack: tree_squatter::PackOptions {
                     initial_group_capacity: self.initial_group_capacity,
                     repack: self.repack,
-                    symbol_presence: self.symbol_presence,
+                    symbol_presence: &|_| self.symbol_presence,
                     points: self.points,
                 },
             },
         )?;
-        self.finish(LoadedTree::Owned(Arc::new(tree)), false, false, options)
+        self.finish(LoadedTree::owned(Arc::new(tree)), false, false, options)
     }
 
     fn finish(

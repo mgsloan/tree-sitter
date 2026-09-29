@@ -19,7 +19,7 @@ use std::{
     time::Duration,
 };
 use tree_sitter::Point;
-use tree_squatter::{PackOptions, Packer, Tree};
+use tree_squatter::{Forest, PackOptions, Packer};
 
 pub const BACKEND: &str = "rust";
 
@@ -347,9 +347,9 @@ struct Source {
 struct Pair<'source> {
     source: &'source Source,
     mainline: tree_sitter::Tree,
-    squat: Tree,
+    squat: Forest,
     mainline_ids: compare::Identities<usize>,
-    squat_ids: compare::Identities<tree_squatter::SlotIx>,
+    squat_ids: compare::Identities<tree_squatter::NodeId>,
     seek_bytes: Vec<usize>,
     seek_points: Vec<Point>,
 }
@@ -446,11 +446,11 @@ impl ParseContext {
         }
     }
 
-    fn packed(&mut self, source: &[u8], mode: &str, options: PackOptions) -> Result<Tree> {
+    fn packed(&mut self, source: &[u8], mode: &str, options: PackOptions<'_>) -> Result<Forest> {
         let native = self.native(source, mode == "warm-parse", true)?;
         if mode == "cold-parse" {
             let language = tree_squatter::Language::new(&self.language.tree_sitter_language())?;
-            Ok(Tree::pack_with_options(&language, &native, options)?)
+            Ok(Forest::pack_with_options(&language, &native, options)?)
         } else {
             Ok(self
                 .pack
@@ -458,10 +458,12 @@ impl ParseContext {
         }
     }
 
-    fn direct(&mut self, source: &[u8], mode: &str, options: PackOptions) -> Result<Tree> {
+    fn direct(&mut self, source: &[u8], mode: &str, options: PackOptions<'_>) -> Result<Forest> {
         if mode == "cold-parse" {
             let language = tree_squatter::Language::new(&self.language.tree_sitter_language())?;
-            Ok(Tree::parse_direct_with_options(&language, source, options)?)
+            Ok(Forest::parse_direct_with_options(
+                &language, source, options,
+            )?)
         } else {
             Ok(self
                 .feller
@@ -482,15 +484,15 @@ impl ParseContext {
 
 struct ParseMeasurements {
     mainline: (Result<tree_sitter::Tree>, Metrics),
-    squat: (Result<Tree>, Metrics),
-    feller: Option<(Result<Tree>, Metrics)>,
+    squat: (Result<Forest>, Metrics),
+    feller: Option<(Result<Forest>, Metrics)>,
 }
 
 fn measure_parses(
     context: &mut ParseContext,
     source: &[u8],
     mode: &str,
-    options: PackOptions,
+    options: PackOptions<'_>,
     rotation: usize,
     enabled: bool,
     meter: &mut Meter,
@@ -529,8 +531,8 @@ fn measure_parses(
 fn validate_feller(
     context: &ParseContext,
     mainline: &tree_sitter::Tree,
-    squat: &Tree,
-    measured: Option<(Result<Tree>, Metrics)>,
+    squat: &Forest,
+    measured: Option<(Result<Forest>, Metrics)>,
 ) -> FellerResult {
     let (status, reason, metrics) = if let Some(Err(error)) = &context.feller {
         (
@@ -718,7 +720,7 @@ fn accumulate(
     benchmark: &str,
     mainline: Metrics,
     squat: Metrics,
-    tree: &Tree,
+    tree: &Forest,
     failed: bool,
     feller: Option<FellerResult>,
 ) {

@@ -2,7 +2,7 @@ use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
 };
-use tree_squatter::{PackOptions, Tree};
+use tree_squatter::{Forest, PackOptions};
 
 struct TrackedSlab {
     storage: Box<[u64]>,
@@ -53,7 +53,7 @@ fn retained_slab_retains_storage_and_releases_it_on_all_outcomes() {
     let drops = Arc::new(AtomicUsize::new(0));
     let owner = tracked(tree.as_bytes(), false, drops.clone());
     let address = tree_squatter::StableSlab::bytes(&owner).as_ptr();
-    let retained = Tree::from_retained(&language, owner).unwrap();
+    let retained = Forest::from_retained(std::slice::from_ref(&language), owner).unwrap();
     assert_eq!(retained.as_bytes().as_ptr(), address);
     assert_eq!(drops.load(Ordering::Relaxed), 0);
     let detached = retained.detach().unwrap();
@@ -61,9 +61,21 @@ fn retained_slab_retains_storage_and_releases_it_on_all_outcomes() {
     drop(retained);
     assert_eq!(drops.load(Ordering::Relaxed), 1);
     assert_eq!(detached.root_node().kind(), "document");
-    assert!(Tree::from_retained(&language, tracked(tree.as_bytes(), true, drops.clone())).is_err());
+    assert!(
+        Forest::from_retained(
+            std::slice::from_ref(&language),
+            tracked(tree.as_bytes(), true, drops.clone())
+        )
+        .is_err()
+    );
     assert_eq!(drops.load(Ordering::Relaxed), 2);
-    assert!(Tree::from_retained(&language, tracked(b"invalid", false, drops.clone())).is_err());
+    assert!(
+        Forest::from_retained(
+            std::slice::from_ref(&language),
+            tracked(b"invalid", false, drops.clone())
+        )
+        .is_err()
+    );
     assert_eq!(drops.load(Ordering::Relaxed), 3);
 }
 
@@ -71,16 +83,16 @@ fn tree_sitter_language() -> tree_sitter::Language {
     unsafe { tree_sitter::Language::from_raw(tree_sitter_json::LANGUAGE.into_raw()().cast()) }
 }
 
-fn pack(tree_sitter_language: &tree_sitter::Language, source: &str, presence: bool) -> Tree {
+fn pack(tree_sitter_language: &tree_sitter::Language, source: &str, presence: bool) -> Forest {
     let language = tree_squatter::Language::new(tree_sitter_language).unwrap();
     let mut parser = tree_sitter::Parser::new();
     parser.set_language(tree_sitter_language).unwrap();
-    Tree::pack_with_options(
+    Forest::pack_with_options(
         &language,
         &parser.parse(source, None).unwrap(),
         PackOptions {
             repack: true,
-            symbol_presence: presence,
+            symbol_presence: &|_| presence,
             ..PackOptions::default()
         },
     )
@@ -98,7 +110,9 @@ fn presence_sidecar_is_separate_and_debug_loading_checks_membership() {
     let cache = original.presence_cache().unwrap();
     let mut corrupted = cache.as_bytes().to_vec();
     corrupted[16..].fill(0);
-    let loaded = Tree::from_bytes_safety_checked(&language, original.as_bytes()).unwrap();
+    let loaded =
+        Forest::from_bytes_safety_checked(std::slice::from_ref(&language), original.as_bytes())
+            .unwrap();
     assert!(!loaded.has_points());
     assert!(loaded.presence_cache().is_none());
     assert_eq!(
@@ -115,13 +129,19 @@ fn safety_loader_rejects_truncated_sections_and_invalid_headers() {
     let original = pack(&tree_sitter_language, "{\"key\": [true, 42]}", true);
     for length in 0..original.as_bytes().len() {
         assert!(
-            Tree::from_bytes_safety_checked(&language, &original.as_bytes()[..length]).is_err()
+            Forest::from_bytes_safety_checked(
+                std::slice::from_ref(&language),
+                &original.as_bytes()[..length]
+            )
+            .is_err()
         );
     }
     for (offset, value) in [(0, 0), (4, 0), (8, u32::MAX), (12, 257)] {
         let mut bytes = original.as_bytes().to_vec();
         bytes[offset..offset + 4].copy_from_slice(&value.to_ne_bytes());
-        assert!(Tree::from_bytes_safety_checked(&language, &bytes).is_err());
+        assert!(
+            Forest::from_bytes_safety_checked(std::slice::from_ref(&language), &bytes).is_err()
+        );
     }
 }
 
@@ -133,8 +153,9 @@ fn copied_loaders_handle_trees_deeper_than_inline_validation_storage() {
     let original = pack(&tree_sitter_language, &source, false);
     let nodes = original.root_node().preorder().count();
     for loaded in [
-        Tree::from_bytes(&language, original.as_bytes()).unwrap(),
-        Tree::from_bytes_safety_checked(&language, original.as_bytes()).unwrap(),
+        Forest::from_bytes(std::slice::from_ref(&language), original.as_bytes()).unwrap(),
+        Forest::from_bytes_safety_checked(std::slice::from_ref(&language), original.as_bytes())
+            .unwrap(),
     ] {
         assert_eq!(loaded.root_node().preorder().count(), nodes);
         assert_eq!(loaded.as_bytes(), original.as_bytes());
@@ -152,7 +173,8 @@ fn mutated_slabs_are_rejected_or_support_bounded_traversal() {
         state = state.wrapping_mul(1664525).wrapping_add(1013904223);
         let index = state as usize % bytes.len();
         bytes[index] ^= 1 << (trial % 8);
-        let Ok(tree) = Tree::from_bytes_safety_checked(&language, &bytes) else {
+        let Ok(tree) = Forest::from_bytes_safety_checked(std::slice::from_ref(&language), &bytes)
+        else {
             continue;
         };
         for (count, node) in tree.root_node().preorder().nodes().enumerate() {
@@ -193,7 +215,7 @@ fn shared_grammars_support_concurrent_packing_and_outlive_handles() {
                             .unwrap();
                         let native = parser.parse(source, None).unwrap();
                         let tree = context.pack(language, &native).unwrap();
-                        let reference = Tree::pack(language, &native).unwrap();
+                        let reference = Forest::pack(language, &native).unwrap();
                         assert_eq!(tree.as_bytes(), reference.as_bytes());
                         retained.push(tree);
                     }
