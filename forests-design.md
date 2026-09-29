@@ -808,121 +808,45 @@ storage use the same core layout and reader metadata. Integration with pinned
 LMDB transactions remains persistence work; it supplies a `StableSlab` owner
 without introducing another forest owning type.
 
-## Implementation and verification
+## Implementation order
 
 1. Add forest descriptors, caller-defined regions, and flattened root-to-tree mapping;
    accept native subtree nodes with per-root coordinate and per-group slot bounds.
+
 2. Add compact forest/`NodeId` nodes with descriptor lookups through `SmallVec`s
    with inline capacity one for trees and regions.
+
 3. Add forest presence caches with selective region coverage, a shared region
    predicate for packing/building, and a default packing threshold of
    64 or more groups. Add point data with independent per-tree sources.
+
 4. Add checked serialization, retained grammar bindings, and storage-independent
    read paths for allocated and retained storage. Serialize only region
    descriptors and reconstruct runtime tree metadata from root spans.
-5. Extend direct scans across trees and queries to tree/region scopes, initially
-   matching one tree at a time. Use cursor setters for query restrictions and
-   region ordering for byte-range tree selection; keep scan filters
-   separate. Bounded region queries require caller-established source context.
 
-Verify empty, single-tree, mixed-grammar, and repeated-grammar inputs without any
-discovery engine. Compare each packed tree with its native and one-tree forest
-counterparts, including overlapping bytes, positioned roots, arbitrary subtrees,
-errors, predicates, point bounds, and ties. Verify aliases and subtree contents
-survive detachment while excluded parent/sibling/field/supertype context does not.
-Exercise every root/tree boundary, wasted slots, input mapping, changed grammar
-bindings, serialization round trips, malformed descriptors, overflow,
-cancellation during traversal, between roots, and on empty input, and
-existing-reader lifetimes. Verify absent forest presence caches, invalid
-region/dimension rejection, and sidecar serialization
-round trips. Presence changes must preserve query results. Points must
-match each tree's source conversion while attached and use row-zero coordinates
-before attachment and after removal; test point-bounded queries in both states.
-Byte-based matching and core contents must remain unchanged. Setting/replacing/
-dropping independently built or loaded sidecars must preserve the core allocation
-address, serialized bytes, descriptor offsets, groups, and IDs. Test creation
-flags and immediate reclamation of each sidecar while the forest remains alive.
-Check malformed counts/sizes in release and debug builds, and malformed contents
-with matching counts in debug builds. Release load paths must contain no content
-validation scan beyond point-delta overflow and the metadata and root-boundary
-checks needed for loading.
+5. Extend queries to tree/region scopes, initially matching one tree at a time.
+   Use cursor setters for query restrictions and region ordering for byte-range
+   tree selection. Bounded region queries require caller-established source context.
 
-Verify end-only region descriptors reconstruct the same runtime slot ranges,
-tree bounds, region mappings, and tree-index order as packing. Cover empty and
-single-region forests, several trees in one region, partial final groups, and
-repeated grammars. Reject misaligned or nonincreasing region ends and a final end
-that disagrees with the used slot count in debug builds. Reject invalid root
-accesses, span arithmetic, nonprogressing reconstruction, and tree-count overflow
-during loading without traversing descendants.
+## Verification
 
-Verify input-order preservation for grouped, interleaved, and byte-unsorted
-inputs, including A/B/A regions with two roots in the last region. Exercise
-separate bitmap segments sharing one grammar. Pack trees from different sources
-with overlapping byte and point ranges, including within the same region. Check
-native point copying, per-tree text queries, and sidecar round trips without
-source retention or a common coordinate-frame requirement.
+Keep the existing tests and add three focused tests, reusing fixtures and comparison
+helpers where practical:
 
-Exercise input byte and row bounds, conservative column rejection for multiline
-inputs, and point-free packing without native point checks. Test slot exhaustion
-at group reservation, including partial-group waste, and layout overflow during
-capacity growth. Coordinate checks must stay outside descendant traversal;
-physical slot-limit checks belong at group reservation.
+1. **Forest packing and round trip.** Pack A/B/A grammar regions, with several
+   trees in one region. Check input mapping, distinct node identities, and
+   navigation staying within each tree. Serialize and reload the forest, then
+   compare its trees with the original.
 
-Verify node identity for overlapping trees and tree/region vector lookups in
-nodes, cursors, scans, and queries at every tree boundary. Check inline storage
-for empty and single-tree forests and spilled storage for larger forests,
-including multiple trees in one region. Reuse query cursors across forests and
-trees without retaining stale state. Check compact node layout. Exercise owned
-and retained loads, moves of the forest owner, and storage release after
-the last owner is dropped. Check that core and side-data reads use cached
-addresses without storage dispatch and that side-data replacement cannot leave
-stale reader pointers.
+2. **Region queries.** Compare a region query with querying its trees individually,
+   using a text provider that selects sources by tree ID. Check rejection of a
+   query compiled for a different language.
 
-Verify `NodeId` composition and extraction, including the high bits of each
-32-bit index. Equal IDs from different forests must not make their nodes equal;
-node construction must reject wasted slots and mismatched tree/slot pairs.
-Check that `NodeLike::id()` and inherent `id()` return the same composite identity
-and that `slot()` agrees with its slot component.
+3. **Bounded queries and ordering.** Use one example for each ordering class and
+   compare region results with per-tree queries using the same bounds. Include an
+   early root that extends into the viewport so start-based pruning cannot skip it.
 
-Verify subtree, tree, and region query scopes, including empty ranges and rejection
-of incompatible languages before returning results. Compare byte/point restrictions
-and maximum start depth with Tree-sitter for rooted and non-rooted patterns,
-including out-of-range captures in matches versus individual capture events.
-Exercise viewport pruning with overlapping/nested trees and providers selecting
-distinct sources through `node.id().tree()`. Cover match removal across tree
-transitions, cancellation during and between trees, and subsequent cursor reuse.
-Preserve the prerequisite resumption and limit contracts across trees; range
-semantics follow the Queries section. Do not require cross-tree source ordering
-or finite-limit result-subset parity.
-
-Verify packing and loading compute the same `RegionOrder`. Cover single-tree,
-unsorted, nonoverlapping, nested, crossing, equal-span, and zero-width roots,
-including equal starts with differing end order. Classification must preserve
-input order and accept every ordering. Compare each byte-range scan strategy
-with checking every root, including roots at viewport boundaries and early roots
-that extend into the viewport. Check point-only restrictions without assuming
-byte order implies point order.
-
-Verify presence serialization concatenates present/absent region records,
-including empty, single-region, repeated-grammar, and differently sized regions.
-Cover all, none, and partial coverage, with cached and uncached regions sharing
-one grammar. Compare packing and explicit building with the same predicate;
-check one predicate call per region in physical order and no symbol scans of
-unselected regions. Check the default at 63 and 64 groups, explicit all/none
-predicates, and language-based selection. Query results must agree for every
-coverage choice. Loading must preserve coverage, and replacing a cache with
-different coverage must clear old pointers.
-
-Check one allocation for the owned bitmap payload and one storage owner for
-mapped payloads. Exercise invalid tags, truncated records, trailing bytes, extent
-overflow, and whole-cache replacement/removal without stale region views. Release
-loading may walk region headers but must not scan bitmap contents.
-Load sidecars without a forest, then attach them to compatible and incompatible
-forests; rejected attachment must preserve existing side data.
-
-Later, compare per-tree/segmented queries with shared candidate scanning and
-contiguous reassembly. Include viewport selection, predicates, merging, copying,
-validation, and index construction in measurements. Candidate scanning may cross
-tree boundaries; structural matching may not. Shared candidate-scan batching,
-result merging, and placement/relocation APIs remain outside the initial forest
-interface.
+Broader combinations, malformed inputs, boundary cases, and invariant checking
+belong to the planned property and fuzz tests that exercise the full system.
+Those gaps are intentional; implementing this design does not require expanding
+the focused tests into an exhaustive suite.
