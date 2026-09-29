@@ -208,13 +208,16 @@ cache-key design are separate work.
 The packed host must be a whole host-tree root paired with the registry's host
 language/grammar and captured source. Validate that pairing before discovery.
 After parsing, pass only injection nodes to `Packer::pack_forest`, preserving
-the engine's chosen input order. Use its input-to-tree mapping to populate parsed
-layer states; never infer logical order from physical IDs. Adjacent same-grammar
-inputs share a region; nested injections may create further regions for a
-grammar already present. All these regions remain in the same injection forest.
+the engine's chosen input order. Use its flattened root-to-tree mapping to
+populate parsed layer states; never infer logical order from physical IDs. Each
+input defines a region, including when adjacent regions use the same grammar. Nested
+injections may create further regions for a grammar already present. All these
+regions remain in the same injection forest.
 Forward `pack_options` to forest packing so callers choose initial presence and
-point sidecars. Points are captured during packing and their delta limits affect
-core grouping. The engine uses captured source for coordinate conversion.
+point sidecars. Wrap its progress callback to check `cancel` and return
+`ControlFlow::Break(())` when set. Points are captured during packing and their
+delta limits affect core grouping. The engine uses captured source for coordinate
+conversion.
 Side-data flags do not affect native parse requests. Map cancelled packing to
 `InjectionError::Cancelled`.
 

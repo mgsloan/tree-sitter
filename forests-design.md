@@ -50,9 +50,8 @@ pub struct ForestRegionToPack<'tree> {
 impl Packer {
     pub fn pack_forest(
         &mut self,
-        inputs: Vec<ForestRegionToPack<'_>,
+        inputs: Vec<ForestRegionToPack<'_>>,
         options: PackOptions,
-        cancel: Option<&AtomicBool>,
     ) -> Result<(Forest, Vec<TreeIx>), ForestError>;
 }
 
@@ -92,21 +91,29 @@ impl<'forest> std::ops::Deref for Tree<'forest> {
 }
 ```
 
-Packing preserves input order; the returned vector maps that order to physical
-tree indices. Empty input is valid. Adjacent inputs with the same exact grammar
-share a region; a grammar change starts another region. Each tree gets a
-group-aligned interval. Region boundaries and IDs are deterministic for the same
-ordered inputs and grammar bindings. Grouping never combines native parser inputs.
+Each input defines one region containing one or more roots with the same exact
+grammar. Empty input is valid; an input with no roots is invalid. Adjacent inputs
+remain separate regions even when their grammars match. Packing preserves region
+and root order. The returned vector maps roots in flattened input order to
+physical tree indices. Each root becomes an independent tree with a group-aligned
+interval. Region boundaries and IDs are deterministic for the same ordered
+inputs and grammar bindings. Grouping never combines native parser inputs.
 
-The caller may group inputs by grammar or sort them before packing, but neither
-is required. Discovery can append trees as parsing completes, including when
-grammars recur through injection nesting. Direct-parser output can be encoded
-into the forest after each parse without retaining all parses for later grammar
-grouping. This does not require the parser itself to stream individual nodes.
+The caller may group roots by grammar or sort them before packing, but neither
+is required. Discovery can append one-root inputs as parsing completes,
+including when grammars recur through injection nesting. Native trees must stay
+alive until `pack_forest` returns because the inputs contain borrowed nodes.
 Source-order indexes can be built separately from physical packing order; no
 byte-order sorting or index is required by the initial forest representation.
 
-Each input packs the supplied node and its descendants as an independent tree;
+`PackOptions::progress_callback` reports the current or last native byte offset
+and returns `ControlFlow::Break(())` to cancel. Offsets can decrease when packing
+moves to another tree and do not measure forest-wide work completed. Poll between
+roots and regions as well as during traversal; an empty forest polls once with
+offset zero. Cancellation returns `ForestError::Cancelled` without publishing a
+partial forest.
+
+Each root packs the supplied node and its descendants as an independent tree;
 the node need not be a whole-tree root. Preserve its displayed kind/alias and
 subtree contents. Its packed root has no parent, siblings, parent field, or
 supertype context inherited from excluded ancestors. Relationships and supertype
@@ -142,17 +149,17 @@ physical order makes no tree the document root.
 // placement checked before constructing the positioned root
 let positioned_second = second.root_node_with_offset(second_origin, second_point);
 let third_subtree = third.root_node().named_child(0).unwrap();
-let inputs = [
-    PackInput { language: &language_a, root: first.root_node() },
-    PackInput { language: &language_b, root: positioned_second },
-    PackInput { language: &language_a, root: third_subtree },
+let inputs = vec![
+    ForestRegionToPack { language: language_a.clone(), roots: vec![first.root_node()] },
+    ForestRegionToPack { language: language_b, roots: vec![positioned_second] },
+    ForestRegionToPack { language: language_a, roots: vec![third_subtree] },
 ];
 let options = PackOptions {
     symbol_presence: false,
     points: false,
     ..PackOptions::default()
 };
-let (forest, input_trees) = packer.pack_forest(&inputs, options, None)?;
+let (forest, input_trees) = packer.pack_forest(inputs, options)?;
 let second_root = forest.tree(input_trees[1]).unwrap().root_node();
 assert_eq!(second_root.start_byte(), positioned_second.start_byte());
 ```
@@ -181,7 +188,7 @@ primitive child indices, as in the packing example above.
 
 ## Packing bounds
 
-Check grammar compatibility and coordinate bounds once per `PackInput`. Trust
+Check grammar compatibility and coordinate bounds once per root. Trust
 Tree-sitter's subtree containment; do not add a coordinate-validation pass or
 repeat these checks for every descendant. Packing does not verify coordinates
 against source text or prove that byte and point positions correspond.
@@ -195,7 +202,7 @@ node reached packing cannot reliably be detected; checking that earlier
 translation belongs to the caller.
 
 When copying native points, check the supplied start row plus native subtree row
-extent once per input. The ending column does not bound columns on earlier
+extent once per root. The ending column does not bound columns on earlier
 lines. A conservative column bound is the supplied start column plus subtree
 byte size, computed with checked or widened arithmetic and required to fit
 `u32`. This can reject representable multiline inputs near the column limit;
@@ -666,8 +673,8 @@ without introducing another forest owning type.
 
 ## Implementation and verification
 
-1. Add forest descriptors, adjacent exact-grammar runs, and input-to-tree mapping;
-   accept native subtree nodes with per-input coordinate and per-group slot bounds.
+1. Add forest descriptors, caller-defined regions, and flattened root-to-tree mapping;
+   accept native subtree nodes with per-root coordinate and per-group slot bounds.
 2. Add compact forest/`NodeId` nodes with descriptor lookups through `SmallVec`s
    with inline capacity one for trees and regions.
 3. Add concatenated forest presence caches and point data with independent
@@ -686,8 +693,9 @@ errors, predicates, point bounds, and ties. Verify aliases and subtree contents
 survive detachment while excluded parent/sibling/field/supertype context does not.
 Exercise every root/tree boundary, wasted slots, input mapping, changed grammar
 bindings, serialization round trips, malformed descriptors, overflow,
-cancelled packing, and existing-reader lifetimes. Verify absent forest presence
-caches, invalid region/dimension rejection, and sidecar serialization
+cancellation during traversal, between roots, and on empty input, and
+existing-reader lifetimes. Verify absent forest presence caches, invalid
+region/dimension rejection, and sidecar serialization
 round trips. Presence changes must preserve query results. Points must
 match each tree's source conversion while attached and use row-zero coordinates
 before attachment and after removal; test point-bounded queries in both states.
@@ -709,7 +717,7 @@ accesses, span arithmetic, nonprogressing reconstruction, and tree-count overflo
 during loading without traversing descendants.
 
 Verify input-order preservation for grouped, interleaved, and byte-unsorted
-inputs, including an A/B/A/A grammar sequence producing three regions. Exercise
+inputs, including A/B/A regions with two roots in the last region. Exercise
 separate bitmap segments sharing one grammar. Pack trees from different sources
 with overlapping byte and point ranges, including within the same region. Check
 native point copying, per-tree text queries, and sidecar round trips without
