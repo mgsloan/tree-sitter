@@ -45,6 +45,31 @@ const SKIPPED_QUANTIFIER: u16 = 16;
 const REMOVED: u16 = 32;
 const EXHAUSTED: u16 = 64;
 
+// Patterns 64 apart share a bit; collisions only add deduplication work.
+#[derive(Clone, Copy, Default)]
+struct DirtyPatterns(u64);
+
+impl DirtyPatterns {
+    #[inline]
+    fn mark(&mut self, pattern: PatternIndex) {
+        self.0 |= Self::bit(pattern);
+    }
+
+    #[inline]
+    fn may_contain(self, pattern: PatternIndex) -> bool {
+        self.0 & Self::bit(pattern) != 0
+    }
+
+    fn is_empty(self) -> bool {
+        self.0 == 0
+    }
+
+    #[inline]
+    fn bit(pattern: PatternIndex) -> u64 {
+        1 << (pattern.raw() % 64)
+    }
+}
+
 #[derive(Clone, Copy)]
 #[repr(C)]
 struct Capture {
@@ -701,7 +726,7 @@ pub struct QueryCursor {
     error: Option<QueryExecutionError>,
     exceeded_limit: bool,
     operations: u32,
-    dirty_patterns: u64,
+    dirty_patterns: DirtyPatterns,
     states_need_sort: bool,
     states_max_depth: u32,
     next_state_id: MatchId,
@@ -752,7 +777,7 @@ impl QueryCursor {
             error: None,
             exceeded_limit: false,
             operations: 0,
-            dirty_patterns: 0,
+            dirty_patterns: DirtyPatterns::default(),
             states_need_sort: false,
             states_max_depth: 0,
             next_state_id: MatchId::from_raw(0),
@@ -846,7 +871,7 @@ impl QueryCursor {
         self.halted = self.error.is_some();
         self.position = root.slot();
         self.ascending = false;
-        self.dirty_patterns = 0;
+        self.dirty_patterns = DirtyPatterns::default();
         self.states_need_sort = false;
         self.states_max_depth = 0;
         self.finished_heap_size = 0;
@@ -1568,7 +1593,7 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
                     if self.cursor.direct {
                         self.release_direct(DirectStateIx(state.order));
                     }
-                    self.cursor.dirty_patterns |= 1 << (state.pattern.raw() % 64);
+                    self.cursor.dirty_patterns.mark(state.pattern);
                 }
             }
             if !self.advance(true) && (self.stopped || self.cursor.finished.is_empty()) {
@@ -1594,7 +1619,7 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
             if self.cursor.direct {
                 self.release_direct(DirectStateIx(state.order));
             }
-            self.cursor.dirty_patterns |= 1 << (state.pattern.raw() % 64);
+            self.cursor.dirty_patterns.mark(state.pattern);
             self.cursor.first_capture_valid = false;
         }
     }
@@ -1619,7 +1644,7 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
         state.captures = other.captures;
         other.captures = CaptureListIx::NONE;
         other.flags |= DEAD;
-        self.cursor.dirty_patterns |= 1 << (other.pattern.raw() % 64);
+        self.cursor.dirty_patterns.mark(other.pattern);
         self.cursor.states_need_sort = true;
         self.cursor.pool.clear(state.captures);
         true
@@ -1670,7 +1695,7 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
             index -= 1;
         }
 
-        self.cursor.dirty_patterns |= 1 << (entry.pattern_index.raw() % 64);
+        self.cursor.dirty_patterns.mark(entry.pattern_index);
         self.cursor.states_need_sort = true;
         self.cursor.states.insert(
             index,
@@ -1779,7 +1804,6 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
         targets: [SquatterKindId; N],
     ) -> PreorderIx {
         use crate::scan::GroupRef;
-        use crate::storage::GROUP_SIZE;
 
         let total = self.total_slots();
         let groups = GroupRef::new(self.root);
@@ -1789,7 +1813,7 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
                 return start;
             }
             let index = start.slot(total).group();
-            let group_end = PreorderIx((start.raw() / GROUP_SIZE + 1) * GROUP_SIZE).min(end);
+            let group_end = start.next_group_start().min(end);
             if self
                 .root
                 .presence()
@@ -1814,7 +1838,6 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
     }
 
     fn find_symbols_control(&mut self, mut start: PreorderIx, end: PreorderIx) -> PreorderIx {
-        use crate::storage::GROUP_SIZE;
         let query = self.query;
         let data = self.root.data();
         let filter = &query.program.scan_filter.matches;
@@ -1833,7 +1856,7 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
                 return start;
             }
             let group = start.slot(total).group();
-            let group_end = PreorderIx((start.raw() / GROUP_SIZE + 1) * GROUP_SIZE).min(end);
+            let group_end = start.next_group_start().min(end);
             if !targets.is_empty()
                 && targets.len() <= 4
                 && self
@@ -2009,10 +2032,9 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
         let scanned_end = begin + (limit - begin).raw().min(256);
         let mut position = begin;
         while position < scanned_end {
-            let group = position.raw() / group_size;
-            let group_start = PreorderIx(group * group_size);
-            let end = (group_start + group_size).min(scanned_end);
-            let physical_group = GroupIx(data.groups() - 1 - group);
+            let group_start = position.group_start();
+            let end = position.next_group_start().min(scanned_end);
+            let physical_group = position.slot(self.total_slots()).group();
             let mut hits = {
                 let mut hits = u64::MAX;
                 if requirement.symbol != SquatterKindId(0) {
@@ -2370,13 +2392,13 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
                         let step = self.step(state.step);
                         if step.depth == DONE && (state.start_depth as u32 > depth || depth == 0) {
                             self.finish(state);
-                            self.cursor.dirty_patterns |= 1 << (state.pattern.raw() % 64);
+                            self.cursor.dirty_patterns.mark(state.pattern);
                             did_match = true;
                         } else if step.depth != DONE
                             && state.start_depth as u32 + step.depth as u32 > depth
                         {
                             self.cursor.pool.release(state.captures);
-                            self.cursor.dirty_patterns |= 1 << (state.pattern.raw() % 64);
+                            self.cursor.dirty_patterns.mark(state.pattern);
                         } else {
                             if retained != index {
                                 self.cursor.states[retained] = state;
@@ -2548,7 +2570,7 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
                 && state.has(SEEKING_IMMEDIATE)
                 && symbol_matches
             {
-                self.cursor.dirty_patterns |= 1 << (state.pattern.raw() % 64);
+                self.cursor.dirty_patterns.mark(state.pattern);
                 if step.capture_ids[0] != QueryCaptureIx::NONE {
                     self.capture(&mut state, node, step);
                 }
@@ -2598,7 +2620,7 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
             if !matches {
                 if !later_can_match {
                     self.cursor.pool.release(state.captures);
-                    self.cursor.dirty_patterns |= 1 << (state.pattern.raw() % 64);
+                    self.cursor.dirty_patterns.mark(state.pattern);
                     self.stage_remaining(index);
                     self.cursor.states.remove(index);
                 } else {
@@ -2606,7 +2628,7 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
                 }
                 continue;
             }
-            self.cursor.dirty_patterns |= 1 << (state.pattern.raw() % 64);
+            self.cursor.dirty_patterns.mark(state.pattern);
             self.stage_remaining(index);
             let mut copies = 0;
             if later_can_match
@@ -2736,14 +2758,14 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
         }
     }
 
-    fn needs_comparison_blocks(&self, dirty: u64) -> bool {
+    fn needs_comparison_blocks(&self, dirty: DirtyPatterns) -> bool {
         if self.cursor.states.len() < 256 {
             return false;
         }
         let mut previous = None;
         let mut run = 0;
         for state in &self.cursor.states {
-            if dirty & (1 << (state.pattern.raw() % 64)) == 0 {
+            if !dirty.may_contain(state.pattern) {
                 run = 0;
                 continue;
             }
@@ -2765,7 +2787,7 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
         false
     }
 
-    fn index_captures(&mut self, dirty: u64, dirty_count: usize) {
+    fn index_captures(&mut self, dirty: DirtyPatterns, dirty_count: usize) {
         self.cursor.comparison_blocks.clear();
         if dirty_count < 64 {
             self.cursor.comparison_index.clear();
@@ -2788,7 +2810,7 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
         // collisions merely add candidates; exact containment decides removal.
         for index in (0..count).rev() {
             let state = self.cursor.states[index];
-            if dirty & (1 << (state.pattern.raw() % 64)) == 0 {
+            if !dirty.may_contain(state.pattern) {
                 continue;
             }
             let captures = self.cursor.pool.list(state.captures);
@@ -2896,14 +2918,13 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
     // Keep the large comparison pass out of the per-node matcher's register set.
     #[inline(never)]
     fn deduplicate(&mut self) -> bool {
-        let dirty = self.cursor.dirty_patterns;
-        if dirty == 0 {
+        let dirty = std::mem::take(&mut self.cursor.dirty_patterns);
+        if dirty.is_empty() {
             return false;
         }
-        self.cursor.dirty_patterns = 0;
         let mut dirty_count = 0;
         for state in &mut self.cursor.states {
-            if dirty & (1 << (state.pattern.raw() % 64)) != 0 {
+            if dirty.may_contain(state.pattern) {
                 state.flags &= !HAS_ALTERNATIVES;
                 dirty_count += 1;
             }
@@ -2924,20 +2945,20 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
 
     // Small state sets do not use indexes. Select that path once per pass so
     // their inner loop carries no hash-bucket or capture-set bitmap state.
-    fn compare_states<const INDEXED: bool>(&mut self, dirty: u64) -> bool {
+    fn compare_states<const INDEXED: bool>(&mut self, dirty: DirtyPatterns) -> bool {
         let mut group = None;
         let mut unique_start = false;
         let mut did_match = false;
         for index in 0..self.cursor.states.len() {
             self.poll();
             let mut state = self.cursor.states[index];
-            if state.has(REMOVED) || dirty & (1 << (state.pattern.raw() % 64)) == 0 {
+            if state.has(REMOVED) || !dirty.may_contain(state.pattern) {
                 continue;
             }
             if state.has(DEAD) {
                 self.cursor.pool.release(state.captures);
                 self.cursor.states[index].flags |= REMOVED;
-                self.cursor.dirty_patterns |= 1 << (state.pattern.raw() % 64);
+                self.cursor.dirty_patterns.mark(state.pattern);
                 continue;
             }
             if group != Some((state.start_depth, state.pattern)) {
@@ -3028,7 +3049,7 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
                     {
                         self.cursor.pool.release(other.captures);
                         self.cursor.states[other_index].flags |= REMOVED;
-                        self.cursor.dirty_patterns |= 1 << (state.pattern.raw() % 64);
+                        self.cursor.dirty_patterns.mark(state.pattern);
                         other_index += 1;
                         continue;
                     }
@@ -3041,7 +3062,7 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
                     {
                         self.cursor.pool.release(state.captures);
                         state.flags |= REMOVED;
-                        self.cursor.dirty_patterns |= 1 << (state.pattern.raw() % 64);
+                        self.cursor.dirty_patterns.mark(state.pattern);
                         break;
                     }
                     state.flags |= HAS_ALTERNATIVES;
@@ -3055,7 +3076,7 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
             {
                 self.finish(state);
                 state.flags |= REMOVED;
-                self.cursor.dirty_patterns |= 1 << (state.pattern.raw() % 64);
+                self.cursor.dirty_patterns.mark(state.pattern);
                 did_match = true;
             }
             self.cursor.states[index].flags = state.flags;

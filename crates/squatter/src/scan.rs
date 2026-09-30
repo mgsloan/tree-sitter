@@ -1008,7 +1008,7 @@ impl<'tree> Preorder<'tree> {
         let first = columns.first_slot(root.slot());
         Self {
             group: columns.group(root.slot().group()),
-            groups: first.group().raw()..(root.slot().raw() >> GROUP_SIZE.trailing_zeros()) + 1,
+            groups: first.group().raw()..(root.slot().group() + 1).raw(),
             slots: first..root.slot() + 1,
         }
     }
@@ -1503,8 +1503,7 @@ fn byte_cutoff(base: u64, position: u64, inclusive: bool, limit: u32) -> u32 {
 
 #[inline]
 fn point_cutoff(base: PackedPoint, position: PackedPoint, inclusive: bool) -> u32 {
-    let (base, position) = (base.raw(), position.raw());
-    let Some(row) = (position >> 32).checked_sub(base >> 32) else {
+    let Some(row) = position.row().checked_sub(base.row()) else {
         return 0;
     };
     if row > 255 {
@@ -1512,9 +1511,9 @@ fn point_cutoff(base: PackedPoint, position: PackedPoint, inclusive: bool) -> u3
     }
     // A query column outside this row's encoded interval selects all or none
     // of that row, while earlier delta rows still qualify.
-    let columns = (i64::from(position as u32) - i64::from(base as u32) + i64::from(inclusive))
+    let columns = (i64::from(position.column()) - i64::from(base.column()) + i64::from(inclusive))
         .clamp(0, 256) as u32;
-    (row as u32 * 256) + columns
+    row * 256 + columns
 }
 
 #[inline]
@@ -1628,8 +1627,11 @@ impl<const END: bool, const STORED: bool> PositionColumn for PointColumn<'_, END
     #[inline]
     fn minimum(&self) -> PackedPoint {
         if END {
-            self.base
-                .saturating_sub(if STORED { (255 << 32) | 255 } else { 65535 })
+            self.base.saturating_sub(if STORED {
+                PackedPoint::expand_delta(u16::MAX)
+            } else {
+                65535
+            })
         } else {
             self.base
         }
@@ -1639,8 +1641,11 @@ impl<const END: bool, const STORED: bool> PositionColumn for PointColumn<'_, END
         if END {
             self.base
         } else {
-            self.base
-                .saturating_add(if STORED { (255 << 32) | 255 } else { 255 })
+            self.base.saturating_add(if STORED {
+                PackedPoint::expand_delta(u16::MAX)
+            } else {
+                255
+            })
         }
     }
     #[inline]
@@ -1648,17 +1653,14 @@ impl<const END: bool, const STORED: bool> PositionColumn for PointColumn<'_, END
         let deltas = self.deltas.slice();
         let delta = if STORED || END {
             let offset = slot.ix() * 2;
-            u64::from(u16::from_le_bytes(
-                deltas[offset..offset + 2].try_into().unwrap(),
-            ))
+            u16::from_le_bytes(deltas[offset..offset + 2].try_into().unwrap())
         } else {
-            u64::from(deltas[slot.ix()])
+            u16::from(deltas[slot.ix()])
         };
-        // Rows occupy the high word, so unsigned comparison orders both components.
         let delta = if STORED {
-            ((delta >> 8) << 32) | (delta & 255)
+            PackedPoint::expand_delta(delta)
         } else {
-            delta
+            u64::from(delta)
         };
         if END {
             self.base - delta

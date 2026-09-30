@@ -469,12 +469,8 @@ impl Builder {
         if let Some(points) = &mut self.points {
             points.put_bases(
                 GroupIx(group),
-                PackedPoint(
-                    (u64::from(self.base.start_row) << 32) | u64::from(self.base.start_column),
-                ),
-                PackedPoint(
-                    (u64::from(self.maximum.end_row) << 32) | u64::from(self.maximum.end_column),
-                ),
+                PackedPoint::from_parts(self.base.start_row, self.base.start_column),
+                PackedPoint::from_parts(self.maximum.end_row, self.maximum.end_column),
             );
         }
 

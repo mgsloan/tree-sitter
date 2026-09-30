@@ -250,14 +250,15 @@ impl PresenceCache {
                         let payload = record.add(HEADER_BYTES);
                         // Bitmap updates read the previous word before setting bits.
                         ptr::write_bytes(payload, 0, record_length - HEADER_BYTES);
-                        let first_group = region.data().slots.start.raw() / GROUP_SIZE;
+                        let first_group = region.data().slots.start.group();
                         let words = (groups as usize).div_ceil(64);
                         for group in 0..groups {
                             if cancellation_callback().is_break() {
                                 return Err(Error::Canceled);
                             }
-                            for slot in (first_group + group) * GROUP_SIZE
-                                ..forest.data().group_end(GroupIx(first_group + group)).raw()
+                            let physical_group = first_group + group;
+                            for slot in physical_group.first_slot().raw()
+                                ..forest.data().group_end(physical_group).raw()
                             {
                                 let symbol = forest.data().symbol_index(SlotIx(slot)).ix();
                                 let bitmap = payload
@@ -476,7 +477,9 @@ impl PointsData {
     fn point<const END: bool>(&self, slot: SlotIx) -> PackedPoint {
         let (base, deltas) = self.column::<END>(slot.group());
         let offset = slot.in_group().ix() * 2;
-        let delta = u64::from(deltas[offset + 1]) << 32 | u64::from(deltas[offset]);
+        let delta = PackedPoint::expand_delta(u16::from_le_bytes(
+            deltas[offset..offset + 2].try_into().unwrap(),
+        ));
         if END { base - delta } else { base + delta }
     }
     pub(crate) fn start(&self, slot: SlotIx) -> PackedPoint {
@@ -516,18 +519,15 @@ impl PointsData {
     /// This check is explicit in every build profile.
     pub fn validate_for(&self, forest: &Forest) -> Result<(), SideDataError> {
         self.validate_loaded(forest)?;
-        for group in 0..forest.group_count() {
-            let end = forest.data().group_end(GroupIx(group));
-            let used = (end.raw() - group * GROUP_SIZE) as usize;
-            for (_, deltas) in [
-                self.column::<false>(GroupIx(group)),
-                self.column::<true>(GroupIx(group)),
-            ] {
+        for group in (0..forest.group_count()).map(GroupIx) {
+            let end = forest.data().group_end(group);
+            let used = (end - group.first_slot()).raw() as usize;
+            for (_, deltas) in [self.column::<false>(group), self.column::<true>(group)] {
                 if deltas[used * 2..].iter().any(|&byte| byte != 0) {
                     return Err(SideDataError::InvalidTarget);
                 }
             }
-            for slot in group * GROUP_SIZE..end.raw() {
+            for slot in group.first_slot().raw()..end.raw() {
                 if self.start(SlotIx(slot)) > self.end(SlotIx(slot)) {
                     return Err(SideDataError::InvalidTarget);
                 }
@@ -543,20 +543,19 @@ impl PointsData {
         {
             return Err(SideDataError::InvalidTarget);
         }
-        for group in 0..tree.group_count() {
-            let used = (tree.data().group_end(GroupIx(group)).raw() - group * GROUP_SIZE) as usize;
+        for group in (0..tree.group_count()).map(GroupIx) {
+            let used = (tree.data().group_end(group) - group.first_slot()).raw() as usize;
             for (end, (base, deltas)) in [
-                (false, self.column::<false>(GroupIx(group))),
-                (true, self.column::<true>(GroupIx(group))),
+                (false, self.column::<false>(group)),
+                (true, self.column::<true>(group)),
             ] {
-                let base = base.point();
                 for delta in deltas[..used * 2].chunks_exact(2) {
                     let row = u32::from(delta[1]);
                     let column = u32::from(delta[0]);
                     let valid = if end {
-                        base.row as u32 >= row && base.column as u32 >= column
+                        base.row() >= row && base.column() >= column
                     } else {
-                        base.row as u32 <= u32::MAX - row && base.column as u32 <= u32::MAX - column
+                        base.row() <= u32::MAX - row && base.column() <= u32::MAX - column
                     };
                     if !valid {
                         return Err(SideDataError::InvalidTarget);

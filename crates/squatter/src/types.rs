@@ -209,19 +209,40 @@ impl std::ops::Sub<u32> for SlabOffset {
 }
 
 impl PackedPoint {
+    #[inline]
+    pub(crate) const fn from_parts(row: u32, column: u32) -> Self {
+        Self(((row as u64) << 32) | column as u64)
+    }
+
+    #[inline]
+    pub(crate) const fn row(self) -> u32 {
+        (self.0 >> 32) as u32
+    }
+
+    #[inline]
+    pub(crate) const fn column(self) -> u32 {
+        self.0 as u32
+    }
+
+    /// Expands the sidecar's 8-bit row and column deltas for packed arithmetic.
+    #[inline]
+    pub(crate) const fn expand_delta(delta: u16) -> u64 {
+        Self::from_parts((delta >> 8) as u32, (delta & 255) as u32).raw()
+    }
+
     pub(crate) fn from_point_cast(point: tree_sitter::Point) -> Self {
-        Self((u64::from(point.row as u32) << 32) | u64::from(point.column as u32))
+        Self::from_parts(point.row as u32, point.column as u32)
     }
 
     pub(crate) fn from_point(point: tree_sitter::Point) -> Option<Self> {
-        Some(Self(
-            (u64::from(u32::try_from(point.row).ok()?) << 32)
-                | u64::from(u32::try_from(point.column).ok()?),
+        Some(Self::from_parts(
+            u32::try_from(point.row).ok()?,
+            u32::try_from(point.column).ok()?,
         ))
     }
 
     pub(crate) fn point(self) -> tree_sitter::Point {
-        tree_sitter::Point::new((self.0 >> 32) as usize, (self.0 as u32) as usize)
+        tree_sitter::Point::new(self.row() as usize, self.column() as usize)
     }
 }
 
@@ -255,6 +276,9 @@ impl PackedPoint {
 impl SlotIx {
     pub(crate) fn is_group_start(self) -> bool {
         self.0.is_multiple_of(crate::storage::GROUP_SIZE)
+    }
+    pub(crate) fn next_group_start(self) -> Self {
+        (self.group() + 1).first_slot()
     }
     pub(crate) fn checked_sub(self, span: SlotSpan) -> Option<Self> {
         self.0.checked_sub(span.0).map(Self)
@@ -572,6 +596,15 @@ index_type!(
 index_type!(pub(crate) DirectStateIx(u32));
 
 impl PreorderIx {
+    pub(crate) fn group_start(self) -> Self {
+        let group_size = crate::storage::GROUP_SIZE;
+        Self(self.0 / group_size * group_size)
+    }
+
+    pub(crate) fn next_group_start(self) -> Self {
+        self.group_start() + crate::storage::GROUP_SIZE
+    }
+
     pub(crate) fn from_slot(slot: SlotIx, total_slots: u32) -> Self {
         Self(total_slots - 1 - slot.raw())
     }

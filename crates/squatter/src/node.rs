@@ -440,7 +440,7 @@ impl<'tree> Node<'tree> {
         if slot < self.data().group_end(self.slot().group()) {
             slot
         } else {
-            (self.slot().group() + 1).first_slot()
+            self.slot().next_group_start()
         }
     }
 
@@ -905,7 +905,7 @@ impl<'tree> Node<'tree> {
         }
         let data = self.data();
         if POINTS && !data.has_points() {
-            return if start >> 32 == 0 && end >> 32 == 0 {
+            return if PackedPoint(start).row() == 0 && PackedPoint(end).row() == 0 {
                 self.seek::<false>(start, end, named)
             } else {
                 Some(self.seek_descent::<true>(start, end, named))
@@ -936,32 +936,32 @@ impl<'tree> Node<'tree> {
             }
         }
 
-        let mut slot = (low * GROUP_SIZE).max(first.raw());
-        let limit = data.group_end(GroupIx(low)).min(self.slot() + 1);
+        let group = GroupIx(low);
+        let mut slot = group.first_slot().max(first);
+        let limit = data.group_end(group).min(self.slot() + 1);
         if POINTS {
-            let group = scan::GroupRef::new(self).at_group(GroupIx(low));
-            slot = (low * GROUP_SIZE
-                + group
-                    .first_point_start_before(PackedPoint(start), GroupSlotIx(slot % GROUP_SIZE))
-                    .raw())
-            .min(limit.raw());
+            let view = scan::GroupRef::new(self).at_group(group);
+            slot = group
+                .slot(view.first_point_start_before(PackedPoint(start), slot.in_group()))
+                .min(limit);
         } else {
             let base = data.word(data.layout.start_byte_base, low) as u64;
-            let mask = start_mask(data, low, (start - base).min(255) as u8) >> (slot % GROUP_SIZE);
+            let mask =
+                start_mask(data, group, (start - base).min(255) as u8) >> slot.in_group().raw();
             slot = if mask == 0 {
-                limit.raw()
+                limit
             } else {
-                (slot + mask.trailing_zeros()).min(limit.raw())
+                (slot + mask.trailing_zeros()).min(limit)
             };
         }
-        if slot == limit.raw() {
-            slot = (low + 1) * GROUP_SIZE;
-            if slot > self.slot().raw() {
+        if slot == limit {
+            slot = (group + 1).first_slot();
+            if slot > self.slot() {
                 return Some(self);
             }
         }
 
-        let mut candidate = self.at(SlotIx::from_raw(slot));
+        let mut candidate = self.at(slot);
         if start == end {
             let mut previous = candidate;
             while previous.slot() <= self.slot() && previous.start_key::<POINTS>() == start {
@@ -991,18 +991,18 @@ impl<'tree> Node<'tree> {
             if candidate_end >= end && candidate_end > start && (!named || candidate.is_named()) {
                 return Some(candidate);
             }
-            candidate = candidate.at(SlotIx::from_raw(candidate.slot().raw() + 1));
+            candidate = candidate.at(candidate.slot() + 1);
         }
 
         // Earlier preorder siblings end before the range. The first qualifying
         // end after the selected start is an enclosing ancestor.
         while candidate.slot() < self.slot() {
-            let group = candidate.slot().group().raw();
-            let limit = data.group_end(GroupIx(group)).min(self.slot());
-            let view = scan::GroupRef::new(self).at_group(GroupIx(group));
+            let group = candidate.slot().group();
+            let limit = data.group_end(group).min(self.slot());
+            let view = scan::GroupRef::new(self).at_group(group);
             let mut first = candidate.slot().in_group();
             while let Some(offset) = view.first_end_after::<POINTS>(start, end, first) {
-                let slot = GroupIx(group).slot(offset);
+                let slot = group.slot(offset);
                 if slot >= limit {
                     break;
                 }
@@ -1012,16 +1012,16 @@ impl<'tree> Node<'tree> {
                 }
                 first = GroupSlotIx(offset.raw() + 1);
             }
-            candidate = candidate.at(SlotIx::from_raw((group + 1) * GROUP_SIZE));
+            candidate = candidate.at((group + 1).first_slot());
         }
         Some(self)
     }
 }
 
-fn start_mask(data: &ForestData, group: u32, threshold: u8) -> u64 {
+fn start_mask(data: &ForestData, group: GroupIx, threshold: u8) -> u64 {
     let deltas = data.column_slice(
         data.layout.start_byte_delta,
-        (group * GROUP_SIZE) as usize,
+        group.first_slot().ix(),
         GROUP_SIZE as usize,
     );
     dispatch!(crate::simd::level(), simd => start_delta_mask(simd, deltas, threshold))
