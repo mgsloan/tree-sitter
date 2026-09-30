@@ -155,7 +155,7 @@ fn error_queries_survive_native_mutations() {
                     1 => {
                         query.disable_capture("error");
                         for (_, _, captures) in &mut expected {
-                            captures.retain(|(index, _)| *index != error_capture);
+                            captures.retain(|(index, _)| index.raw() != error_capture);
                         }
                     }
                     2 | 3 => {

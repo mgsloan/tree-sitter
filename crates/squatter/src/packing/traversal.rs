@@ -1,8 +1,10 @@
 use super::{Builder, InputNode};
 use crate::{
-    Error, FieldId,
+    Error, FieldId, GrammarId, KindId, SlotIx,
     native::{GrammarView, Point, Range, Reduction},
-    types::{SquatterGrammarId, SquatterKindId},
+    types::{
+        ProductionId, ReductionIx, SquatterGrammarId, SquatterKindId, SupertypeIx, SupertypeMask,
+    },
 };
 use std::{ffi::c_void, marker::PhantomData, ptr};
 
@@ -133,7 +135,7 @@ impl Subtree {
 
     // The caller has established a nonzero child count, hence heap storage
     // and the nonterminal union member are active.
-    fn branch(self) -> (*const ffi::Subtree, u16, u16) {
+    fn branch(self) -> (*const ffi::Subtree, ProductionId, GrammarId) {
         unsafe {
             let heap = (*self.0).ptr;
             debug_assert!(
@@ -143,8 +145,8 @@ impl Subtree {
             (
                 heap.cast::<ffi::Subtree>()
                     .sub((*heap).child_count as usize),
-                (*heap).__bindgen_anon_1.__bindgen_anon_1.production_id,
-                (*heap).symbol,
+                ProductionId((*heap).__bindgen_anon_1.__bindgen_anon_1.production_id),
+                GrammarId((*heap).symbol),
             )
         }
     }
@@ -153,7 +155,7 @@ impl Subtree {
 pub(super) struct Root<'tree> {
     subtree: Subtree,
     position: Position,
-    alias: u16,
+    alias: KindId,
     input: PhantomData<&'tree tree_sitter::Tree>,
 }
 
@@ -188,7 +190,7 @@ impl<'tree> Root<'tree> {
                     column: raw.context[2],
                 },
             },
-            alias: raw.context[3] as u16,
+            alias: KindId(raw.context[3] as u16),
             input: PhantomData,
         })
     }
@@ -202,9 +204,9 @@ struct Mask(u64);
 struct Node {
     position: Position,
     mask: Mask,
-    boundary: u32,
+    boundary: SlotIx,
     field: Option<FieldId>,
-    alias: u16,
+    alias: KindId,
     later: bool,
 }
 
@@ -212,7 +214,7 @@ struct Frame {
     node: Node,
     subtree: Subtree,
     children: *const ffi::Subtree,
-    aliases: *const u16,
+    aliases: *const KindId,
     inline_position: Position,
     child_end: u32,
     position_mark: usize,
@@ -228,8 +230,8 @@ struct Frame {
 
 struct ReductionFrame {
     node: Node,
-    index: u32,
-    next_child: u32,
+    index: ReductionIx,
+    next_child: ReductionIx,
     mask_mark: usize,
     child_mask: Mask,
     visible: bool,
@@ -277,45 +279,45 @@ fn reserve<T>(values: &mut Vec<T>, additional: usize) -> Result<(), Error> {
 }
 
 impl Walk<'_> {
-    fn aliases(&self, production: u16) -> *const u16 {
-        if production == 0 {
+    fn aliases(&self, production: ProductionId) -> *const KindId {
+        if production == ProductionId(0) {
             ptr::null()
         } else {
-            self.tables
-                .alias_sequences
-                .wrapping_add(production as usize * self.tables.max_alias_sequence_length as usize)
+            self.tables.alias_sequences.cast::<KindId>().wrapping_add(
+                production.raw() as usize * self.tables.max_alias_sequence_length as usize,
+            )
         }
     }
 
-    fn fields(&self, production: u16) -> Range {
+    fn fields(&self, production: ProductionId) -> Range {
         if self.tables.production_fields.is_null() {
             Range {
                 offset: 0,
                 length: 0,
             }
         } else {
-            unsafe { *self.tables.production_fields.add(production as usize) }
+            unsafe { *self.tables.production_fields.add(production.raw() as usize) }
         }
     }
 
-    fn supertype(&self, symbol: u16) -> u16 {
-        if u32::from(symbol) < self.tables.symbol_count {
-            unsafe { *self.tables.supertype_indexes.add(symbol as usize) }
+    fn supertype(&self, symbol: GrammarId) -> SupertypeIx {
+        if u32::from(symbol.raw()) < self.tables.symbol_count {
+            SupertypeIx(unsafe { *self.tables.supertype_indexes.add(symbol.raw() as usize) })
         } else {
-            0
+            SupertypeIx(0)
         }
     }
 
     #[inline(always)]
-    fn child_mask(&mut self, mask: Mask, visible: bool, symbol: u16) -> Result<Mask, Error> {
+    fn child_mask(&mut self, mask: Mask, visible: bool, symbol: GrammarId) -> Result<Mask, Error> {
         if self.words == 0 {
             return Ok(Mask(0));
         }
         let supertype = self.supertype(symbol);
         if self.words == 1 {
             let mut bits = if visible { 0 } else { mask.0 };
-            if supertype != 0 {
-                bits |= 1 << (supertype - 1);
+            if supertype != SupertypeIx(0) {
+                bits |= 1 << (supertype.raw() - 1);
             }
             return Ok(Mask(bits));
         }
@@ -327,7 +329,7 @@ impl Walk<'_> {
         &mut self,
         mask: Mask,
         visible: bool,
-        supertype: u16,
+        supertype: SupertypeIx,
     ) -> Result<Mask, Error> {
         let masks = &mut self.scratch.masks;
         let offset = masks.len();
@@ -336,23 +338,23 @@ impl Walk<'_> {
         if !visible {
             masks.copy_within(mask.0 as usize..mask.0 as usize + self.words, offset);
         }
-        if supertype != 0 {
-            let index = usize::from(supertype - 1);
+        if supertype != SupertypeIx(0) {
+            let index = usize::from(supertype.raw() - 1);
             masks[offset + index / 64] |= 1 << (index % 64);
         }
         Ok(Mask(offset as u64))
     }
 
     #[inline(always)]
-    fn mask_id(&self, mask: Mask) -> Result<u16, Error> {
+    fn mask_id(&self, mask: Mask) -> Result<SupertypeMask, Error> {
         if self.tables.supertype_count <= 8 {
-            return Ok(mask.0 as u16);
+            return Ok(SupertypeMask(mask.0 as u16));
         }
         self.lookup_mask(mask)
     }
 
     #[inline(never)]
-    fn lookup_mask(&self, mask: Mask) -> Result<u16, Error> {
+    fn lookup_mask(&self, mask: Mask) -> Result<SupertypeMask, Error> {
         let words = if self.words == 1 {
             std::slice::from_ref(&mask.0)
         } else {
@@ -379,7 +381,7 @@ impl Walk<'_> {
                 )
             };
             if words == stored {
-                return Ok(index as u16);
+                return Ok(SupertypeMask(index as u16));
             }
             bucket = (bucket + 1) & limit;
         }
@@ -429,7 +431,11 @@ impl Walk<'_> {
             let child_mask = self.child_mask(
                 node.mask,
                 visible,
-                if node.alias == 0 { symbol } else { node.alias },
+                if node.alias == KindId(0) {
+                    symbol
+                } else {
+                    GrammarId(node.alias.raw())
+                },
             )?;
             if self.points && facts.children > 1 {
                 reserve(&mut self.scratch.positions, facts.children as usize)?;
@@ -465,11 +471,11 @@ impl Walk<'_> {
 
     #[inline(never)]
     fn descend_hidden(&self, subtree: &mut Subtree, node: &mut Node, facts: &mut Facts) {
-        while !facts.visible && node.alias == 0 && facts.children == 1 {
+        while !facts.visible && node.alias == KindId(0) && facts.children == 1 {
             let (children, production, symbol) = subtree.branch();
             let child = Subtree(children);
             *facts = child.facts();
-            let mut alias = 0;
+            let mut alias = KindId(0);
             let mut field = None;
             if !facts.extra {
                 let aliases = self.aliases(production);
@@ -487,8 +493,8 @@ impl Walk<'_> {
             }
             if self.words == 1 {
                 let supertype = self.supertype(symbol);
-                if supertype != 0 {
-                    node.mask.0 |= 1 << (supertype - 1);
+                if supertype != SupertypeIx(0) {
+                    node.mask.0 |= 1 << (supertype.raw() - 1);
                 }
             }
             *subtree = child;
@@ -511,7 +517,7 @@ impl Walk<'_> {
                             column: data.size_bytes.into(),
                         },
                     },
-                    u16::from(data.symbol),
+                    GrammarId(u16::from(data.symbol)),
                     data.extra(),
                     data.is_missing(),
                     data.is_missing(),
@@ -520,7 +526,7 @@ impl Walk<'_> {
                 let heap = subtree.ptr;
                 (
                     (*heap).size.into(),
-                    (*heap).symbol,
+                    GrammarId((*heap).symbol),
                     ffi::SubtreeHeapData::extra_raw(heap),
                     ffi::SubtreeHeapData::is_missing_raw(heap),
                     ffi::SubtreeHeapData::is_missing_raw(heap) || (*heap).error_cost != 0,
@@ -551,19 +557,19 @@ impl Walk<'_> {
         builder: &mut Builder,
         node: &Node,
         end: Position,
-        symbol: u16,
+        symbol: GrammarId,
         flags: u16,
     ) -> Result<(), Error> {
-        let original = match symbol {
+        let original = match symbol.raw() {
             u16::MAX => self.tables.symbol_count as u16,
             65534 => (self.tables.symbol_count + 1) as u16,
-            _ => symbol,
+            _ => symbol.raw(),
         };
         let display = unsafe {
-            *self.tables.public_symbols.add(if node.alias == 0 {
+            *self.tables.public_symbols.add(if node.alias == KindId(0) {
                 original
             } else {
-                node.alias
+                node.alias.raw()
             } as usize)
         };
         let display = unsafe { *self.tables.native_to_kind.add(display as usize) };
@@ -600,7 +606,7 @@ impl Walk<'_> {
     fn push_reduction(
         &mut self,
         node: Node,
-        index: u32,
+        index: ReductionIx,
         reduction: &Reduction,
         visible: bool,
     ) -> Result<(), Error> {
@@ -608,10 +614,10 @@ impl Walk<'_> {
         let child_mask = self.child_mask(
             node.mask,
             visible,
-            if node.alias == 0 {
+            if node.alias == KindId(0) {
                 reduction.symbol
             } else {
-                node.alias
+                GrammarId(node.alias.raw())
             },
         )?;
         reserve(&mut self.scratch.reductions, 1)?;
@@ -652,7 +658,7 @@ pub(super) fn pack_reductions(
     tables: &GrammarView,
     scratch: &mut Traversal,
     nodes: &[Reduction],
-    root: u32,
+    root: ReductionIx,
 ) -> Result<(), Error> {
     let mut walk = Walk {
         scratch,
@@ -664,7 +670,7 @@ pub(super) fn pack_reductions(
         reserve(&mut walk.scratch.masks, walk.words)?;
         walk.scratch.masks.resize(walk.words, 0);
     }
-    let reduction = &nodes[root as usize];
+    let reduction = &nodes[root.raw() as usize];
     let node = Node {
         position: Position {
             bytes: reduction.start_byte,
@@ -673,22 +679,22 @@ pub(super) fn pack_reductions(
         mask: Mask(0),
         boundary: builder.distance(),
         field: None,
-        alias: 0,
+        alias: KindId(0),
         later: false,
     };
     walk.push_reduction(node, root, reduction, true)?;
     while let Some(frame) = walk.scratch.reductions.last_mut() {
-        if frame.next_child == u32::MAX {
+        if frame.next_child == ReductionIx::NONE {
             let frame = walk.scratch.reductions.last().unwrap();
             if frame.visible {
-                walk.emit_reduction(builder, &frame.node, &nodes[frame.index as usize])?;
+                walk.emit_reduction(builder, &frame.node, &nodes[frame.index.raw() as usize])?;
             }
             walk.scratch.masks.truncate(frame.mask_mark);
             walk.scratch.reductions.pop();
             continue;
         }
         let mut index = frame.next_child;
-        let mut child = &nodes[index as usize];
+        let mut child = &nodes[index.raw() as usize];
         frame.next_child = child.next_sibling;
         let mut field = if frame.visible || child.extra {
             None
@@ -702,15 +708,17 @@ pub(super) fn pack_reductions(
 
         if walk.words <= 1 {
             // Hidden reductions always have a child with visible output.
-            while !child.visible && nodes[child.first_child as usize].next_sibling == u32::MAX {
+            while !child.visible
+                && nodes[child.first_child.raw() as usize].next_sibling == ReductionIx::NONE
+            {
                 if walk.words == 1 {
                     let supertype = walk.supertype(child.symbol);
-                    if supertype != 0 {
-                        mask.0 |= 1 << (supertype - 1);
+                    if supertype != SupertypeIx(0) {
+                        mask.0 |= 1 << (supertype.raw() - 1);
                     }
                 }
                 index = child.first_child;
-                child = &nodes[index as usize];
+                child = &nodes[index.raw() as usize];
                 if child.extra {
                     field = None;
                 }
@@ -728,7 +736,7 @@ pub(super) fn pack_reductions(
             alias: child.alias,
             later,
         };
-        if child.first_child == u32::MAX {
+        if child.first_child == ReductionIx::NONE {
             walk.emit_reduction(builder, &node, child)?;
         } else {
             walk.push_reduction(node, index, child, child.visible)?;
@@ -792,12 +800,12 @@ pub(super) fn pack(
             frame.structural -= 1;
         }
         let alias = if facts.extra || frame.aliases.is_null() {
-            0
+            KindId(0)
         } else {
             unsafe { *frame.aliases.add(frame.structural as usize) }
         };
         let later = frame.child_later || (!frame.visible && frame.node.later);
-        frame.child_later |= alias != 0 || facts.visible || facts.visible_children != 0;
+        frame.child_later |= alias != KindId(0) || facts.visible || facts.visible_children != 0;
         let mut field = if frame.visible || facts.extra {
             None
         } else {
@@ -811,7 +819,7 @@ pub(super) fn pack(
             })
             .or(field);
         }
-        if facts.children == 0 && !facts.visible && alias == 0 {
+        if facts.children == 0 && !facts.visible && alias == KindId(0) {
             continue;
         }
         let position = if walk.points {
@@ -834,15 +842,20 @@ pub(super) fn pack(
             mask: frame.child_mask,
             boundary: builder.distance(),
         };
-        if facts.children == 1 && !facts.visible && alias == 0 && walk.words <= 1 {
+        if facts.children == 1 && !facts.visible && alias == KindId(0) && walk.words <= 1 {
             walk.descend_hidden(&mut subtree, &mut node, &mut facts);
         }
         if facts.children == 0 {
-            if facts.visible || node.alias != 0 {
+            if facts.visible || node.alias != KindId(0) {
                 walk.emit(builder, subtree, &node)?;
             }
         } else {
-            walk.push(node, subtree, facts.visible || node.alias != 0, &facts)?;
+            walk.push(
+                node,
+                subtree,
+                facts.visible || node.alias != KindId(0),
+                &facts,
+            )?;
         }
     }
     Ok(())

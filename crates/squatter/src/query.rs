@@ -485,8 +485,8 @@ impl Query {
             pattern.0 < self.pattern_count(),
             "pattern index out of bounds"
         );
-        self.compiled.disable_pattern(pattern.0 as u32);
-        self.program.disable_pattern(&self.compiled, pattern.0);
+        self.compiled.disable_pattern(pattern);
+        self.program.disable_pattern(&self.compiled, pattern);
     }
 
     /// Prevent a capture from being returned or recorded during execution.

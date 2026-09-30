@@ -1,6 +1,9 @@
 use crate::{
-    Error, FieldId, GrammarId, KindId, QueryError,
-    types::{PatternIndex, SquatterGrammarId, SquatterKindId},
+    Error, FieldId, GrammarId, KindId, PatternIx, QueryError,
+    types::{
+        NegatedFieldListIx, PatternIndex, PresenceRequirementIx, QueryCaptureIx, QueryStepIx,
+        ReductionIx, SquatterGrammarId, SquatterKindId,
+    },
 };
 use std::{
     ffi::{CStr, c_char, c_void},
@@ -135,12 +138,12 @@ unsafe impl Send for GrammarView {}
 unsafe impl Sync for GrammarView {}
 
 impl GrammarView {
-    pub fn supertypes(&self) -> &[u16] {
+    pub fn supertypes(&self) -> &[GrammarId] {
         if self.supertype_count == 0 {
             return &[];
         }
         // The native owner retains these immutable arrays with the view.
-        unsafe { std::slice::from_raw_parts(self.supertypes, self.supertype_count as usize) }
+        unsafe { std::slice::from_raw_parts(self.supertypes.cast(), self.supertype_count as usize) }
     }
 
     pub fn supertype_masks(&self) -> &[u64] {
@@ -192,7 +195,15 @@ impl GrammarView {
         }
     }
 
-    pub fn symbol_name(&self, symbol: u16) -> &str {
+    pub fn kind_name(&self, kind: KindId) -> &str {
+        self.symbol_name(kind.raw())
+    }
+
+    pub fn grammar_name(&self, grammar: GrammarId) -> &str {
+        self.symbol_name(grammar.raw())
+    }
+
+    fn symbol_name(&self, symbol: u16) -> &str {
         match symbol {
             u16::MAX => "ERROR",
             65534 => "_ERROR",
@@ -204,12 +215,12 @@ impl GrammarView {
         }
     }
 
-    pub fn field_name(&self, field: u16) -> Option<&str> {
-        if field == 0 || field as u32 > self.field_count {
+    pub fn field_name(&self, field: FieldId) -> Option<&str> {
+        if field.raw() as u32 > self.field_count {
             return None;
         }
         Some(unsafe {
-            CStr::from_ptr(*self.field_names.add(field as usize))
+            CStr::from_ptr(*self.field_names.add(field.raw() as usize))
                 .to_str()
                 .unwrap()
         })
@@ -562,13 +573,13 @@ impl Range {
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Step {
     // stored kind ID; zero denotes a wildcard
-    pub symbol: u16,
-    pub supertype_symbol: u16,
-    pub field: u16,
-    pub capture_ids: [u16; 3],
+    pub symbol: SquatterKindId,
+    pub supertype_symbol: GrammarId,
+    pub field: Option<FieldId>,
+    pub capture_ids: [QueryCaptureIx; 3],
     pub depth: u16,
-    pub alternative_index: u16,
-    pub negated_field_list_id: u16,
+    pub alternative_index: QueryStepIx,
+    pub negated_field_list_id: NegatedFieldListIx,
     pub flags: u16,
 }
 pub(crate) mod flags {
@@ -585,9 +596,9 @@ impl Step {
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct PatternEntry {
-    pub step_index: u16,
+    pub step_index: QueryStepIx,
     pub pattern_index: PatternIndex,
-    pub presence_requirement: u16,
+    pub presence_requirement: PresenceRequirementIx,
     pub flags: u16,
 }
 
@@ -633,8 +644,8 @@ pub(crate) struct QueryView {
     pub capture_names: StringTable,
     pub predicate_values: StringTable,
     pub capture_quantifiers: NativeSlice<NativeSlice<u8>>,
-    pub negated_fields: NativeSlice<u16>,
-    pub rootless_repeat_symbols: NativeSlice<u16>,
+    pub negated_fields: NativeSlice<Option<FieldId>>,
+    pub rootless_repeat_symbols: NativeSlice<GrammarId>,
     pub wildcard_root_pattern_count: u32,
 }
 const _: () = {
@@ -709,19 +720,19 @@ impl CompiledQuery {
             language: language.clone(),
         };
         result.view.symbol_count = tables.kind_count;
-        // Native mutations only remove entries or captures; symbols stay encoded.
+        // The compiler returns native kinds. Normalize before exposing the steps;
+        // subsequent native mutations only remove entries or captures.
         for step in result.steps_mut() {
-            if step.symbol != 0 {
+            if step.symbol != SquatterKindId(0) {
                 step.symbol = tables
-                    .remap_kind(KindId::from_raw(step.symbol))
+                    .remap_kind(KindId::from_raw(step.symbol.raw()))
                     .ok_or_else(|| QueryError {
                         row: 0,
                         column: 0,
                         offset: 0,
                         kind: tree_sitter::QueryErrorKind::Structure,
                         message: "query kind cannot occur in packed storage".into(),
-                    })?
-                    .raw();
+                    })?;
             }
         }
         #[cfg(debug_assertions)]
@@ -788,9 +799,9 @@ impl CompiledQuery {
         }
     }
 
-    pub fn disable_pattern(&mut self, pattern: u32) {
+    pub fn disable_pattern(&mut self, pattern: PatternIx) {
         unsafe {
-            sq_native_query_disable_pattern(self.raw.as_ptr(), pattern);
+            sq_native_query_disable_pattern(self.raw.as_ptr(), pattern.raw() as u32);
         }
         self.refresh();
     }
@@ -820,22 +831,22 @@ impl CompiledQuery {
     fn validate(&self) {
         let steps = self.steps();
         for step in steps {
-            assert!((step.symbol as u32) < self.view.symbol_count + 2);
+            assert!((step.symbol.raw() as u32) < self.view.symbol_count + 2);
             assert_eq!(step.flags & !0x0fff, 0);
             assert!(
-                step.alternative_index == u16::MAX
-                    || (step.alternative_index as usize) < steps.len()
+                step.alternative_index == QueryStepIx::NONE
+                    || (step.alternative_index.raw() as usize) < steps.len()
             );
-            assert!((step.negated_field_list_id as u32) < self.view.negated_fields.length);
+            assert!((step.negated_field_list_id.raw() as u32) < self.view.negated_fields.length);
             for capture in step.capture_ids {
                 assert!(
-                    capture == u16::MAX
-                        || (capture as u32) < self.view.capture_names.entries.length
+                    capture == QueryCaptureIx::NONE
+                        || (capture.raw() as u32) < self.view.capture_names.entries.length
                 );
             }
         }
         for entry in self.entries() {
-            assert!((entry.step_index as usize) < steps.len());
+            assert!((entry.step_index.raw() as usize) < steps.len());
             assert!((entry.pattern_index.raw() as usize) < self.patterns().len());
             assert_eq!(entry.flags & !1, 0);
         }
@@ -928,14 +939,14 @@ struct ParserInput {
 
 #[repr(C)]
 pub(crate) struct Reduction {
-    pub first_child: u32,
-    pub next_sibling: u32,
+    pub first_child: ReductionIx,
+    pub next_sibling: ReductionIx,
     pub start_byte: u32,
     pub end_byte: u32,
     pub start_point: Point,
     pub end_point: Point,
-    pub symbol: u16,
-    pub alias: u16,
+    pub symbol: GrammarId,
+    pub alias: KindId,
     pub field: Option<FieldId>,
     pub extra: bool,
     pub visible: bool,
@@ -1130,7 +1141,7 @@ impl Reductions<'_> {
         &self.0.language
     }
 
-    pub fn nodes(&self) -> (&[Reduction], u32) {
+    pub fn nodes(&self) -> (&[Reduction], ReductionIx) {
         let mut count = 0;
         let mut root = 0;
         let nodes =
@@ -1139,7 +1150,7 @@ impl Reductions<'_> {
         debug_assert!(root < count);
         (
             unsafe { std::slice::from_raw_parts(nodes, count as usize) },
-            root,
+            ReductionIx(root),
         )
     }
 }

@@ -1,9 +1,13 @@
-use crate::native::{CompiledQuery, PatternEntry, Range, flags::*};
+use crate::{
+    FieldId, GrammarId, PatternIx, SquatterKindId,
+    native::{CompiledQuery, PatternEntry, Range, flags::*},
+    types::{NegatedFieldListIx, PresenceRequirementIx, QueryStepIx},
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct PresenceRequirement {
-    pub symbol: u16,
-    pub field: u16,
+    pub symbol: SquatterKindId,
+    pub field: Option<FieldId>,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -17,9 +21,9 @@ pub(crate) enum Relation {
 #[derive(Clone, Copy, Default)]
 pub(crate) struct DirectStep {
     pub relation: Relation,
-    pub symbol_start: u16,
+    pub symbol_start: SquatterKindId,
     pub symbol_span: u16,
-    pub field: u16,
+    pub field: Option<FieldId>,
     pub last_named_child: bool,
 }
 
@@ -27,8 +31,8 @@ pub(crate) struct DirectStep {
 pub(crate) struct DirectPlan {
     pub steps: Vec<DirectStep>,
     pub roots: Vec<u64>,
-    pub start_steps: [u16; 64],
-    pub end_steps: [u16; 64],
+    pub start_steps: [QueryStepIx; 64],
+    pub end_steps: [QueryStepIx; 64],
     pub local_patterns: u64,
 }
 
@@ -41,7 +45,7 @@ pub(crate) struct SymbolFilter {
 pub(crate) struct Program {
     pub pattern_map: Vec<Range>,
     pub scan_symbols: Vec<u64>,
-    pub scan_targets: Vec<u16>,
+    pub scan_targets: Vec<SquatterKindId>,
     pub scan_filter: SymbolFilter,
     pub presence: Vec<PresenceRequirement>,
     pub direct: Option<DirectPlan>,
@@ -57,7 +61,7 @@ impl Program {
             step.flags &= !IS_LOCAL;
         }
         for entry in compiled.entries_mut() {
-            entry.presence_requirement = 0;
+            entry.presence_requirement = PresenceRequirementIx(0);
         }
 
         let mut result = Self {
@@ -73,11 +77,11 @@ impl Program {
             scan_filter: SymbolFilter::default(),
             presence: Vec::new(),
             direct: None,
-            needs_fields: compiled.steps().iter().any(|step| step.field != 0),
+            needs_fields: compiled.steps().iter().any(|step| step.field.is_some()),
             needs_supertypes: compiled
                 .steps()
                 .iter()
-                .any(|step| step.supertype_symbol != 0),
+                .any(|step| step.supertype_symbol != GrammarId(0)),
             repeated_captures: unsafe { compiled.view.capture_quantifiers.as_slice() }
                 .iter()
                 .any(|captures| {
@@ -90,11 +94,13 @@ impl Program {
         for index in 0..compiled.entries().len() {
             let entry = compiled.entries()[index];
             if entry.flags & 1 != 0 && local_alternative(compiled, entry) {
-                compiled.steps_mut()[entry.step_index as usize].flags |= IS_LOCAL;
+                compiled.steps_mut()[entry.step_index.raw() as usize].flags |= IS_LOCAL;
             }
 
             if index >= compiled.view.wildcard_root_pattern_count as usize {
-                let symbol = compiled.steps()[entry.step_index as usize].symbol as usize;
+                let symbol = compiled.steps()[entry.step_index.raw() as usize]
+                    .symbol
+                    .raw() as usize;
                 let range = &mut result.pattern_map[symbol];
                 if range.length == 0 {
                     range.offset = index as u32;
@@ -113,7 +119,7 @@ impl Program {
                         result.presence.push(requirement);
                     }
                     compiled.entries_mut()[index].presence_requirement =
-                        requirement_index as u16 + 1;
+                        PresenceRequirementIx(requirement_index as u16 + 1);
                 }
             }
         }
@@ -123,9 +129,9 @@ impl Program {
         result
     }
 
-    pub fn disable_pattern(&mut self, compiled: &CompiledQuery, pattern: usize) {
+    pub fn disable_pattern(&mut self, compiled: &CompiledQuery, pattern: PatternIx) {
         if let Some(plan) = &mut self.direct {
-            let keep = !(1 << pattern);
+            let keep = !(1 << pattern.raw());
             for roots in &mut plan.roots {
                 *roots &= keep;
             }
@@ -145,7 +151,9 @@ impl Program {
             .enumerate()
             .skip(compiled.view.wildcard_root_pattern_count as usize)
         {
-            let symbol = compiled.steps()[entry.step_index as usize].symbol as usize;
+            let symbol = compiled.steps()[entry.step_index.raw() as usize]
+                .symbol
+                .raw() as usize;
             let range = &mut self.pattern_map[symbol];
             if range.length == 0 {
                 range.offset = index as u32;
@@ -157,11 +165,9 @@ impl Program {
     fn prepare_scan(&mut self, compiled: &CompiledQuery) {
         // Root ?/* alternatives include an empty wildcard branch; every node
         // can start such a match, so symbol skipping would lose empty matches.
-        if compiled
-            .entries()
-            .iter()
-            .any(|entry| compiled.steps()[entry.step_index as usize].symbol == 0)
-        {
+        if compiled.entries().iter().any(|entry| {
+            compiled.steps()[entry.step_index.raw() as usize].symbol == SquatterKindId(0)
+        }) {
             return;
         }
 
@@ -171,7 +177,7 @@ impl Program {
         for symbol in 1..=count {
             if self.pattern_map[symbol as usize].length != 0 {
                 self.scan_symbols[symbol as usize / 64] |= 1 << (symbol % 64);
-                self.scan_targets.push(symbol as u16);
+                self.scan_targets.push(SquatterKindId(symbol as u16));
             }
         }
         self.scan_filter = SymbolFilter::new(&self.scan_targets);
@@ -179,13 +185,13 @@ impl Program {
 }
 
 fn local_alternative(compiled: &CompiledQuery, entry: PatternEntry) -> bool {
-    let step = compiled.steps()[entry.step_index as usize];
+    let step = compiled.steps()[entry.step_index.raw() as usize];
     let pattern = compiled.patterns()[entry.pattern_index.raw() as usize];
     let end = pattern.steps.end() - 1;
     if step.depth != 0
-        || step.field != 0
-        || step.supertype_symbol != 0
-        || step.negated_field_list_id != 0
+        || step.field.is_some()
+        || step.supertype_symbol != GrammarId(0)
+        || step.negated_field_list_id != NegatedFieldListIx(0)
         || step.has(
             IS_IMMEDIATE
                 | IS_LAST_CHILD
@@ -198,7 +204,7 @@ fn local_alternative(compiled: &CompiledQuery, entry: PatternEntry) -> bool {
         return false;
     }
 
-    let mut next = entry.step_index as usize + 1;
+    let mut next = entry.step_index.raw() as usize + 1;
     for _ in 0..pattern.steps.length {
         if next == end {
             return true;
@@ -206,7 +212,7 @@ fn local_alternative(compiled: &CompiledQuery, entry: PatternEntry) -> bool {
         if next >= end || !compiled.steps()[next].has(IS_DEAD_END) {
             return false;
         }
-        next = compiled.steps()[next].alternative_index as usize;
+        next = compiled.steps()[next].alternative_index.raw() as usize;
     }
     false
 }
@@ -215,22 +221,24 @@ fn presence_requirement(
     compiled: &CompiledQuery,
     entry: PatternEntry,
 ) -> Option<PresenceRequirement> {
-    let root = compiled.steps()[entry.step_index as usize];
-    if entry.flags & 1 == 0 || root.depth != 0 || root.alternative_index != u16::MAX {
+    let root = compiled.steps()[entry.step_index.raw() as usize];
+    if entry.flags & 1 == 0 || root.depth != 0 || root.alternative_index != QueryStepIx::NONE {
         return None;
     }
 
     let mut required = None;
     let pattern = compiled.patterns()[entry.pattern_index.raw() as usize];
-    for step in &compiled.steps()[entry.step_index as usize + 1..pattern.steps.end()] {
+    for step in &compiled.steps()[entry.step_index.raw() as usize + 1..pattern.steps.end()] {
         if step.depth == 0
             || step.depth == u16::MAX
-            || step.alternative_index != u16::MAX
+            || step.alternative_index != QueryStepIx::NONE
             || step.has(IS_DEAD_END | IS_PASS_THROUGH | IS_MISSING)
         {
             break;
         }
-        if (step.symbol != 0 && step.symbol as u32 != compiled.view.symbol_count) || step.field != 0
+        if (step.symbol != SquatterKindId(0)
+            && step.symbol.raw() as u32 != compiled.view.symbol_count)
+            || step.field.is_some()
         {
             required = Some(PresenceRequirement {
                 symbol: step.symbol,
@@ -256,8 +264,8 @@ impl DirectPlan {
                 compiled.steps().len()
             ],
             roots: Vec::new(),
-            start_steps: [0; 64],
-            end_steps: [0; 64],
+            start_steps: [QueryStepIx(0); 64],
+            end_steps: [QueryStepIx(0); 64],
             local_patterns: 0,
         };
         let mut patterns = 0;
@@ -270,18 +278,19 @@ impl DirectPlan {
             let pattern = compiled.patterns()[entry.pattern_index.raw() as usize];
             let bit = 1 << entry.pattern_index.raw();
             let end = pattern.steps.end() - 1;
-            plan.end_steps[entry.pattern_index.raw() as usize] = end as u16;
+            plan.end_steps[entry.pattern_index.raw() as usize] = QueryStepIx(end as u16);
 
-            let root = compiled.steps()[entry.step_index as usize];
-            if root.symbol != 0 && local_alternative(compiled, entry) {
+            let root = compiled.steps()[entry.step_index.raw() as usize];
+            if root.symbol != SquatterKindId(0) && local_alternative(compiled, entry) {
                 if patterns & bit != 0 {
                     let first = compiled.steps()
-                        [plan.start_steps[entry.pattern_index.raw() as usize] as usize];
+                        [plan.start_steps[entry.pattern_index.raw() as usize].raw() as usize];
                     if plan.local_patterns & bit == 0
                         || first.capture_ids != root.capture_ids
                         || compiled.entries()[..index].iter().any(|other| {
                             other.pattern_index == entry.pattern_index
-                                && compiled.steps()[other.step_index as usize].symbol == root.symbol
+                                && compiled.steps()[other.step_index.raw() as usize].symbol
+                                    == root.symbol
                         })
                     {
                         return None;
@@ -294,7 +303,7 @@ impl DirectPlan {
                 continue;
             }
 
-            if entry.step_index as u32 != pattern.steps.offset
+            if entry.step_index.raw() as u32 != pattern.steps.offset
                 || patterns & bit != 0
                 || end == pattern.steps.offset as usize
                 || compiled.steps()[end].depth != u16::MAX
@@ -307,9 +316,9 @@ impl DirectPlan {
             for step_index in pattern.steps.offset as usize..end {
                 let step = compiled.steps()[step_index];
                 let root = step_index == pattern.steps.offset as usize;
-                if step.alternative_index != u16::MAX
-                    || step.supertype_symbol != 0
-                    || step.negated_field_list_id != 0
+                if step.alternative_index != QueryStepIx::NONE
+                    || step.supertype_symbol != GrammarId(0)
+                    || step.negated_field_list_id != NegatedFieldListIx(0)
                     || step.has(
                         IS_PASS_THROUGH
                             | IS_DEAD_END
@@ -321,16 +330,18 @@ impl DirectPlan {
                     return None;
                 }
                 if root {
-                    if step.depth != 0 || step.field != 0 || step.has(IS_IMMEDIATE | IS_LAST_CHILD)
+                    if step.depth != 0
+                        || step.field.is_some()
+                        || step.has(IS_IMMEDIATE | IS_LAST_CHILD)
                     {
                         return None;
                     }
                 } else {
                     // Named anchors select one possible child at each step;
                     // these plans need neither branching nor longest-match dedup.
-                    let named = if step.symbol != 0 {
-                        step.symbol as u32 == compiled.view.symbol_count
-                            || tables.named_index(crate::SquatterKindId(step.symbol))
+                    let named = if step.symbol != SquatterKindId(0) {
+                        step.symbol.raw() as u32 == compiled.view.symbol_count
+                            || tables.named_index(step.symbol)
                     } else {
                         step.has(IS_NAMED)
                     };
@@ -339,10 +350,10 @@ impl DirectPlan {
                     }
                 }
                 let (symbol_start, symbol_span) = if root {
-                    (0, u16::MAX)
-                } else if step.symbol == 0 {
+                    (SquatterKindId(0), u16::MAX)
+                } else if step.symbol == SquatterKindId(0) {
                     // Named child traversal excludes the other reserved kind, _ERROR.
-                    (0, compiled.view.symbol_count as u16 - 1)
+                    (SquatterKindId(0), compiled.view.symbol_count as u16 - 1)
                 } else {
                     (step.symbol, 0)
                 };
@@ -367,9 +378,9 @@ impl DirectPlan {
             .resize(compiled.view.symbol_count as usize + 2, 0);
         for symbol in 1..=compiled.view.symbol_count as usize {
             for entry in compiled.entries() {
-                let step = compiled.steps()[entry.step_index as usize];
-                if if step.symbol != 0 {
-                    step.symbol == symbol as u16
+                let step = compiled.steps()[entry.step_index.raw() as usize];
+                if if step.symbol != SquatterKindId(0) {
+                    step.symbol == SquatterKindId(symbol as u16)
                 } else {
                     symbol != compiled.view.symbol_count as usize
                         && (!step.has(IS_NAMED)
@@ -384,11 +395,14 @@ impl DirectPlan {
 }
 
 impl SymbolFilter {
-    fn new(targets: &[u16]) -> Self {
+    fn new(targets: &[SquatterKindId]) -> Self {
         if targets.is_empty() || targets.len() > 32 {
             return Self::default();
         }
-        let mut matches: Vec<_> = targets.iter().map(|target| (*target, u16::MAX)).collect();
+        let mut matches: Vec<_> = targets
+            .iter()
+            .map(|target| (target.raw(), u16::MAX))
+            .collect();
 
         // Merge disjoint halves of an exact symbol set. Equal masks differing
         // by one value bit can drop that bit without admitting extra symbols.

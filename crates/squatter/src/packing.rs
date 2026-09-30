@@ -1,3 +1,4 @@
+use crate::types::{GroupIx, ReductionIx, SupertypeMask};
 use crate::{
     Error, FieldId, Forest, ForestRegion, Language, RegionIx, SlotIx, TreeIx,
     native::{Point, Reduction},
@@ -59,7 +60,7 @@ struct InputNode {
     symbol: SquatterKindId,
     grammar: SquatterGrammarId,
     field: Option<FieldId>,
-    supertype: u16,
+    supertype: SupertypeMask,
     flags: u16,
 }
 
@@ -150,12 +151,12 @@ impl Packer {
         &mut self,
         language: &Language,
         nodes: &[Reduction],
-        root: u32,
+        root: ReductionIx,
         options: PackOptions<'_>,
     ) -> Result<Forest, Error> {
         let mut builder = Builder::for_input(
             language,
-            nodes[root as usize].visible_descendant_count + 1,
+            nodes[root.raw() as usize].visible_descendant_count + 1,
             &options,
         )?;
         traversal::pack_reductions(
@@ -240,14 +241,14 @@ struct Values {
 #[derive(Clone, Copy, Default)]
 struct Pending {
     values: Values,
-    supertype: u16,
+    supertype: SupertypeMask,
 }
 
 struct Builder {
     forest: Forest,
     pending: [Pending; GROUP_SIZE as usize],
     count: u32,
-    slot_base: u32,
+    slot_base: SlotIx,
     base: Values,
     maximum: Values,
     last: u64,
@@ -282,7 +283,7 @@ impl Builder {
             forest,
             pending: [Pending::default(); GROUP_SIZE as usize],
             count: 0,
-            slot_base: 0,
+            slot_base: SlotIx(0),
             base: Values::default(),
             maximum: Values::default(),
             last: 0,
@@ -294,7 +295,7 @@ impl Builder {
         })
     }
 
-    fn distance(&self) -> u32 {
+    fn distance(&self) -> SlotIx {
         self.slot_base + self.count
     }
 
@@ -362,12 +363,12 @@ impl Builder {
     }
 
     #[inline(always)]
-    fn emit(&mut self, event: &InputNode, boundary: u32) -> Result<(), Error> {
+    fn emit(&mut self, event: &InputNode, boundary: SlotIx) -> Result<(), Error> {
         loop {
             if self.count == GROUP_SIZE {
                 self.close();
             }
-            if self.count == 0 && self.slot_base > u32::MAX - GROUP_SIZE {
+            if self.count == 0 && self.slot_base.raw() > u32::MAX - GROUP_SIZE {
                 return Err(Error::Overflow);
             }
 
@@ -397,25 +398,29 @@ impl Builder {
             }
 
             let slot = self.distance();
-            if slot.is_multiple_of(GROUP_SIZE)
+            if slot.in_group().raw() == 0
                 && let Some(points) = &mut self.points
             {
-                points.grow(slot / GROUP_SIZE + 1)?;
+                points.grow(slot.group().raw() + 1)?;
             }
             let data = self.forest.data_mut();
             let layout = data.layout;
             let mut writer = data.writer();
             if layout.symbol_width == 1 {
-                writer.put_byte(layout.symbol, slot, event.symbol.raw() as u8);
+                writer.put_byte(layout.symbol, slot.raw(), event.symbol.raw() as u8);
             } else {
-                writer.put_short(layout.symbol, slot, event.symbol.raw());
+                writer.put_short(layout.symbol, slot.raw(), event.symbol.raw());
             }
             if layout.symbol_width == 1 {
-                writer.put_byte(layout.grammar, slot, event.grammar.raw() as u8);
+                writer.put_byte(layout.grammar, slot.raw(), event.grammar.raw() as u8);
             } else {
-                writer.put_short(layout.grammar, slot, event.grammar.raw());
+                writer.put_short(layout.grammar, slot.raw(), event.grammar.raw());
             }
-            writer.put_short(layout.field, slot, event.field.map_or(0, FieldId::raw));
+            writer.put_short(
+                layout.field,
+                slot.raw(),
+                event.field.map_or(0, FieldId::raw),
+            );
             if event.grammar.raw() != event.symbol.raw() {
                 self.optional |= SEPARATE_GRAMMAR;
             }
@@ -472,7 +477,7 @@ impl Builder {
 
         if let Some(points) = &mut self.points {
             points.put_bases(
-                group,
+                GroupIx(group),
                 PackedPoint(
                     (u64::from(self.base.start_row) << 32) | u64::from(self.base.start_column),
                 ),
@@ -490,27 +495,27 @@ impl Builder {
             if SPAN_BITS == 16 {
                 writer.put_short(
                     layout.span_delta,
-                    slot,
+                    slot.raw(),
                     (self.maximum.span - value.span) as u16,
                 );
             } else {
                 writer.put_byte(
                     layout.span_delta,
-                    slot,
+                    slot.raw(),
                     (self.maximum.span - value.span) as u8,
                 );
             }
             writer.put_byte(
                 layout.start_byte_delta,
-                slot,
+                slot.raw(),
                 (value.start_byte - self.base.start_byte) as u8,
             );
             writer.put_short(
                 layout.end_byte_delta,
-                slot,
+                slot.raw(),
                 (self.maximum.end_byte - value.end_byte) as u16,
             );
-            writer.put_short(layout.supertype, slot, pending.supertype);
+            writer.put_short(layout.supertype, slot.raw(), pending.supertype.raw());
             if let Some(points) = &mut self.points {
                 points.put_deltas(
                     slot,
@@ -530,7 +535,7 @@ impl Builder {
         self.error = 0;
     }
 
-    fn finish_root(&mut self, start: u32, region: RegionIx) -> Result<TreeIx, Error> {
+    fn finish_root(&mut self, start: SlotIx, region: RegionIx) -> Result<TreeIx, Error> {
         self.close();
         let data = self.forest.data_mut();
         let index = TreeIx::from_raw(u32::try_from(data.trees.len()).map_err(|_| Error::Overflow)?);
@@ -539,22 +544,22 @@ impl Builder {
         data.trees.push(TreeData {
             region,
             tables: NonNull::from(data.regions[region.raw() as usize].language.tables()),
-            slots: SlotIx(start)..SlotIx(self.slot_base),
+            slots: start..self.slot_base,
         });
         let region = &mut data.regions[region.raw() as usize];
         if region.trees.is_empty() {
             region.trees.start = index;
-            region.slots.start = SlotIx(start);
+            region.slots.start = start;
         }
         region.trees.end = end;
-        region.slots.end = SlotIx(self.slot_base);
+        region.slots.end = self.slot_base;
         Ok(index)
     }
 
     fn finish(mut self, options: PackOptions<'_>) -> Result<Forest, Error> {
         self.close();
         if self.forest.data().trees.is_empty() && self.forest.group_count() != 0 {
-            self.finish_root(0, RegionIx(0))?;
+            self.finish_root(SlotIx(0), RegionIx(0))?;
         }
         let groups = self.forest.group_count();
         let capacity = if options.repack {

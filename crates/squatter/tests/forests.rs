@@ -6,10 +6,10 @@ use tree_squatter::{
     TreeIx,
 };
 
-fn describe(root: Node<'_>) -> Vec<(u16, tree_sitter::Range)> {
+fn describe(root: Node<'_>) -> Vec<(tree_squatter::KindId, tree_sitter::Range)> {
     root.preorder()
         .nodes()
-        .map(|node| (node.kind_id().raw(), node.range()))
+        .map(|node| (node.kind_id(), node.range()))
         .collect()
 }
 

@@ -2,6 +2,7 @@
 
 use std::{fmt::Debug, ops::Range};
 use tree_sitter::{Language, Node, Query, QueryCursor, StreamingIterator, Tree};
+use tree_squatter::{CaptureIx, KindId};
 
 pub fn json_language() -> Language {
     unsafe { Language::from_raw(tree_sitter_json::LANGUAGE.into_raw()().cast()) }
@@ -21,19 +22,15 @@ pub fn parse_native(language: &Language, source: impl AsRef<[u8]>) -> Tree {
     parser.parse(source, None).unwrap()
 }
 
-pub type NodeDescription = (u16, usize, usize);
-pub type CaptureDescription = (u32, NodeDescription);
+pub type NodeDescription = (KindId, usize, usize);
+pub type CaptureDescription = (CaptureIx, NodeDescription);
 pub type QueryResult = (usize, Option<usize>, Vec<CaptureDescription>);
 
-pub fn describe_node(kind: impl Into<u16>, range: Range<usize>) -> NodeDescription {
-    (kind.into(), range.start, range.end)
+pub fn describe_node(kind: KindId, range: Range<usize>) -> NodeDescription {
+    (kind, range.start, range.end)
 }
 
-pub fn describe_capture(
-    index: u32,
-    kind: impl Into<u16>,
-    range: Range<usize>,
-) -> CaptureDescription {
+pub fn describe_capture(index: CaptureIx, kind: KindId, range: Range<usize>) -> CaptureDescription {
     (index, describe_node(kind, range))
 }
 
@@ -43,7 +40,7 @@ pub fn native_orders(root: Node<'_>) -> (Vec<NodeDescription>, Vec<NodeDescripti
         preorder: &mut Vec<NodeDescription>,
         postorder: &mut Vec<NodeDescription>,
     ) {
-        let description = describe_node(node.kind_id(), node.byte_range());
+        let description = describe_node(KindId::from_raw(node.kind_id()), node.byte_range());
         preorder.push(description);
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
@@ -82,8 +79,8 @@ pub fn native_query_results_with_cursor(
                 .iter()
                 .map(|capture| {
                     describe_capture(
-                        capture.index,
-                        capture.node.kind_id(),
+                        CaptureIx(capture.index),
+                        KindId::from_raw(capture.node.kind_id()),
                         capture.node.byte_range(),
                     )
                 })
@@ -173,7 +170,7 @@ pub fn query_snapshot(
             .iter()
             .map(|capture| {
                 describe_capture(
-                    capture.index.0,
+                    capture.index,
                     capture.node.kind_id(),
                     capture.node.byte_range(),
                 )

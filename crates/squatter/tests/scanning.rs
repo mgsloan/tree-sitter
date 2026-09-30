@@ -69,15 +69,22 @@ fn check_pipeline<'tree, S: GroupScan<'tree>>(
         assert_eq!(mask.intersection(group.valid_mask()), mask);
         count += mask.count_ones() as usize;
         let mut matched_nodes: HashSet<_> = (0..64)
-            .filter(|&slot| mask.contains(slot))
-            .map(|slot| group.node(slot).unwrap())
+            .filter(|&slot| mask.contains(tree_squatter::GroupSlotIx::from_raw(slot)))
+            .map(|slot| {
+                group
+                    .node(tree_squatter::GroupSlotIx::from_raw(slot))
+                    .unwrap()
+            })
             .collect();
         for node in fragment.nodes() {
             assert!(seen.insert(node.id()));
             assert!(matched_nodes.remove(&node));
         }
         assert!(matched_nodes.is_empty());
-        assert_eq!(group.node(u32::MAX), None);
+        assert_eq!(
+            group.node(tree_squatter::GroupSlotIx::from_raw(u32::MAX)),
+            None
+        );
     }
     assert_eq!(count, expected.len());
     check_consumption(|| make().nodes(), expected);
@@ -1185,7 +1192,7 @@ fn fixed_kind_sets() {
     use tree_squatter::traits::NodeLike;
     let kinds = [number, array];
     let native_matches = NodeLike::descendants_matching_kinds(native.root_node(), kinds)
-        .map(|node| describe_node(node.kind_id(), node.byte_range()))
+        .map(|node| describe_node(KindId::from_raw(node.kind_id()), node.byte_range()))
         .collect::<Vec<_>>();
     let packed_matches = NodeLike::descendants_matching_kinds(tree.root_node(), &kinds)
         .map(describe)

@@ -310,16 +310,24 @@ pub enum WriteOutcome {
     Busy,
 }
 
-// Strong entries deliberately keep LMDB open until process exit. This avoids a
-// last-Arc-drop/reopen race and fcntl lock breakage from duplicate environments.
-// A later bounded registry must serialize final close with a subsequent reopen.
+#[cfg(unix)]
+#[derive(Hash, PartialEq, Eq)]
+struct DeviceId(u64);
+
+#[cfg(unix)]
+#[derive(Hash, PartialEq, Eq)]
+struct InodeId(u64);
+
 #[derive(Hash, PartialEq, Eq)]
 enum EnvironmentKey {
     #[cfg(unix)]
-    Inode(u64, u64),
+    Inode(DeviceId, InodeId),
     #[cfg(not(unix))]
     Path(PathBuf),
 }
+// Strong entries deliberately keep LMDB open until process exit. This avoids a
+// last-Arc-drop/reopen race and fcntl lock breakage from duplicate environments.
+// A later bounded registry must serialize final close with a subsequent reopen.
 static STORES: OnceLock<Mutex<HashMap<EnvironmentKey, Arc<Store>>>> = OnceLock::new();
 
 pub(crate) struct Writer<'a>(MutexGuard<'a, File>);
@@ -400,7 +408,7 @@ impl Store {
         let key = {
             use std::os::unix::fs::MetadataExt;
             let metadata = directory.metadata()?;
-            EnvironmentKey::Inode(metadata.dev(), metadata.ino())
+            EnvironmentKey::Inode(DeviceId(metadata.dev()), InodeId(metadata.ino()))
         };
         #[cfg(not(unix))]
         let key = EnvironmentKey::Path(canonical.clone());

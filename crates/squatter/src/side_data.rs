@@ -1,3 +1,4 @@
+use crate::types::{GroupIx, SlotIx, SquatterKindId};
 use crate::{
     Error, Forest, ForestRegion,
     storage::{GROUP_SIZE, Slab, StableSlab, slab_format},
@@ -256,9 +257,10 @@ impl PresenceCache {
                                 return Err(Error::Canceled);
                             }
                             for slot in (first_group + group) * GROUP_SIZE
-                                ..forest.data().group_end(first_group + group)
+                                ..forest.data().group_end(GroupIx(first_group + group)).raw()
                             {
-                                let symbol = forest.data().symbol_index(slot).raw() as usize;
+                                let symbol =
+                                    forest.data().symbol_index(SlotIx(slot)).raw() as usize;
                                 let bitmap = payload
                                     .add((symbol * words + group as usize / 64) * 8)
                                     .cast::<u64>();
@@ -316,7 +318,7 @@ impl PresenceCache {
             }
             views.push((header.format == PRESENCE_FORMAT).then(|| PresenceView {
                 payload: NonNull::from(&self.as_bytes()[offset + HEADER_BYTES..]).cast(),
-                first_group: region.data().slots.start.raw() / GROUP_SIZE,
+                first_group: region.data().slots.start.group(),
                 groups: region.group_count(),
             }));
         }
@@ -337,7 +339,7 @@ impl PresenceCache {
 #[derive(Clone, Copy)]
 pub(crate) struct PresenceView {
     payload: NonNull<u8>,
-    first_group: u32,
+    first_group: GroupIx,
     groups: u32,
 }
 unsafe impl Send for PresenceView {}
@@ -355,20 +357,20 @@ impl PresenceView {
         })
     }
 
-    pub(crate) fn has(self, group: u32, symbol: usize) -> bool {
+    pub(crate) fn has(self, group: GroupIx, symbol: SquatterKindId) -> bool {
         let group = group - self.first_group;
         let words = (self.groups as usize).div_ceil(64);
-        self.word((symbol * words + group as usize / 64) * 8) & (1 << (group % 64)) != 0
+        self.word((symbol.raw() as usize * words + group as usize / 64) * 8) & (1 << (group % 64))
+            != 0
     }
     pub(crate) fn find_matching_group(
         &self,
-        mut range: std::ops::Range<u32>,
-        symbol: usize,
+        range: std::ops::Range<GroupIx>,
+        symbol: SquatterKindId,
         reverse: bool,
-    ) -> Option<u32> {
+    ) -> Option<GroupIx> {
         let words = (self.groups as usize).div_ceil(64);
-        range.start -= self.first_group;
-        range.end -= self.first_group;
+        let mut range = range.start - self.first_group..range.end - self.first_group;
         while !range.is_empty() {
             let word_index = if reverse {
                 range.start / 64
@@ -377,7 +379,7 @@ impl PresenceView {
             };
             let start = range.start.saturating_sub(word_index * 64);
             let end = (range.end - word_index * 64).min(64);
-            let word = self.word((symbol * words + word_index as usize) * 8);
+            let word = self.word((symbol.raw() as usize * words + word_index as usize) * 8);
             let bits = word & (u64::MAX << start) & (u64::MAX >> (64 - end));
             if bits != 0 {
                 return Some(
@@ -451,24 +453,24 @@ impl PointsData {
         self.0.header(0, POINT_FORMAT, groups, regions)
     }
 
-    pub(crate) fn put_bases(&mut self, group: u32, start: PackedPoint, end: PackedPoint) {
-        let offset = HEADER_BYTES + group as usize * POINT_GROUP_BYTES;
+    pub(crate) fn put_bases(&mut self, group: GroupIx, start: PackedPoint, end: PackedPoint) {
+        let offset = HEADER_BYTES + group.raw() as usize * POINT_GROUP_BYTES;
         self.0.put_word(offset, start.raw());
         self.0.put_word(offset + 8, end.raw());
     }
-    pub(crate) fn put_deltas(&mut self, slot: u32, start: u16, end: u16) {
+    pub(crate) fn put_deltas(&mut self, slot: SlotIx, start: u16, end: u16) {
         let offset = HEADER_BYTES
-            + (slot / GROUP_SIZE) as usize * POINT_GROUP_BYTES
+            + slot.group().raw() as usize * POINT_GROUP_BYTES
             + 16
-            + (slot % GROUP_SIZE) as usize * 2;
+            + slot.in_group().raw() as usize * 2;
         let bytes = self.0.bytes_mut();
         bytes[offset..offset + 2].copy_from_slice(&start.to_le_bytes());
         let offset = offset + GROUP_SIZE as usize * 2;
         bytes[offset..offset + 2].copy_from_slice(&end.to_le_bytes());
     }
     #[inline]
-    pub(crate) fn column<const END: bool>(&self, group: u32) -> (PackedPoint, &[u8]) {
-        let offset = HEADER_BYTES + group as usize * POINT_GROUP_BYTES;
+    pub(crate) fn column<const END: bool>(&self, group: GroupIx) -> (PackedPoint, &[u8]) {
+        let offset = HEADER_BYTES + group.raw() as usize * POINT_GROUP_BYTES;
         let base = PackedPoint(self.0.word(offset + usize::from(END) * 8));
         let offset = offset + 16 + usize::from(END) * GROUP_SIZE as usize * 2;
         (
@@ -476,16 +478,16 @@ impl PointsData {
             &self.0.bytes()[offset..offset + GROUP_SIZE as usize * 2],
         )
     }
-    fn point<const END: bool>(&self, slot: u32) -> PackedPoint {
-        let (base, deltas) = self.column::<END>(slot / GROUP_SIZE);
-        let offset = (slot % GROUP_SIZE) as usize * 2;
+    fn point<const END: bool>(&self, slot: SlotIx) -> PackedPoint {
+        let (base, deltas) = self.column::<END>(slot.group());
+        let offset = slot.in_group().raw() as usize * 2;
         let delta = u64::from(deltas[offset + 1]) << 32 | u64::from(deltas[offset]);
         if END { base - delta } else { base + delta }
     }
-    pub(crate) fn start(&self, slot: u32) -> PackedPoint {
+    pub(crate) fn start(&self, slot: SlotIx) -> PackedPoint {
         self.point::<false>(slot)
     }
-    pub(crate) fn end(&self, slot: u32) -> PackedPoint {
+    pub(crate) fn end(&self, slot: SlotIx) -> PackedPoint {
         self.point::<true>(slot)
     }
     /// Borrows separately serializable side-data bytes.
@@ -517,10 +519,10 @@ impl PointsData {
             return Err(SideDataError::InvalidTarget);
         }
         for group in 0..tree.group_count() {
-            let used = (tree.data().group_end(group) - group * GROUP_SIZE) as usize;
+            let used = (tree.data().group_end(GroupIx(group)).raw() - group * GROUP_SIZE) as usize;
             for (end, (base, deltas)) in [
-                (false, self.column::<false>(group)),
-                (true, self.column::<true>(group)),
+                (false, self.column::<false>(GroupIx(group))),
+                (true, self.column::<true>(GroupIx(group))),
             ] {
                 let base = base.point();
                 for delta in deltas[..used * 2].chunks_exact(2) {
@@ -541,8 +543,8 @@ impl PointsData {
                 }
             }
             #[cfg(debug_assertions)]
-            for slot in group * GROUP_SIZE..tree.data().group_end(group) {
-                if self.start(slot) > self.end(slot) {
+            for slot in group * GROUP_SIZE..tree.data().group_end(GroupIx(group)).raw() {
+                if self.start(SlotIx(slot)) > self.end(SlotIx(slot)) {
                     return Err(SideDataError::InvalidTarget);
                 }
             }

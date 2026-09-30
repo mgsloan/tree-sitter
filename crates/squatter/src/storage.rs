@@ -1,8 +1,8 @@
 use crate::{
-    Error, Language, Node, NodeId, RegionIx, SlotIx, TreeCursor, TreeIx,
+    Error, Language, Node, NodeId, RegionIx, RepresentationId, SlotIx, TreeCursor, TreeIx,
     native::GrammarView,
     side_data::{PointsData, PresenceCache},
-    types::{SlabOffset, SquatterGrammarId, SquatterKindId},
+    types::{GroupIx, SlabOffset, SquatterGrammarId, SquatterKindId},
 };
 use smallvec::SmallVec;
 use std::{
@@ -47,8 +47,8 @@ pub(crate) fn id_width_flags<'language>(
 /// Identifies the packed slab format for persistence compatibility.
 ///
 /// **Not in Tree-sitter**
-pub fn representation_id() -> u64 {
-    FOREST_FORMAT as u64
+pub fn representation_id() -> RepresentationId {
+    RepresentationId(FOREST_FORMAT as u64)
 }
 
 #[derive(Clone, Copy, Default, Debug)]
@@ -486,8 +486,8 @@ impl<'forest> ForestRegion<'forest> {
 impl ForestData {
     pub(crate) fn tree(&self, index: TreeIx) -> Tree<'_> {
         let tree = &self.trees[index.raw() as usize];
-        let root = self.group_end(tree.slots.end.raw() / GROUP_SIZE - 1) - 1;
-        Tree(Node::new(self, NodeId::new(index, SlotIx::from_raw(root))))
+        let root = self.group_end(GroupIx(tree.slots.end.raw() / GROUP_SIZE - 1)) - 1;
+        Tree(Node::new(self, NodeId::new(index, root)))
     }
 }
 
@@ -577,46 +577,46 @@ impl ForestData {
     }
 
     #[inline]
-    pub fn waste(&self, group: u32) -> u32 {
-        self.short(Layout::WASTE, group) as u32
+    pub fn waste(&self, group: GroupIx) -> u32 {
+        self.short(Layout::WASTE, group.raw()) as u32
     }
 
     #[inline]
-    pub fn group_end(&self, group: u32) -> u32 {
-        (group + 1) * GROUP_SIZE - self.waste(group)
+    pub fn group_end(&self, group: GroupIx) -> SlotIx {
+        SlotIx((group.raw() + 1) * GROUP_SIZE - self.waste(group))
     }
 
     #[inline]
-    pub fn first_slot(&self, slot: u32) -> u32 {
-        slot - (self.word(self.layout.span_max, slot / GROUP_SIZE) - self.span_delta(slot))
+    pub fn first_slot(&self, slot: SlotIx) -> SlotIx {
+        slot - (self.word(self.layout.span_max, slot.group().raw()) - self.span_delta(slot))
     }
 
     #[inline]
-    pub fn span_delta(&self, slot: u32) -> u32 {
+    pub fn span_delta(&self, slot: SlotIx) -> u32 {
         if SPAN_BITS == 16 {
-            self.short(self.layout.span_delta, slot) as u32
+            self.short(self.layout.span_delta, slot.raw()) as u32
         } else {
-            self.byte(self.layout.span_delta, slot) as u32
+            self.byte(self.layout.span_delta, slot.raw()) as u32
         }
     }
 
     #[inline]
-    pub fn previous_slot(&self, slot: u32) -> Option<u32> {
-        let previous = slot.checked_sub(1)?;
-        Some(if slot.is_multiple_of(GROUP_SIZE) {
-            previous - self.waste(previous / GROUP_SIZE)
+    pub fn previous_slot(&self, slot: SlotIx) -> Option<SlotIx> {
+        let previous = SlotIx(slot.raw().checked_sub(1)?);
+        Some(if slot.raw().is_multiple_of(GROUP_SIZE) {
+            previous - self.waste(previous.group())
         } else {
             previous
         })
     }
 
     #[inline]
-    pub fn symbol_index(&self, slot: u32) -> SquatterKindId {
+    pub fn symbol_index(&self, slot: SlotIx) -> SquatterKindId {
         SquatterKindId(self.symbol_id(self.layout.symbol, slot, self.layout.symbol_width))
     }
 
     #[inline]
-    pub fn grammar_index(&self, slot: u32) -> SquatterGrammarId {
+    pub fn grammar_index(&self, slot: SlotIx) -> SquatterGrammarId {
         let column = if self.flags() & SEPARATE_GRAMMAR != 0 {
             self.layout.grammar
         } else {
@@ -626,11 +626,11 @@ impl ForestData {
     }
 
     #[inline]
-    fn symbol_id(&self, column: ColumnPointer, slot: u32, width: u32) -> u16 {
+    fn symbol_id(&self, column: ColumnPointer, slot: SlotIx, width: u32) -> u16 {
         if width == 1 {
-            u16::from(self.byte(column, slot))
+            u16::from(self.byte(column, slot.raw()))
         } else {
-            self.short(column, slot)
+            self.short(column, slot.raw())
         }
     }
 
@@ -1135,7 +1135,7 @@ impl Forest {
             let mut end = slots.end.raw();
             while end > slots.start.raw() {
                 let group = end.checked_sub(1).ok_or(Error::InvalidSlab)? / GROUP_SIZE;
-                let waste = self.data.waste(group);
+                let waste = self.data.waste(GroupIx(group));
                 if waste >= GROUP_SIZE {
                     return Err(Error::InvalidSlab);
                 }
@@ -1146,7 +1146,7 @@ impl Forest {
                 let span = self
                     .data
                     .word(self.data.layout.span_max, group)
-                    .checked_sub(self.data.span_delta(root))
+                    .checked_sub(self.data.span_delta(SlotIx(root)))
                     .ok_or(Error::InvalidSlab)?;
                 let start = root.checked_sub(span).ok_or(Error::InvalidSlab)?;
                 if start < slots.start.raw() || start >= end || !start.is_multiple_of(GROUP_SIZE) {
@@ -1259,33 +1259,35 @@ impl Forest {
             let tables = tree.language().tables();
             let symbols = tables.kind_count + 2;
             for group in slots.start.raw() / GROUP_SIZE..slots.end.raw() / GROUP_SIZE {
-                if data.waste(group) >= GROUP_SIZE {
+                if data.waste(GroupIx(group)) >= GROUP_SIZE {
                     return Err(Error::InvalidSlab);
                 }
             }
-            let root = data.group_end(slots.end.raw() / GROUP_SIZE - 1) - 1;
+            let root = data.group_end(GroupIx(slots.end.raw() / GROUP_SIZE - 1)) - 1;
             let mut ends = Vec::with_capacity(64);
             for group in (slots.start.raw() / GROUP_SIZE..slots.end.raw() / GROUP_SIZE).rev() {
                 let span_max = data.word(data.layout.span_max, group) as u64;
                 let start_base = data.word(data.layout.start_byte_base, group) as u64;
                 let end_base = data.word(data.layout.end_byte_base, group);
-                for slot in (group * GROUP_SIZE..data.group_end(group)).rev() {
+                for slot in (group * GROUP_SIZE..data.group_end(GroupIx(group)).raw()).rev() {
                     while ends.last().is_some_and(|end| *end > slot) {
                         ends.pop();
                     }
                     let span = span_max
-                        .checked_sub(data.span_delta(slot) as u64)
+                        .checked_sub(data.span_delta(SlotIx(slot)) as u64)
                         .ok_or(Error::InvalidSlab)?;
                     if span > (slot - slots.start.raw()) as u64 {
                         return Err(Error::InvalidSlab);
                     }
                     let end = slot - span as u32;
-                    if end != slots.start.raw() && end > data.group_end((end - 1) / GROUP_SIZE) {
+                    if end != slots.start.raw()
+                        && end > data.group_end(GroupIx((end - 1) / GROUP_SIZE)).raw()
+                    {
                         return Err(Error::InvalidSlab);
                     }
                     let last = data.bit(data.layout.last, slot);
                     let field = data.short(data.layout.field, slot) as u32;
-                    if slot == root {
+                    if slot == root.raw() {
                         if end != slots.start.raw()
                             || !last
                             || field != 0
@@ -1299,11 +1301,11 @@ impl Forest {
                     {
                         return Err(Error::InvalidSlab);
                     }
-                    let symbol = u32::from(data.symbol_index(slot).raw());
+                    let symbol = u32::from(data.symbol_index(SlotIx(slot)).raw());
                     if symbol == 0 || symbol >= symbols || field > tables.field_count {
                         return Err(Error::InvalidSlab);
                     }
-                    let grammar = u32::from(data.grammar_index(slot).raw());
+                    let grammar = u32::from(data.grammar_index(SlotIx(slot)).raw());
                     if grammar == 0 || grammar >= tables.compact_grammar_count + 2 {
                         return Err(Error::InvalidSlab);
                     }

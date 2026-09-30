@@ -310,7 +310,7 @@ fn leaf(symbol: u16, grammar: u16, supertype: u16, flags: u8) -> InputNode {
         symbol: SquatterKindId(symbol),
         grammar: SquatterGrammarId(grammar),
         field: None,
-        supertype,
+        supertype: crate::types::SupertypeMask(supertype),
         flags: flags.into(),
     }
 }
@@ -345,7 +345,7 @@ fn point_delta_limits_control_grouping() {
                 let mut builder = Builder::new(&fixture.grammar, 1, points).unwrap();
                 builder.emit(&first, builder.distance()).unwrap();
                 builder.emit(&second, builder.distance()).unwrap();
-                builder.emit(&root, 0).unwrap();
+                builder.emit(&root, SlotIx(0)).unwrap();
                 let tree = builder
                     .finish(PackOptions {
                         points,
@@ -388,7 +388,7 @@ fn point_delta_limits_control_grouping() {
         column: u32::MAX,
     };
     root.end_point = root.start_point;
-    builder.emit(&root, 0).unwrap();
+    builder.emit(&root, SlotIx(0)).unwrap();
     let tree = builder.finish(PackOptions::default()).unwrap();
     let expected = tree_sitter::Point::new(u32::MAX as usize, u32::MAX as usize);
     assert_eq!(tree.root_node().start_position(), expected);
@@ -431,9 +431,9 @@ fn synthetic_supertype_emission_and_persistence() {
                         builder.distance(),
                     )
                     .unwrap();
-                slots.push(SlotIx::from_raw(builder.distance() - 1));
+                slots.push(builder.distance() - 1);
             }
-            builder.emit(&leaf(1, 1, 0, 1), 0).unwrap();
+            builder.emit(&leaf(1, 1, 0, 1), SlotIx(0)).unwrap();
             let mut tree = builder.finish(PackOptions::default()).unwrap();
             let groups = tree.group_count();
             for capacity in [groups + 17, groups, groups + 1] {
@@ -485,9 +485,11 @@ fn id_width_covers_all_grammars_and_reserved_errors() {
         let count = fixture.grammar.tables().symbol_count as u16;
         let mut builder = Builder::new(&fixture.grammar, 1, false).unwrap();
         builder
-            .emit(&leaf(count + 1, count + 1, 0, 1 | 8), 0)
+            .emit(&leaf(count + 1, count + 1, 0, 1 | 8), SlotIx(0))
             .unwrap();
-        builder.emit(&leaf(count, count, 0, 1 | 8), 0).unwrap();
+        builder
+            .emit(&leaf(count, count, 0, 1 | 8), SlotIx(0))
+            .unwrap();
         let tree = builder.finish(PackOptions::default()).unwrap();
         assert_eq!(
             tree.data().layout.symbol_width,
@@ -495,10 +497,10 @@ fn id_width_covers_all_grammars_and_reserved_errors() {
         );
         let tree =
             Forest::from_bytes(std::slice::from_ref(&fixture.grammar), tree.as_bytes()).unwrap();
-        assert_eq!(tree.data().symbol_index(0).raw(), count + 1);
-        assert_eq!(tree.data().grammar_index(0).raw(), count + 1);
-        assert_eq!(tree.data().symbol_index(1).raw(), count);
-        assert_eq!(tree.data().grammar_index(1).raw(), count);
+        assert_eq!(tree.data().symbol_index(SlotIx(0)).raw(), count + 1);
+        assert_eq!(tree.data().grammar_index(SlotIx(0)).raw(), count + 1);
+        assert_eq!(tree.data().symbol_index(SlotIx(1)).raw(), count);
+        assert_eq!(tree.data().grammar_index(SlotIx(1)).raw(), count);
     }
 }
 
@@ -552,7 +554,7 @@ fn compact_domains_preserve_aliases_with_shared_width() {
         .squatter_grammar_id(GrammarId::from_raw(1))
         .unwrap();
     builder
-        .emit(&leaf(display.raw(), default.raw(), 0, 1), 0)
+        .emit(&leaf(display.raw(), default.raw(), 0, 1), SlotIx(0))
         .unwrap();
     let tree = builder
         .finish(PackOptions {
@@ -597,7 +599,7 @@ fn compact_domains_preserve_aliases_with_shared_width() {
         .unwrap();
     assert_ne!(display.raw(), default.raw());
     builder
-        .emit(&leaf(display.raw(), default.raw(), 0, 1), 0)
+        .emit(&leaf(display.raw(), default.raw(), 0, 1), SlotIx(0))
         .unwrap();
     let tree = builder.finish(PackOptions::default()).unwrap();
     assert_eq!(tree.data().flags() & SEPARATE_GRAMMAR, SEPARATE_GRAMMAR);
@@ -620,7 +622,7 @@ fn matching_ids_omit_grammar_before_flag_columns() {
                         )
                         .unwrap();
                 }
-                builder.emit(&leaf(2, 2, 0, 1), 0).unwrap();
+                builder.emit(&leaf(2, 2, 0, 1), SlotIx(0)).unwrap();
                 let tree = builder
                     .finish(PackOptions {
                         repack,
@@ -671,7 +673,7 @@ fn synthetic_symbol_ids_and_optional_columns() {
                         )
                         .unwrap();
                 }
-                builder.emit(&leaf(1, 1, 0, 1), 0).unwrap();
+                builder.emit(&leaf(1, 1, 0, 1), SlotIx(0)).unwrap();
                 let mut tree = builder
                     .finish(PackOptions {
                         points,
@@ -699,10 +701,10 @@ fn synthetic_symbol_ids_and_optional_columns() {
                     for slot in 0..3 * GROUP_SIZE {
                         let original = (slot % 4 + 1) as u16;
                         assert_eq!(
-                            data.symbol_index(slot).raw(),
+                            data.symbol_index(SlotIx(slot)).raw(),
                             if original <= 2 { 1 } else { original }
                         );
-                        assert_eq!(data.grammar_index(slot).raw(), original);
+                        assert_eq!(data.grammar_index(SlotIx(slot)).raw(), original);
                     }
                     assert_eq!(
                         Layout::new(4, FOREST_FORMAT | BYTE_IDS | SEPARATE_GRAMMAR)
@@ -831,7 +833,7 @@ fn loading_rejects_tree_start_inside_group() {
     parser.set_language(&language).unwrap();
     let mut forest = Forest::parse(&grammar, &mut parser, "[0]").unwrap();
     let slot = forest.root_node().slot().raw();
-    let delta = forest.data().span_delta(slot) as u16;
+    let delta = forest.data().span_delta(SlotIx(slot)) as u16;
     put_span_delta(forest.data_mut(), slot, delta + 1);
     assert!(matches!(
         Forest::from_bytes(std::slice::from_ref(&grammar), forest.as_bytes()),
@@ -1016,7 +1018,7 @@ fn invalid_waste_and_absent_fields() {
                 .emit(&leaf(1, 1, 0, u8::from(index == 0)), builder.distance())
                 .unwrap();
         }
-        builder.emit(&leaf(1, 1, 0, 1), 0).unwrap();
+        builder.emit(&leaf(1, 1, 0, 1), SlotIx(0)).unwrap();
         let tree = builder.finish(PackOptions::default()).unwrap();
         assert_eq!(
             tree.root_node().all().filter_field_ids([None]).count(),

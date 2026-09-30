@@ -5,7 +5,11 @@ use crate::{
     native::{Pattern, PatternEntry, Step, flags::*},
     query::Scope,
     storage::{ColumnPointer, RegionOrder},
-    types::{CaptureIx, GroupIx, MatchId, PackedPoint, PatternIndex, SquatterKindId},
+    types::{
+        CaptureIx, CaptureListIx, CapturePrefixId, CaptureStorageIx, DirectStateIx, GroupIx,
+        MatchId, NegatedFieldListIx, PackedPoint, PatternIndex, PreorderIx, PresenceRequirementIx,
+        QueryCaptureIx, QueryStepIx, SquatterKindId,
+    },
 };
 use std::{cell::Cell, cmp::Ordering, marker::PhantomData, rc::Rc};
 use tree_sitter::Point;
@@ -59,13 +63,14 @@ impl PartialEq for Capture {
 #[derive(Clone, Copy)]
 struct State {
     id: MatchId,
-    captures: u32,
+    captures: CaptureListIx,
+    // direct-state index while active; completion order after finishing
     order: u32,
     start_depth: u16,
-    step: u16,
+    step: QueryStepIx,
     pattern: PatternIndex,
     flags: u16,
-    consumed: u32,
+    consumed: MatchCaptureIx,
 }
 
 impl State {
@@ -81,11 +86,11 @@ impl State {
     // keeps the hot state record the same size in both queues.
     fn set_capture_byte(&mut self, byte: u32) {
         self.start_depth = byte as u16;
-        self.step = (byte >> 16) as u16;
+        self.step = QueryStepIx((byte >> 16) as u16);
     }
 
     fn capture_byte(self) -> u32 {
-        self.start_depth as u32 | ((self.step as u32) << 16)
+        self.start_depth as u32 | ((self.step.raw() as u32) << 16)
     }
 
     fn precedes(self, other: Self) -> bool {
@@ -102,11 +107,12 @@ const _: () = assert!(size_of::<State>() == 24);
 struct CaptureList {
     contents: *const Capture,
     length: u32,
-    storage: u32,
+    // when length is NONE, holds the next free CaptureListIx
+    storage: CaptureStorageIx,
     first_byte: u32,
     last_end: u32,
     prefix_size: u32,
-    prefix: u64,
+    prefix: CapturePrefixId,
     hash: u64,
     set: [u64; 2],
 }
@@ -116,11 +122,11 @@ impl CaptureList {
         Self {
             contents: std::ptr::null(),
             length: 0,
-            storage: NONE,
+            storage: CaptureStorageIx::NONE,
             first_byte: 0,
             last_end: NONE,
             prefix_size: 0,
-            prefix: 0,
+            prefix: CapturePrefixId(0),
             hash: 0,
             set: [0; 2],
         }
@@ -143,16 +149,16 @@ impl CaptureList {
 struct CaptureStorage {
     values: Vec<Capture>,
     references: u32,
-    next_free: u32,
+    next_free: CaptureStorageIx,
 }
 
 struct CapturePool {
     lists: Vec<CaptureList>,
     storage: Vec<CaptureStorage>,
-    free_list: u32,
-    free_storage: u32,
+    free_list: CaptureListIx,
+    free_storage: CaptureStorageIx,
     limit: u32,
-    next_prefix: u64,
+    next_prefix: CapturePrefixId,
 }
 
 impl CapturePool {
@@ -160,10 +166,10 @@ impl CapturePool {
         Self {
             lists: Vec::new(),
             storage: Vec::new(),
-            free_list: NONE,
-            free_storage: NONE,
+            free_list: CaptureListIx::NONE,
+            free_storage: CaptureStorageIx::NONE,
             limit: NONE,
-            next_prefix: 0,
+            next_prefix: CapturePrefixId(0),
         }
     }
 
@@ -171,37 +177,37 @@ impl CapturePool {
         let count = self.lists.len();
         for (index, list) in self.lists.iter_mut().enumerate() {
             list.length = NONE;
-            list.storage = if index + 1 < count {
+            list.storage = CaptureStorageIx(if index + 1 < count {
                 index as u32 + 1
             } else {
                 NONE
-            };
+            });
         }
-        self.free_list = if count == 0 { NONE } else { 0 };
+        self.free_list = CaptureListIx(if count == 0 { NONE } else { 0 });
 
         let count = self.storage.len();
         for (index, storage) in self.storage.iter_mut().enumerate() {
             storage.references = 0;
-            storage.next_free = if index + 1 < count {
+            storage.next_free = CaptureStorageIx(if index + 1 < count {
                 index as u32 + 1
             } else {
                 NONE
-            };
+            });
         }
-        self.free_storage = if count == 0 { NONE } else { 0 };
-        self.next_prefix = 0;
+        self.free_storage = CaptureStorageIx(if count == 0 { NONE } else { 0 });
+        self.next_prefix = CapturePrefixId(0);
     }
 
-    fn list(&self, id: u32) -> &CaptureList {
+    fn list(&self, id: CaptureListIx) -> &CaptureList {
         const EMPTY: CaptureList = CaptureList::empty();
-        if id == NONE {
+        if id == CaptureListIx::NONE {
             &EMPTY
         } else {
-            &self.lists[id as usize]
+            &self.lists[id.raw() as usize]
         }
     }
 
-    fn get(&self, id: u32) -> &[Capture] {
+    fn get(&self, id: CaptureListIx) -> &[Capture] {
         self.values(self.list(id))
     }
 
@@ -213,36 +219,38 @@ impl CapturePool {
             // unique writer refreshes this pointer after reserving capacity.
             debug_assert_eq!(
                 list.contents,
-                self.storage[list.storage as usize].values.as_ptr()
+                self.storage[list.storage.raw() as usize].values.as_ptr()
             );
-            debug_assert!(list.length as usize <= self.storage[list.storage as usize].values.len());
+            debug_assert!(
+                list.length as usize <= self.storage[list.storage.raw() as usize].values.len()
+            );
             unsafe { std::slice::from_raw_parts(list.contents, list.length as usize) }
         }
     }
 
     fn is_empty(&self) -> bool {
-        self.free_list == NONE && self.lists.len() >= self.limit as usize
+        self.free_list == CaptureListIx::NONE && self.lists.len() >= self.limit as usize
     }
 
-    fn acquire(&mut self) -> u32 {
-        if self.free_list != NONE {
+    fn acquire(&mut self) -> CaptureListIx {
+        if self.free_list != CaptureListIx::NONE {
             let id = self.free_list;
-            self.free_list = self.lists[id as usize].storage;
-            self.lists[id as usize] = CaptureList::empty();
+            self.free_list = CaptureListIx(self.lists[id.raw() as usize].storage.raw());
+            self.lists[id.raw() as usize] = CaptureList::empty();
             id
         } else if self.lists.len() < self.limit as usize {
-            let id = self.lists.len() as u32;
+            let id = CaptureListIx(self.lists.len() as u32);
             self.lists.push(CaptureList::empty());
             id
         } else {
-            NONE
+            CaptureListIx::NONE
         }
     }
 
-    fn clear(&mut self, id: u32) {
-        let list = &mut self.lists[id as usize];
-        if list.storage != NONE {
-            let storage = &mut self.storage[list.storage as usize];
+    fn clear(&mut self, id: CaptureListIx) {
+        let list = &mut self.lists[id.raw() as usize];
+        if list.storage != CaptureStorageIx::NONE {
+            let storage = &mut self.storage[list.storage.raw() as usize];
             storage.references -= 1;
             if storage.references == 0 {
                 // Returned captures remain readable until the next advancement
@@ -254,35 +262,37 @@ impl CapturePool {
         *list = CaptureList::empty();
     }
 
-    fn release(&mut self, id: u32) {
-        if id == NONE {
+    fn release(&mut self, id: CaptureListIx) {
+        if id == CaptureListIx::NONE {
             return;
         }
-        debug_assert_ne!(self.lists[id as usize].length, NONE);
+        debug_assert_ne!(self.lists[id.raw() as usize].length, NONE);
         self.clear(id);
-        self.lists[id as usize].length = NONE;
-        self.lists[id as usize].storage = self.free_list;
+        self.lists[id.raw() as usize].length = NONE;
+        self.lists[id.raw() as usize].storage = CaptureStorageIx(self.free_list.raw());
         self.free_list = id;
     }
 
-    fn make_mutable(&mut self, id: u32, additional: usize) {
-        let list = self.lists[id as usize];
-        if list.storage == NONE || self.storage[list.storage as usize].references > 1 {
-            let target = if self.free_storage == NONE {
-                let target = self.storage.len() as u32;
+    fn make_mutable(&mut self, id: CaptureListIx, additional: usize) {
+        let list = self.lists[id.raw() as usize];
+        if list.storage == CaptureStorageIx::NONE
+            || self.storage[list.storage.raw() as usize].references > 1
+        {
+            let target = if self.free_storage == CaptureStorageIx::NONE {
+                let target = CaptureStorageIx(self.storage.len() as u32);
                 self.storage.push(CaptureStorage::default());
                 target
             } else {
                 let target = self.free_storage;
-                self.free_storage = self.storage[target as usize].next_free;
+                self.free_storage = self.storage[target.raw() as usize].next_free;
                 target
             };
             let source = if list.length == 0 {
                 std::ptr::null()
             } else {
-                self.storage[list.storage as usize].values.as_ptr()
+                self.storage[list.storage.raw() as usize].values.as_ptr()
             };
-            let storage = &mut self.storage[target as usize];
+            let storage = &mut self.storage[target.raw() as usize];
             storage.values.clear();
             storage.values.reserve(list.length as usize + additional);
             if list.length != 0 {
@@ -298,71 +308,71 @@ impl CapturePool {
                 }
             }
             storage.references = 1;
-            if list.storage != NONE {
-                self.storage[list.storage as usize].references -= 1;
+            if list.storage != CaptureStorageIx::NONE {
+                self.storage[list.storage.raw() as usize].references -= 1;
             }
-            self.lists[id as usize].storage = target;
+            self.lists[id.raw() as usize].storage = target;
         } else {
-            self.storage[list.storage as usize]
+            self.storage[list.storage.raw() as usize]
                 .values
                 .reserve(additional);
         }
-        let list = &mut self.lists[id as usize];
-        list.contents = self.storage[list.storage as usize].values.as_ptr();
+        let list = &mut self.lists[id.raw() as usize];
+        list.contents = self.storage[list.storage.raw() as usize].values.as_ptr();
     }
 
-    fn share(&mut self, target: u32, source: u32) {
-        let mut list = self.lists[source as usize];
+    fn share(&mut self, target: CaptureListIx, source: CaptureListIx) {
+        let mut list = self.lists[source.raw() as usize];
         if list.length == 0 {
             return;
         }
 
         // Fingerprints are only useful after branching. Unbranched histories
         // avoid maintaining them; later appends preserve the shared prefix ID.
-        if list.prefix == 0 {
+        if list.prefix == CapturePrefixId(0) {
             list.hash = 0;
             list.set = [0; 2];
             for capture in self.get(source) {
                 list.hash_capture(*capture);
             }
         }
-        if list.prefix == 0 || list.prefix_size != list.length {
-            self.next_prefix = self.next_prefix.wrapping_add(1);
-            if self.next_prefix == 0 {
+        if list.prefix == CapturePrefixId(0) || list.prefix_size != list.length {
+            self.next_prefix = CapturePrefixId(self.next_prefix.raw().wrapping_add(1));
+            if self.next_prefix == CapturePrefixId(0) {
                 for list in &mut self.lists {
-                    list.prefix = 0;
+                    list.prefix = CapturePrefixId(0);
                 }
-                self.next_prefix = 1;
+                self.next_prefix = CapturePrefixId(1);
             }
             list.prefix = self.next_prefix;
             list.prefix_size = list.length;
         }
-        self.lists[source as usize] = list;
-        self.lists[target as usize] = list;
-        self.storage[list.storage as usize].references += 1;
+        self.lists[source.raw() as usize] = list;
+        self.lists[target.raw() as usize] = list;
+        self.storage[list.storage.raw() as usize].references += 1;
     }
 
-    fn append(&mut self, id: u32, node: Node<'_>, step: &Step) -> bool {
+    fn append(&mut self, id: CaptureListIx, node: Node<'_>, step: &Step) -> bool {
         self.make_mutable(id, 3);
-        let list = &mut self.lists[id as usize];
+        let list = &mut self.lists[id.raw() as usize];
         let first = list.length == 0;
         if first {
             list.first_byte = node.start_byte() as u32;
         }
         list.last_end = NONE;
 
-        let storage = &mut self.storage[list.storage as usize];
+        let storage = &mut self.storage[list.storage.raw() as usize];
         for capture_id in step.capture_ids {
-            if capture_id == DONE {
+            if capture_id == QueryCaptureIx::NONE {
                 break;
             }
             let capture = Capture {
                 node: node.raw,
-                index: CaptureIx(capture_id as u32),
+                index: capture_id.into(),
             };
             storage.values.push(capture);
             list.length += 1;
-            if list.prefix != 0 {
+            if list.prefix != CapturePrefixId(0) {
                 list.hash_capture(capture);
             }
         }
@@ -383,7 +393,7 @@ impl CapturePool {
 
         // Hashes and sets only reject containment. Collisions still undergo
         // exact comparison of node identity and capture order.
-        if left_list.prefix != 0 && right_list.prefix != 0 {
+        if left_list.prefix != CapturePrefixId(0) && right_list.prefix != CapturePrefixId(0) {
             if left_list.length == right_list.length {
                 if left_list.hash != right_list.hash {
                     return (false, false);
@@ -403,11 +413,12 @@ impl CapturePool {
 
         let left = self.values(left_list);
         let right = self.values(right_list);
-        let shared = if left_list.prefix != 0 && left_list.prefix == right_list.prefix {
-            left_list.prefix_size.min(right_list.prefix_size) as usize
-        } else {
-            0
-        };
+        let shared =
+            if left_list.prefix != CapturePrefixId(0) && left_list.prefix == right_list.prefix {
+                left_list.prefix_size.min(right_list.prefix_size) as usize
+            } else {
+                0
+            };
         let (mut left_index, mut right_index) = (shared, shared);
         while left_index < left.len() && right_index < right.len() {
             let first = left[left_index];
@@ -530,20 +541,20 @@ impl QueryRange {
 
 struct RegionTrees<'forest> {
     region: ForestRegion<'forest>,
-    next: u32,
-    end: u32,
+    next: TreeIx,
+    end: TreeIx,
 }
 
 impl<'forest> RegionTrees<'forest> {
     fn new(region: ForestRegion<'forest>, range: QueryRange) -> Self {
         let trees = region.data().trees.clone();
-        let mut next = trees.start.raw();
-        let end = trees.end.raw();
+        let mut next = trees.start;
+        let end = trees.end;
         if region.data().order == RegionOrder::NonOverlapping {
             let mut upper = end;
             while next < upper {
                 let middle = next + (upper - next) / 2;
-                let root = region.forest.tree(TreeIx::from_raw(middle)).root_node();
+                let root = region.forest.tree(middle).root_node();
                 let root_end = root.end_byte();
                 let before = root_end < range.start_byte as usize
                     || (root_end == range.start_byte as usize && root.start_byte() != root_end);
@@ -559,11 +570,7 @@ impl<'forest> RegionTrees<'forest> {
 
     fn next_root(&mut self, range: QueryRange) -> Option<Node<'forest>> {
         while self.next < self.end {
-            let root = self
-                .region
-                .forest
-                .tree(TreeIx::from_raw(self.next))
-                .root_node();
+            let root = self.region.forest.tree(self.next).root_node();
             self.next += 1;
             if self.region.data().order != RegionOrder::Unordered
                 && root.start_byte() >= range.end_byte as usize
@@ -581,8 +588,8 @@ impl<'forest> RegionTrees<'forest> {
 
 #[derive(Clone, Copy, Default)]
 struct PresenceCache {
-    start: u32,
-    next: u32,
+    start: PreorderIx,
+    next: PreorderIx,
     found: bool,
     samples: u8,
     rejections: u8,
@@ -591,9 +598,9 @@ struct PresenceCache {
 
 #[derive(Clone, Copy)]
 struct DirectPosition {
-    root: u32,
-    next: u32,
-    end: u32,
+    root: PreorderIx,
+    next: PreorderIx,
+    end: PreorderIx,
 }
 
 #[derive(Clone, Copy)]
@@ -708,9 +715,9 @@ pub struct QueryCursor {
     first_capture_valid: bool,
     presence: Vec<PresenceCache>,
     direct: bool,
-    direct_position: u32,
+    direct_position: PreorderIx,
     direct_states: Vec<DirectPosition>,
-    direct_free: u32,
+    direct_free: DirectStateIx,
     scan_samples: u32,
     scan_sparse_samples: u32,
     scan_cooldown: u32,
@@ -759,9 +766,9 @@ impl QueryCursor {
             first_capture_valid: false,
             presence: Vec::new(),
             direct: false,
-            direct_position: 0,
+            direct_position: PreorderIx(0),
             direct_states: Vec::new(),
-            direct_free: NONE,
+            direct_free: DirectStateIx::NONE,
             scan_samples: 0,
             scan_sparse_samples: 0,
             scan_cooldown: 0,
@@ -856,9 +863,11 @@ impl QueryCursor {
             && query.program.direct.is_some()
             && self.max_start_depth == NONE
             && !self.halted;
-        self.direct_position =
-            root.data().groups() * crate::storage::GROUP_SIZE - 1 - root.slot().raw();
-        self.direct_free = NONE;
+        self.direct_position = PreorderIx::from_slot(
+            root.slot(),
+            root.data().groups() * crate::storage::GROUP_SIZE,
+        );
+        self.direct_free = DirectStateIx::NONE;
     }
 
     /// Start a fresh execution, retaining the provider and borrowing this cursor
@@ -1016,7 +1025,7 @@ where
     text_buffers: [Vec<u8>; 2],
     chunk: PhantomData<Chunk>,
     stopped: bool,
-    scan_resume: Option<u32>,
+    scan_resume: Option<PreorderIx>,
 }
 
 impl<Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>> Drop
@@ -1161,10 +1170,10 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
         self.stopped
     }
 
-    fn step(&self, index: u16) -> &'query Step {
-        debug_assert!((index as usize) < self.steps.len());
+    fn step(&self, index: QueryStepIx) -> &'query Step {
+        debug_assert!((index.raw() as usize) < self.steps.len());
         // Only the trusted compiler and its control-flow edges produce indexes.
-        unsafe { self.steps.get_unchecked(index as usize) }
+        unsafe { self.steps.get_unchecked(index.raw() as usize) }
     }
 }
 
@@ -1400,13 +1409,13 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
 {
     fn update_key(&self, state: &mut State) {
         let captures = self.cursor.pool.get(state.captures);
-        state.set(EXHAUSTED, state.consumed as usize >= captures.len());
+        state.set(EXHAUSTED, state.consumed.raw() as usize >= captures.len());
         if !state.has(EXHAUSTED) {
-            let byte = if state.consumed == 0 {
+            let byte = if state.consumed.raw() == 0 {
                 self.cursor.pool.list(state.captures).first_byte
             } else {
                 self.root
-                    .at(captures[state.consumed as usize].node.id.slot())
+                    .at(captures[state.consumed.raw() as usize].node.id.slot())
                     .start_byte() as u32
             };
             state.set_capture_byte(byte);
@@ -1444,7 +1453,7 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
             pattern: state.pattern,
             captures: captures.as_ptr(),
             count: captures.len(),
-            index: state.consumed as usize,
+            index: state.consumed.raw() as usize,
         }
     }
 
@@ -1480,16 +1489,16 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
                 continue;
             }
             let captures = self.cursor.pool.get(state.captures);
-            while (state.consumed as usize) < captures.len()
+            while (state.consumed.raw() as usize) < captures.len()
                 && self.cursor.range.precedes(
                     self.root
-                        .at(captures[state.consumed as usize].node.id.slot()),
+                        .at(captures[state.consumed.raw() as usize].node.id.slot()),
                 )
             {
                 state.consumed += 1;
             }
             self.cursor.states[index].consumed = state.consumed;
-            let Some(capture) = captures.get(state.consumed as usize) else {
+            let Some(capture) = captures.get(state.consumed.raw() as usize) else {
                 continue;
             };
             let byte = self.root.at(capture.node.id.slot()).start_byte() as u32;
@@ -1521,7 +1530,7 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
 
             while let Some(mut state) = self.cursor.finished.first().copied() {
                 let captures = self.cursor.pool.get(state.captures);
-                let Some(capture) = captures.get(state.consumed as usize) else {
+                let Some(capture) = captures.get(state.consumed.raw() as usize) else {
                     self.cursor.pool.release(state.captures);
                     self.cursor.erase_finished(0);
                     continue;
@@ -1562,7 +1571,7 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
                     let state = self.cursor.states.remove(first.state);
                     self.cursor.pool.release(state.captures);
                     if self.cursor.direct {
-                        self.release_direct(state.order);
+                        self.release_direct(DirectStateIx(state.order));
                     }
                     self.cursor.dirty_patterns |= 1 << (state.pattern.raw() % 64);
                 }
@@ -1588,7 +1597,7 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
             let state = self.cursor.states.remove(index);
             self.cursor.pool.release(state.captures);
             if self.cursor.direct {
-                self.release_direct(state.order);
+                self.release_direct(DirectStateIx(state.order));
             }
             self.cursor.dirty_patterns |= 1 << (state.pattern.raw() % 64);
             self.cursor.first_capture_valid = false;
@@ -1596,11 +1605,11 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
     }
 
     fn prepare_capture(&mut self, state: &mut State, preserve: usize) -> bool {
-        if state.captures != NONE {
+        if state.captures != CaptureListIx::NONE {
             return true;
         }
         state.captures = self.cursor.pool.acquire();
-        if state.captures != NONE {
+        if state.captures != CaptureListIx::NONE {
             return true;
         }
 
@@ -1613,7 +1622,7 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
         };
         let other = &mut self.cursor.states[first.state];
         state.captures = other.captures;
-        other.captures = NONE;
+        other.captures = CaptureListIx::NONE;
         other.flags |= DEAD;
         self.cursor.dirty_patterns |= 1 << (other.pattern.raw() % 64);
         self.cursor.states_need_sort = true;
@@ -1635,8 +1644,8 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
     fn copy_state(&mut self, index: usize) -> bool {
         let original = self.cursor.states[index];
         let mut copy = original;
-        copy.captures = NONE;
-        if original.captures != NONE {
+        copy.captures = CaptureListIx::NONE;
+        if original.captures != CaptureListIx::NONE {
             if !self.prepare_capture(&mut copy, index) {
                 return false;
             }
@@ -1672,12 +1681,12 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
             index,
             State {
                 id: MatchId::from_raw(NONE),
-                captures: NONE,
+                captures: CaptureListIx::NONE,
                 order: NONE,
                 start_depth: depth as u16,
                 step: entry.step_index,
                 pattern: entry.pattern_index,
-                consumed: 0,
+                consumed: MatchCaptureIx::from_raw(0),
                 flags: SEEKING_IMMEDIATE | if step.depth == 1 { NEEDS_PARENT } else { 0 },
             },
         );
@@ -1725,68 +1734,43 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
         self.total_slots
     }
 
-    fn normalize_position(&self, position: u32) -> u32 {
+    fn normalize_position(&self, position: PreorderIx) -> PreorderIx {
         let total = self.total_slots();
         let limit = self.node_end(self.root);
         if position >= limit {
             return limit;
         }
-        let slot = total - 1 - position;
-        let end = self
-            .root
-            .data()
-            .group_end(slot / crate::storage::GROUP_SIZE);
+        let slot = position.slot(total);
+        let end = self.root.data().group_end(slot.group());
         if slot >= end {
-            (total - end).min(limit)
+            PreorderIx(total - end.raw()).min(limit)
         } else {
             position
         }
     }
 
-    fn position_node(&self, position: u32) -> Node<'tree> {
-        self.root
-            .at(SlotIx::from_raw(self.total_slots() - 1 - position))
+    fn position_node(&self, position: PreorderIx) -> Node<'tree> {
+        self.root.at(position.slot(self.total_slots()))
     }
 
-    fn node_end(&self, node: Node<'tree>) -> u32 {
-        self.total_slots() - node.first_slot()
+    fn node_end(&self, node: Node<'tree>) -> PreorderIx {
+        PreorderIx(self.total_slots() - node.first_slot().raw())
     }
 
-    fn find_symbols(&mut self, start: u32, end: u32) -> u32 {
+    fn find_symbols(&mut self, start: PreorderIx, end: PreorderIx) -> PreorderIx {
         let targets = &self.query.program.scan_targets;
         // Fixed cardinalities keep comparison counts visible to the scan
         // compiler. Larger unions retain the packed-word control kernel.
         match targets.as_slice() {
-            &[first] => return self.find_symbols_simd(start, end, [SquatterKindId(first)]),
+            &[first] => return self.find_symbols_simd(start, end, [first]),
             &[first, second] => {
-                return self.find_symbols_simd(
-                    start,
-                    end,
-                    [SquatterKindId(first), SquatterKindId(second)],
-                );
+                return self.find_symbols_simd(start, end, [first, second]);
             }
             &[first, second, third] => {
-                return self.find_symbols_simd(
-                    start,
-                    end,
-                    [
-                        SquatterKindId(first),
-                        SquatterKindId(second),
-                        SquatterKindId(third),
-                    ],
-                );
+                return self.find_symbols_simd(start, end, [first, second, third]);
             }
             &[first, second, third, fourth] => {
-                return self.find_symbols_simd(
-                    start,
-                    end,
-                    [
-                        SquatterKindId(first),
-                        SquatterKindId(second),
-                        SquatterKindId(third),
-                        SquatterKindId(fourth),
-                    ],
-                );
+                return self.find_symbols_simd(start, end, [first, second, third, fourth]);
             }
             _ => {}
         }
@@ -1795,10 +1779,10 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
 
     fn find_symbols_simd<const N: usize>(
         &mut self,
-        mut start: u32,
-        end: u32,
+        mut start: PreorderIx,
+        end: PreorderIx,
         targets: [SquatterKindId; N],
-    ) -> u32 {
+    ) -> PreorderIx {
         use crate::scan::GroupRef;
         use crate::storage::GROUP_SIZE;
 
@@ -1806,27 +1790,27 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
         let groups = GroupRef::new(self.root);
 
         while start < end {
-            if self.poll_at(SlotIx::from_raw(total - 1 - start)) {
+            if self.poll_at(start.slot(total)) {
                 return start;
             }
-            let index = (total - 1 - start) / GROUP_SIZE;
-            let group_end = ((start / GROUP_SIZE + 1) * GROUP_SIZE).min(end);
+            let index = start.slot(total).group().raw();
+            let group_end = PreorderIx((start.raw() / GROUP_SIZE + 1) * GROUP_SIZE).min(end);
             if self.root.presence().is_none_or(|cache| {
                 targets
                     .iter()
-                    .any(|symbol| cache.has(index, symbol.raw() as usize))
+                    .any(|symbol| cache.has(GroupIx(index), *symbol))
             }) {
                 let group = groups.at_group(GroupIx(index));
                 let base = group.first_slot().raw();
                 let mut hits = group.equal_kind_ids(&targets, group.valid_mask()).bits();
-                let first = total - group_end - base;
-                let last = total - start - base;
+                let first = total - group_end.raw() - base;
+                let last = total - start.raw() - base;
                 hits &= u64::MAX << first;
                 if last < 64 {
                     hits &= (1 << last) - 1;
                 }
                 if hits != 0 {
-                    return total - 1 - (base + 63 - hits.leading_zeros());
+                    return PreorderIx::from_slot(SlotIx(base + 63 - hits.leading_zeros()), total);
                 }
             }
             start = self.normalize_position(group_end);
@@ -1834,7 +1818,7 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
         end
     }
 
-    fn find_symbols_control(&mut self, mut start: u32, end: u32) -> u32 {
+    fn find_symbols_control(&mut self, mut start: PreorderIx, end: PreorderIx) -> PreorderIx {
         use crate::storage::GROUP_SIZE;
         let query = self.query;
         let data = self.root.data();
@@ -1850,17 +1834,17 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
         };
 
         while start < end {
-            if self.poll_at(SlotIx::from_raw(total - 1 - start)) {
+            if self.poll_at(start.slot(total)) {
                 return start;
             }
-            let group = (total - 1 - start) / GROUP_SIZE;
-            let group_end = ((start / GROUP_SIZE + 1) * GROUP_SIZE).min(end);
+            let group = start.slot(total).group().raw();
+            let group_end = PreorderIx((start.raw() / GROUP_SIZE + 1) * GROUP_SIZE).min(end);
             if !targets.is_empty()
                 && targets.len() <= 4
                 && self.root.presence().is_some_and(|cache| {
                     !targets
                         .iter()
-                        .any(|symbol| cache.has(group, *symbol as usize))
+                        .any(|symbol| cache.has(GroupIx(group), *symbol))
                 })
             {
                 start = self.normalize_position(group_end);
@@ -1869,7 +1853,7 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
 
             if filter.is_empty() {
                 while start < group_end {
-                    let symbol = data.symbol_index(total - 1 - start).raw();
+                    let symbol = data.symbol_index(start.slot(total)).raw();
                     if query.program.scan_symbols[symbol as usize / 64] & (1 << (symbol % 64)) != 0
                     {
                         return start;
@@ -1879,8 +1863,8 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
             } else {
                 // Lane high bits identify exact matches without carries leaking
                 // between adjacent byte or u16 IDs.
-                let low = total - group_end;
-                let high = total - start;
+                let low = total - group_end.raw();
+                let high = total - start.raw();
                 for word_index in (low / lanes..=(high - 1) / lanes).rev() {
                     let word = data.long(data.layout.symbol, word_index);
                     let mut hits = 0;
@@ -1893,7 +1877,7 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
                         let bit = 63 - hits.leading_zeros();
                         let physical = word_index * lanes + bit / (8 * width);
                         if physical >= low && physical < high {
-                            return total - 1 - physical;
+                            return PreorderIx::from_slot(SlotIx(physical), total);
                         }
                         hits &= !(1 << bit);
                     }
@@ -1905,7 +1889,8 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
     }
 
     fn scan_seek(&mut self) -> bool {
-        let current_position = self.total_slots() - 1 - self.cursor.position.slot().raw();
+        let current_position =
+            PreorderIx::from_slot(self.cursor.position.slot(), self.total_slots());
         let end = self.node_end(self.root);
         let mut start = self.scan_resume.take().unwrap_or(current_position);
         let target = 'search: loop {
@@ -1924,7 +1909,7 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
 
             // With no partial states, skipped enter/exit events cannot affect a
             // match. Restore only the ancestor path needed by the next root.
-            while self.total_slots() - 1 - self.cursor.position.slot().raw() != target {
+            while PreorderIx::from_slot(self.cursor.position.slot(), self.total_slots()) != target {
                 let node = self.current();
                 if target < self.node_end(node) {
                     // A symbol hit must not re-enter a subtree that ordinary
@@ -1964,11 +1949,11 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
         true
     }
 
-    fn presence_matches(&mut self, requirement: u16, root: Node<'tree>) -> bool {
+    fn presence_matches(&mut self, requirement: PresenceRequirementIx, root: Node<'tree>) -> bool {
         if !self.cursor.optimized {
             return true;
         }
-        let index = requirement as usize - 1;
+        let index = requirement.raw() as usize - 1;
         let mut cache = self.cursor.presence[index];
         let requirement = self.query.program.presence[index];
         if cache.samples == 32 {
@@ -1987,7 +1972,7 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
 
         let data = root.data();
         let group_size = crate::storage::GROUP_SIZE;
-        if requirement.symbol != 0 {
+        if requirement.symbol != SquatterKindId(0) {
             if let Some(presence) = root.presence() {
                 let slot = root.slot().raw();
                 let group = slot / group_size;
@@ -1996,9 +1981,9 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
                 let first = slot
                     .saturating_sub(maximum)
                     .max(root.tree_data().slots.start.raw());
-                let groups = first / group_size..group + 1;
+                let groups = GroupIx(first / group_size)..GroupIx(group + 1);
                 let found = presence
-                    .find_matching_group(groups, requirement.symbol as usize, false)
+                    .find_matching_group(groups, requirement.symbol, false)
                     .is_some();
                 if !found {
                     cache.rejections += 1;
@@ -2008,7 +1993,8 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
             }
         }
 
-        let mut begin = self.normalize_position(self.total_slots() - root.slot().raw());
+        let mut begin =
+            self.normalize_position(PreorderIx::from_slot(root.slot(), self.total_slots()) + 1);
         let limit = self.node_end(root);
         if begin >= cache.start && begin <= cache.next {
             if cache.next >= limit {
@@ -2030,28 +2016,28 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
         let scanned_end = begin + (limit - begin).min(256);
         let mut position = begin;
         while position < scanned_end {
-            let group = position / group_size;
-            let group_start = group * group_size;
+            let group = position.raw() / group_size;
+            let group_start = PreorderIx(group * group_size);
             let end = (group_start + group_size).min(scanned_end);
             let physical_group = data.groups() - 1 - group;
             let mut hits = {
                 let mut hits = u64::MAX;
-                if requirement.symbol != 0 {
+                if requirement.symbol != SquatterKindId(0) {
                     hits = equal_column(
                         data,
                         data.layout.symbol,
                         physical_group,
-                        requirement.symbol,
+                        requirement.symbol.raw(),
                         u16::MAX,
                         data.layout.symbol_width,
                     );
                 }
-                if requirement.field != 0 {
+                if requirement.field.is_some() {
                     hits &= equal_column(
                         data,
                         data.layout.field,
                         physical_group,
-                        requirement.field,
+                        requirement.field.unwrap().raw(),
                         u16::MAX,
                         2,
                     );
@@ -2079,25 +2065,28 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
         found
     }
 
-    fn acquire_direct(&mut self, position: DirectPosition) -> u32 {
-        if self.cursor.direct_free == NONE {
-            let index = self.cursor.direct_states.len() as u32;
+    fn acquire_direct(&mut self, position: DirectPosition) -> DirectStateIx {
+        if self.cursor.direct_free == DirectStateIx::NONE {
+            let index = DirectStateIx(self.cursor.direct_states.len() as u32);
             self.cursor.direct_states.push(position);
             index
         } else {
             let index = self.cursor.direct_free;
-            self.cursor.direct_free = self.cursor.direct_states[index as usize].root;
-            self.cursor.direct_states[index as usize] = position;
+            self.cursor.direct_free =
+                DirectStateIx(self.cursor.direct_states[index.raw() as usize].root.raw());
+            self.cursor.direct_states[index.raw() as usize] = position;
             index
         }
     }
 
-    fn release_direct(&mut self, index: u32) {
-        self.cursor.direct_states[index as usize].root = self.cursor.direct_free;
+    fn release_direct(&mut self, index: DirectStateIx) {
+        // Free entries reuse the root position for the next free state index.
+        self.cursor.direct_states[index.raw() as usize].root =
+            PreorderIx(self.cursor.direct_free.raw());
         self.cursor.direct_free = index;
     }
 
-    fn named_child_position(&self, start: u32, end: u32) -> u32 {
+    fn named_child_position(&self, start: PreorderIx, end: PreorderIx) -> PreorderIx {
         let mut position = self.normalize_position(start);
         while position < end {
             let node = self.position_node(position);
@@ -2111,7 +2100,7 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
 
     fn direct_roots(&self, node: Node<'tree>) -> u64 {
         let plan = self.query.program.direct.as_ref().unwrap();
-        let roots = plan.roots[node.data().symbol_index(node.slot().raw()).raw() as usize];
+        let roots = plan.roots[node.data().symbol_index(node.slot()).raw() as usize];
         if roots == 0 || (self.unrestricted && self.containing_unrestricted) {
             return roots;
         }
@@ -2154,7 +2143,7 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
                 .unwrap_or(root_end);
             let mut position = self.normalize_position(self.cursor.direct_position);
             while position < next {
-                if self.poll_at(SlotIx::from_raw(self.total_slots - 1 - position)) {
+                if self.poll_at(position.slot(self.total_slots)) {
                     self.cursor.direct_position = position;
                     return false;
                 }
@@ -2183,7 +2172,7 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
                 let state = self.cursor.states[index];
                 if self.cursor.direct_states[state.order as usize].end <= position {
                     self.cursor.pool.release(state.captures);
-                    self.release_direct(state.order);
+                    self.release_direct(DirectStateIx(state.order));
                     self.cursor.states.remove(index);
                 } else {
                     index += 1;
@@ -2193,7 +2182,7 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
                 self.cursor.halted = true;
                 return false;
             }
-            if self.poll_at(SlotIx::from_raw(self.total_slots - 1 - position)) {
+            if self.poll_at(position.slot(self.total_slots)) {
                 self.cursor.direct_position = position;
                 return false;
             }
@@ -2202,7 +2191,7 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
             let node = self.position_node(position);
             // Shared capture bookkeeping polls the node currently being processed.
             self.cursor.position = node.id();
-            let symbol = node.data().symbol_index(node.slot().raw()).raw();
+            let symbol = node.data().symbol_index(node.slot()).raw();
             let mut roots = self.direct_roots(node);
             while roots != 0 {
                 let pattern = roots.trailing_zeros() as usize;
@@ -2214,12 +2203,12 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
                 });
                 self.cursor.states.push(State {
                     id: MatchId::from_raw(NONE),
-                    captures: NONE,
-                    order,
+                    captures: CaptureListIx::NONE,
+                    order: order.raw(),
                     start_depth: 0,
                     step: plan.start_steps[pattern],
                     pattern: PatternIndex(pattern as u16),
-                    consumed: 0,
+                    consumed: MatchCaptureIx::from_raw(0),
                     flags: 0,
                 });
             }
@@ -2232,7 +2221,7 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
                 let current = self.cursor.direct_states[state.order as usize];
                 if state.has(DEAD) {
                     self.cursor.pool.release(state.captures);
-                    self.release_direct(state.order);
+                    self.release_direct(DirectStateIx(state.order));
                     self.cursor.states.remove(index);
                     continue;
                 }
@@ -2241,27 +2230,26 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
                     continue;
                 }
 
-                let operation = plan.steps[state.step as usize];
+                let operation = plan.steps[state.step.raw() as usize];
                 let step = self.step(state.step);
                 let sibling = self.node_end(node);
                 let symbol_matches =
-                    symbol.wrapping_sub(operation.symbol_start) <= operation.symbol_span;
+                    symbol.wrapping_sub(operation.symbol_start.raw()) <= operation.symbol_span;
                 let matches = symbol_matches
-                    && (operation.field == 0
-                        || FieldId::from_raw(operation.field) == node.field_id())
+                    && (operation.field.is_none() || operation.field == node.field_id())
                     && (!operation.last_named_child
                         || self.named_child_position(sibling, current.end) == current.end);
                 if !matches {
                     self.cursor.pool.release(state.captures);
-                    self.release_direct(state.order);
+                    self.release_direct(DirectStateIx(state.order));
                     self.cursor.states.remove(index);
                     continue;
                 }
-                if step.capture_ids[0] != DONE {
+                if step.capture_ids[0] != QueryCaptureIx::NONE {
                     self.capture(&mut state, node, step);
                 }
                 if state.has(DEAD) {
-                    self.release_direct(state.order);
+                    self.release_direct(DirectStateIx(state.order));
                     self.cursor.states.remove(index);
                     continue;
                 }
@@ -2274,12 +2262,12 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
                 let next_step = self.step(state.step);
                 did_match |= stop_on_definite && next_step.has(ROOT_PATTERN_GUARANTEED);
                 if next_step.depth == DONE {
-                    self.release_direct(state.order);
+                    self.release_direct(DirectStateIx(state.order));
                     self.finish(state);
                     self.cursor.states.remove(index);
                     did_match = true;
                 } else {
-                    let start = match plan.steps[state.step as usize].relation {
+                    let start = match plan.steps[state.step.raw() as usize].relation {
                         crate::query_plan::Relation::FirstNamedChild => position + 1,
                         _ => sibling,
                     };
@@ -2316,13 +2304,13 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
         if named { later_named } else { later }
     }
 
-    fn later_field(&self, field: u16) -> bool {
+    fn later_field(&self, field: Option<FieldId>) -> bool {
         if self.cursor.parents.is_empty() {
             return false;
         }
         let mut next = self.current().next_sibling_including_empty();
         while let Some(node) = next {
-            if node.field_id() == FieldId::from_raw(field) {
+            if node.field_id() == field {
                 return true;
             }
             next = node.next_sibling_including_empty();
@@ -2330,7 +2318,7 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
         false
     }
 
-    fn fallible_step(&self, index: u16) -> bool {
+    fn fallible_step(&self, index: QueryStepIx) -> bool {
         let step = self.step(index);
         let mut next = index + 1;
         while self.step(next).has(IS_PASS_THROUGH) {
@@ -2339,7 +2327,7 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
         let next = self.step(next);
         next.depth != DONE
             && (next.depth > step.depth || (next.depth == step.depth && next.has(IS_IMMEDIATE)))
-            && (!next.has(PARENT_PATTERN_GUARANTEED) || step.symbol == 0)
+            && (!next.has(PARENT_PATTERN_GUARANTEED) || step.symbol == SquatterKindId(0))
     }
 
     fn advance(&mut self, stop_on_definite: bool) -> bool {
@@ -2451,14 +2439,13 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
     ) -> bool {
         let query = self.query;
         let depth = self.cursor.parents.len() as u32;
-        let symbol = node.data().symbol_index(node.slot().raw());
+        let symbol = node.data().symbol_index(node.slot());
         let named = node.tables().named_index(symbol);
-        let symbol = symbol.raw();
-        let is_error = symbol as u32 == query.compiled.view.symbol_count;
+        let is_error = symbol.raw() as u32 == query.compiled.view.symbol_count;
         let field = if query.program.needs_fields && depth != 0 {
-            node.field_id().map_or(0, FieldId::raw)
+            node.field_id()
         } else {
-            0
+            None
         };
         let mut siblings = None;
         let mut later_field = None;
@@ -2470,7 +2457,7 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
         let patterns = query
             .program
             .pattern_map
-            .get(symbol as usize)
+            .get(symbol.raw() as usize)
             .copied()
             .unwrap_or(crate::native::Range {
                 offset: 0,
@@ -2522,11 +2509,13 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
                         || self.parent().is_none_or(|parent| !parent.is_error()))
             };
             if in_range
-                && (step.field == 0 || step.field == field)
-                && (!is_wildcard || step.supertype_symbol == 0 || query.program.needs_supertypes)
+                && (step.field.is_none() || step.field == field)
+                && (!is_wildcard
+                    || step.supertype_symbol == GrammarId(0)
+                    || query.program.needs_supertypes)
                 && candidate_depth <= self.cursor.max_start_depth
             {
-                if entry.presence_requirement != 0
+                if entry.presence_requirement != PresenceRequirementIx(0)
                     && !self.presence_matches(entry.presence_requirement, node)
                 {
                     continue;
@@ -2553,7 +2542,7 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
                 continue;
             }
 
-            let symbol_matches = if step.symbol == 0 {
+            let symbol_matches = if step.symbol == SquatterKindId(0) {
                 if step.has(IS_MISSING) {
                     node.is_missing()
                 } else {
@@ -2568,10 +2557,12 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
                 && symbol_matches
             {
                 self.cursor.dirty_patterns |= 1 << (state.pattern.raw() % 64);
-                if step.capture_ids[0] != DONE {
+                if step.capture_ids[0] != QueryCaptureIx::NONE {
                     self.capture(&mut state, node, step);
                 }
-                state.step = (self.patterns[state.pattern.raw() as usize].steps.end() - 1) as u16;
+                state.step = QueryStepIx(
+                    (self.patterns[state.pattern.raw() as usize].steps.end() - 1) as u16,
+                );
                 state.flags &= !(SEEKING_IMMEDIATE | SKIPPED_QUANTIFIER);
                 did_match |= stop_on_definite && self.step(state.step).has(ROOT_PATTERN_GUARANTEED);
                 self.cursor.states[index] = state;
@@ -2587,12 +2578,10 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
             if step.has(IS_LAST_CHILD) && self.later_siblings(&mut siblings, true) {
                 matches = false;
             }
-            if step.supertype_symbol != 0
-                && !node.has_supertype(GrammarId::from_raw(step.supertype_symbol))
-            {
+            if step.supertype_symbol != GrammarId(0) && !node.has_supertype(step.supertype_symbol) {
                 matches = false;
             }
-            if step.field != 0 {
+            if step.field.is_some() {
                 if step.field == field && later_can_match {
                     if !*later_field.get_or_insert_with(|| self.later_field(field)) {
                         later_can_match = false;
@@ -2601,17 +2590,14 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
                     matches = false;
                 }
             }
-            if step.negated_field_list_id != 0 {
+            if step.negated_field_list_id != NegatedFieldListIx(0) {
                 let fields = unsafe { query.compiled.view.negated_fields.as_slice() };
-                for field in fields[step.negated_field_list_id as usize..]
+                for field in fields[step.negated_field_list_id.raw() as usize..]
                     .iter()
                     .copied()
-                    .take_while(|field| *field != 0)
+                    .map_while(|field| field)
                 {
-                    if node
-                        .child_by_field_id(FieldId::from_raw(field).unwrap())
-                        .is_some()
-                    {
+                    if node.child_by_field_id(field).is_some() {
                         matches = false;
                         break;
                     }
@@ -2649,14 +2635,14 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
                         skipped -= 1;
                     }
                     let parent_step = self.step(skipped);
-                    if parent_step.capture_ids[0] != DONE {
+                    if parent_step.capture_ids[0] != QueryCaptureIx::NONE {
                         self.capture(&mut state, parent, parent_step);
                     }
                 } else {
                     state.flags |= DEAD;
                 }
             }
-            if step.capture_ids[0] != DONE {
+            if step.capture_ids[0] != QueryCaptureIx::NONE {
                 self.capture(&mut state, node, step);
             }
             if state.has(DEAD) {
@@ -2670,7 +2656,9 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
             let next_step = self.step(state.step);
             state.set(
                 SEEKING_IMMEDIATE,
-                step.symbol == 0 && !step.has(IS_NAMED) && next_step.has(IS_IMMEDIATE),
+                step.symbol == SquatterKindId(0)
+                    && !step.has(IS_NAMED)
+                    && next_step.has(IS_IMMEDIATE),
             );
             state.flags &= !SKIPPED_QUANTIFIER;
             self.cursor.states[index] = state;
@@ -2682,7 +2670,7 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
                 self.poll();
                 let mut child = self.cursor.states[branch];
                 let step = self.step(child.step);
-                if step.alternative_index == DONE {
+                if step.alternative_index == QueryStepIx::NONE {
                     branch += 1;
                     continue;
                 }
@@ -2765,7 +2753,7 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
         let mut run = 0;
         for state in &self.cursor.states {
             let captures = self.cursor.pool.list(state.captures);
-            if captures.prefix == 0 {
+            if captures.prefix == CapturePrefixId(0) {
                 run = 0;
                 continue;
             }
@@ -2812,7 +2800,7 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
                 count: captures.length,
                 first_byte: captures.first_byte,
             };
-            if captures.prefix != 0 {
+            if captures.prefix != CapturePrefixId(0) {
                 if !self.cursor.comparison_blocks.is_empty() {
                     let block = &mut self.cursor.comparison_blocks[index / 64];
                     let slot = 1 << (index % 64);
@@ -2847,7 +2835,7 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
                     let next_captures = self.cursor.pool.list(next.captures);
                     if state.pattern == next.pattern
                         && state.start_depth == next.start_depth
-                        && next_captures.prefix != 0
+                        && next_captures.prefix != CapturePrefixId(0)
                         && captures.length == next_captures.length
                     {
                         entry.end = self.cursor.comparison_index[index + 1].end;
@@ -2897,14 +2885,14 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
         capture_id.is_some()
     }
 
-    fn last_capture_end(&mut self, id: u32) -> u32 {
+    fn last_capture_end(&mut self, id: CaptureListIx) -> u32 {
         let captures = self.cursor.pool.list(id);
         if captures.last_end != NONE {
             return captures.last_end;
         }
         let slot = self.cursor.pool.get(id).last().unwrap().node.id.slot();
         let end = self.root.at(slot).end_byte() as u32;
-        self.cursor.pool.lists[id as usize].last_end = end;
+        self.cursor.pool.lists[id.raw() as usize].last_end = end;
         end
     }
 
@@ -2996,7 +2984,7 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
 
                 if INDEXED
                     && !self.cursor.comparison_blocks.is_empty()
-                    && captures.prefix != 0
+                    && captures.prefix != CapturePrefixId(0)
                     && (self.query.program.repeated_captures || captures.length != other_count)
                 {
                     if comparison_block != other_index / 64 {
@@ -3015,8 +3003,8 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
 
                 let other_captures = self.cursor.pool.list(other.captures);
                 if let Some(entry) = other_entry {
-                    if captures.prefix != 0
-                        && other_captures.prefix != 0
+                    if captures.prefix != CapturePrefixId(0)
+                        && other_captures.prefix != CapturePrefixId(0)
                         && captures.length == other_captures.length
                         && captures.hash != other_captures.hash
                     {
@@ -3109,7 +3097,7 @@ fn equal_column(
     if width == 1 {
         let bytes = data.column_slice(address, (group * GROUP_SIZE) as usize, GROUP_SIZE as usize);
         return crate::scan::equal_byte_ids(bytes, &[SquatterKindId(value)])
-            & (u64::MAX >> (64 - GROUP_SIZE + data.waste(group)));
+            & (u64::MAX >> (64 - GROUP_SIZE + data.waste(GroupIx(group))));
     }
     let mut matches = 0;
     #[cfg(target_arch = "x86_64")]
@@ -3129,7 +3117,7 @@ fn equal_column(
         matches |=
             ((data.short(address, group * GROUP_SIZE + lane) & mask == value) as u64) << lane;
     }
-    matches & (u64::MAX >> (64 - GROUP_SIZE + data.waste(group)))
+    matches & (u64::MAX >> (64 - GROUP_SIZE + data.waste(GroupIx(group))))
 }
 
 #[cfg(test)]
@@ -3260,7 +3248,7 @@ mod scan_tests {
                 },
             )
             .unwrap();
-            assert!((0..tree.group_count()).any(|group| tree.data().waste(group) != 0));
+            assert!((0..tree.group_count()).any(|group| tree.data().waste(GroupIx(group)) != 0));
             let selected = tree
                 .root_node()
                 .preorder()
@@ -3362,7 +3350,7 @@ mod scan_tests {
                 },
             )
             .unwrap();
-            assert!((0..tree.group_count()).any(|group| tree.data().waste(group) != 0));
+            assert!((0..tree.group_count()).any(|group| tree.data().waste(GroupIx(group)) != 0));
             for pattern in [
                 "(number) @value",
                 "[(number) (string)] @value",
@@ -3375,14 +3363,16 @@ mod scan_tests {
                 let mut execution = cursor.execute(&query, tree.root_node(), source.as_bytes());
                 let total = execution.total_slots();
                 for start in 0..=total {
-                    let start = execution.normalize_position(start);
-                    for end in start..=total {
-                        let expected = (start..end)
+                    let start = execution.normalize_position(PreorderIx(start));
+                    for end in (start.raw()..=total).map(PreorderIx) {
+                        let expected = (start.raw()..end.raw())
+                            .map(PreorderIx)
                             .find(|&position| {
                                 execution.normalize_position(position) == position
-                                    && query.program.scan_targets.contains(
-                                        &tree.data().symbol_index(total - 1 - position).raw(),
-                                    )
+                                    && query
+                                        .program
+                                        .scan_targets
+                                        .contains(&tree.data().symbol_index(position.slot(total)))
                             })
                             .unwrap_or(end);
                         assert_eq!(execution.find_symbols(start, end), expected, "{pattern}");

@@ -49,6 +49,7 @@ integer_type!(
     /// An absolute physical slot in a forest's reverse-preorder storage.
     ///
     /// **Not in Tree-sitter**
+    #[derive(Default)]
     pub(crate) SlotIx(u32));
 
 integer_type!(
@@ -123,15 +124,32 @@ impl From<NonZeroU16> for FieldId {
     }
 }
 
-integer_type!(pub(crate) GroupIx(u32));
-integer_type!(pub(crate) GroupSlotIx(u32));
-integer_type!(pub(crate) SlabOffset(u32));
+integer_type!(
+    /// A physical group index, local to one forest.
+    pub GroupIx(u32));
+integer_type!(
+    /// A physical slot relative to one group.
+    ///
+    /// ```compile_fail
+    /// # fn example(group: tree_squatter::scan::GroupRef<'_>) {
+    /// group.node(group.index());
+    /// # }
+    /// ```
+    pub GroupSlotIx(u32));
 
-impl Default for SlabOffset {
-    fn default() -> Self {
-        Self(0)
+impl GroupIx {
+    pub const fn from_raw(value: u32) -> Self {
+        Self(value)
     }
 }
+impl GroupSlotIx {
+    pub const fn from_raw(value: u32) -> Self {
+        Self(value)
+    }
+}
+integer_type!(#[derive(Default)]
+    pub(crate) SlabOffset(u32));
+
 integer_type!(
     /// A compact displayed kind in one prepared language. Zero is reserved;
     /// error IDs follow the concrete kinds. Convert through [`crate::Language`].
@@ -141,6 +159,7 @@ integer_type!(
     /// root.all().filter_kind_ids([root.squatter_kind_id()]);
     /// # }
     /// ```
+    #[derive(Default)]
     pub SquatterKindId(u16));
 integer_type!(
     /// A compact original grammar symbol in one prepared language, ignoring aliases.
@@ -148,6 +167,14 @@ integer_type!(
     pub SquatterGrammarId(u16));
 integer_type!(pub(crate) PatternIndex(u16));
 integer_type!(pub(crate) QueryStringId(u32));
+integer_type!(pub(crate) QueryStepIx(u16));
+integer_type!(pub(crate) NegatedFieldListIx(u16));
+integer_type!(pub(crate) PresenceRequirementIx(u16));
+
+impl QueryStepIx {
+    pub(crate) const NONE: Self = Self(u16::MAX);
+}
+
 integer_type!(
     /// Row in the upper 32 bits and column in the lower 32 bits.
     pub(crate) PackedPoint(u64));
@@ -382,3 +409,107 @@ impl MatchCaptureIx {
         self.0
     }
 }
+
+integer_type!(pub(crate) CaptureListIx(u32));
+integer_type!(#[derive(Default)]
+    pub(crate) CaptureStorageIx(u32));
+integer_type!(pub(crate) CapturePrefixId(u64));
+
+impl CaptureListIx {
+    pub(crate) const NONE: Self = Self(u32::MAX);
+}
+impl CaptureStorageIx {
+    pub(crate) const NONE: Self = Self(u32::MAX);
+}
+
+integer_type!(
+    /// Identifies the packed slab format for persistence compatibility.
+    pub RepresentationId(u64));
+
+integer_type!(pub(crate) ProductionId(u16));
+integer_type!(pub(crate) ReductionIx(u32));
+integer_type!(pub(crate) SupertypeIx(u16));
+integer_type!(#[derive(Default)]
+    pub(crate) SupertypeMask(u16));
+
+impl ReductionIx {
+    pub(crate) const NONE: Self = Self(u32::MAX);
+}
+
+integer_type!(pub(crate) QueryCaptureIx(u16));
+
+impl QueryCaptureIx {
+    pub(crate) const NONE: Self = Self(u16::MAX);
+}
+
+impl From<QueryCaptureIx> for CaptureIx {
+    fn from(value: QueryCaptureIx) -> Self {
+        Self(u32::from(value.raw()))
+    }
+}
+
+impl std::ops::AddAssign<u32> for MatchCaptureIx {
+    fn add_assign(&mut self, captures: u32) {
+        self.0 += captures;
+    }
+}
+
+macro_rules! index_arithmetic {
+    ($name:ident, $integer:ty) => {
+        impl std::ops::Add<$integer> for $name {
+            type Output = Self;
+            fn add(self, count: $integer) -> Self {
+                Self(self.0 + count)
+            }
+        }
+        impl std::ops::Sub<$integer> for $name {
+            type Output = Self;
+            fn sub(self, count: $integer) -> Self {
+                Self(self.0 - count)
+            }
+        }
+        impl std::ops::Sub for $name {
+            type Output = $integer;
+            fn sub(self, other: Self) -> $integer {
+                self.0 - other.0
+            }
+        }
+        impl std::ops::AddAssign<$integer> for $name {
+            fn add_assign(&mut self, count: $integer) {
+                self.0 += count;
+            }
+        }
+        impl std::ops::SubAssign<$integer> for $name {
+            fn sub_assign(&mut self, count: $integer) {
+                self.0 -= count;
+            }
+        }
+    };
+}
+
+index_arithmetic!(SlotIx, u32);
+index_arithmetic!(GroupIx, u32);
+index_arithmetic!(TreeIx, u32);
+index_arithmetic!(QueryStepIx, u16);
+
+integer_type!(
+    /// A physical slot counted from the forest's end in preorder direction.
+    #[derive(Default)]
+    pub(crate) PreorderIx(u32));
+integer_type!(pub(crate) DirectStateIx(u32));
+
+impl PreorderIx {
+    pub(crate) fn from_slot(slot: SlotIx, total_slots: u32) -> Self {
+        Self(total_slots - 1 - slot.raw())
+    }
+
+    pub(crate) fn slot(self, total_slots: u32) -> SlotIx {
+        SlotIx(total_slots - 1 - self.0)
+    }
+}
+
+impl DirectStateIx {
+    pub(crate) const NONE: Self = Self(u32::MAX);
+}
+
+index_arithmetic!(PreorderIx, u32);

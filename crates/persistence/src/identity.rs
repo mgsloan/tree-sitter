@@ -97,7 +97,7 @@ pub(crate) fn digest(domain: &str, bytes: &[u8]) -> [u8; 32] {
 }
 
 pub(crate) fn representation() -> [u8; 32] {
-    let bytes = tree_squatter::representation_id().to_le_bytes();
+    let bytes = tree_squatter::representation_id().raw().to_le_bytes();
     digest("tree-squatter representation v0", &bytes)
 }
 
