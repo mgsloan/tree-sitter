@@ -102,7 +102,7 @@ mod tests {
         let stored = request
             .decode(store.trees.get(&after, &request.tree_key).unwrap().unwrap())
             .unwrap();
-        assert_eq!(stored, tree.repack().unwrap().as_bytes());
+        assert_eq!(stored, tree.to_compacted().unwrap().as_bytes());
         assert!(stored.len() < original.len());
         assert_eq!(tree.as_bytes(), original);
         assert_eq!(

@@ -10,8 +10,6 @@ Lean
 
 - [ ] newtype for SlotSpan?  slot.is_multiple_of(GROUP_SIZE) helper method - other such methods?
 
-- [ ] Rename repack to "compact"?
-
 - [ ] Do not namespace qualify types that are unique to tree-squatter
 
 - [ ] Make SlotIx private

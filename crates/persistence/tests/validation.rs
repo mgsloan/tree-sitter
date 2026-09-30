@@ -91,7 +91,7 @@ fn pack(tree_sitter_language: &tree_sitter::Language, source: &str, presence: bo
         &language,
         &parser.parse(source, None).unwrap(),
         PackOptions {
-            repack: true,
+            compact: true,
             symbol_presence: &|_| presence,
             ..PackOptions::default()
         },
@@ -230,7 +230,7 @@ fn shared_grammars_support_concurrent_packing_and_outlive_handles() {
     for worker in workers {
         for tree in worker.join().unwrap() {
             assert!(tree.root_node().descendant_count() > 1);
-            let compact = tree.repack().unwrap();
+            let compact = tree.to_compacted().unwrap();
             assert_eq!(
                 compact.root_node().attributes(),
                 tree.root_node().attributes()

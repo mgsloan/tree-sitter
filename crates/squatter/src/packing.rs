@@ -16,7 +16,7 @@ mod traversal;
 #[derive(Clone, Copy)]
 pub struct PackOptions<'options> {
     pub initial_group_capacity: u32,
-    pub repack: bool,
+    pub compact: bool,
     /// Select coverage once per region after layout finalization. The default
     /// selects regions with at least 64 groups, an untuned size heuristic.
     pub symbol_presence: &'options dyn Fn(ForestRegion<'_>) -> bool,
@@ -30,7 +30,7 @@ impl Default for PackOptions<'_> {
     fn default() -> Self {
         Self {
             initial_group_capacity: 0,
-            repack: false,
+            compact: false,
             symbol_presence: &|region| region.group_count() >= 64,
             cancellation_callback: None,
             points: true,
@@ -562,7 +562,7 @@ impl Builder {
             self.finish_root(SlotIx(0), RegionIx(0))?;
         }
         let groups = self.forest.group_count();
-        let capacity = if options.repack {
+        let capacity = if options.compact {
             groups
         } else {
             self.forest.group_capacity()

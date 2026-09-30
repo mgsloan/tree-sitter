@@ -260,7 +260,7 @@ fn lexer_fallback_and_concurrent_parser_preparation() {
     let native = parser.parse("\nx", None).unwrap();
     let options = PackOptions {
         initial_group_capacity: 1,
-        repack: true,
+        compact: true,
         ..Default::default()
     };
     let expected = Forest::pack_with_options(&grammar, &native, options).unwrap();
@@ -281,7 +281,7 @@ fn lexer_fallback_and_concurrent_parser_preparation() {
                                     PackedParseOptions {
                                         pack: PackOptions {
                                             initial_group_capacity: 1,
-                                            repack: true,
+                                            compact: true,
                                             ..Default::default()
                                         },
                                         ..Default::default()
@@ -558,7 +558,7 @@ fn compact_domains_preserve_aliases_with_shared_width() {
         .unwrap();
     let tree = builder
         .finish(PackOptions {
-            repack: true,
+            compact: true,
             symbol_presence: &|_| true,
             ..Default::default()
         })
@@ -612,7 +612,7 @@ fn matching_ids_omit_grammar_before_flag_columns() {
     for count in [16, 300] {
         let fixture = Fixture::symbols(count);
         for flags in [0, 2, 8, 2 | 8, 4 | 8, 2 | 4 | 8] {
-            for repack in [false, true] {
+            for compact in [false, true] {
                 let mut builder = Builder::new(&fixture.grammar, 4, false).unwrap();
                 for index in 0..2 * GROUP_SIZE {
                     builder
@@ -625,7 +625,7 @@ fn matching_ids_omit_grammar_before_flag_columns() {
                 builder.emit(&leaf(2, 2, 0, 1), SlotIx(0)).unwrap();
                 let tree = builder
                     .finish(PackOptions {
-                        repack,
+                        compact,
                         ..Default::default()
                     })
                     .unwrap();
@@ -749,7 +749,7 @@ fn synthetic_symbol_ids_and_optional_columns() {
                             flags & 8 != 0 && [2, 63 * GROUP_SIZE].contains(&slot)
                         );
                     }
-                    let compact = tree.repack().unwrap();
+                    let compact = tree.to_compacted().unwrap();
                     let copy =
                         Forest::from_bytes(std::slice::from_ref(grammar), compact.as_bytes())
                             .unwrap();

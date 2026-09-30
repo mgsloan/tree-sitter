@@ -71,7 +71,7 @@ struct Arguments {
     #[arg(long, default_value_t = 16 * 1024 * 1024)]
     max_file_bytes: u64,
     #[arg(long)]
-    repack: bool,
+    compact: bool,
     /// Disable squat query scan/plan shortcuts for an ablation run.
     #[arg(long)]
     unoptimized_query: bool,
@@ -1254,7 +1254,7 @@ pub fn run(check_only: bool) -> Result<()> {
                 let language = &grammars[&source.input.grammar].language;
                 let context = parse_contexts.get_mut(&source.input.grammar).unwrap();
                 let options = PackOptions {
-                    repack: arguments.repack,
+                    compact: arguments.compact,
                     ..Default::default()
                 };
                 let mut pair = None;

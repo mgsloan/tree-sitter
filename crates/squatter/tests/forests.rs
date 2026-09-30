@@ -66,7 +66,11 @@ fn grammar_caches_follow_cursor_resets_and_forest_copies() {
                 PointsData::from_bytes(packed.point_data().unwrap().as_bytes()).unwrap(),
             )
             .unwrap();
-        [packed.detach().unwrap(), packed.repack().unwrap(), loaded]
+        [
+            packed.detach().unwrap(),
+            packed.to_compacted().unwrap(),
+            loaded,
+        ]
     };
     let initial = forests[0].tree(TreeIx::from_raw(0)).unwrap().root_node();
     let mut cursor = initial.walk();
@@ -199,7 +203,7 @@ fn forest_packing_and_round_trip() {
             ],
             PackOptions {
                 symbol_presence: &select,
-                repack: true,
+                compact: true,
                 ..Default::default()
             },
         )
@@ -289,7 +293,7 @@ fn forest_packing_and_round_trip() {
         Forest::from_bytes(&languages, &core).unwrap(),
         Forest::from_retained(&languages, retain(&core)).unwrap(),
         forest.detach().unwrap(),
-        forest.repack().unwrap(),
+        forest.to_compacted().unwrap(),
     ] {
         loaded.drop_point_data();
         assert!(!loaded.has_points());

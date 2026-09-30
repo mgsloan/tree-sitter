@@ -1012,12 +1012,12 @@ impl Forest {
         Ok(())
     }
 
-    pub fn repack_in_place(&mut self) -> Result<(), Error> {
+    pub fn compact(&mut self) -> Result<(), Error> {
         self.finish_layout(self.group_count(), self.data.flags() & OPTIONAL)
     }
 
     /// Copies compact core columns and attached side data into independent storage.
-    pub fn repack(&self) -> Result<Self, Error> {
+    pub fn to_compacted(&self) -> Result<Self, Error> {
         let layout = Layout::new(self.group_count(), self.data.flags())?;
         let storage = unsafe {
             Slab::initialize(self.compact_size(), |destination| {

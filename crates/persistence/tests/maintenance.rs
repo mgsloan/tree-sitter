@@ -257,7 +257,7 @@ fn sidecars_can_be_evicted_independently_of_core_and_readers() {
                 )
                 .unwrap();
             assert_eq!(rebuilt.file.cache_hit(), kind == SidecarKind::Presence);
-            assert_eq!(rebuilt.file.tree().repack().unwrap().as_bytes(), core);
+            assert_eq!(rebuilt.file.tree().to_compacted().unwrap().as_bytes(), core);
             assert_eq!(
                 rebuilt.file.tree().presence_cache().unwrap().as_bytes(),
                 presence

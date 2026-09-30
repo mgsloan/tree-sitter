@@ -50,7 +50,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             &parsed,
             PackOptions {
                 initial_group_capacity: variant & 1,
-                repack: variant & 2 != 0,
+                compact: variant & 2 != 0,
                 points: variant & 4 == 0,
                 symbol_presence: &|_| variant & 8 == 0,
                 ..Default::default()
@@ -102,7 +102,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let mut compact = vec![MaybeUninit::uninit(); tree.compact_size()];
             assert_eq!(
                 tree.copy_compact_into(&mut compact)?,
-                tree.repack()?.as_bytes()
+                tree.to_compacted()?.as_bytes()
             );
         }
     }

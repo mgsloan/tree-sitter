@@ -291,7 +291,7 @@ fn ranges_filters_waste_and_storage_variants() {
                 },
             );
             check_ranges(&tree, source.len());
-            let compact = tree.repack().unwrap();
+            let compact = tree.to_compacted().unwrap();
             let grammar = Language::new(&language).unwrap();
             let borrowed =
                 Forest::from_bytes_borrowed(std::slice::from_ref(&grammar), compact.as_bytes())
@@ -674,7 +674,7 @@ fn range_and_position_relations() {
                     ..Default::default()
                 },
             );
-            let compact = tree.repack().unwrap();
+            let compact = tree.to_compacted().unwrap();
             let grammar = Language::new(&language).unwrap();
             let borrowed =
                 Forest::from_bytes_borrowed(std::slice::from_ref(&grammar), compact.as_bytes())

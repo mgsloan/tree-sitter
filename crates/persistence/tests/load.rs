@@ -35,7 +35,7 @@ fn miss_hit_and_old_reader_survives_update() {
     assert_eq!(reader.tree().group_capacity(), reader.tree().group_count());
     assert_eq!(
         reader.tree().as_bytes(),
-        first.tree().repack().unwrap().as_bytes()
+        first.tree().to_compacted().unwrap().as_bytes()
     );
     assert_eq!(reader.source(), b"{\"old\": [1, 2]}\r\n");
     fs::write(root.path().join("file.json"), b"[false, true]").unwrap();

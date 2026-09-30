@@ -42,8 +42,8 @@ fn error_flags_match_each_native_node() -> Result<(), Box<dyn Error>> {
                     ..Default::default()
                 },
             )?;
-            tree.repack_in_place()?;
-            let compact = tree.repack()?;
+            tree.compact()?;
+            let compact = tree.to_compacted()?;
             let copy = Forest::from_bytes(std::slice::from_ref(&grammar), compact.as_bytes())?;
             let borrowed =
                 Forest::from_bytes_borrowed(std::slice::from_ref(&grammar), compact.as_bytes())?;
@@ -372,7 +372,7 @@ fn streaming_queries_and_cursor_reuse() -> Result<(), Box<dyn Error>> {
 fn owned_and_borrowed_storage() -> Result<(), Box<dyn Error>> {
     let (language, native, packed) = fixture()?;
     let grammar = tree_squatter::Language::new(&language)?;
-    let compact = packed.repack()?;
+    let compact = packed.to_compacted()?;
     let decoded = Forest::from_bytes(std::slice::from_ref(&grammar), compact.as_bytes())?;
     let borrowed = Forest::from_bytes_borrowed(std::slice::from_ref(&grammar), compact.as_bytes())?;
     assert_eq!(borrowed.as_bytes().as_ptr(), compact.as_bytes().as_ptr());
@@ -441,7 +441,7 @@ fn direct_parser_matches_mainline_packing() -> Result<(), Box<dyn Error>> {
             for symbol_presence in [false, true] {
                 let options = PackOptions {
                     initial_group_capacity: 1,
-                    repack: true,
+                    compact: true,
                     symbol_presence: &|_| symbol_presence,
                     points,
                     ..Default::default()

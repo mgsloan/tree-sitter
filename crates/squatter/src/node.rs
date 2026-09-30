@@ -124,8 +124,8 @@ impl<'tree> Node<'tree> {
     /// Physical slot in reverse preorder; decreasing slots advance preorder.
     ///
     /// **Not in Tree-sitter**. Returns a physical slot scoped to this immutable tree
-    /// snapshot. Slots are forest-global; repacking may change them. Use [`Self::id`]
-    /// for identity including the tree context.
+    /// snapshot. Slots are forest-global; packing again may change them.
+    /// Use [`Self::id`] for identity including the tree context.
     #[inline]
     pub(crate) fn slot(self) -> SlotIx {
         self.raw.id.slot()

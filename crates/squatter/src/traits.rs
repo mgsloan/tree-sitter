@@ -101,7 +101,7 @@ pub trait NodeLike<'tree>: Copy + Eq {
     ///
     /// Within a given syntax tree, no two nodes have the same id.
     ///
-    /// Identity is scoped to one immutable snapshot; it is not guaranteed across repacking,
+    /// Identity is scoped to one immutable snapshot; it is not guaranteed across packing,
     /// reloads, or edits. An ID does not keep its tree alive. Packed nodes also expose
     /// inherent `slot()`; `id()` requires this trait in scope.
     fn id(&self) -> Self::Id;

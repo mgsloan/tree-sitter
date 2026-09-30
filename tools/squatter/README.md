@@ -39,7 +39,7 @@ match. Binary search, immediate returns, empty-boundary descent, and the distant
 point-search fallback are preserved.
 
 `core-lifecycle-bench` measures packing alone (cold/reused/dropped scratch), full and safety-only loads,
-borrowed/retained loads, compact copying, repacking, grammar preparation/cache
+borrowed/retained loads, compact copying, `to-compacted`, grammar preparation/cache
 loading, and query construction, destruction, and disabling. Each operation
 includes destruction unless named `query-drop` or `query-disable-*`; those exclude
 compilation. Compact copying reuses its destination. Mutation/destruction batches

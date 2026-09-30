@@ -231,7 +231,7 @@ fn direct_callback_chunks_match_contiguous() {
         for options in [
             PackOptions::default(),
             PackOptions {
-                repack: true,
+                compact: true,
                 points: false,
                 symbol_presence: &|_| false,
                 ..Default::default()
@@ -437,7 +437,7 @@ where
         parse: ParseOptions::new().progress_callback(&mut progress),
         pack: PackOptions {
             initial_group_capacity: 1,
-            repack: true,
+            compact: true,
             ..Default::default()
         },
     };
@@ -463,7 +463,7 @@ fn packed_options_progress_and_equivalence() {
             PackedParseOptions {
                 pack: PackOptions {
                     initial_group_capacity: 1,
-                    repack: true,
+                    compact: true,
                     ..Default::default()
                 },
                 ..Default::default()

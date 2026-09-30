@@ -107,13 +107,13 @@ fn packing_context_matches_fresh_packing_and_loading() {
         for source in sources {
             let tree = parser.parse(source, None).unwrap();
             for points in [false, true] {
-                for repack in [false, true] {
+                for compact in [false, true] {
                     for initial_group_capacity in [0, 1] {
                         let mut core = None;
                         for symbol_presence in [false, true] {
                             let options = PackOptions {
                                 initial_group_capacity,
-                                repack,
+                                compact,
                                 symbol_presence: &|_| symbol_presence,
                                 points,
                                 ..Default::default()
@@ -150,10 +150,13 @@ fn packing_context_matches_fresh_packing_and_loading() {
                             )
                             .unwrap();
 
-                            let compact = actual.repack().unwrap();
+                            let compact = actual.to_compacted().unwrap();
                             assert_eq!(compact.has_points(), points);
                             assert_eq!(compact.presence_cache().is_some(), symbol_presence);
-                            assert_eq!(compact.as_bytes(), expected.repack().unwrap().as_bytes());
+                            assert_eq!(
+                                compact.as_bytes(),
+                                expected.to_compacted().unwrap().as_bytes()
+                            );
                         }
                     }
                 }
@@ -426,7 +429,7 @@ fn point_bounded_queries_follow_attachment() {
 }
 
 #[test]
-fn repacking_in_place_preserves_nodes_and_side_data() {
+fn compaction_preserves_nodes_and_side_data() {
     let language = json_language();
     let grammar = Language::new(&language).unwrap();
     let native = support::parse_native(&language, "[1,\n2, 3]");
@@ -440,10 +443,10 @@ fn repacking_in_place_preserves_nodes_and_side_data() {
         },
     )
     .unwrap();
-    let expected = tree.repack().unwrap();
+    let expected = tree.to_compacted().unwrap();
     let presence = tree.presence_cache().unwrap().as_bytes().as_ptr();
     let points = tree.point_data().unwrap().as_bytes().as_ptr();
-    tree.repack_in_place().unwrap();
+    tree.compact().unwrap();
     assert_eq!(tree.group_capacity(), tree.group_count());
     assert_eq!(tree.presence_cache().unwrap().as_bytes().as_ptr(), presence);
     assert_eq!(tree.point_data().unwrap().as_bytes().as_ptr(), points);
@@ -460,5 +463,5 @@ fn repacking_in_place_preserves_nodes_and_side_data() {
         assert_eq!(actual.end_position(), expected.end_position());
     }
     Forest::from_bytes(std::slice::from_ref(&grammar), tree.as_bytes()).unwrap();
-    tree.repack_in_place().unwrap();
+    tree.compact().unwrap();
 }

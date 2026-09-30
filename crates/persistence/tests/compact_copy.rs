@@ -7,7 +7,7 @@ fn tree_sitter_language() -> Language {
 }
 
 #[test]
-fn compact_copy_matches_repack_for_padded_and_compact_trees() {
+fn compact_copy_matches_to_compacted_for_padded_and_compact_trees() {
     let tree_sitter_language = tree_sitter_language();
     let language = tree_squatter::Language::new(&tree_sitter_language).unwrap();
     let mut parser = tree_sitter::Parser::new();
@@ -19,13 +19,13 @@ fn compact_copy_matches_repack_for_padded_and_compact_trees() {
     ] {
         let native = parser.parse(&source, None).unwrap();
         for presence in [false, true] {
-            for (repack, points) in [(false, false), (false, true), (true, false), (true, true)] {
+            for (compact, points) in [(false, false), (false, true), (true, false), (true, true)] {
                 let tree = Forest::pack_with_options(
                     &language,
                     &native,
                     PackOptions {
                         initial_group_capacity: 1024,
-                        repack,
+                        compact,
                         symbol_presence: &|_| presence,
                         points,
                         ..Default::default()
@@ -33,7 +33,7 @@ fn compact_copy_matches_repack_for_padded_and_compact_trees() {
                 )
                 .unwrap();
                 let original = tree.as_bytes().to_vec();
-                let expected = tree.repack().unwrap();
+                let expected = tree.to_compacted().unwrap();
                 assert_eq!(tree.compact_size(), expected.as_bytes().len());
                 // Odd offsets exercise unaligned storage and guards catch writes
                 // outside the exact reservation, including its alignment padding.
@@ -113,7 +113,7 @@ fn point_free_trees_use_byte_offsets_as_single_line_points() {
     point_cursor.set_point_range(Point::new(0, 3)..Point::new(0, 4));
     assert_eq!(captures(&mut byte_cursor), captures(&mut point_cursor));
 
-    let compact = tree.repack().unwrap();
+    let compact = tree.to_compacted().unwrap();
     let loaded = Forest::from_bytes(std::slice::from_ref(&language), compact.as_bytes()).unwrap();
     assert!(!loaded.has_points());
     assert_eq!(

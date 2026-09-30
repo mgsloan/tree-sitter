@@ -29,7 +29,7 @@ struct Arguments {
     #[arg(long)]
     no_presence: bool,
     #[arg(long)]
-    repack: bool,
+    compact: bool,
 }
 
 struct Slab(Arc<Forest>);
@@ -64,7 +64,7 @@ const WORKLOADS: &[&str] = &[
     "load-borrowed",
     "load-retained",
     "compact-copy",
-    "repack",
+    "to-compacted",
     "language-new",
     "language-cache",
     "query-new",
@@ -140,7 +140,7 @@ impl Case<'_> {
                 )
             }
             "compact-copy" => measure!(self.tree.copy_compact_into(&mut self.compact).unwrap()),
-            "repack" => measure!(self.tree.repack().unwrap()),
+            "to-compacted" => measure!(self.tree.to_compacted().unwrap()),
             "language-new" => measure!(Language::new(self.tree_sitter_language).unwrap()),
             "language-cache" => {
                 measure!(Language::from_cache(self.tree_sitter_language, &self.cache).unwrap())
@@ -217,7 +217,7 @@ fn main() -> Result<()> {
         let options = PackOptions {
             points: !arguments.no_points,
             symbol_presence: &|_| !arguments.no_presence,
-            repack: arguments.repack,
+            compact: arguments.compact,
             ..Default::default()
         };
         let tree = Arc::new(Forest::pack_with_options(&owner, &native, options)?);
