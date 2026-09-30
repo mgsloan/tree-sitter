@@ -4,7 +4,10 @@ use crate::{
     types::PackedPoint,
 };
 use smallvec::SmallVec;
-use std::{ops::ControlFlow, ptr::NonNull};
+use std::{
+    ops::ControlFlow,
+    ptr::{self, NonNull},
+};
 
 const PRESENCE_FORMAT: u32 = slab_format(0xfe, 0);
 const ABSENT_PRESENCE_FORMAT: u32 = slab_format(0xfc, 0);
@@ -44,9 +47,6 @@ impl std::error::Error for SideDataError {}
 struct Sidecar(Slab);
 
 impl Sidecar {
-    fn zeroed(length: usize) -> Result<Self, SideDataError> {
-        Ok(Self(Slab::zeroed(length)?))
-    }
     fn bytes(&self) -> &[u8] {
         self.0.bytes()
     }
@@ -66,13 +66,28 @@ impl Sidecar {
         groups: u32,
         dimension: u32,
     ) -> Result<(), SideDataError> {
-        let slots = groups.checked_mul(GROUP_SIZE).ok_or(Error::Overflow)?;
-        for (index, word) in [format, groups, slots, dimension].into_iter().enumerate() {
-            self.bytes_mut()[offset + index * 4..offset + index * 4 + 4]
-                .copy_from_slice(&word.to_le_bytes());
-        }
-        Ok(())
+        let bytes = &mut self.bytes_mut()[offset..offset + HEADER_BYTES];
+        unsafe { write_header(bytes.as_mut_ptr(), format, groups, dimension) }
+            .map_err(SideDataError::from)
     }
+}
+
+unsafe fn write_header(
+    destination: *mut u8,
+    format: u32,
+    groups: u32,
+    dimension: u32,
+) -> Result<(), Error> {
+    let slots = groups.checked_mul(GROUP_SIZE).ok_or(Error::Overflow)?;
+    for (index, word) in [format, groups, slots, dimension].into_iter().enumerate() {
+        unsafe {
+            destination
+                .add(index * 4)
+                .cast::<u32>()
+                .write_unaligned(word.to_le());
+        }
+    }
+    Ok(())
 }
 
 #[derive(Clone, Copy)]
@@ -208,44 +223,57 @@ impl PresenceCache {
                 )?)
                 .ok_or(Error::Overflow)?;
         }
-        let mut sidecar = Sidecar::zeroed(length)?;
-        let mut offset = 0;
-        for (region, present) in forest.regions().zip(selected) {
-            if cancellation_callback().is_break() {
-                return Err(Error::Canceled.into());
-            }
-            let groups = region.group_count();
-            let symbols = region.language().tables().kind_count + 2;
-            sidecar.header(
-                offset,
-                if present {
-                    PRESENCE_FORMAT
-                } else {
-                    ABSENT_PRESENCE_FORMAT
-                },
-                groups,
-                symbols,
-            )?;
-            if present {
-                let first_group = region.data().slots.start.raw() / GROUP_SIZE;
-                let words = (groups as usize).div_ceil(64);
-                for group in 0..groups {
+        let storage = unsafe {
+            Slab::initialize(length, |destination| {
+                let mut offset = 0;
+                for (region, present) in forest.regions().zip(selected) {
                     if cancellation_callback().is_break() {
-                        return Err(Error::Canceled.into());
+                        return Err(Error::Canceled);
                     }
-                    for slot in (first_group + group) * GROUP_SIZE
-                        ..forest.data().group_end(first_group + group)
-                    {
-                        let symbol = forest.data().symbol_index(slot).raw() as usize;
-                        let byte =
-                            offset + HEADER_BYTES + (symbol * words + group as usize / 64) * 8;
-                        sidecar.put_word(byte, sidecar.word(byte) | 1 << (group % 64));
+                    let groups = region.group_count();
+                    let symbols = region.language().tables().kind_count + 2;
+                    let record_length =
+                        presence_length(groups, symbols, present).map_err(Error::from)?;
+                    let record = destination.add(offset);
+                    write_header(
+                        record,
+                        if present {
+                            PRESENCE_FORMAT
+                        } else {
+                            ABSENT_PRESENCE_FORMAT
+                        },
+                        groups,
+                        symbols,
+                    )?;
+                    if present {
+                        let payload = record.add(HEADER_BYTES);
+                        // Bitmap updates read the previous word before setting bits.
+                        ptr::write_bytes(payload, 0, record_length - HEADER_BYTES);
+                        let first_group = region.data().slots.start.raw() / GROUP_SIZE;
+                        let words = (groups as usize).div_ceil(64);
+                        for group in 0..groups {
+                            if cancellation_callback().is_break() {
+                                return Err(Error::Canceled);
+                            }
+                            for slot in (first_group + group) * GROUP_SIZE
+                                ..forest.data().group_end(first_group + group)
+                            {
+                                let symbol = forest.data().symbol_index(slot).raw() as usize;
+                                let bitmap = payload
+                                    .add((symbol * words + group as usize / 64) * 8)
+                                    .cast::<u64>();
+                                let value =
+                                    u64::from_le(bitmap.read_unaligned()) | 1 << (group % 64);
+                                bitmap.write_unaligned(value.to_le());
+                            }
+                        }
                     }
+                    offset += record_length;
                 }
-            }
-            offset += presence_length(groups, symbols, present)?;
-        }
-        Ok(Some(Self(sidecar)))
+                Ok(())
+            })?
+        };
+        Ok(Some(Self(Sidecar(storage))))
     }
 
     pub fn as_bytes(&self) -> &[u8] {
@@ -401,14 +429,20 @@ fn validate_points(bytes: &[u8]) -> Result<Header, SideDataError> {
 pub struct PointsData(Sidecar);
 impl PointsData {
     pub(crate) fn empty(forest: &Forest) -> Result<Self, SideDataError> {
-        let mut sidecar = Sidecar::zeroed(point_length(forest.group_count())?)?;
-        sidecar.header(
-            0,
-            POINT_FORMAT,
-            forest.group_count(),
-            forest.data().regions.len() as u32,
-        )?;
-        Ok(Self(sidecar))
+        let length = point_length(forest.group_count())?;
+        let storage = unsafe {
+            Slab::initialize(length, |destination| {
+                write_header(
+                    destination,
+                    POINT_FORMAT,
+                    forest.group_count(),
+                    forest.data().regions.len() as u32,
+                )?;
+                ptr::write_bytes(destination.add(HEADER_BYTES), 0, length - HEADER_BYTES);
+                Ok(())
+            })?
+        };
+        Ok(Self(Sidecar(storage)))
     }
 
     pub(crate) fn grow(&mut self, groups: u32) -> Result<(), SideDataError> {

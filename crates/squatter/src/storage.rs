@@ -268,16 +268,25 @@ unsafe impl Send for Slab {}
 unsafe impl Sync for Slab {}
 
 impl Slab {
-    pub(crate) fn zeroed(length: usize) -> Result<Self, Error> {
+    /// # Safety
+    /// The initializer must write all `length` bytes before returning `Ok(())`.
+    pub(crate) unsafe fn initialize(
+        length: usize,
+        initialize: impl FnOnce(*mut u8) -> Result<(), Error>,
+    ) -> Result<Self, Error> {
         if !length.is_multiple_of(ALIGNMENT) {
             return Err(Error::InvalidArgument);
         }
-        let mut words = Vec::new();
+        let mut words = Vec::<u64>::new();
         words
             .try_reserve_exact(length / 8)
             .map_err(|_| Error::Allocation)?;
-        words.resize(length / 8, 0);
         let bytes = NonNull::new(words.as_mut_ptr().cast()).unwrap();
+        // Keep unfinished storage outside the length, including during unwinding.
+        initialize(bytes.as_ptr())?;
+        unsafe {
+            words.set_len(length / 8);
+        }
         Ok(Self {
             storage: Storage::Owned(words),
             bytes,
@@ -285,10 +294,23 @@ impl Slab {
         })
     }
 
+    #[cfg(test)]
+    fn zeroed(length: usize) -> Result<Self, Error> {
+        unsafe {
+            Self::initialize(length, |destination| {
+                ptr::write_bytes(destination, 0, length);
+                Ok(())
+            })
+        }
+    }
+
     pub(crate) fn copy(bytes: &[u8]) -> Result<Self, Error> {
-        let mut result = Self::zeroed(bytes.len())?;
-        result.bytes_mut().copy_from_slice(bytes);
-        Ok(result)
+        unsafe {
+            Self::initialize(bytes.len(), |destination| {
+                ptr::copy_nonoverlapping(bytes.as_ptr(), destination, bytes.len());
+                Ok(())
+            })
+        }
     }
 
     pub(crate) fn retained(owner: impl StableSlab) -> Result<Self, Error> {
@@ -743,7 +765,25 @@ impl Forest {
         let flags = FOREST_FORMAT | OPTIONAL | id_width_flags(languages);
         let layout = Layout::new(capacity, flags)?;
         let length = slab_length(layout, count)?;
-        let mut forest = Self::allocate(layout, Slab::zeroed(length)?);
+        let storage = unsafe {
+            Slab::initialize(length, |destination| {
+                for (index, word) in [flags, 0, capacity, count].into_iter().enumerate() {
+                    destination
+                        .add(index * 4)
+                        .cast::<u32>()
+                        .write_unaligned(word.to_le());
+                }
+                ptr::write_bytes(destination.add(16), 0, layout.end.raw() as usize - 16);
+                for index in 0..count {
+                    let descriptor =
+                        destination.add(layout.end.raw() as usize + index as usize * 8);
+                    descriptor.cast::<u32>().write_unaligned(index.to_le());
+                    descriptor.add(4).cast::<u32>().write_unaligned(0);
+                }
+                Ok(())
+            })?
+        };
+        let mut forest = Self::allocate(layout, storage);
         forest
             .data
             .regions
@@ -757,12 +797,6 @@ impl Forest {
                 order: RegionOrder::NonOverlapping,
                 presence: None,
             });
-        }
-        forest.data.put_word(SlabOffset(0), 0, flags);
-        forest.data.put_word(SlabOffset(0), 2, capacity);
-        forest.data.put_word(SlabOffset(0), 3, count);
-        for index in 0..count {
-            forest.data.put_word(layout.end + index * 8, 0, index);
         }
         Ok(forest)
     }
@@ -846,27 +880,30 @@ impl Forest {
         capacity: u32,
     ) {
         let data = &self.data;
-        let length = slab_length(next, data.regions.len() as u32).unwrap();
         unsafe {
-            ptr::write_bytes(destination, 0, length);
             ptr::copy_nonoverlapping(data.storage.bytes.as_ptr(), destination, 16);
             destination.cast::<u32>().write_unaligned(flags.to_le());
             destination
                 .add(8)
                 .cast::<u32>()
                 .write_unaligned(capacity.to_le());
+            let mut initialized = 16;
             for ((source, _), (target, length)) in data
                 .layout
                 .columns(data.groups(), flags)
                 .into_iter()
                 .zip(next.columns(data.groups(), flags))
             {
-                ptr::copy_nonoverlapping(
-                    source.as_ptr(),
-                    destination.add(target.raw() as usize),
-                    length,
-                );
+                let start = target.raw() as usize;
+                ptr::write_bytes(destination.add(initialized), 0, start - initialized);
+                ptr::copy_nonoverlapping(source.as_ptr(), destination.add(start), length);
+                initialized = start + length;
             }
+            ptr::write_bytes(
+                destination.add(initialized),
+                0,
+                next.end.raw() as usize - initialized,
+            );
             // Only regions are serialized. Tree boundaries follow from root spans.
             for (index, region) in data.regions.iter().enumerate() {
                 let descriptor = destination.add(next.end.raw() as usize + index * 8);
@@ -884,10 +921,15 @@ impl Forest {
 
     pub(crate) fn resize(&mut self, capacity: u32, flags: u32) -> Result<(), Error> {
         let layout = Layout::new(capacity, flags)?;
-        let mut storage = Slab::zeroed(slab_length(layout, self.data.regions.len() as u32)?)?;
-        unsafe {
-            self.copy_columns(storage.bytes_mut().as_mut_ptr(), layout, flags, capacity);
-        }
+        let storage = unsafe {
+            Slab::initialize(
+                slab_length(layout, self.data.regions.len() as u32)?,
+                |destination| {
+                    self.copy_columns(destination, layout, flags, capacity);
+                    Ok(())
+                },
+            )?
+        };
         self.data.layout = layout.resolve(storage.bytes);
         self.data.storage = storage;
         Ok(())
@@ -967,15 +1009,12 @@ impl Forest {
     /// Copies compact core columns and attached side data into independent storage.
     pub fn repack(&self) -> Result<Self, Error> {
         let layout = Layout::new(self.group_count(), self.data.flags())?;
-        let mut storage = Slab::zeroed(self.compact_size())?;
-        unsafe {
-            self.copy_columns(
-                storage.bytes_mut().as_mut_ptr(),
-                layout,
-                self.data.flags(),
-                self.group_count(),
-            );
-        }
+        let storage = unsafe {
+            Slab::initialize(self.compact_size(), |destination| {
+                self.copy_columns(destination, layout, self.data.flags(), self.group_count());
+                Ok(())
+            })?
+        };
         self.copy_with_storage(layout, storage)
     }
 
