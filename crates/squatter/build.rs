@@ -64,11 +64,15 @@ fn main() {
     for name in names {
         build.define(&name, format!("sq_native_{name}").as_str());
     }
-    for file in ["grammar.c", "supertypes.c", "query.c", "parser.c"] {
+    for file in [
+        "grammar.c",
+        "supertypes.c",
+        "query.c",
+        "parser.c",
+        "tests.c",
+    ] {
         build.file(PathBuf::from("native").join(file));
     }
-    build.file("tests/native.c");
-    println!("cargo:rerun-if-changed=tests/native.c");
     for file in ["tf_language.c", "tf_lexer.c", "tf_parser.c"] {
         build.file(feller.join("src").join(file));
     }
