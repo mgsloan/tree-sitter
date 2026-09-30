@@ -1,24 +1,26 @@
 use std::{env, fs, mem::MaybeUninit};
-use tree_squatter::{Forest, Language, PackOptions, PointsData, PresenceCache, SlotIx};
+use tree_squatter::{Forest, Language, PackOptions, PointsData, PresenceCache};
 
 fn compare(expected: &Forest, actual: &Forest) {
     assert_eq!(expected.slot_count(), actual.slot_count());
     assert_eq!(expected.has_points(), actual.has_points());
-    for slot in 0..expected.slot_count() {
-        let left = expected.node_at_slot(SlotIx::from_raw(slot));
-        let right = actual.node_at_slot(SlotIx::from_raw(slot));
-        assert_eq!(left.is_some(), right.is_some());
-        if let (Some(left), Some(right)) = (left, right) {
-            assert_eq!(left.attributes(), right.attributes());
-            assert_eq!(left.field_id(), right.field_id());
-            assert_eq!(left.child_count(), right.child_count());
-            assert_eq!(left.named_child_count(), right.named_child_count());
-            assert_eq!(left.descendant_count(), right.descendant_count());
-            assert_eq!(
-                left.parent().map(|node| node.slot()),
-                right.parent().map(|node| node.slot())
-            );
-        }
+    let expected_root = expected.root_node();
+    let actual_root = actual.root_node();
+    assert_eq!(
+        expected_root.descendant_count(),
+        actual_root.descendant_count()
+    );
+    for (left, right) in expected_root.preorder().nodes().zip(actual_root.preorder()) {
+        assert_eq!(left.id(), right.id());
+        assert_eq!(left.attributes(), right.attributes());
+        assert_eq!(left.field_id(), right.field_id());
+        assert_eq!(left.child_count(), right.child_count());
+        assert_eq!(left.named_child_count(), right.named_child_count());
+        assert_eq!(left.descendant_count(), right.descendant_count());
+        assert_eq!(
+            left.parent().map(|node| node.id()),
+            right.parent().map(|node| node.id())
+        );
     }
 }
 

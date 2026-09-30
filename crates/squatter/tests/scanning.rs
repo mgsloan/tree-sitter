@@ -68,13 +68,15 @@ fn check_pipeline<'tree, S: GroupScan<'tree>>(
         assert!(!mask.is_empty());
         assert_eq!(mask.intersection(group.valid_mask()), mask);
         count += mask.count_ones() as usize;
+        let mut matched_nodes: HashSet<_> = (0..64)
+            .filter(|&slot| mask.contains(slot))
+            .map(|slot| group.node(slot).unwrap())
+            .collect();
         for node in fragment.nodes() {
-            assert!(seen.insert(node.slot()));
-            assert_eq!(
-                group.node(node.slot().raw() - group.first_slot().raw()),
-                Some(node)
-            );
+            assert!(seen.insert(node.id()));
+            assert!(matched_nodes.remove(&node));
         }
+        assert!(matched_nodes.is_empty());
         assert_eq!(group.node(u32::MAX), None);
     }
     assert_eq!(count, expected.len());
@@ -1254,7 +1256,6 @@ fn field_sets() {
             node.kind_id(),
             grammar.kind_id_for_name("string", true).unwrap()
         );
-        assert_eq!(tree.node_at_slot(node.slot()), Some(node));
     }
     let value = Some(grammar.field_id_for_name("value").unwrap());
     let subtree = root

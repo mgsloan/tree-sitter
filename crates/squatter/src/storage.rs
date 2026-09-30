@@ -1,5 +1,6 @@
 use crate::{
     Error, Language, Node, NodeId, RegionIx, SlotIx, TreeCursor, TreeIx,
+    native::GrammarView,
     side_data::{PointsData, PresenceCache},
     types::{SlabOffset, SquatterGrammarId, SquatterKindId},
 };
@@ -384,7 +385,20 @@ pub(crate) struct ForestData {
 #[derive(Clone)]
 pub(crate) struct TreeData {
     pub region: RegionIx,
+    pub tables: NonNull<GrammarView>,
+    // trees occupy whole groups; the final group may contain waste
     pub slots: Range<SlotIx>,
+}
+
+// The region language retains the immutable tables, including in forest copies.
+unsafe impl Send for TreeData {}
+unsafe impl Sync for TreeData {}
+
+impl TreeData {
+    #[inline]
+    pub(crate) fn tables(&self) -> &GrammarView {
+        unsafe { self.tables.as_ref() }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -431,11 +445,6 @@ impl<'forest> Tree<'forest> {
     }
     pub fn walk(&self) -> TreeCursor<'forest> {
         self.0.walk()
-    }
-
-    /// Looks up a live forest-global slot within this tree.
-    pub fn node_at_slot(&self, slot: SlotIx) -> Option<Node<'forest>> {
-        self.0.node_at_slot(slot)
     }
 }
 
@@ -723,7 +732,8 @@ impl Forest {
     pub fn walk(&self) -> TreeCursor<'_> {
         self.root_node().walk()
     }
-    pub fn node_at_slot(&self, slot: SlotIx) -> Option<Node<'_>> {
+    #[cfg(test)]
+    pub(crate) fn node_at_slot(&self, slot: SlotIx) -> Option<Node<'_>> {
         self.root_node().node_at_slot(slot)
     }
     pub fn language_cache(&self) -> Result<Vec<u8>, Error> {
@@ -1120,6 +1130,7 @@ impl Forest {
     fn reconstruct_trees(&mut self) -> Result<(), Error> {
         for region_index in 0..self.data.regions.len() {
             let slots = self.data.regions[region_index].slots.clone();
+            let tables = NonNull::from(self.data.regions[region_index].language.tables());
             let first_tree = self.data.trees.len();
             let mut end = slots.end.raw();
             while end > slots.start.raw() {
@@ -1138,7 +1149,7 @@ impl Forest {
                     .checked_sub(self.data.span_delta(root))
                     .ok_or(Error::InvalidSlab)?;
                 let start = root.checked_sub(span).ok_or(Error::InvalidSlab)?;
-                if start < slots.start.raw() || start >= end {
+                if start < slots.start.raw() || start >= end || !start.is_multiple_of(GROUP_SIZE) {
                     return Err(Error::InvalidSlab);
                 }
                 let byte_start = self
@@ -1160,6 +1171,7 @@ impl Forest {
                     .map_err(|_| Error::Allocation)?;
                 self.data.trees.push(TreeData {
                     region: RegionIx(region_index as u32),
+                    tables,
                     slots: SlotIx(start)..SlotIx(end),
                 });
                 end = start;

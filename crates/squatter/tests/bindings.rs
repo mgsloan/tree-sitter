@@ -664,7 +664,6 @@ fn compact_ids_roundtrip_native_kinds_and_scans() -> Result<(), Box<dyn Error>> 
             .nodes()
             .zip(NodeLike::preorder(parsed.root_node()))
         {
-            assert_eq!(tree.node_at_slot(node.slot()), Some(node));
             if node.kind() == "type_identifier" {
                 assert_eq!(
                     node.grammar_id(),

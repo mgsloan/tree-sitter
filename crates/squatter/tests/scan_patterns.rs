@@ -3,7 +3,7 @@ mod support;
 
 use std::{hint::black_box, ops::Range};
 use tree_sitter::Point;
-use tree_squatter::{FieldId, Forest, GrammarId, KindId, KindSet, Language, Node, SlotIx};
+use tree_squatter::{FieldId, Forest, GrammarId, KindId, KindSet, Language, Node, NodeId};
 
 use support::{json_language, parse_native};
 
@@ -74,19 +74,19 @@ mod patterns {
         root.all().overlapping_bytes(range).count()
     }
     #[inline(never)]
-    pub fn range_slots(root: Node<'_>, range: Range<usize>) -> u64 {
+    pub fn range_ids(root: Node<'_>, range: Range<usize>) -> u64 {
         root.all()
             .overlapping_bytes(range)
             .nodes()
-            .map(|node| u64::from(node.slot().raw()))
+            .map(|node| node.id().raw())
             .sum()
     }
     #[inline(never)]
-    pub fn point_range_slots(root: Node<'_>, range: Range<Point>) -> u64 {
+    pub fn point_range_ids(root: Node<'_>, range: Range<Point>) -> u64 {
         root.all()
             .overlapping_points(range)
             .nodes()
-            .map(|node| u64::from(node.slot().raw()))
+            .map(|node| node.id().raw())
             .sum()
     }
     #[inline(never)]
@@ -109,45 +109,34 @@ mod patterns {
         root.all().filter_supertype_id(supertype).count()
     }
     #[inline(never)]
-    pub fn preorder_slots(root: Node<'_>) -> u64 {
-        root.preorder()
-            .nodes()
-            .map(|node| u64::from(node.slot().raw()))
-            .sum()
+    pub fn preorder_ids(root: Node<'_>) -> u64 {
+        root.preorder().nodes().map(|node| node.id().raw()).sum()
     }
     #[inline(never)]
-    pub fn reverse_preorder_slots(root: Node<'_>) -> u64 {
+    pub fn reverse_preorder_ids(root: Node<'_>) -> u64 {
         root.preorder()
             .rev()
             .nodes()
-            .map(|node| u64::from(node.slot().raw()))
+            .map(|node| node.id().raw())
             .sum()
     }
     #[inline(never)]
-    pub fn postorder_slots(root: Node<'_>) -> u64 {
-        root.postorder()
-            .nodes()
-            .map(|node| u64::from(node.slot().raw()))
-            .sum()
+    pub fn postorder_ids(root: Node<'_>) -> u64 {
+        root.postorder().nodes().map(|node| node.id().raw()).sum()
     }
     #[inline(never)]
-    pub fn reverse_postorder_slots(root: Node<'_>) -> u64 {
+    pub fn reverse_postorder_ids(root: Node<'_>) -> u64 {
         root.postorder()
             .rev()
             .nodes()
-            .map(|node| u64::from(node.slot().raw()))
+            .map(|node| node.id().raw())
             .sum()
     }
     #[inline(never)]
-    pub fn grouped_slots(root: Node<'_>) -> u64 {
+    pub fn grouped_ids(root: Node<'_>) -> u64 {
         root.preorder()
             .groups()
-            .map(|group| {
-                group
-                    .nodes()
-                    .map(|node| u64::from(node.slot().raw()))
-                    .sum::<u64>()
-            })
+            .map(|group| group.nodes().map(|node| node.id().raw()).sum::<u64>())
             .sum()
     }
     #[inline(never)]
@@ -159,12 +148,12 @@ mod patterns {
             .sum()
     }
     #[inline(never)]
-    pub fn first_kind_slot(root: Node<'_>, kinds: &KindSet) -> Option<SlotIx> {
+    pub fn first_kind_id(root: Node<'_>, kinds: &KindSet) -> Option<NodeId> {
         root.preorder()
             .filter_kind_ids(kinds)
             .nodes()
             .next()
-            .map(|node| node.slot())
+            .map(|node| node.id())
     }
 }
 
@@ -178,11 +167,11 @@ fn assembly_patterns_are_callable() {
     assert_eq!(patterns::reverse_postorder_count(root), 41);
     assert_eq!(patterns::nodes_count(root), 41);
 
-    let slots = patterns::preorder_slots(root);
-    assert_eq!(patterns::reverse_preorder_slots(root), slots);
-    assert_eq!(patterns::postorder_slots(root), slots);
-    assert_eq!(patterns::reverse_postorder_slots(root), slots);
-    assert_eq!(patterns::grouped_slots(root), slots);
+    let ids = patterns::preorder_ids(root);
+    assert_eq!(patterns::reverse_preorder_ids(root), ids);
+    assert_eq!(patterns::postorder_ids(root), ids);
+    assert_eq!(patterns::reverse_postorder_ids(root), ids);
+    assert_eq!(patterns::grouped_ids(root), ids);
 
     let number = grammar.kind_id_for_name("number", true).unwrap();
     let numbers = KindSet::new([number]);
@@ -191,7 +180,7 @@ fn assembly_patterns_are_callable() {
     assert_eq!(patterns::scalar_kind_count(root, numbers), 4);
     assert_eq!(patterns::four_kind_count(root, black_box([number; 4])), 4);
     assert_eq!(patterns::eight_kind_count(root, black_box([number; 8])), 4);
-    black_box(patterns::first_kind_slot(root, numbers));
+    black_box(patterns::first_kind_id(root, numbers));
     black_box(patterns::kind_start_bytes(root, numbers));
 
     let value_field = black_box(Some(grammar.field_id_for_name("value").unwrap()));
@@ -205,13 +194,13 @@ fn assembly_patterns_are_callable() {
     );
     let range = black_box(0..SOURCE.len());
     assert_eq!(patterns::range_count(root, range.clone()), 41);
-    assert_eq!(patterns::range_slots(root, range.clone()), slots);
+    assert_eq!(patterns::range_ids(root, range.clone()), ids);
     assert_eq!(
-        patterns::point_range_slots(
+        patterns::point_range_ids(
             root,
             black_box(Point::new(0, range.start)..Point::new(0, range.end)),
         ),
-        slots
+        ids
     );
     assert_eq!(
         patterns::combined_count(root, range, numbers, value_field),

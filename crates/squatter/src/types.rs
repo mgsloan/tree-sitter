@@ -49,7 +49,7 @@ integer_type!(
     /// An absolute physical slot in a forest's reverse-preorder storage.
     ///
     /// **Not in Tree-sitter**
-    pub SlotIx(u32));
+    pub(crate) SlotIx(u32));
 
 integer_type!(
     /// A physical tree index, local to one forest.
@@ -71,7 +71,7 @@ impl TreeIx {
 pub struct NodeId(u64);
 
 impl NodeId {
-    pub const fn new(tree: TreeIx, slot: SlotIx) -> Self {
+    pub(crate) const fn new(tree: TreeIx, slot: SlotIx) -> Self {
         Self(((tree.raw() as u64) << 32) | slot.raw() as u64)
     }
 
@@ -79,7 +79,7 @@ impl NodeId {
         TreeIx::from_raw((self.0 >> 32) as u32)
     }
 
-    pub const fn slot(self) -> SlotIx {
+    pub(crate) const fn slot(self) -> SlotIx {
         SlotIx::from_raw(self.0 as u32)
     }
 

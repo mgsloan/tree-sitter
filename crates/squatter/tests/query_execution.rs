@@ -20,7 +20,7 @@ macro_rules! matches {
                 result
                     .captures()
                     .iter()
-                    .map(|capture| (u32::from(capture.node.slot()), capture.index.raw()))
+                    .map(|capture| (capture.node.id(), capture.index.raw()))
                     .collect::<Vec<_>>(),
             ));
             assert!(results.len() < 100_000, "unexpected match explosion");
@@ -39,7 +39,7 @@ macro_rules! captures {
             let capture = result.captures()[index.raw() as usize];
             results.push((
                 result.pattern_index.raw(),
-                u32::from(capture.node.slot()),
+                capture.node.id(),
                 capture.index.raw(),
             ));
             assert!(results.len() < 100_000, "unexpected capture explosion");
@@ -286,12 +286,12 @@ fn malformed_queries_match_with_and_without_plans() {
             }
             errors += 1;
             let tree = Forest::pack(&grammar, &native).unwrap();
-            let capturable_slots = tree
+            let capturable_nodes = tree
                 .root_node()
                 .preorder()
                 .nodes()
                 .filter(|node| node.end_byte() > 0)
-                .map(|node| node.slot().raw())
+                .map(|node| node.id())
                 .collect::<BTreeSet<_>>();
             for (pattern, query) in &queries {
                 for bounded in [false, true] {
@@ -312,10 +312,10 @@ fn malformed_queries_match_with_and_without_plans() {
                     if !bounded {
                         let actual = captures!(&mut optimized, query, tree, source);
                         for (pattern_index, captures) in expected {
-                            for (slot, index) in captures {
-                                if capturable_slots.contains(&slot) {
+                            for (node_id, index) in captures {
+                                if capturable_nodes.contains(&node_id) {
                                     assert!(
-                                        actual.contains(&(pattern_index, slot, index)),
+                                        actual.contains(&(pattern_index, node_id, index)),
                                         "capture {index}, {name}, {pattern}, {source:?}"
                                     );
                                 }
@@ -406,11 +406,8 @@ fn disabling_non_rooted_pattern_preserves_ranges() {
         assert_eq!(
             matches!(&mut cursor, &query, tree, source),
             vec![
-                (
-                    0,
-                    vec![(identifier.slot().raw(), 0), (number.slot().raw(), 1)]
-                ),
-                (1, vec![(identifier.slot().raw(), 2)]),
+                (0, vec![(identifier.id(), 0), (number.id(), 1)]),
+                (1, vec![(identifier.id(), 2)]),
             ],
         );
 
@@ -418,7 +415,7 @@ fn disabling_non_rooted_pattern_preserves_ranges() {
             query.disable_pattern(tree_squatter::PatternIx(0));
             assert_eq!(
                 matches!(&mut cursor, &query, tree, source),
-                vec![(1, vec![(identifier.slot().raw(), 2)])],
+                vec![(1, vec![(identifier.id(), 2)])],
             );
         }
     }
@@ -477,7 +474,7 @@ fn switching_between_matches_and_captures_preserves_finished_order() {
                     result
                         .captures()
                         .iter()
-                        .map(|capture| (u32::from(capture.node.slot()), capture.index))
+                        .map(|capture| (capture.node.id(), capture.index))
                         .collect::<Vec<_>>(),
                 )
             })

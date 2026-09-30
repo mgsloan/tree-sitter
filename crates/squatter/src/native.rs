@@ -130,6 +130,10 @@ pub(crate) struct GrammarView {
     pub compact_grammar_count: u32,
 }
 
+// Published views and the arrays they reference are immutable.
+unsafe impl Send for GrammarView {}
+unsafe impl Sync for GrammarView {}
+
 impl GrammarView {
     pub fn supertypes(&self) -> &[u16] {
         if self.supertype_count == 0 {

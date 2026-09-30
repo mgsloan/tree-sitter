@@ -185,14 +185,14 @@ fn side_data_changes_only_attached_coordinates() {
         .unwrap();
         let core_address = tree.as_bytes().as_ptr();
         let core_bytes = tree.as_bytes().to_vec();
-        let root_slot = tree.root_node().slot();
+        let root_id = tree.root_node().id();
         let points = tree.point_data().unwrap().as_bytes().to_vec();
 
         let expected = tree
             .root_node()
             .preorder()
             .nodes()
-            .map(|node| (node.slot(), node.start_position(), node.end_position()))
+            .map(|node| (node.id(), node.start_position(), node.end_position()))
             .collect::<Vec<_>>();
         tree.drop_point_data();
         assert!(!tree.root_node().has_points());
@@ -208,14 +208,14 @@ fn side_data_changes_only_attached_coordinates() {
         tree.set_point_data(points).unwrap();
         assert!(tree.has_points());
         assert!(tree.root_node().attributes().has_points);
-        for (slot, start, end) in expected {
-            let node = tree.node_at_slot(slot).unwrap();
+        for (node, (id, start, end)) in tree.root_node().preorder().nodes().zip(expected) {
+            assert_eq!(node.id(), id);
             assert_eq!(node.start_position(), start);
             assert_eq!(node.end_position(), end);
         }
         assert_eq!(tree.as_bytes().as_ptr(), core_address);
         assert_eq!(tree.as_bytes(), core_bytes);
-        assert_eq!(tree.root_node().slot(), root_slot);
+        assert_eq!(tree.root_node().id(), root_id);
         tree.drop_presence_cache();
         assert!(tree.has_points());
         tree.drop_point_data();
@@ -341,7 +341,7 @@ fn sidecar_mapping_copy_and_failed_replacement() {
     invalid[4..8].copy_from_slice(&0u32.to_le_bytes());
     assert!(PointsData::copy_from_bytes(&tree, &invalid).is_err());
     let mut invalid = points.as_bytes().to_vec();
-    let root_start = 16 + (tree.root_node().slot().raw() as usize / 32) * (16 + 32 * 4);
+    let root_start = 16 + (tree.root_node().id().raw() as u32 as usize / 32) * (16 + 32 * 4);
     invalid[root_start..root_start + 8].copy_from_slice(&u64::MAX.to_le_bytes());
     invalid[root_start + 16..root_start + 18].copy_from_slice(&1u16.to_le_bytes());
     assert!(PointsData::copy_from_bytes(&tree, &invalid).is_err());

@@ -1,6 +1,6 @@
 use super::*;
 use crate::{GrammarId, PackedParseOptions, SlotIx, TreeFellerParser};
-use std::ffi::c_void;
+use std::{ffi::c_void, ptr::NonNull};
 
 unsafe extern "C" {
     fn sq_test_dictionaries();
@@ -38,6 +38,7 @@ fn synthetic_forest(language: &Language, groups: u32) -> Result<Forest, Error> {
     let mut forest = Forest::empty(std::slice::from_ref(language), groups)?;
     forest.data_mut().trees.push(TreeData {
         region: RegionIx(0),
+        tables: NonNull::from(language.tables()),
         slots: SlotIx(0)..SlotIx(groups * GROUP_SIZE),
     });
     forest.data_mut().regions[0].slots.end = SlotIx(groups * GROUP_SIZE);
@@ -819,6 +820,23 @@ fn maximum_spans_roundtrip_and_reject_delta_underflow() {
         Forest::from_bytes_safety_checked(std::slice::from_ref(&grammar), small.as_bytes())
             .is_err()
     );
+}
+
+#[test]
+fn loading_rejects_tree_start_inside_group() {
+    let language =
+        unsafe { tree_sitter::Language::from_raw(tree_sitter_json::LANGUAGE.into_raw()().cast()) };
+    let grammar = Language::new(&language).unwrap();
+    let mut parser = tree_sitter::Parser::new();
+    parser.set_language(&language).unwrap();
+    let mut forest = Forest::parse(&grammar, &mut parser, "[0]").unwrap();
+    let slot = forest.root_node().slot().raw();
+    let delta = forest.data().span_delta(slot) as u16;
+    put_span_delta(forest.data_mut(), slot, delta + 1);
+    assert!(matches!(
+        Forest::from_bytes(std::slice::from_ref(&grammar), forest.as_bytes()),
+        Err(Error::InvalidSlab)
+    ));
 }
 
 #[test]

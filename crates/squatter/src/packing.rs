@@ -5,7 +5,7 @@ use crate::{
     storage::*,
     types::{PackedPoint, SlabOffset, SquatterGrammarId, SquatterKindId},
 };
-use std::ops::ControlFlow;
+use std::{ops::ControlFlow, ptr::NonNull};
 
 mod traversal;
 
@@ -538,6 +538,7 @@ impl Builder {
         data.trees.try_reserve(1).map_err(|_| Error::Allocation)?;
         data.trees.push(TreeData {
             region,
+            tables: NonNull::from(data.regions[region.raw() as usize].language.tables()),
             slots: SlotIx(start)..SlotIx(self.slot_base),
         });
         let region = &mut data.regions[region.raw() as usize];

@@ -146,16 +146,19 @@ where
     absent
 }
 
-// Group views borrow the same descriptor as nodes. Keeping layout and grammar
-// metadata there avoids copying either into each scan and returned group.
+// Column layout stays in the forest; scans resolve grammar tables once.
 #[derive(Clone, Copy)]
 struct Columns<'tree> {
     root: Node<'tree>,
+    tables: &'tree GrammarView,
 }
 
 impl<'tree> Columns<'tree> {
     fn new(root: Node<'tree>) -> Self {
-        Self { root }
+        Self {
+            root,
+            tables: root.tables(),
+        }
     }
 
     #[inline]
@@ -170,7 +173,7 @@ impl<'tree> Columns<'tree> {
 
     #[inline]
     fn tables(self) -> &'tree GrammarView {
-        self.root.tables()
+        self.tables
     }
 
     #[inline]
@@ -418,7 +421,7 @@ impl<'tree> GroupRef<'tree> {
         self.index.raw()
     }
     /// Returns the group’s first absolute physical slot.
-    pub fn first_slot(self) -> SlotIx {
+    pub(crate) fn first_slot(self) -> SlotIx {
         self.index.first_slot()
     }
     /// Selects live slots, excluding group waste.

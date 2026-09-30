@@ -29,6 +29,85 @@ fn retain(bytes: &[u8]) -> SlabOwner {
 }
 
 #[test]
+fn grammar_caches_follow_cursor_resets_and_forest_copies() {
+    use tree_squatter::traits::NodeLike;
+
+    let json = support::json_language();
+    let c = support::c_language();
+    let array = format!("[{}0]", "1,".repeat(100));
+    let native = [
+        support::parse_native(&json, &array),
+        support::parse_native(&c, "int answer(int value) { return value + 1; }"),
+        support::parse_native(&json, "{\"other\": true}"),
+    ];
+    let forests = {
+        let languages = [
+            Language::new(&json).unwrap(),
+            Language::new(&c).unwrap(),
+            Language::new(&json).unwrap(),
+        ];
+        let (packed, _) = Packer::new()
+            .unwrap()
+            .pack_forest(
+                languages
+                    .iter()
+                    .zip(&native)
+                    .map(|(language, tree)| PackRegion {
+                        language: language.clone(),
+                        roots: vec![tree.root_node()],
+                    })
+                    .collect::<Vec<_>>(),
+                PackOptions::default(),
+            )
+            .unwrap();
+        let mut loaded = Forest::from_bytes(&languages, packed.as_bytes()).unwrap();
+        loaded
+            .set_point_data(
+                PointsData::from_bytes(packed.point_data().unwrap().as_bytes()).unwrap(),
+            )
+            .unwrap();
+        [packed.detach().unwrap(), packed.repack().unwrap(), loaded]
+    };
+    let initial = forests[0].tree(TreeIx::from_raw(0)).unwrap().root_node();
+    let mut cursor = initial.walk();
+    for forest in &forests {
+        for (tree, native) in forest.trees().zip(&native) {
+            let nodes: Vec<_> = tree.preorder().nodes().collect();
+            assert_eq!(
+                std::iter::successors(Some(tree.root_node()), |node| node.next_preorder())
+                    .collect::<Vec<_>>(),
+                nodes
+            );
+            for (node, native) in nodes
+                .iter()
+                .copied()
+                .zip(NodeLike::preorder(native.root_node()))
+            {
+                let expected = NodeLike::attributes(native);
+                assert_eq!(node.attributes(), expected);
+                cursor.reset(node);
+                assert_eq!(cursor.attributes(), expected);
+                assert_eq!(cursor.clone().attributes(), expected);
+                cursor.reset(initial);
+                cursor.reset_to(&node.walk());
+                assert_eq!(cursor.attributes(), expected);
+                if cursor.goto_first_child() {
+                    assert_eq!(cursor.field_name(), cursor.node().field_name());
+                }
+            }
+            let kinds = tree_squatter::KindSet::new(nodes.iter().map(|node| node.kind_id()));
+            assert_eq!(
+                tree.all()
+                    .filter_kind_ids(&kinds)
+                    .nodes()
+                    .collect::<Vec<_>>(),
+                nodes
+            );
+        }
+    }
+}
+
+#[test]
 fn forest_packing_and_round_trip() {
     let json = support::json_language();
     let c = support::c_language();

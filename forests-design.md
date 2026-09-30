@@ -145,9 +145,9 @@ including within one region. Neither core storage nor point data requires a
 shared source or a forest-wide coordinate frame.
 
 Tree indices and region indices identify runtime metadata only within their owner.
-`SlotIx` addresses a physical slot within the forest, including group waste;
-wasted slots do not produce nodes. `NodeId` combines a tree index and slot index
-and is local to one forest. None of these indices or IDs is stable across
+Crate-private `SlotIx` addresses a physical slot within the forest, including
+group waste; wasted slots do not produce nodes. `NodeId` combines a tree index
+and slot index and is local to one forest. None of these indices or IDs is stable across
 rebuilding/reordering. The caller chooses a main tree if its application has one;
 physical order makes no tree the document root.
 
@@ -274,6 +274,7 @@ struct RegionData {
 
 struct TreeData {
     region: RegionIx,
+    tables: NonNull<GrammarView>,
     slots: Range<SlotIx>,
 }
 
@@ -335,7 +336,7 @@ a retained owner. This does not require another tree representation.
 pub struct NodeId(u64);
 
 impl NodeId {
-    pub const fn new(tree: TreeIx, slot: SlotIx) -> Self {
+    pub(crate) const fn new(tree: TreeIx, slot: SlotIx) -> Self {
         Self(((tree.raw() as u64) << 32) | slot.raw() as u64)
     }
 
@@ -343,7 +344,7 @@ impl NodeId {
         TreeIx::from_raw((self.0 >> 32) as u32)
     }
 
-    pub const fn slot(self) -> SlotIx {
+    pub(crate) const fn slot(self) -> SlotIx {
         SlotIx::from_raw(self.0 as u32)
     }
 
@@ -360,6 +361,7 @@ pub struct Node<'forest> {
 
 pub struct TreeCursor<'forest> {
     node: Node<'forest>,
+    tables: &'forest GrammarView,
     // traversal state
 }
 
@@ -369,7 +371,7 @@ pub struct QueryCursor {
 
 impl<'forest> Node<'forest> {
     pub fn id(&self) -> NodeId;
-    pub fn slot(self) -> SlotIx;
+    pub(crate) fn slot(self) -> SlotIx;
     pub fn walk(&self) -> TreeCursor<'forest>;
 }
 
@@ -381,8 +383,9 @@ impl<'forest> TreeCursor<'forest> {
 Forest nodes expose the composite `NodeId` through both inherent `Node::id()`
 and `NodeLike::id()` (`type Id = NodeId`). This supersedes the API alignment
 plan's slot-only identity and omission of an inherent `id()` for standalone trees.
-Keep `slot()` for physical addressing. The composite ID carries the tree context
-needed for descriptor lookup and caller-owned source selection.
+Crate-private `slot()` supports internal physical addressing. The composite ID
+carries the tree context needed for descriptor lookup and caller-owned source
+selection.
 
 `NodeId` stores `TreeIx` in bits 63–32 and `SlotIx` in bits 31–0. The slot remains
 forest-global, not relative to the tree. Constructing an ID only combines the
@@ -395,15 +398,20 @@ Column access follows `Node → ForestData.columns → column bytes`, indexed by
 reference and a 64-bit ID can fit in 16 bytes on a 64-bit target; verify the
 implemented layout.
 
-Tree-dependent operations index `ForestData::trees` by `id.tree()` for slot bounds
-and `RegionIx`, then index `ForestData::regions` for grammar and presence metadata.
-No containing-tree search by slot is needed. Nodes, cursors, scans, and query
-executions use these same lookups rather than retaining a separate resolved
-context or descriptor references. Returned nodes and captures retain the compact
-forest/ID representation. Cursor, scan, and query state carry nodes or `NodeId`s
-instead of storing separate tree and slot indices. The reusable query cursor
-retains no forest borrow between executions. Column pointers are stored once in
-`ForestData`.
+Tree-dependent operations index `ForestData::trees` by `id.tree()` for slot bounds,
+cached grammar tables, and `RegionIx`. The region lookup remains necessary for
+language ownership and presence metadata. Table pointers borrow the immutable
+native grammar retained by each region's language; cloning a language preserves
+the table address. Cursors and scans resolve tables once, and cursor resets
+refresh that reference. Bundled attributes reuse one table reference and decoded
+IDs. Returned nodes and captures retain the compact forest/ID representation.
+The reusable query cursor retains no forest borrow between executions. Column
+pointers are stored once in `ForestData`.
+
+Trees occupy separate groups, including when loaded from core bytes. Scalar
+preorder steps within a group decrement the slot directly; only group crossings
+check the tree boundary and skip waste. First-child lookup checks the subtree
+boundary, which also excludes neighboring trees.
 
 ## Ownership
 

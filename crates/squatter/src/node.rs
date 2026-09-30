@@ -1,5 +1,6 @@
 use crate::{
     ChildIx, FieldId, Forest, GrammarId, KindId, NamedChildIx, NodeId, SlotIx,
+    native::GrammarView,
     scan::{self, Postorder, Preorder, Scan},
     storage::*,
     traits,
@@ -83,14 +84,16 @@ impl<'tree> Node<'tree> {
         &self.data().regions[self.tree_data().region.raw() as usize]
     }
 
-    pub(crate) fn tables(self) -> &'tree crate::native::GrammarView {
-        self.language().tables()
+    #[inline]
+    pub(crate) fn tables(self) -> &'tree GrammarView {
+        self.tree_data().tables()
     }
 
     pub(crate) fn presence(self) -> Option<crate::side_data::PresenceView> {
         self.region_data().presence
     }
 
+    #[cfg(test)]
     pub(crate) fn node_at_slot(self, slot: SlotIx) -> Option<Self> {
         (self.tree_data().slots.contains(&slot)
             && slot.raw() < self.data().group_end(slot.group().raw()))
@@ -125,7 +128,7 @@ impl<'tree> Node<'tree> {
     /// snapshot. Slots are forest-global; repacking may change them. Use [`Self::id`]
     /// for identity including the tree context.
     #[inline]
-    pub fn slot(self) -> SlotIx {
+    pub(crate) fn slot(self) -> SlotIx {
         self.raw.id.slot()
     }
 
@@ -413,8 +416,13 @@ impl<'tree> Node<'tree> {
     /// **Not in Tree-sitter**
     #[inline]
     pub fn next_preorder(self) -> Option<Self> {
+        let slot = self.slot().raw();
+        // Only group crossings can leave the current tree.
+        if !slot.is_multiple_of(GROUP_SIZE) {
+            return Some(self.at(SlotIx::from_raw(slot - 1)));
+        }
         self.data()
-            .previous_slot(self.slot().raw())
+            .previous_slot(slot)
             .filter(|&slot| slot >= self.tree_data().slots.start.raw())
             .map(|slot| self.at(SlotIx::from_raw(slot)))
     }
@@ -438,8 +446,10 @@ impl<'tree> Node<'tree> {
     }
 
     fn first_child(self) -> Option<Self> {
-        self.next_preorder()
-            .filter(|node| node.slot().raw() >= self.first_slot())
+        self.data()
+            .previous_slot(self.slot().raw())
+            .filter(|&slot| slot >= self.first_slot())
+            .map(|slot| self.at(SlotIx::from_raw(slot)))
     }
 
     pub(crate) fn next_sibling_including_empty(self) -> Option<Self> {
@@ -767,20 +777,27 @@ impl<'tree> Node<'tree> {
     /// **Not in Tree-sitter**. Bundles constant-time node attributes; child and descendant
     /// counts are separate.
     pub fn attributes(self) -> traits::Attributes<'tree> {
+        self.attributes_with_tables(self.tables())
+    }
+
+    fn attributes_with_tables(self, tables: &'tree GrammarView) -> traits::Attributes<'tree> {
+        let symbol = self.squatter_kind_id();
+        let kind_id = tables.decode_kind(symbol);
+        let grammar_id = tables.decode_grammar_kind(self.squatter_grammar_id());
         traits::Attributes {
-            kind: self.kind(),
-            grammar_name: self.grammar_name(),
-            kind_id: self.kind_id(),
-            grammar_id: self.grammar_id(),
+            kind: tables.symbol_name(kind_id.raw()),
+            grammar_name: tables.symbol_name(grammar_id.raw()),
+            kind_id,
+            grammar_id,
             start_byte: self.start_byte(),
             end_byte: self.end_byte(),
             start_position: self.start_position(),
             end_position: self.end_position(),
             has_points: self.has_points(),
-            is_named: self.is_named(),
+            is_named: tables.named_index(symbol),
             is_extra: self.is_extra(),
             is_missing: self.is_missing(),
-            is_error: self.is_error(),
+            is_error: symbol.raw() as u32 == tables.kind_count,
             has_error: self.has_error(),
         }
     }
@@ -795,6 +812,7 @@ impl<'tree> Node<'tree> {
     pub fn walk(&self) -> TreeCursor<'tree> {
         TreeCursor {
             node: *self,
+            tables: self.tables(),
             parents: Vec::new(),
         }
     }
@@ -1035,6 +1053,7 @@ impl std::iter::FusedIterator for Children<'_> {}
 #[derive(Clone)]
 pub struct TreeCursor<'tree> {
     node: Node<'tree>,
+    tables: &'tree GrammarView,
     parents: Vec<SlotIx>,
 }
 
@@ -1058,7 +1077,7 @@ impl<'tree> TreeCursor<'tree> {
     /// full tree.
     pub fn field_name(&self) -> Option<&'tree str> {
         self.field_id()
-            .and_then(|field| self.node.tables().field_name(field.raw()))
+            .and_then(|field| self.tables.field_name(field.raw()))
     }
 
     /// Re-initialize a tree cursor to the same position as another cursor.
@@ -1071,6 +1090,7 @@ impl<'tree> TreeCursor<'tree> {
     /// their trees.
     pub fn reset_to(&mut self, cursor: &Self) {
         self.node = cursor.node;
+        self.tables = cursor.tables;
         self.parents.clone_from(&cursor.parents);
     }
 
@@ -1078,7 +1098,7 @@ impl<'tree> TreeCursor<'tree> {
     ///
     /// **Not in Tree-sitter**
     pub fn attributes(&mut self) -> traits::Attributes<'tree> {
-        self.node.attributes()
+        self.node.attributes_with_tables(self.tables)
     }
 
     /// Get the tree cursor's current [`Node`].
@@ -1093,6 +1113,7 @@ impl<'tree> TreeCursor<'tree> {
     /// Re-initialize this tree cursor to start at the given node.
     pub fn reset(&mut self, node: Node<'tree>) {
         self.node = node;
+        self.tables = node.tables();
         self.parents.clear();
     }
 
