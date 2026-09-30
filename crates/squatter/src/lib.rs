@@ -1,9 +1,8 @@
 mod types;
 pub(crate) use types::SlotIx;
 pub use types::{
-    CaptureIx, ChildIx, FieldId, GrammarId, GroupIx, GroupSlotIx, KindId, MatchCaptureIx, MatchId,
-    NamedChildIx, NodeId, PatternIx, RegionIx, RepresentationId, SquatterGrammarId, SquatterKindId,
-    TreeIx,
+    CaptureIx, ChildIx, FieldId, GrammarId, KindId, MatchCaptureIx, MatchId, NamedChildIx, NodeId,
+    PatternIx, RegionIx, RepresentationId, SquatterGrammarId, SquatterKindId, TreeIx,
 };
 mod node;
 use node::RawNode;

@@ -126,27 +126,10 @@ impl From<NonZeroU16> for FieldId {
 
 integer_type!(
     /// A physical group index, local to one forest.
-    pub GroupIx(u32));
+    pub(crate) GroupIx(u32));
 integer_type!(
     /// A physical slot relative to one group.
-    ///
-    /// ```compile_fail
-    /// # fn example(group: tree_squatter::scan::GroupRef<'_>) {
-    /// group.node(group.index());
-    /// # }
-    /// ```
-    pub GroupSlotIx(u32));
-
-impl GroupIx {
-    pub const fn from_raw(value: u32) -> Self {
-        Self(value)
-    }
-}
-impl GroupSlotIx {
-    pub const fn from_raw(value: u32) -> Self {
-        Self(value)
-    }
-}
+    pub(crate) GroupSlotIx(u32));
 integer_type!(#[derive(Default)]
     pub(crate) SlabOffset(u32));
 

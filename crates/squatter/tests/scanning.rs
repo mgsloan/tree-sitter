@@ -63,28 +63,16 @@ fn check_pipeline<'tree, S: GroupScan<'tree>>(
     let mut seen = HashSet::new();
     let mut count = 0;
     for fragment in make().groups() {
-        let mask = fragment.matches();
-        let group = fragment.group();
-        assert!(!mask.is_empty());
-        assert_eq!(mask.intersection(group.valid_mask()), mask);
-        count += mask.count_ones() as usize;
-        let mut matched_nodes: HashSet<_> = (0..64)
-            .filter(|&slot| mask.contains(tree_squatter::GroupSlotIx::from_raw(slot)))
-            .map(|slot| {
-                group
-                    .node(tree_squatter::GroupSlotIx::from_raw(slot))
-                    .unwrap()
-            })
-            .collect();
-        for node in fragment.nodes() {
+        assert!(!fragment.is_empty());
+        count += fragment.len();
+        let mut nodes = fragment.nodes();
+        assert_eq!(nodes.len(), fragment.len());
+        for remaining in (0..fragment.len()).rev() {
+            let node = nodes.next().unwrap();
             assert!(seen.insert(node.id()));
-            assert!(matched_nodes.remove(&node));
+            assert_eq!(nodes.len(), remaining);
         }
-        assert!(matched_nodes.is_empty());
-        assert_eq!(
-            group.node(tree_squatter::GroupSlotIx::from_raw(u32::MAX)),
-            None
-        );
+        assert_eq!(nodes.next(), None);
     }
     assert_eq!(count, expected.len());
     check_consumption(|| make().nodes(), expected);
@@ -133,7 +121,6 @@ fn orders_subtrees_groups_and_directions() {
     require_send_sync(root.preorder().within_bytes(0..7));
     let group = root.all().groups().next().unwrap();
     require_send_sync(group);
-    require_send_sync(group.group());
     require_send_sync(group.nodes());
 
     let (preorder, postorder) = native_orders(native.root_node());

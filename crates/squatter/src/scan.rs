@@ -267,22 +267,22 @@ impl SymbolIndex {
 ///
 /// **Not in Tree-sitter**
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct Mask(u64);
+pub(crate) struct Mask(u64);
 impl Mask {
     /// Returns the physical-slot mask bits.
-    pub fn bits(self) -> u64 {
+    pub(crate) fn bits(self) -> u64 {
         self.0
     }
     /// Reports whether the mask contains no slots.
-    pub fn is_empty(self) -> bool {
+    fn is_empty(self) -> bool {
         self.0 == 0
     }
     /// Counts selected slots.
-    pub fn count_ones(self) -> u32 {
+    fn count_ones(self) -> u32 {
         self.0.count_ones()
     }
     /// Intersects two masks for the same physical group.
-    pub fn intersection(self, other: Self) -> Self {
+    fn intersection(self, other: Self) -> Self {
         Self(self.0 & other.0)
     }
     #[inline]
@@ -292,10 +292,6 @@ impl Mask {
             remaining &= remaining.wrapping_sub(1);
         }
         remaining == 0
-    }
-    /// Tests a group-relative slot.
-    pub fn contains(self, slot: GroupSlotIx) -> bool {
-        slot.raw() < 64 && self.0 & (1u64 << slot.raw()) != 0
     }
     fn lower(length: u32) -> Self {
         Self(if length == 64 {
@@ -335,7 +331,7 @@ impl Mask {
 ///
 /// **Not in Tree-sitter**
 #[derive(Clone, Copy)]
-pub struct GroupRef<'tree> {
+pub(crate) struct GroupRef<'tree> {
     columns: Columns<'tree>,
     index: GroupIx,
 }
@@ -418,22 +414,14 @@ impl<'tree> GroupRef<'tree> {
         }
     }
 
-    /// Returns the physical group index.
-    pub fn index(self) -> GroupIx {
-        self.index
-    }
     /// Returns the group’s first absolute physical slot.
     pub(crate) fn first_slot(self) -> SlotIx {
         self.index.first_slot()
     }
     /// Selects live slots, excluding group waste.
     #[inline]
-    pub fn valid_mask(self) -> Mask {
+    pub(crate) fn valid_mask(self) -> Mask {
         Mask::lower(self.used())
-    }
-    /// Resolve a group-relative physical slot; waste and out-of-group slots fail.
-    pub fn node(self, slot: GroupSlotIx) -> Option<Node<'tree>> {
-        (slot.raw() < self.used()).then(|| self.columns.root.at(self.index.slot(slot)))
     }
     #[inline]
     fn used(self) -> u32 {
@@ -530,7 +518,7 @@ impl<'tree> GroupRef<'tree> {
     }
 }
 
-/// An ordered fragment of a physical group. Postorder may revisit the same group.
+/// A nonempty batch of matching nodes in traversal order. Group boundaries are unspecified.
 ///
 /// **Not in Tree-sitter**
 #[derive(Clone, Copy)]
@@ -540,13 +528,13 @@ pub struct GroupMatches<'tree> {
     descending: bool,
 }
 impl<'tree> GroupMatches<'tree> {
-    /// Returns the underlying physical group.
-    pub fn group(self) -> GroupRef<'tree> {
-        self.group
+    /// Counts matching nodes without constructing handles.
+    pub fn len(self) -> usize {
+        self.matches.count_ones() as usize
     }
-    /// Returns this fragment’s selected-slot mask.
-    pub fn matches(self) -> Mask {
-        self.matches
+    /// Reports whether the group contains no matches. Scans only yield nonempty groups.
+    pub fn is_empty(self) -> bool {
+        self.matches.is_empty()
     }
     /// Enumerates selected nodes in traversal order.
     #[inline]
@@ -621,11 +609,8 @@ impl FusedIterator for GroupNodes<'_> {}
 mod sealed {
     use super::{Bound, GroupRef, GroupSlotIx, Mask};
     use std::ops::RangeBounds;
-    pub trait Source {}
-    pub trait Predicate {}
-    pub trait IdSelection {}
 
-    pub trait Coordinates: Sized {
+    pub(super) trait Coordinates: Sized {
         type Position: Copy + Ord;
         const MINIMUM: Self::Position;
         const PRUNE_SUBTREES: bool;
@@ -639,7 +624,7 @@ mod sealed {
             relation: &R,
         ) -> Mask;
     }
-    pub trait PositionColumn {
+    pub(super) trait PositionColumn {
         type Position: Copy + Ord;
         fn minimum(&self) -> Self::Position;
         fn maximum(&self) -> Self::Position;
@@ -653,14 +638,14 @@ mod sealed {
             candidates.retain(|slot| bounds.contains(&self.get(slot)))
         }
     }
-    pub trait Positions {
+    pub(super) trait Positions {
         type Position: Copy + Ord;
         type Start: PositionColumn<Position = Self::Position>;
         type End: PositionColumn<Position = Self::Position>;
         fn start(&self) -> Self::Start;
         fn end(&self) -> Self::End;
     }
-    pub trait Relation<T: Copy + Ord> {
+    pub(super) trait Relation<T: Copy + Ord> {
         type Mapped<U: Copy + Ord>: Relation<U>;
         fn try_map<U: Copy + Ord>(
             &self,
@@ -680,9 +665,21 @@ mod sealed {
 }
 use sealed::{Coordinates, PositionColumn, Positions, Relation};
 
-/// Internal protocol exposed for generic scan consumers. Implementations are sealed.
-pub trait GroupScan<'tree>: sealed::Source + Sized {
+/// A scan source usable by generic scan consumers. Implementations are sealed.
+///
+/// Execution methods are internal:
+///
+/// ```compile_fail
+/// # fn example<'tree, S: tree_squatter::scan::GroupScan<'tree>>(mut source: S) {
+/// source.next_mask();
+/// # }
+/// ```
+#[allow(private_bounds)]
+pub trait GroupScan<'tree>: ScanSource<'tree> {
     type Reversed: GroupScan<'tree, Reversed = Self>;
+}
+
+trait ScanSource<'tree>: Sized {
     type Slots: Iterator<Item = GroupSlotIx> + ExactSizeIterator;
     const DESCENDING: bool;
 
@@ -690,13 +687,15 @@ pub trait GroupScan<'tree>: sealed::Source + Sized {
     fn slots(matches: Mask) -> Self::Slots;
 
     /// Change direction before consuming the scan.
-    fn reverse(self) -> Self::Reversed;
+    fn reverse(self) -> <Self as GroupScan<'tree>>::Reversed
+    where
+        Self: GroupScan<'tree>;
     /// Metadata for the current fragment, or the root before iteration starts.
     fn group(&self) -> &GroupRef<'tree>;
     /// Advance the current group and return its nonempty matching mask.
     fn next_mask(&mut self) -> Option<Mask>;
     #[inline]
-    fn next_matching<P: Predicate>(&mut self, predicate: &mut P) -> Option<Mask> {
+    fn next_matching<P: ScanPredicate>(&mut self, predicate: &mut P) -> Option<Mask> {
         loop {
             let candidates = self.next_mask()?;
             let matches = predicate.retain_matches(self.group(), candidates);
@@ -714,15 +713,22 @@ pub trait GroupScan<'tree>: sealed::Source + Sized {
     #[inline]
     fn fold_nodes<B, F>(self, accumulator: B, fold: F) -> B
     where
+        Self: GroupScan<'tree>,
         F: FnMut(B, Node<'tree>) -> B,
     {
         fold_nodes(self, accumulator, fold)
     }
     #[inline]
-    fn count(self) -> usize {
+    fn count(self) -> usize
+    where
+        Self: GroupScan<'tree>,
+    {
         self.count_matches(Identity)
     }
-    fn count_matches<P: Predicate>(self, predicate: P) -> usize {
+    fn count_matches<P: ScanPredicate>(self, predicate: P) -> usize
+    where
+        Self: GroupScan<'tree>,
+    {
         count_groups(self, predicate)
     }
 }
@@ -741,7 +747,7 @@ where
     accumulator
 }
 #[inline(always)]
-fn count_groups<'tree, S: GroupScan<'tree>, P: Predicate>(
+fn count_groups<'tree, S: GroupScan<'tree>, P: ScanPredicate>(
     mut source: S,
     mut predicate: P,
 ) -> usize {
@@ -861,7 +867,7 @@ impl<'tree, S: GroupScan<'tree>> Scan<'tree, S> {
         self.filtered(Missing(value))
     }
     #[inline(always)]
-    fn filtered<P: Predicate>(self, mut predicate: P) -> Scan<'tree, Filtered<S, P>> {
+    fn filtered<P: ScanPredicate>(self, mut predicate: P) -> Scan<'tree, Filtered<S, P>> {
         predicate.prepare(self.source.group());
         Scan::new(Filtered {
             source: self.source,
@@ -929,7 +935,7 @@ impl<'tree, S: GroupScan<'tree>> Iterator for Nodes<'tree, S> {
 impl<'tree, S: GroupScan<'tree>> FusedIterator for Nodes<'tree, S> {}
 
 /// Contiguous physical slots within a group.
-pub struct GroupSlots(Range<u32>);
+struct GroupSlots(Range<u32>);
 
 impl Iterator for GroupSlots {
     type Item = GroupSlotIx;
@@ -955,7 +961,7 @@ impl ExactSizeIterator for GroupSlots {}
 impl FusedIterator for GroupSlots {}
 
 /// Sparse fragment slots, with extraction direction fixed by the source type.
-pub struct MatchingSlots<S> {
+struct MatchingSlots<S> {
     matches: Mask,
     source: PhantomData<fn() -> S>,
 }
@@ -1034,7 +1040,7 @@ impl<'tree> Preorder<'tree> {
         const REVERSE: bool,
         const SUBTREES: bool,
         const INDEXED: bool,
-        P: Predicate,
+        P: ScanPredicate,
     >(
         &mut self,
         predicate: &mut P,
@@ -1091,7 +1097,7 @@ impl<'tree> Preorder<'tree> {
         }
     }
     #[inline(always)]
-    fn count_indexed<const SUBTREES: bool, P: Predicate>(mut self, predicate: &mut P) -> usize {
+    fn count_indexed<const SUBTREES: bool, P: ScanPredicate>(mut self, predicate: &mut P) -> usize {
         let mut count = 0;
         while let Some(matches) = self.next_matching_group::<false, SUBTREES, true, _>(predicate) {
             count += matches.count_ones() as usize;
@@ -1101,7 +1107,7 @@ impl<'tree> Preorder<'tree> {
     // Own the predicate and isolate the loop from index setup so column metadata
     // can stay in registers. The call is paid once per flat scan.
     #[inline(never)]
-    fn count_flat<P: Predicate>(mut self, mut predicate: P) -> usize {
+    fn count_flat<P: ScanPredicate>(mut self, mut predicate: P) -> usize {
         let mut count = 0;
         while let Some(matches) = if predicate.has_subtree_bound() {
             self.next_matching_group::<false, true, false, _>(&mut predicate)
@@ -1113,7 +1119,7 @@ impl<'tree> Preorder<'tree> {
         count
     }
     #[inline(always)]
-    fn next_indexed<const REVERSE: bool, const SUBTREES: bool, P: Predicate>(
+    fn next_indexed<const REVERSE: bool, const SUBTREES: bool, P: ScanPredicate>(
         &mut self,
         predicate: &mut P,
     ) -> Option<Mask> {
@@ -1130,7 +1136,7 @@ impl<'tree> Preorder<'tree> {
 // Only the remaining group interval is mutable across this call. Flat scan
 // kernels can keep their column metadata in registers between matching groups.
 #[inline(always)]
-fn indexed_group<const REVERSE: bool, const SUBTREES: bool, P: Predicate>(
+fn indexed_group<const REVERSE: bool, const SUBTREES: bool, P: ScanPredicate>(
     group: &GroupRef<'_>,
     groups: &mut Range<u32>,
     slots: Range<SlotIx>,
@@ -1145,9 +1151,10 @@ fn indexed_group<const REVERSE: bool, const SUBTREES: bool, P: Predicate>(
     *groups = source.groups;
     (source.group.index, matches)
 }
-impl sealed::Source for Preorder<'_> {}
 impl<'tree> GroupScan<'tree> for Preorder<'tree> {
     type Reversed = ReversePreorder<'tree>;
+}
+impl<'tree> ScanSource<'tree> for Preorder<'tree> {
     type Slots = std::iter::Rev<GroupSlots>;
     const DESCENDING: bool = true;
     #[inline]
@@ -1161,7 +1168,7 @@ impl<'tree> GroupScan<'tree> for Preorder<'tree> {
             .map(|range| GroupSlots(range).rev())
     }
     #[inline]
-    fn reverse(self) -> Self::Reversed {
+    fn reverse(self) -> <Self as GroupScan<'tree>>::Reversed {
         ReversePreorder(self)
     }
     #[inline]
@@ -1177,7 +1184,7 @@ impl<'tree> GroupScan<'tree> for Preorder<'tree> {
             .sum()
     }
     #[inline(always)]
-    fn count_matches<P: Predicate>(self, mut predicate: P) -> usize {
+    fn count_matches<P: ScanPredicate>(self, mut predicate: P) -> usize {
         if !predicate.has_group_index() {
             predicate.count_flat(self)
         } else if predicate.has_subtree_bound() {
@@ -1191,7 +1198,7 @@ impl<'tree> GroupScan<'tree> for Preorder<'tree> {
         &self.group
     }
     #[inline(always)]
-    fn next_matching<P: Predicate>(&mut self, predicate: &mut P) -> Option<Mask> {
+    fn next_matching<P: ScanPredicate>(&mut self, predicate: &mut P) -> Option<Mask> {
         match (predicate.has_group_index(), predicate.has_subtree_bound()) {
             (true, true) => self.next_indexed::<false, true, _>(predicate),
             (true, false) => self.next_indexed::<false, false, _>(predicate),
@@ -1213,9 +1220,10 @@ impl<'tree> GroupScan<'tree> for Preorder<'tree> {
 
 /// Reverse preorder over the same physical group and subtree bounds.
 pub struct ReversePreorder<'tree>(Preorder<'tree>);
-impl sealed::Source for ReversePreorder<'_> {}
 impl<'tree> GroupScan<'tree> for ReversePreorder<'tree> {
     type Reversed = Preorder<'tree>;
+}
+impl<'tree> ScanSource<'tree> for ReversePreorder<'tree> {
     type Slots = GroupSlots;
     const DESCENDING: bool = false;
     #[inline]
@@ -1227,7 +1235,7 @@ impl<'tree> GroupScan<'tree> for ReversePreorder<'tree> {
         self.0.next_range::<true>().map(GroupSlots)
     }
     #[inline]
-    fn reverse(self) -> Self::Reversed {
+    fn reverse(self) -> <Self as GroupScan<'tree>>::Reversed {
         self.0
     }
     #[inline]
@@ -1235,7 +1243,7 @@ impl<'tree> GroupScan<'tree> for ReversePreorder<'tree> {
         self.0.count()
     }
     #[inline]
-    fn count_matches<P: Predicate>(self, predicate: P) -> usize {
+    fn count_matches<P: ScanPredicate>(self, predicate: P) -> usize {
         self.0.count_matches(predicate)
     }
     #[inline]
@@ -1243,7 +1251,7 @@ impl<'tree> GroupScan<'tree> for ReversePreorder<'tree> {
         &self.0.group
     }
     #[inline(always)]
-    fn next_matching<P: Predicate>(&mut self, predicate: &mut P) -> Option<Mask> {
+    fn next_matching<P: ScanPredicate>(&mut self, predicate: &mut P) -> Option<Mask> {
         if predicate.has_group_index() {
             self.0
                 .next_matching_group::<true, false, true, _>(predicate)
@@ -1316,9 +1324,10 @@ impl<'tree> Postorder<'tree> {
         }
     }
 }
-impl sealed::Source for Postorder<'_> {}
 impl<'tree> GroupScan<'tree> for Postorder<'tree> {
     type Reversed = ReversePostorder<'tree>;
+}
+impl<'tree> ScanSource<'tree> for Postorder<'tree> {
     type Slots = MatchingSlots<Self>;
     const DESCENDING: bool = true;
     #[inline]
@@ -1326,7 +1335,7 @@ impl<'tree> GroupScan<'tree> for Postorder<'tree> {
         MatchingSlots::new(matches)
     }
     #[inline]
-    fn reverse(self) -> Self::Reversed {
+    fn reverse(self) -> <Self as GroupScan<'tree>>::Reversed {
         ReversePostorder {
             group: self.group,
             pending: Vec::new(),
@@ -1347,7 +1356,7 @@ impl<'tree> GroupScan<'tree> for Postorder<'tree> {
         &self.group
     }
     #[inline]
-    fn count_matches<P: Predicate>(self, predicate: P) -> usize {
+    fn count_matches<P: ScanPredicate>(self, predicate: P) -> usize {
         // Counts do not observe order; partial scans must retain their topology.
         if !self.traversal.started {
             Preorder::new(self.group.columns).count_matches(predicate)
@@ -1370,9 +1379,10 @@ pub struct ReversePostorder<'tree> {
     expand: Option<SlotIx>,
     started: bool,
 }
-impl sealed::Source for ReversePostorder<'_> {}
 impl<'tree> GroupScan<'tree> for ReversePostorder<'tree> {
     type Reversed = Postorder<'tree>;
+}
+impl<'tree> ScanSource<'tree> for ReversePostorder<'tree> {
     type Slots = MatchingSlots<Self>;
     const DESCENDING: bool = false;
     #[inline]
@@ -1380,7 +1390,7 @@ impl<'tree> GroupScan<'tree> for ReversePostorder<'tree> {
         MatchingSlots::new(matches)
     }
     #[inline]
-    fn reverse(self) -> Self::Reversed {
+    fn reverse(self) -> <Self as GroupScan<'tree>>::Reversed {
         Postorder::new(self.group.columns)
     }
     #[inline]
@@ -1396,7 +1406,7 @@ impl<'tree> GroupScan<'tree> for ReversePostorder<'tree> {
         }
     }
     #[inline]
-    fn count_matches<P: Predicate>(self, predicate: P) -> usize {
+    fn count_matches<P: ScanPredicate>(self, predicate: P) -> usize {
         if !self.started {
             Preorder::new(self.group.columns).count_matches(predicate)
         } else {
@@ -2083,14 +2093,18 @@ position_relation!(
 );
 
 /// Sources that still permit range restriction; filters do not implement this trait.
-pub trait UnrestrictedScan: sealed::Source {
+#[allow(private_bounds)]
+pub trait UnrestrictedScan: RangeScan {}
+impl<S: RangeScan> UnrestrictedScan for S {}
+
+trait RangeScan {
     fn restrict<C: Coordinates>(
         &mut self,
         coordinates: &C,
         bounds: (Bound<C::Position>, Bound<C::Position>),
     );
 }
-impl UnrestrictedScan for Preorder<'_> {
+impl RangeScan for Preorder<'_> {
     // Specialize constant bound variants before entering either search.
     #[inline(always)]
     fn restrict<C: Coordinates>(
@@ -2142,7 +2156,7 @@ impl UnrestrictedScan for Preorder<'_> {
         }
     }
 }
-impl UnrestrictedScan for ReversePreorder<'_> {
+impl RangeScan for ReversePreorder<'_> {
     #[inline(always)]
     fn restrict<C: Coordinates>(
         &mut self,
@@ -2152,10 +2166,10 @@ impl UnrestrictedScan for ReversePreorder<'_> {
         self.0.restrict(coordinates, bounds);
     }
 }
-impl UnrestrictedScan for Postorder<'_> {
+impl RangeScan for Postorder<'_> {
     fn restrict<C: Coordinates>(&mut self, _: &C, _: (Bound<C::Position>, Bound<C::Position>)) {}
 }
-impl UnrestrictedScan for ReversePostorder<'_> {
+impl RangeScan for ReversePostorder<'_> {
     fn restrict<C: Coordinates>(&mut self, _: &C, _: (Bound<C::Position>, Bound<C::Position>)) {}
 }
 
@@ -2173,18 +2187,12 @@ pub type OverlappingBytes<S> = Restricted<S, Selection<Bytes, Overlapping<usize>
 pub type PreorderOverlappingBytes<'tree> = OverlappingBytes<Preorder<'tree>>;
 
 macro_rules! selection_method {
-    ($method:ident, $coordinates:ident, $relation:ident, $input:ty, $documentation:literal) => {
+    ($method:ident, $coordinates:ident, $position:ty, $relation:ident, $input:ty, $documentation:literal) => {
         #[doc = $documentation]
         pub fn $method(
             self,
             value: $input,
-        ) -> Scan<
-            'tree,
-            Restricted<
-                S,
-                Selection<$coordinates, $relation<<$coordinates as Coordinates>::Position>>,
-            >,
-        > {
+        ) -> Scan<'tree, Restricted<S, Selection<$coordinates, $relation<$position>>>> {
             self.selected::<$coordinates, _>($relation(value))
         }
     };
@@ -2209,6 +2217,7 @@ impl<'tree, S: UnrestrictedScan + GroupScan<'tree>> Scan<'tree, S> {
     selection_method!(
         overlapping_bytes,
         Bytes,
+        usize,
         Overlapping,
         Range<usize>,
         "Intersect a nonempty byte range, including zero-width nodes at positions inside it."
@@ -2216,6 +2225,7 @@ impl<'tree, S: UnrestrictedScan + GroupScan<'tree>> Scan<'tree, S> {
     selection_method!(
         within_bytes,
         Bytes,
+        usize,
         Within,
         Range<usize>,
         "Match spans wholly within a byte range. Zero-width nodes at either boundary qualify, including for empty queries."
@@ -2223,6 +2233,7 @@ impl<'tree, S: UnrestrictedScan + GroupScan<'tree>> Scan<'tree, S> {
     selection_method!(
         containing_bytes,
         Bytes,
+        usize,
         Containing,
         Range<usize>,
         "Match spans enclosing a byte range, including equal spans. Empty queries use inclusive endpoint containment."
@@ -2230,6 +2241,7 @@ impl<'tree, S: UnrestrictedScan + GroupScan<'tree>> Scan<'tree, S> {
     selection_method!(
         starting_in_bytes,
         Bytes,
+        usize,
         StartingIn,
         Range<usize>,
         "Match start offsets inside a half-open byte range."
@@ -2237,6 +2249,7 @@ impl<'tree, S: UnrestrictedScan + GroupScan<'tree>> Scan<'tree, S> {
     selection_method!(
         ending_in_bytes,
         Bytes,
+        usize,
         EndingIn,
         Range<usize>,
         "Match exclusive end offsets inside a half-open byte range."
@@ -2244,6 +2257,7 @@ impl<'tree, S: UnrestrictedScan + GroupScan<'tree>> Scan<'tree, S> {
     selection_method!(
         overlapping_points,
         Points,
+        Point,
         Overlapping,
         Range<Point>,
         "Point-coordinate counterpart of `overlapping_bytes`, including zero-width nodes."
@@ -2251,6 +2265,7 @@ impl<'tree, S: UnrestrictedScan + GroupScan<'tree>> Scan<'tree, S> {
     selection_method!(
         within_points,
         Points,
+        Point,
         Within,
         Range<Point>,
         "Point-coordinate counterpart of `within_bytes`, including zero-width nodes at either boundary."
@@ -2258,6 +2273,7 @@ impl<'tree, S: UnrestrictedScan + GroupScan<'tree>> Scan<'tree, S> {
     selection_method!(
         containing_points,
         Points,
+        Point,
         Containing,
         Range<Point>,
         "Match spans enclosing a point range, including equal spans. Empty queries use inclusive endpoint containment."
@@ -2265,6 +2281,7 @@ impl<'tree, S: UnrestrictedScan + GroupScan<'tree>> Scan<'tree, S> {
     selection_method!(
         starting_in_points,
         Points,
+        Point,
         StartingIn,
         Range<Point>,
         "Match start positions inside a half-open point range."
@@ -2272,6 +2289,7 @@ impl<'tree, S: UnrestrictedScan + GroupScan<'tree>> Scan<'tree, S> {
     selection_method!(
         ending_in_points,
         Points,
+        Point,
         EndingIn,
         Range<Point>,
         "Match exclusive end positions inside a half-open point range."
@@ -2279,6 +2297,7 @@ impl<'tree, S: UnrestrictedScan + GroupScan<'tree>> Scan<'tree, S> {
     selection_method!(
         containing_byte,
         Bytes,
+        usize,
         ContainingPosition,
         usize,
         "Match `start <= offset < end`; zero-width nodes do not qualify."
@@ -2286,6 +2305,7 @@ impl<'tree, S: UnrestrictedScan + GroupScan<'tree>> Scan<'tree, S> {
     selection_method!(
         starting_at_byte,
         Bytes,
+        usize,
         StartingAt,
         usize,
         "Match an exact start offset, including zero-width nodes."
@@ -2293,6 +2313,7 @@ impl<'tree, S: UnrestrictedScan + GroupScan<'tree>> Scan<'tree, S> {
     selection_method!(
         ending_at_byte,
         Bytes,
+        usize,
         EndingAt,
         usize,
         "Match an exact exclusive end offset, including zero-width nodes."
@@ -2300,6 +2321,7 @@ impl<'tree, S: UnrestrictedScan + GroupScan<'tree>> Scan<'tree, S> {
     selection_method!(
         containing_point,
         Points,
+        Point,
         ContainingPosition,
         Point,
         "Match `start <= position < end`; zero-width nodes do not qualify."
@@ -2307,6 +2329,7 @@ impl<'tree, S: UnrestrictedScan + GroupScan<'tree>> Scan<'tree, S> {
     selection_method!(
         starting_at_point,
         Points,
+        Point,
         StartingAt,
         Point,
         "Match an exact start position, including zero-width nodes."
@@ -2314,14 +2337,13 @@ impl<'tree, S: UnrestrictedScan + GroupScan<'tree>> Scan<'tree, S> {
     selection_method!(
         ending_at_point,
         Points,
+        Point,
         EndingAt,
         Point,
         "Match an exact exclusive end position, including zero-width nodes."
     );
 }
-impl<S: sealed::Source, P> sealed::Source for Restricted<S, P> {}
-impl<C, R> sealed::Predicate for Selection<C, R> {}
-impl<C: Coordinates, R: Relation<C::Position>> Predicate for Selection<C, R> {
+impl<C: Coordinates, R: Relation<C::Position>> ScanPredicate for Selection<C, R> {
     #[inline(always)]
     fn has_subtree_bound(&self) -> bool {
         if !C::PRUNE_SUBTREES {
@@ -2354,6 +2376,10 @@ impl<'tree, S: GroupScan<'tree>, C: Coordinates, R: Relation<C::Position>> Group
     for Restricted<S, Selection<C, R>>
 {
     type Reversed = Restricted<S::Reversed, Selection<C, R>>;
+}
+impl<'tree, S: GroupScan<'tree>, C: Coordinates, R: Relation<C::Position>> ScanSource<'tree>
+    for Restricted<S, Selection<C, R>>
+{
     type Slots = MatchingSlots<Self>;
     const DESCENDING: bool = S::DESCENDING;
     #[inline]
@@ -2361,7 +2387,7 @@ impl<'tree, S: GroupScan<'tree>, C: Coordinates, R: Relation<C::Position>> Group
         MatchingSlots::new(matches)
     }
     #[inline]
-    fn reverse(self) -> Self::Reversed {
+    fn reverse(self) -> <Self as GroupScan<'tree>>::Reversed {
         Restricted {
             source: self.source.reverse(),
             selection: self.selection,
@@ -2379,7 +2405,7 @@ impl<'tree, S: GroupScan<'tree>, C: Coordinates, R: Relation<C::Position>> Group
         self.source.count_matches(self.selection)
     }
     #[inline(always)]
-    fn count_matches<P: Predicate>(self, predicate: P) -> usize {
+    fn count_matches<P: ScanPredicate>(self, predicate: P) -> usize {
         if self.selection.relation.is_empty() {
             return 0;
         }
@@ -2393,7 +2419,7 @@ impl<'tree, S: GroupScan<'tree>, C: Coordinates, R: Relation<C::Position>> Group
         self.source.next_matching(&mut self.selection)
     }
     #[inline(always)]
-    fn next_matching<P: Predicate>(&mut self, predicate: &mut P) -> Option<Mask> {
+    fn next_matching<P: ScanPredicate>(&mut self, predicate: &mut P) -> Option<Mask> {
         if self.selection.relation.is_empty() {
             return None;
         }
@@ -2402,7 +2428,12 @@ impl<'tree, S: GroupScan<'tree>, C: Coordinates, R: Relation<C::Position>> Group
     }
 }
 
-pub trait Predicate: sealed::Predicate {
+/// A scan filter. Implementations and execution are internal.
+#[allow(private_bounds)]
+pub trait Predicate: ScanPredicate {}
+impl<P: ScanPredicate + ?Sized> Predicate for P {}
+
+trait ScanPredicate {
     #[inline]
     fn fold_nodes<'tree, S: GroupScan<'tree>, B, F>(self, source: S, accumulator: B, fold: F) -> B
     where
@@ -2420,12 +2451,12 @@ pub trait Predicate: sealed::Predicate {
     }
     /// Comparison state without group-index traversal.
     #[inline(always)]
-    fn flat(&self) -> impl Predicate {
+    fn flat(&self) -> impl ScanPredicate {
         self
     }
 
     #[inline(always)]
-    fn into_flat(self) -> impl Predicate
+    fn into_flat(self) -> impl ScanPredicate
     where
         Self: Sized,
     {
@@ -2484,8 +2515,7 @@ pub trait Predicate: sealed::Predicate {
 
 // Shared predicate views carry comparison and subtree bounds.
 // Preparation and indexed traversal use the owning predicate.
-impl<P: Predicate + ?Sized> sealed::Predicate for &P {}
-impl<P: Predicate + ?Sized> Predicate for &P {
+impl<P: ScanPredicate + ?Sized> ScanPredicate for &P {
     #[inline(always)]
     fn has_subtree_bound(&self) -> bool {
         P::has_subtree_bound(self)
@@ -2507,10 +2537,9 @@ impl<P: Predicate + ?Sized> Predicate for &P {
     }
 }
 
-impl<P: Predicate> sealed::Predicate for &mut P {}
-impl<P: Predicate> Predicate for &mut P {
+impl<P: ScanPredicate> ScanPredicate for &mut P {
     #[inline(always)]
-    fn flat(&self) -> impl Predicate {
+    fn flat(&self) -> impl ScanPredicate {
         P::flat(self)
     }
 
@@ -2545,23 +2574,21 @@ impl<P: Predicate> Predicate for &mut P {
     }
 }
 struct Identity;
-impl sealed::Predicate for Identity {}
-impl Predicate for Identity {
+impl ScanPredicate for Identity {
     #[inline(always)]
     fn retain_matches(&self, _: &GroupRef<'_>, candidates: Mask) -> Mask {
         candidates
     }
 }
 struct And<P, Q>(P, Q);
-impl<P: Predicate, Q: Predicate> sealed::Predicate for And<P, Q> {}
-impl<P: Predicate, Q: Predicate> Predicate for And<P, Q> {
+impl<P: ScanPredicate, Q: ScanPredicate> ScanPredicate for And<P, Q> {
     #[inline(always)]
-    fn flat(&self) -> impl Predicate {
+    fn flat(&self) -> impl ScanPredicate {
         And(self.0.flat(), self.1.flat())
     }
 
     #[inline(always)]
-    fn into_flat(self) -> impl Predicate {
+    fn into_flat(self) -> impl ScanPredicate {
         And(self.0.into_flat(), self.1.into_flat())
     }
 
@@ -2608,9 +2635,10 @@ pub struct Filtered<S, P> {
     source: S,
     predicate: P,
 }
-impl<S: sealed::Source, P: Predicate> sealed::Source for Filtered<S, P> {}
-impl<'tree, S: GroupScan<'tree>, P: Predicate> GroupScan<'tree> for Filtered<S, P> {
+impl<'tree, S: GroupScan<'tree>, P: ScanPredicate> GroupScan<'tree> for Filtered<S, P> {
     type Reversed = Filtered<S::Reversed, P>;
+}
+impl<'tree, S: GroupScan<'tree>, P: ScanPredicate> ScanSource<'tree> for Filtered<S, P> {
     type Slots = MatchingSlots<Self>;
     const DESCENDING: bool = S::DESCENDING;
     #[inline]
@@ -2618,7 +2646,7 @@ impl<'tree, S: GroupScan<'tree>, P: Predicate> GroupScan<'tree> for Filtered<S, 
         MatchingSlots::new(matches)
     }
     #[inline]
-    fn reverse(self) -> Self::Reversed {
+    fn reverse(self) -> <Self as GroupScan<'tree>>::Reversed {
         Filtered {
             source: self.source.reverse(),
             predicate: self.predicate,
@@ -2645,7 +2673,7 @@ impl<'tree, S: GroupScan<'tree>, P: Predicate> GroupScan<'tree> for Filtered<S, 
     }
 
     #[inline(always)]
-    fn count_matches<Q: Predicate>(self, predicate: Q) -> usize {
+    fn count_matches<Q: ScanPredicate>(self, predicate: Q) -> usize {
         self.source.count_matches(And(self.predicate, predicate))
     }
     #[inline(always)]
@@ -2664,7 +2692,7 @@ impl<'tree, S: GroupScan<'tree>, P: Predicate> GroupScan<'tree> for Filtered<S, 
         }
     }
     #[inline(always)]
-    fn next_matching<Q: Predicate>(&mut self, predicate: &mut Q) -> Option<Mask> {
+    fn next_matching<Q: ScanPredicate>(&mut self, predicate: &mut Q) -> Option<Mask> {
         if predicate.has_group_index() {
             return self
                 .source
@@ -2682,22 +2710,30 @@ impl<'tree, S: GroupScan<'tree>, P: Predicate> GroupScan<'tree> for Filtered<S, 
     }
 }
 
+trait KindSelection {
+    fn into_kind_predicate(self, group: &GroupRef<'_>) -> <Self as IdSelection>::KindPredicate
+    where
+        Self: IdSelection;
+}
+
 /// Kind selections accepted by scans. Array lengths specialize the scan.
-pub trait IdSelection: sealed::IdSelection {
+#[allow(private_bounds)]
+pub trait IdSelection: KindSelection {
     type KindPredicate: Predicate;
-    fn into_kind_predicate(self, group: &GroupRef<'_>) -> Self::KindPredicate;
     fn contains_id(&self, id: KindId) -> bool;
     fn is_empty(&self) -> bool;
 }
-impl sealed::IdSelection for &KindSet {}
-impl<'ids> IdSelection for &'ids KindSet {
-    type KindPredicate = KindIds<'ids>;
-    fn into_kind_predicate(self, _: &GroupRef<'_>) -> Self::KindPredicate {
+impl<'ids> KindSelection for &'ids KindSet {
+    fn into_kind_predicate(self, _: &GroupRef<'_>) -> <Self as IdSelection>::KindPredicate {
         KindIds {
             strategy: KindStrategy::Multiple(self),
             index: SymbolIndex::default(),
         }
     }
+}
+impl<'ids> IdSelection for &'ids KindSet {
+    type KindPredicate = KindIds<'ids>;
+
     fn contains_id(&self, id: KindId) -> bool {
         self.contains(id)
     }
@@ -2705,11 +2741,9 @@ impl<'ids> IdSelection for &'ids KindSet {
         KindSet::is_empty(self)
     }
 }
-impl<const N: usize> sealed::IdSelection for [KindId; N] {}
-impl<const N: usize> IdSelection for [KindId; N] {
-    type KindPredicate = ArrayKindIds<N>;
+impl<const N: usize> KindSelection for [KindId; N] {
     #[inline(always)]
-    fn into_kind_predicate(self, group: &GroupRef<'_>) -> Self::KindPredicate {
+    fn into_kind_predicate(self, group: &GroupRef<'_>) -> <Self as IdSelection>::KindPredicate {
         let encode = |kind| group.columns.encode_kind(kind);
         let first = self.iter().copied().find_map(encode);
         // Repeating a valid target preserves membership without an invalid sentinel.
@@ -2726,6 +2760,10 @@ impl<const N: usize> IdSelection for [KindId; N] {
             index: SymbolIndex::default(),
         }
     }
+}
+impl<const N: usize> IdSelection for [KindId; N] {
+    type KindPredicate = ArrayKindIds<N>;
+
     fn contains_id(&self, id: KindId) -> bool {
         self.contains(&id)
     }
@@ -2733,13 +2771,15 @@ impl<const N: usize> IdSelection for [KindId; N] {
         N == 0
     }
 }
-impl<const N: usize> sealed::IdSelection for &[KindId; N] {}
-impl<const N: usize> IdSelection for &[KindId; N] {
-    type KindPredicate = ArrayKindIds<N>;
+impl<const N: usize> KindSelection for &[KindId; N] {
     #[inline(always)]
-    fn into_kind_predicate(self, group: &GroupRef<'_>) -> Self::KindPredicate {
+    fn into_kind_predicate(self, group: &GroupRef<'_>) -> <Self as IdSelection>::KindPredicate {
         (*self).into_kind_predicate(group)
     }
+}
+impl<const N: usize> IdSelection for &[KindId; N] {
+    type KindPredicate = ArrayKindIds<N>;
+
     fn contains_id(&self, id: KindId) -> bool {
         self.contains(&id)
     }
@@ -2748,45 +2788,56 @@ impl<const N: usize> IdSelection for &[KindId; N] {
     }
 }
 
-/// Field selections accepted by scans; `None` selects nodes with no field.
-pub trait FieldSelection: sealed::IdSelection {
-    type FieldPredicate: Predicate;
-    fn into_field_predicate(self) -> Self::FieldPredicate;
+trait FieldSelectionSource {
+    fn into_field_predicate(self) -> <Self as FieldSelection>::FieldPredicate
+    where
+        Self: FieldSelection;
 }
-impl sealed::IdSelection for &FieldSet {}
-impl<'ids> FieldSelection for &'ids FieldSet {
-    type FieldPredicate = FieldIds<'ids>;
-    fn into_field_predicate(self) -> Self::FieldPredicate {
+
+/// Field selections accepted by scans; `None` selects nodes with no field.
+#[allow(private_bounds)]
+pub trait FieldSelection: FieldSelectionSource {
+    type FieldPredicate: Predicate;
+}
+impl<'ids> FieldSelectionSource for &'ids FieldSet {
+    fn into_field_predicate(self) -> <Self as FieldSelection>::FieldPredicate {
         FieldIds(self)
     }
 }
-impl<const N: usize> sealed::IdSelection for [Option<FieldId>; N] {}
-impl<const N: usize> FieldSelection for [Option<FieldId>; N] {
-    type FieldPredicate = ArrayFieldIds<N>;
-    fn into_field_predicate(self) -> Self::FieldPredicate {
+impl<'ids> FieldSelection for &'ids FieldSet {
+    type FieldPredicate = FieldIds<'ids>;
+}
+impl<const N: usize> FieldSelectionSource for [Option<FieldId>; N] {
+    fn into_field_predicate(self) -> <Self as FieldSelection>::FieldPredicate {
         ArrayFieldIds(self)
     }
 }
-impl<const N: usize> sealed::IdSelection for [FieldId; N] {}
-impl<const N: usize> FieldSelection for [FieldId; N] {
+impl<const N: usize> FieldSelection for [Option<FieldId>; N] {
     type FieldPredicate = ArrayFieldIds<N>;
-    fn into_field_predicate(self) -> Self::FieldPredicate {
+}
+impl<const N: usize> FieldSelectionSource for [FieldId; N] {
+    fn into_field_predicate(self) -> <Self as FieldSelection>::FieldPredicate {
         ArrayFieldIds(self.map(Some))
     }
 }
-impl<const N: usize> sealed::IdSelection for &[FieldId; N] {}
-impl<const N: usize> FieldSelection for &[FieldId; N] {
+impl<const N: usize> FieldSelection for [FieldId; N] {
     type FieldPredicate = ArrayFieldIds<N>;
-    fn into_field_predicate(self) -> Self::FieldPredicate {
+}
+impl<const N: usize> FieldSelectionSource for &[FieldId; N] {
+    fn into_field_predicate(self) -> <Self as FieldSelection>::FieldPredicate {
         (*self).into_field_predicate()
     }
 }
-impl<const N: usize> sealed::IdSelection for &[Option<FieldId>; N] {}
-impl<const N: usize> FieldSelection for &[Option<FieldId>; N] {
+impl<const N: usize> FieldSelection for &[FieldId; N] {
     type FieldPredicate = ArrayFieldIds<N>;
-    fn into_field_predicate(self) -> Self::FieldPredicate {
+}
+impl<const N: usize> FieldSelectionSource for &[Option<FieldId>; N] {
+    fn into_field_predicate(self) -> <Self as FieldSelection>::FieldPredicate {
         (*self).into_field_predicate()
     }
+}
+impl<const N: usize> FieldSelection for &[Option<FieldId>; N] {
+    type FieldPredicate = ArrayFieldIds<N>;
 }
 
 pub struct ArrayKindIds<const N: usize> {
@@ -2819,8 +2870,7 @@ impl KindPredicate {
     }
 }
 
-impl sealed::Predicate for KindPredicate {}
-impl Predicate for KindPredicate {
+impl ScanPredicate for KindPredicate {
     #[inline(always)]
     fn retain_matches(&self, group: &GroupRef<'_>, candidates: Mask) -> Mask {
         if self.width == 1 {
@@ -2831,8 +2881,7 @@ impl Predicate for KindPredicate {
     }
 }
 
-impl<const N: usize> sealed::Predicate for ArrayKindValues<N> {}
-impl<const N: usize> Predicate for ArrayKindValues<N> {
+impl<const N: usize> ScanPredicate for ArrayKindValues<N> {
     #[inline(always)]
     fn retain_matches(&self, group: &GroupRef<'_>, candidates: Mask) -> Mask {
         if self.empty {
@@ -2843,8 +2892,7 @@ impl<const N: usize> Predicate for ArrayKindValues<N> {
     }
 }
 
-impl<const N: usize> sealed::Predicate for ArrayKindIds<N> {}
-impl<const N: usize> Predicate for ArrayKindIds<N> {
+impl<const N: usize> ScanPredicate for ArrayKindIds<N> {
     #[inline(always)]
     fn count_flat(self, source: Preorder<'_>) -> usize {
         if self.values.empty {
@@ -2858,14 +2906,14 @@ impl<const N: usize> Predicate for ArrayKindIds<N> {
     }
 
     #[inline(always)]
-    fn flat(&self) -> impl Predicate {
+    fn flat(&self) -> impl ScanPredicate {
         // Give the loop its own encoded IDs so advancing the source cannot
         // obscure their independence from the source position.
         self.values
     }
 
     #[inline(always)]
-    fn into_flat(self) -> impl Predicate {
+    fn into_flat(self) -> impl ScanPredicate {
         self.values
     }
 
@@ -2930,8 +2978,7 @@ impl KindStrategy<'_> {
         )
     }
 }
-impl sealed::Predicate for KindIds<'_> {}
-impl Predicate for KindIds<'_> {
+impl ScanPredicate for KindIds<'_> {
     #[inline]
     fn fold_nodes<'tree, S: GroupScan<'tree>, B, F>(self, source: S, accumulator: B, fold: F) -> B
     where
@@ -2988,12 +3035,12 @@ impl Predicate for KindIds<'_> {
     }
 
     #[inline(always)]
-    fn flat(&self) -> impl Predicate {
+    fn flat(&self) -> impl ScanPredicate {
         &self.strategy
     }
 
     #[inline(always)]
-    fn into_flat(self) -> impl Predicate {
+    fn into_flat(self) -> impl ScanPredicate {
         self.strategy
     }
 
@@ -3060,8 +3107,7 @@ impl Predicate for KindIds<'_> {
     }
 }
 
-impl sealed::Predicate for KindStrategy<'_> {}
-impl Predicate for KindStrategy<'_> {
+impl ScanPredicate for KindStrategy<'_> {
     // Inlining lets node consumers discard unused group metadata.
     #[inline(always)]
     fn retain_matches(&self, group: &GroupRef<'_>, candidates: Mask) -> Mask {
@@ -3113,16 +3159,14 @@ fn retain_kind_set(group: &GroupRef<'_>, candidates: Mask, kinds: &KindSet) -> M
     candidates.intersection(Mask(matches))
 }
 pub struct ArrayFieldIds<const N: usize>([Option<FieldId>; N]);
-impl<const N: usize> sealed::Predicate for ArrayFieldIds<N> {}
-impl<const N: usize> Predicate for ArrayFieldIds<N> {
+impl<const N: usize> ScanPredicate for ArrayFieldIds<N> {
     #[inline(always)]
     fn retain_matches(&self, group: &GroupRef<'_>, candidates: Mask) -> Mask {
         group.equal_id_set(group.columns.layout().field, &self.0, candidates)
     }
 }
 pub struct FieldIds<'ids>(&'ids FieldSet);
-impl sealed::Predicate for FieldIds<'_> {}
-impl Predicate for FieldIds<'_> {
+impl ScanPredicate for FieldIds<'_> {
     #[inline]
     fn retain_matches(&self, group: &GroupRef<'_>, candidates: Mask) -> Mask {
         let column = group.columns.layout().field;
@@ -3150,8 +3194,7 @@ impl Predicate for FieldIds<'_> {
     }
 }
 pub struct FieldPredicate(Option<FieldId>);
-impl sealed::Predicate for FieldPredicate {}
-impl Predicate for FieldPredicate {
+impl ScanPredicate for FieldPredicate {
     #[inline]
     fn retain_matches(&self, group: &GroupRef<'_>, candidates: Mask) -> Mask {
         group.equal_ids(
@@ -3162,8 +3205,7 @@ impl Predicate for FieldPredicate {
     }
 }
 pub struct Extra(bool);
-impl sealed::Predicate for Extra {}
-impl Predicate for Extra {
+impl ScanPredicate for Extra {
     #[inline]
     fn retain_matches(&self, group: &GroupRef<'_>, candidates: Mask) -> Mask {
         let flags = if group.columns.tree().flags() & crate::storage::EXTRAS != 0 {
@@ -3175,8 +3217,7 @@ impl Predicate for Extra {
     }
 }
 pub struct Missing(bool);
-impl sealed::Predicate for Missing {}
-impl Predicate for Missing {
+impl ScanPredicate for Missing {
     #[inline]
     fn retain_matches(&self, group: &GroupRef<'_>, candidates: Mask) -> Mask {
         let flags = if group.columns.tree().flags() & crate::storage::MISSING != 0 {
@@ -3212,8 +3253,7 @@ pub struct SupertypeId {
     symbol: GrammarId,
     index: Option<usize>,
 }
-impl sealed::Predicate for SupertypeId {}
-impl Predicate for SupertypeId {
+impl ScanPredicate for SupertypeId {
     #[inline]
     fn prepare(&mut self, group: &GroupRef<'_>) {
         self.index = group
