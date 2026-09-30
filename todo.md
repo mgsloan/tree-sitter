@@ -6,13 +6,11 @@ Lean
 
 # Todos
 
-- [ ] Sweep of primitives for spots they should be newtypes
+- [ ] Private GroupIx / GroupSlotIx - generally private storage decisions
 
 - [ ] newtype for SlotSpan?  slot.is_multiple_of(GROUP_SIZE) helper method - other such methods?
 
-- [ ] Do not namespace qualify types that are unique to tree-squatter
-
-- [ ] Make SlotIx private
+- [ ] Add `.ix()` for `.raw() as usize`
 
 - [ ] Update agent rules about documentation and refine documentation.  Should copy text from tree-sitter docs where sensible.  Should describe what's important / guaranteed to the user, not how it's implemented
 
