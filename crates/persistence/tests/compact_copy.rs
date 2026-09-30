@@ -109,7 +109,7 @@ fn point_free_trees_use_byte_offsets_as_single_line_points() {
         let mut execution = cursor.execute(&query, tree.root_node(), source.as_slice());
         let mut ranges = Vec::new();
         while let Some((result, index)) = execution.next_capture() {
-            ranges.push(result.captures()[index.raw() as usize].node.byte_range());
+            ranges.push(result.captures()[index.ix()].node.byte_range());
         }
         ranges
     };

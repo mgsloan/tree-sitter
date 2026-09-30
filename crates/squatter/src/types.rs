@@ -29,7 +29,22 @@ macro_rules! integer_type {
     };
 }
 
-integer_type!(
+macro_rules! index_type {
+    ($(#[$attribute:meta])* $visibility:vis $name:ident($($integer:tt)*)) => {
+        integer_type!($(#[$attribute])* $visibility $name($($integer)*));
+
+        impl $name {
+            /// Returns the raw value as a slice index.
+            #[inline]
+            #[allow(dead_code)]
+            pub const fn ix(self) -> usize {
+                self.raw() as usize
+            }
+        }
+    };
+}
+
+index_type!(
     /// A displayed node kind, including aliases, in a particular grammar.
     ///
     /// **Not in Tree-sitter:** it uses `u16` instead.
@@ -40,12 +55,12 @@ integer_type!(
     /// # }
     /// ```
     pub KindId(u16));
-integer_type!(
+index_type!(
     /// A node kind in the original grammar, ignoring aliases.
     ///
     /// **Not in Tree-sitter:** it uses `u16` instead.
     pub GrammarId(u16));
-integer_type!(
+index_type!(
     /// An absolute physical slot in a forest's reverse-preorder storage.
     ///
     /// **Not in Tree-sitter**
@@ -57,10 +72,10 @@ integer_type!(
     #[derive(Default)]
     pub(crate) SlotSpan(u32));
 
-integer_type!(
+index_type!(
     /// A physical tree index, local to one forest.
     pub TreeIx(u32));
-integer_type!(
+index_type!(
     /// A region index, local to one forest.
     pub RegionIx(u32));
 
@@ -108,6 +123,12 @@ impl NodeId {
 pub struct FieldId(NonZeroU16);
 
 impl FieldId {
+    /// Returns the raw value as a slice index.
+    #[inline]
+    pub const fn ix(self) -> usize {
+        self.raw() as usize
+    }
+
     /// Rejects zero; membership in a grammar is not checked.
     #[inline]
     pub const fn from_raw(value: u16) -> Option<Self> {
@@ -129,16 +150,16 @@ impl From<NonZeroU16> for FieldId {
     }
 }
 
-integer_type!(
+index_type!(
     /// A physical group index, local to one forest.
     pub(crate) GroupIx(u32));
-integer_type!(
+index_type!(
     /// A physical slot relative to one group.
     pub(crate) GroupSlotIx(u32));
-integer_type!(#[derive(Default)]
+index_type!(#[derive(Default)]
     pub(crate) SlabOffset(u32));
 
-integer_type!(
+index_type!(
     /// A compact displayed kind in one prepared language. Zero is reserved;
     /// error IDs follow the concrete kinds. Convert through [`crate::Language`].
     ///
@@ -149,15 +170,15 @@ integer_type!(
     /// ```
     #[derive(Default)]
     pub SquatterKindId(u16));
-integer_type!(
+index_type!(
     /// A compact original grammar symbol in one prepared language, ignoring aliases.
     /// Zero is reserved; convert through [`crate::Language`].
     pub SquatterGrammarId(u16));
-integer_type!(pub(crate) PatternIndex(u16));
-integer_type!(pub(crate) QueryStringId(u32));
-integer_type!(pub(crate) QueryStepIx(u16));
-integer_type!(pub(crate) NegatedFieldListIx(u16));
-integer_type!(pub(crate) PresenceRequirementIx(u16));
+index_type!(pub(crate) PatternIndex(u16));
+index_type!(pub(crate) QueryStringId(u32));
+index_type!(pub(crate) QueryStepIx(u16));
+index_type!(pub(crate) NegatedFieldListIx(u16));
+index_type!(pub(crate) PresenceRequirementIx(u16));
 
 impl QueryStepIx {
     pub(crate) const NONE: Self = Self(u16::MAX);
@@ -232,6 +253,9 @@ impl PackedPoint {
 }
 
 impl SlotIx {
+    pub(crate) fn is_group_start(self) -> bool {
+        self.0.is_multiple_of(crate::storage::GROUP_SIZE)
+    }
     pub(crate) fn checked_sub(self, span: SlotSpan) -> Option<Self> {
         self.0.checked_sub(span.0).map(Self)
     }
@@ -350,7 +374,7 @@ impl SlotIx {
     }
 }
 
-integer_type!(
+index_type!(
     /// A position or exclusive count among all children.
     /// Counts are exclusive upper bounds, not existing positions. This is distinct
     /// from named-child indices and physical slots.
@@ -371,7 +395,7 @@ impl ChildIx {
     }
 }
 
-integer_type!(
+index_type!(
     /// A position or exclusive count among named children.
     /// Counts are exclusive upper bounds, not existing positions. This is distinct
     /// from all-child indices and physical slots.
@@ -392,6 +416,12 @@ impl NamedChildIx {
 pub struct PatternIx(pub usize);
 
 impl PatternIx {
+    /// Returns the raw value as a slice index.
+    #[inline]
+    pub const fn ix(self) -> usize {
+        self.0
+    }
+
     pub const fn raw(self) -> usize {
         self.0
     }
@@ -403,6 +433,12 @@ impl PatternIx {
 pub struct CaptureIx(pub u32);
 
 impl CaptureIx {
+    /// Returns the raw value as a slice index.
+    #[inline]
+    pub const fn ix(self) -> usize {
+        self.raw() as usize
+    }
+
     pub const fn raw(self) -> u32 {
         self.0
     }
@@ -429,6 +465,12 @@ impl MatchId {
 pub struct MatchCaptureIx(u32);
 
 impl MatchCaptureIx {
+    /// Returns the raw value as a slice index.
+    #[inline]
+    pub const fn ix(self) -> usize {
+        self.raw() as usize
+    }
+
     pub(crate) const fn from_raw(value: u32) -> Self {
         Self(value)
     }
@@ -438,8 +480,8 @@ impl MatchCaptureIx {
     }
 }
 
-integer_type!(pub(crate) CaptureListIx(u32));
-integer_type!(#[derive(Default)]
+index_type!(pub(crate) CaptureListIx(u32));
+index_type!(#[derive(Default)]
     pub(crate) CaptureStorageIx(u32));
 integer_type!(pub(crate) CapturePrefixId(u64));
 
@@ -454,9 +496,9 @@ integer_type!(
     /// Identifies the packed slab format for persistence compatibility.
     pub RepresentationId(u64));
 
-integer_type!(pub(crate) ProductionId(u16));
-integer_type!(pub(crate) ReductionIx(u32));
-integer_type!(pub(crate) SupertypeIx(u16));
+index_type!(pub(crate) ProductionId(u16));
+index_type!(pub(crate) ReductionIx(u32));
+index_type!(pub(crate) SupertypeIx(u16));
 integer_type!(#[derive(Default)]
     pub(crate) SupertypeMask(u16));
 
@@ -464,7 +506,7 @@ impl ReductionIx {
     pub(crate) const NONE: Self = Self(u32::MAX);
 }
 
-integer_type!(pub(crate) QueryCaptureIx(u16));
+index_type!(pub(crate) QueryCaptureIx(u16));
 
 impl QueryCaptureIx {
     pub(crate) const NONE: Self = Self(u16::MAX);
@@ -523,11 +565,11 @@ index_arithmetic!(GroupIx, u32);
 index_arithmetic!(TreeIx, u32);
 index_arithmetic!(QueryStepIx, u16);
 
-integer_type!(
+index_type!(
     /// A physical slot counted from the forest's end in preorder direction.
     #[derive(Default)]
     pub(crate) PreorderIx(u32));
-integer_type!(pub(crate) DirectStateIx(u32));
+index_type!(pub(crate) DirectStateIx(u32));
 
 impl PreorderIx {
     pub(crate) fn from_slot(slot: SlotIx, total_slots: u32) -> Self {

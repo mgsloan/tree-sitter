@@ -154,7 +154,7 @@ impl Packer {
     ) -> Result<Forest, Error> {
         let mut builder = Builder::for_input(
             language,
-            nodes[root.raw() as usize].visible_descendant_count + 1,
+            nodes[root.ix()].visible_descendant_count + 1,
             &options,
         )?;
         traversal::pack_reductions(
@@ -534,10 +534,10 @@ impl Builder {
         data.trees.try_reserve(1).map_err(|_| Error::Allocation)?;
         data.trees.push(TreeData {
             region,
-            tables: NonNull::from(data.regions[region.raw() as usize].language.tables()),
+            tables: NonNull::from(data.regions[region.ix()].language.tables()),
             slots: start..self.slot_base,
         });
-        let region = &mut data.regions[region.raw() as usize];
+        let region = &mut data.regions[region.ix()];
         if region.trees.is_empty() {
             region.trees.start = index;
             region.slots.start = start;

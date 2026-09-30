@@ -180,11 +180,11 @@ impl GrammarView {
     }
 
     pub fn decode_kind(&self, symbol: SquatterKindId) -> KindId {
-        KindId::from_raw(unsafe { *self.kind_to_native.add(symbol.raw() as usize) })
+        KindId::from_raw(unsafe { *self.kind_to_native.add(symbol.ix()) })
     }
 
     pub fn decode_grammar_kind(&self, symbol: SquatterGrammarId) -> GrammarId {
-        GrammarId::from_raw(unsafe { *self.grammar_to_native.add(symbol.raw() as usize) })
+        GrammarId::from_raw(unsafe { *self.grammar_to_native.add(symbol.ix()) })
     }
 
     fn native_index(&self, symbol: u16) -> u32 {
@@ -220,7 +220,7 @@ impl GrammarView {
             return None;
         }
         Some(unsafe {
-            CStr::from_ptr(*self.field_names.add(field.raw() as usize))
+            CStr::from_ptr(*self.field_names.add(field.ix()))
                 .to_str()
                 .unwrap()
         })
@@ -233,7 +233,7 @@ impl GrammarView {
 
     #[inline]
     pub fn named_index(&self, symbol: SquatterKindId) -> bool {
-        unsafe { *self.kind_flags.add(symbol.raw() as usize) & 1 != 0 }
+        unsafe { *self.kind_flags.add(symbol.ix()) & 1 != 0 }
     }
 }
 
@@ -835,7 +835,7 @@ impl CompiledQuery {
             assert_eq!(step.flags & !0x0fff, 0);
             assert!(
                 step.alternative_index == QueryStepIx::NONE
-                    || (step.alternative_index.raw() as usize) < steps.len()
+                    || step.alternative_index.ix() < steps.len()
             );
             assert!((step.negated_field_list_id.raw() as u32) < self.view.negated_fields.length);
             for capture in step.capture_ids {
@@ -846,8 +846,8 @@ impl CompiledQuery {
             }
         }
         for entry in self.entries() {
-            assert!((entry.step_index.raw() as usize) < steps.len());
-            assert!((entry.pattern_index.raw() as usize) < self.patterns().len());
+            assert!(entry.step_index.ix() < steps.len());
+            assert!(entry.pattern_index.ix() < self.patterns().len());
             assert_eq!(entry.flags & !1, 0);
         }
         for pattern in self.patterns() {

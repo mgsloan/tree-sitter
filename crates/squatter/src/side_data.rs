@@ -259,8 +259,7 @@ impl PresenceCache {
                             for slot in (first_group + group) * GROUP_SIZE
                                 ..forest.data().group_end(GroupIx(first_group + group)).raw()
                             {
-                                let symbol =
-                                    forest.data().symbol_index(SlotIx(slot)).raw() as usize;
+                                let symbol = forest.data().symbol_index(SlotIx(slot)).ix();
                                 let bitmap = payload
                                     .add((symbol * words + group as usize / 64) * 8)
                                     .cast::<u64>();
@@ -310,7 +309,7 @@ impl PresenceCache {
     pub fn validate_for(&self, forest: &Forest) -> Result<(), SideDataError> {
         let records = self.validate_loaded(forest)?;
         let expected = Self::build_selected(forest, |region| {
-            records[region.index().raw() as usize].1.format == PRESENCE_FORMAT
+            records[region.index().ix()].1.format == PRESENCE_FORMAT
         })?;
         if expected.as_bytes() != self.as_bytes() {
             return Err(SideDataError::InvalidTarget);
@@ -359,8 +358,7 @@ impl PresenceView {
     pub(crate) fn has(self, group: GroupIx, symbol: SquatterKindId) -> bool {
         let group = group - self.first_group;
         let words = (self.groups as usize).div_ceil(64);
-        self.word((symbol.raw() as usize * words + group as usize / 64) * 8) & (1 << (group % 64))
-            != 0
+        self.word((symbol.ix() * words + group as usize / 64) * 8) & (1 << (group % 64)) != 0
     }
     pub(crate) fn find_matching_group(
         &self,
@@ -378,7 +376,7 @@ impl PresenceView {
             };
             let start = range.start.saturating_sub(word_index * 64);
             let end = (range.end - word_index * 64).min(64);
-            let word = self.word((symbol.raw() as usize * words + word_index as usize) * 8);
+            let word = self.word((symbol.ix() * words + word_index as usize) * 8);
             let bits = word & (u64::MAX << start) & (u64::MAX >> (64 - end));
             if bits != 0 {
                 return Some(
@@ -453,15 +451,13 @@ impl PointsData {
     }
 
     pub(crate) fn put_bases(&mut self, group: GroupIx, start: PackedPoint, end: PackedPoint) {
-        let offset = HEADER_BYTES + group.raw() as usize * POINT_GROUP_BYTES;
+        let offset = HEADER_BYTES + group.ix() * POINT_GROUP_BYTES;
         self.0.put_word(offset, start.raw());
         self.0.put_word(offset + 8, end.raw());
     }
     pub(crate) fn put_deltas(&mut self, slot: SlotIx, start: u16, end: u16) {
-        let offset = HEADER_BYTES
-            + slot.group().raw() as usize * POINT_GROUP_BYTES
-            + 16
-            + slot.in_group().raw() as usize * 2;
+        let offset =
+            HEADER_BYTES + slot.group().ix() * POINT_GROUP_BYTES + 16 + slot.in_group().ix() * 2;
         let bytes = self.0.bytes_mut();
         bytes[offset..offset + 2].copy_from_slice(&start.to_le_bytes());
         let offset = offset + GROUP_SIZE as usize * 2;
@@ -469,7 +465,7 @@ impl PointsData {
     }
     #[inline]
     pub(crate) fn column<const END: bool>(&self, group: GroupIx) -> (PackedPoint, &[u8]) {
-        let offset = HEADER_BYTES + group.raw() as usize * POINT_GROUP_BYTES;
+        let offset = HEADER_BYTES + group.ix() * POINT_GROUP_BYTES;
         let base = PackedPoint(self.0.word(offset + usize::from(END) * 8));
         let offset = offset + 16 + usize::from(END) * GROUP_SIZE as usize * 2;
         (
@@ -479,7 +475,7 @@ impl PointsData {
     }
     fn point<const END: bool>(&self, slot: SlotIx) -> PackedPoint {
         let (base, deltas) = self.column::<END>(slot.group());
-        let offset = slot.in_group().raw() as usize * 2;
+        let offset = slot.in_group().ix() * 2;
         let delta = u64::from(deltas[offset + 1]) << 32 | u64::from(deltas[offset]);
         if END { base - delta } else { base + delta }
     }

@@ -6,7 +6,7 @@
 //! let mut matches = cursor.matches(query, root, source);
 //! while let Some(found) = matches.next() {
 //!     for capture in found.captures() {
-//!         let name = query.capture_names()[capture.index.0 as usize];
+//!         let name = query.capture_names()[capture.index.ix()];
 //!         let node = capture.node;
 //!     }
 //! }
@@ -14,7 +14,7 @@
 //!
 //! let mut captures = cursor.captures(query, root, source);
 //! while let Some((found, index)) = captures.next() {
-//!     let capture = found.captures()[index.raw() as usize];
+//!     let capture = found.captures()[index.ix()];
 //!     found.remove(); // suppress subsequent events for this match
 //! }
 //! # }
@@ -387,7 +387,7 @@ impl Query {
     }
 
     fn string_value(&self, id: QueryStringId) -> String {
-        self.string(&self.compiled.view.predicate_values, id.raw() as usize)
+        self.string(&self.compiled.view.predicate_values, id.ix())
     }
 
     fn string(&self, table: &crate::native::StringTable, index: usize) -> String {
@@ -407,7 +407,7 @@ impl Query {
 
     /// Predicates left for host evaluation, excluding built-in text and property predicates.
     pub const fn general_predicates(&self, pattern: PatternIx) -> &[QueryPredicate] {
-        &self.general[pattern.0]
+        &self.general[pattern.ix()]
     }
 
     /// Get the index for a given capture name.
@@ -420,27 +420,27 @@ impl Query {
 
     /// Get the quantifiers of the captures used in a pattern.
     pub const fn capture_quantifiers(&self, index: PatternIx) -> &[CaptureQuantifier] {
-        &self.quantifiers[index.0]
+        &self.quantifiers[index.ix()]
     }
 
     /// Properties set by `set!` predicates, for host evaluation.
     pub const fn property_settings(&self, index: PatternIx) -> &[QueryProperty] {
-        &self.settings[index.0]
+        &self.settings[index.ix()]
     }
 
     /// Properties checked by `is?` (true) and `is-not?` (false), for host evaluation.
     pub const fn property_predicates(&self, index: PatternIx) -> &[(QueryProperty, bool)] {
-        &self.properties[index.0]
+        &self.properties[index.ix()]
     }
 
     /// Get the byte offset where the pattern starts in the query source.
     pub fn start_byte_for_pattern(&self, index: PatternIx) -> usize {
-        self.compiled.patterns()[index.0].start_byte as usize
+        self.compiled.patterns()[index.ix()].start_byte as usize
     }
 
     /// Get the byte offset where the pattern ends in the query source.
     pub fn end_byte_for_pattern(&self, index: PatternIx) -> usize {
-        self.compiled.patterns()[index.0].end_byte as usize
+        self.compiled.patterns()[index.ix()].end_byte as usize
     }
 
     /// Check whether a pattern has a single root node.
@@ -448,13 +448,13 @@ impl Query {
         self.compiled
             .entries()
             .iter()
-            .filter(|entry| entry.pattern_index.raw() as usize == index.0)
+            .filter(|entry| entry.pattern_index.ix() == index.ix())
             .all(|entry| entry.flags & 1 != 0)
     }
 
     /// Check whether a pattern can match across repeating sibling nodes.
     pub fn is_pattern_non_local(&self, index: PatternIx) -> bool {
-        self.compiled.patterns()[index.0].flags & 1 != 0
+        self.compiled.patterns()[index.ix()].flags & 1 != 0
     }
 
     /// Check whether the step at a query-source byte offset is guaranteed to match.
@@ -482,7 +482,7 @@ impl Query {
     /// Disable a pattern without renumbering patterns or captures.
     pub fn disable_pattern(&mut self, pattern: PatternIx) {
         assert!(
-            pattern.0 < self.pattern_count(),
+            pattern.ix() < self.pattern_count(),
             "pattern index out of bounds"
         );
         self.compiled.disable_pattern(pattern);
@@ -560,7 +560,7 @@ impl<'tree> QueryMatch<'_, 'tree> {
     {
         let [left_buffer, right_buffer] = buffers;
         // Preserve mainline Rust's quantifier and empty-capture behavior.
-        query.predicates[self.pattern_index.0]
+        query.predicates[self.pattern_index.ix()]
             .iter()
             .all(|predicate| match predicate {
                 Predicate::EqualCapture(first, second, positive, all) => {

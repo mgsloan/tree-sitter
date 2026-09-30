@@ -77,11 +77,11 @@ impl<'tree> Node<'tree> {
     }
 
     pub(crate) fn tree_data(self) -> &'tree TreeData {
-        &self.data().trees[self.id().tree().raw() as usize]
+        &self.data().trees[self.id().tree().ix()]
     }
 
     pub(crate) fn region_data(self) -> &'tree RegionData {
-        &self.data().regions[self.tree_data().region.raw() as usize]
+        &self.data().regions[self.tree_data().region.ix()]
     }
 
     #[inline]
@@ -653,7 +653,7 @@ impl<'tree> Node<'tree> {
     /// **Different performance than Tree-sitter:** Visits up to index + 1 children. Repeated
     /// indexed lookup across a wide node can be quadratic; prefer one traversal.
     pub fn child(&self, index: ChildIx) -> Option<Self> {
-        self.structural_children().nth(index.raw() as usize)
+        self.structural_children().nth(index.ix())
     }
 
     /// Get this node's *named* child at the given index.
@@ -668,7 +668,7 @@ impl<'tree> Node<'tree> {
     pub fn named_child(&self, index: NamedChildIx) -> Option<Self> {
         self.structural_children()
             .filter(|node| node.is_named())
-            .nth(index.raw() as usize)
+            .nth(index.ix())
     }
 
     /// Get this node's child with the given numerical field id.

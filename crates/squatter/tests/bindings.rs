@@ -171,7 +171,7 @@ fn check_shared_navigation<'tree, N: NodeLike<'tree>>(
                 assert_eq!(
                     cursor
                         .goto_first_child_for_byte(byte)
-                        .map(|index| index.raw() as usize),
+                        .map(|index| index.ix()),
                     expected_index
                 );
                 assert!(cursor.node() == expected_index.map_or(node, |index| children[index]));
@@ -189,7 +189,7 @@ fn check_shared_navigation<'tree, N: NodeLike<'tree>>(
                 assert_eq!(
                     cursor
                         .goto_first_child_for_point(point)
-                        .map(|index| index.raw() as usize),
+                        .map(|index| index.ix()),
                     expected_index
                 );
                 assert!(cursor.node() == expected_index.map_or(node, |index| children[index]));

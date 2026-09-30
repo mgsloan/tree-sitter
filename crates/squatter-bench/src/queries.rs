@@ -270,14 +270,14 @@ impl Queries {
                 if let Some(index) = capture {
                     result
                         .captures()
-                        .get(index.raw() as usize)
+                        .get(index.ix())
                         .context("invalid capture index")?;
                 }
                 ensure!(
                     result
                         .captures()
                         .iter()
-                        .all(|entry| (entry.index.0 as usize) < pair.squat.capture_names().len()),
+                        .all(|entry| entry.index.ix() < pair.squat.capture_names().len()),
                     "invalid capture name index"
                 );
                 let nodes: Vec<_> = result
@@ -294,7 +294,7 @@ impl Queries {
                 output.push(Record {
                     query: query_index,
                     pattern: result.pattern_index.0,
-                    capture: capture.map(|index| index.raw() as usize),
+                    capture: capture.map(|index| index.ix()),
                     nodes,
                 });
             }

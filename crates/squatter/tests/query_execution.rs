@@ -36,7 +36,7 @@ macro_rules! captures {
         let mut execution = $cursor.execute($query, $tree.root_node(), $source.as_bytes());
         let mut results = Vec::new();
         while let Some((result, index)) = execution.next_capture() {
-            let capture = result.captures()[index.raw() as usize];
+            let capture = result.captures()[index.ix()];
             results.push((
                 result.pattern_index.raw(),
                 capture.node.id(),
@@ -757,7 +757,7 @@ fn containing_ranges_combine_with_intersecting_ranges() {
                 let mut captures = cursor.captures(&query, tree.root_node(), source.as_bytes());
                 let (found, index) = captures.next().unwrap();
                 assert_eq!(
-                    &source[found.captures()[index.raw() as usize].node.byte_range()],
+                    &source[found.captures()[index.ix()].node.byte_range()],
                     "30"
                 );
                 assert!(captures.next().is_none());
@@ -1652,7 +1652,7 @@ fn optimized_capture_progress_tracks_later_subtrees() {
         let mut stops = 0;
         loop {
             if let Some((found, index)) = execution.next_capture() {
-                let node = found.captures()[index.raw() as usize].node;
+                let node = found.captures()[index.ix()].node;
                 if node.start_byte() >= second_start {
                     reached_second.set(true);
                 }
@@ -1789,11 +1789,11 @@ fn cursor_and_iterator_ranges_narrow_validate_and_persist() {
         {
             let mut captures = cursor.captures(&query, tree.root_node(), source.as_bytes());
             let (found, index) = captures.next().unwrap();
-            assert_eq!(found.captures()[index.raw() as usize].node.start_byte(), 5);
+            assert_eq!(found.captures()[index.ix()].node.start_byte(), 5);
             captures.set_byte_range(7..8);
             captures.set_point_range(Point::new(0, 7)..Point::new(0, 8));
             let (found, index) = captures.next().unwrap();
-            assert_eq!(found.captures()[index.raw() as usize].node.start_byte(), 7);
+            assert_eq!(found.captures()[index.ix()].node.start_byte(), 7);
             assert!(captures.next().is_none());
         }
         let found = cursor

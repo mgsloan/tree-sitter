@@ -240,7 +240,7 @@ pub(crate) trait SlabAddress: Copy {
 impl SlabAddress for SlabOffset {
     #[inline]
     fn pointer(self, bytes: NonNull<u8>) -> *mut u8 {
-        bytes.as_ptr().wrapping_add(self.raw() as usize)
+        bytes.as_ptr().wrapping_add(self.ix())
     }
 }
 
@@ -463,7 +463,7 @@ pub struct ForestRegion<'forest> {
 
 impl<'forest> ForestRegion<'forest> {
     pub(crate) fn data(self) -> &'forest RegionData {
-        &self.forest.regions[self.index.raw() as usize]
+        &self.forest.regions[self.index.ix()]
     }
     pub fn index(&self) -> RegionIx {
         self.index
@@ -485,7 +485,7 @@ impl<'forest> ForestRegion<'forest> {
 
 impl ForestData {
     pub(crate) fn tree(&self, index: TreeIx) -> Tree<'_> {
-        let tree = &self.trees[index.raw() as usize];
+        let tree = &self.trees[index.ix()];
         let root = self.group_end(GroupIx(tree.slots.end.raw() / GROUP_SIZE - 1)) - 1;
         Tree(Node::new(self, NodeId::new(index, root)))
     }
@@ -608,7 +608,7 @@ impl ForestData {
     #[inline]
     pub fn previous_slot(&self, slot: SlotIx) -> Option<SlotIx> {
         let previous = SlotIx(slot.raw().checked_sub(1)?);
-        Some(if slot.raw().is_multiple_of(GROUP_SIZE) {
+        Some(if slot.is_group_start() {
             previous - self.waste(previous.group())
         } else {
             previous
@@ -710,7 +710,7 @@ impl Forest {
     }
 
     pub fn tree(&self, index: TreeIx) -> Option<Tree<'_>> {
-        ((index.raw() as usize) < self.data.trees.len()).then(|| self.data.tree(index))
+        (index.ix() < self.data.trees.len()).then(|| self.data.tree(index))
     }
 
     pub fn trees(&self) -> impl DoubleEndedIterator<Item = Tree<'_>> + ExactSizeIterator {
@@ -785,10 +785,9 @@ impl Forest {
                         .cast::<u32>()
                         .write_unaligned(word.to_le());
                 }
-                ptr::write_bytes(destination.add(16), 0, layout.end.raw() as usize - 16);
+                ptr::write_bytes(destination.add(16), 0, layout.end.ix() - 16);
                 for index in 0..count {
-                    let descriptor =
-                        destination.add(layout.end.raw() as usize + index as usize * 8);
+                    let descriptor = destination.add(layout.end.ix() + index as usize * 8);
                     descriptor.cast::<u32>().write_unaligned(index.to_le());
                     descriptor.add(4).cast::<u32>().write_unaligned(0);
                 }
@@ -906,19 +905,15 @@ impl Forest {
                 .into_iter()
                 .zip(next.columns(data.groups(), flags))
             {
-                let start = target.raw() as usize;
+                let start = target.ix();
                 ptr::write_bytes(destination.add(initialized), 0, start - initialized);
                 ptr::copy_nonoverlapping(source.as_ptr(), destination.add(start), length);
                 initialized = start + length;
             }
-            ptr::write_bytes(
-                destination.add(initialized),
-                0,
-                next.end.raw() as usize - initialized,
-            );
+            ptr::write_bytes(destination.add(initialized), 0, next.end.ix() - initialized);
             // Only regions are serialized. Tree boundaries follow from root spans.
             for (index, region) in data.regions.iter().enumerate() {
-                let descriptor = destination.add(next.end.raw() as usize + index * 8);
+                let descriptor = destination.add(next.end.ix() + index * 8);
                 let grammar_index = data.word(data.layout.end + index as u32 * 8, 0);
                 descriptor
                     .cast::<u32>()
@@ -1150,11 +1145,8 @@ impl Forest {
                     .span_max(GroupIx(group))
                     .checked_sub(self.data.span_delta(SlotIx(root)))
                     .ok_or(Error::InvalidSlab)?;
-                let start = SlotIx(root)
-                    .checked_sub(span)
-                    .ok_or(Error::InvalidSlab)?
-                    .raw();
-                if start < slots.start.raw() || start >= end || !start.is_multiple_of(GROUP_SIZE) {
+                let start = SlotIx(root).checked_sub(span).ok_or(Error::InvalidSlab)?;
+                if start < slots.start || start.raw() >= end || !start.is_group_start() {
                     return Err(Error::InvalidSlab);
                 }
                 let byte_start = self
@@ -1177,9 +1169,9 @@ impl Forest {
                 self.data.trees.push(TreeData {
                     region: RegionIx(region_index as u32),
                     tables,
-                    slots: SlotIx(start)..SlotIx(end),
+                    slots: start..SlotIx(end),
                 });
-                end = start;
+                end = start.raw();
             }
             self.data.trees[first_tree..].reverse();
             self.data.regions[region_index].trees =
@@ -1250,15 +1242,13 @@ impl Forest {
     fn validate_nodes(&self) -> Result<(), Error> {
         let data = self.data();
         for region in &data.regions {
-            if region.slots.start.raw() % GROUP_SIZE != 0
-                || region.slots.end.raw() % GROUP_SIZE != 0
-            {
+            if !region.slots.start.is_group_start() || !region.slots.end.is_group_start() {
                 return Err(Error::InvalidSlab);
             }
         }
         for tree in self.trees() {
             let slots = tree.0.tree_data().slots.clone();
-            if slots.start.raw() % GROUP_SIZE != 0 || slots.end.raw() % GROUP_SIZE != 0 {
+            if !slots.start.is_group_start() || !slots.end.is_group_start() {
                 return Err(Error::InvalidSlab);
             }
             let tables = tree.language().tables();
@@ -1357,11 +1347,7 @@ mod tests {
                 let mut tree = Forest::empty(std::slice::from_ref(&language), 5).unwrap();
                 unsafe {
                     tree.resize(5, flags).unwrap();
-                    ptr::write_bytes(
-                        tree.data().storage.bytes.as_ptr(),
-                        0x5a,
-                        layout.end.raw() as usize,
-                    );
+                    ptr::write_bytes(tree.data().storage.bytes.as_ptr(), 0x5a, layout.end.ix());
                 }
                 tree.data_mut().put_word(SlabOffset(0), 0, flags);
                 tree.data_mut().put_word(SlabOffset(0), 1, 3);
@@ -1376,10 +1362,10 @@ mod tests {
                     assert_eq!(&destination[12..16], &tree.as_bytes()[12..16]);
                     let mut copied = vec![false; destination.len()];
                     for (offset, length) in next.columns(3, flags) {
-                        let start = offset.raw() as usize;
+                        let start = offset.ix();
                         copied[start..start + length].fill(true);
                     }
-                    for index in 16..next.end.raw() as usize {
+                    for index in 16..next.end.ix() {
                         assert_eq!(destination[index], if copied[index] { 0x5a } else { 0 });
                     }
                     tree.resize(capacity, flags).unwrap();

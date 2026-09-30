@@ -203,7 +203,7 @@ impl CapturePool {
         if id == CaptureListIx::NONE {
             &EMPTY
         } else {
-            &self.lists[id.raw() as usize]
+            &self.lists[id.ix()]
         }
     }
 
@@ -219,11 +219,9 @@ impl CapturePool {
             // unique writer refreshes this pointer after reserving capacity.
             debug_assert_eq!(
                 list.contents,
-                self.storage[list.storage.raw() as usize].values.as_ptr()
+                self.storage[list.storage.ix()].values.as_ptr()
             );
-            debug_assert!(
-                list.length as usize <= self.storage[list.storage.raw() as usize].values.len()
-            );
+            debug_assert!(list.length as usize <= self.storage[list.storage.ix()].values.len());
             unsafe { std::slice::from_raw_parts(list.contents, list.length as usize) }
         }
     }
@@ -235,8 +233,8 @@ impl CapturePool {
     fn acquire(&mut self) -> CaptureListIx {
         if self.free_list != CaptureListIx::NONE {
             let id = self.free_list;
-            self.free_list = CaptureListIx(self.lists[id.raw() as usize].storage.raw());
-            self.lists[id.raw() as usize] = CaptureList::empty();
+            self.free_list = CaptureListIx(self.lists[id.ix()].storage.raw());
+            self.lists[id.ix()] = CaptureList::empty();
             id
         } else if self.lists.len() < self.limit as usize {
             let id = CaptureListIx(self.lists.len() as u32);
@@ -248,9 +246,9 @@ impl CapturePool {
     }
 
     fn clear(&mut self, id: CaptureListIx) {
-        let list = &mut self.lists[id.raw() as usize];
+        let list = &mut self.lists[id.ix()];
         if list.storage != CaptureStorageIx::NONE {
-            let storage = &mut self.storage[list.storage.raw() as usize];
+            let storage = &mut self.storage[list.storage.ix()];
             storage.references -= 1;
             if storage.references == 0 {
                 // Returned captures remain readable until the next advancement
@@ -266,17 +264,16 @@ impl CapturePool {
         if id == CaptureListIx::NONE {
             return;
         }
-        debug_assert_ne!(self.lists[id.raw() as usize].length, NONE);
+        debug_assert_ne!(self.lists[id.ix()].length, NONE);
         self.clear(id);
-        self.lists[id.raw() as usize].length = NONE;
-        self.lists[id.raw() as usize].storage = CaptureStorageIx(self.free_list.raw());
+        self.lists[id.ix()].length = NONE;
+        self.lists[id.ix()].storage = CaptureStorageIx(self.free_list.raw());
         self.free_list = id;
     }
 
     fn make_mutable(&mut self, id: CaptureListIx, additional: usize) {
-        let list = self.lists[id.raw() as usize];
-        if list.storage == CaptureStorageIx::NONE
-            || self.storage[list.storage.raw() as usize].references > 1
+        let list = self.lists[id.ix()];
+        if list.storage == CaptureStorageIx::NONE || self.storage[list.storage.ix()].references > 1
         {
             let target = if self.free_storage == CaptureStorageIx::NONE {
                 let target = CaptureStorageIx(self.storage.len() as u32);
@@ -284,15 +281,15 @@ impl CapturePool {
                 target
             } else {
                 let target = self.free_storage;
-                self.free_storage = self.storage[target.raw() as usize].next_free;
+                self.free_storage = self.storage[target.ix()].next_free;
                 target
             };
             let source = if list.length == 0 {
                 std::ptr::null()
             } else {
-                self.storage[list.storage.raw() as usize].values.as_ptr()
+                self.storage[list.storage.ix()].values.as_ptr()
             };
-            let storage = &mut self.storage[target.raw() as usize];
+            let storage = &mut self.storage[target.ix()];
             storage.values.clear();
             storage.values.reserve(list.length as usize + additional);
             if list.length != 0 {
@@ -309,20 +306,18 @@ impl CapturePool {
             }
             storage.references = 1;
             if list.storage != CaptureStorageIx::NONE {
-                self.storage[list.storage.raw() as usize].references -= 1;
+                self.storage[list.storage.ix()].references -= 1;
             }
-            self.lists[id.raw() as usize].storage = target;
+            self.lists[id.ix()].storage = target;
         } else {
-            self.storage[list.storage.raw() as usize]
-                .values
-                .reserve(additional);
+            self.storage[list.storage.ix()].values.reserve(additional);
         }
-        let list = &mut self.lists[id.raw() as usize];
-        list.contents = self.storage[list.storage.raw() as usize].values.as_ptr();
+        let list = &mut self.lists[id.ix()];
+        list.contents = self.storage[list.storage.ix()].values.as_ptr();
     }
 
     fn share(&mut self, target: CaptureListIx, source: CaptureListIx) {
-        let mut list = self.lists[source.raw() as usize];
+        let mut list = self.lists[source.ix()];
         if list.length == 0 {
             return;
         }
@@ -347,21 +342,21 @@ impl CapturePool {
             list.prefix = self.next_prefix;
             list.prefix_size = list.length;
         }
-        self.lists[source.raw() as usize] = list;
-        self.lists[target.raw() as usize] = list;
-        self.storage[list.storage.raw() as usize].references += 1;
+        self.lists[source.ix()] = list;
+        self.lists[target.ix()] = list;
+        self.storage[list.storage.ix()].references += 1;
     }
 
     fn append(&mut self, id: CaptureListIx, node: Node<'_>, step: &Step) -> bool {
         self.make_mutable(id, 3);
-        let list = &mut self.lists[id.raw() as usize];
+        let list = &mut self.lists[id.ix()];
         let first = list.length == 0;
         if first {
             list.first_byte = node.start_byte() as u32;
         }
         list.last_end = NONE;
 
-        let storage = &mut self.storage[list.storage.raw() as usize];
+        let storage = &mut self.storage[list.storage.ix()];
         for capture_id in step.capture_ids {
             if capture_id == QueryCaptureIx::NONE {
                 break;
@@ -1101,7 +1096,7 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
             };
             let result = QueryMatch {
                 id: output.id,
-                pattern_index: PatternIx(output.pattern.raw() as usize),
+                pattern_index: PatternIx(output.pattern.ix()),
                 captures,
                 removal: &self.cursor.removal,
             };
@@ -1171,9 +1166,9 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
     }
 
     fn step(&self, index: QueryStepIx) -> &'query Step {
-        debug_assert!((index.raw() as usize) < self.steps.len());
+        debug_assert!(index.ix() < self.steps.len());
         // Only the trusted compiler and its control-flow edges produce indexes.
-        unsafe { self.steps.get_unchecked(index.raw() as usize) }
+        unsafe { self.steps.get_unchecked(index.ix()) }
     }
 }
 
@@ -1409,13 +1404,13 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
 {
     fn update_key(&self, state: &mut State) {
         let captures = self.cursor.pool.get(state.captures);
-        state.set(EXHAUSTED, state.consumed.raw() as usize >= captures.len());
+        state.set(EXHAUSTED, state.consumed.ix() >= captures.len());
         if !state.has(EXHAUSTED) {
             let byte = if state.consumed.raw() == 0 {
                 self.cursor.pool.list(state.captures).first_byte
             } else {
                 self.root
-                    .at(captures[state.consumed.raw() as usize].node.id.slot())
+                    .at(captures[state.consumed.ix()].node.id.slot())
                     .start_byte() as u32
             };
             state.set_capture_byte(byte);
@@ -1453,7 +1448,7 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
             pattern: state.pattern,
             captures: captures.as_ptr(),
             count: captures.len(),
-            index: state.consumed.raw() as usize,
+            index: state.consumed.ix(),
         }
     }
 
@@ -1489,16 +1484,16 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
                 continue;
             }
             let captures = self.cursor.pool.get(state.captures);
-            while (state.consumed.raw() as usize) < captures.len()
-                && self.cursor.range.precedes(
-                    self.root
-                        .at(captures[state.consumed.raw() as usize].node.id.slot()),
-                )
+            while state.consumed.ix() < captures.len()
+                && self
+                    .cursor
+                    .range
+                    .precedes(self.root.at(captures[state.consumed.ix()].node.id.slot()))
             {
                 state.consumed += 1;
             }
             self.cursor.states[index].consumed = state.consumed;
-            let Some(capture) = captures.get(state.consumed.raw() as usize) else {
+            let Some(capture) = captures.get(state.consumed.ix()) else {
                 continue;
             };
             let byte = self.root.at(capture.node.id.slot()).start_byte() as u32;
@@ -1530,7 +1525,7 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
 
             while let Some(mut state) = self.cursor.finished.first().copied() {
                 let captures = self.cursor.pool.get(state.captures);
-                let Some(capture) = captures.get(state.consumed.raw() as usize) else {
+                let Some(capture) = captures.get(state.consumed.ix()) else {
                     self.cursor.pool.release(state.captures);
                     self.cursor.erase_finished(0);
                     continue;
@@ -1953,7 +1948,7 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
         if !self.cursor.optimized {
             return true;
         }
-        let index = requirement.raw() as usize - 1;
+        let index = requirement.ix() - 1;
         let mut cache = self.cursor.presence[index];
         let requirement = self.query.program.presence[index];
         if cache.samples == 32 {
@@ -2073,16 +2068,15 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
         } else {
             let index = self.cursor.direct_free;
             self.cursor.direct_free =
-                DirectStateIx(self.cursor.direct_states[index.raw() as usize].root.raw());
-            self.cursor.direct_states[index.raw() as usize] = position;
+                DirectStateIx(self.cursor.direct_states[index.ix()].root.raw());
+            self.cursor.direct_states[index.ix()] = position;
             index
         }
     }
 
     fn release_direct(&mut self, index: DirectStateIx) {
         // Free entries reuse the root position for the next free state index.
-        self.cursor.direct_states[index.raw() as usize].root =
-            PreorderIx(self.cursor.direct_free.raw());
+        self.cursor.direct_states[index.ix()].root = PreorderIx(self.cursor.direct_free.raw());
         self.cursor.direct_free = index;
     }
 
@@ -2100,7 +2094,7 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
 
     fn direct_roots(&self, node: Node<'tree>) -> u64 {
         let plan = self.query.program.direct.as_ref().unwrap();
-        let roots = plan.roots[node.data().symbol_index(node.slot()).raw() as usize];
+        let roots = plan.roots[node.data().symbol_index(node.slot()).ix()];
         if roots == 0 || (self.unrestricted && self.containing_unrestricted) {
             return roots;
         }
@@ -2230,7 +2224,7 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
                     continue;
                 }
 
-                let operation = plan.steps[state.step.raw() as usize];
+                let operation = plan.steps[state.step.ix()];
                 let step = self.step(state.step);
                 let sibling = self.node_end(node);
                 let symbol_matches =
@@ -2255,7 +2249,7 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
                 }
 
                 state.step = if plan.local_patterns & (1 << state.pattern.raw()) != 0 {
-                    plan.end_steps[state.pattern.raw() as usize]
+                    plan.end_steps[state.pattern.ix()]
                 } else {
                     state.step + 1
                 };
@@ -2267,7 +2261,7 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
                     self.cursor.states.remove(index);
                     did_match = true;
                 } else {
-                    let start = match plan.steps[state.step.raw() as usize].relation {
+                    let start = match plan.steps[state.step.ix()].relation {
                         crate::query_plan::Relation::FirstNamedChild => position + 1,
                         _ => sibling,
                     };
@@ -2457,7 +2451,7 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
         let patterns = query
             .program
             .pattern_map
-            .get(symbol.raw() as usize)
+            .get(symbol.ix())
             .copied()
             .unwrap_or(crate::native::Range {
                 offset: 0,
@@ -2560,9 +2554,8 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
                 if step.capture_ids[0] != QueryCaptureIx::NONE {
                     self.capture(&mut state, node, step);
                 }
-                state.step = QueryStepIx(
-                    (self.patterns[state.pattern.raw() as usize].steps.end() - 1) as u16,
-                );
+                state.step =
+                    QueryStepIx((self.patterns[state.pattern.ix()].steps.end() - 1) as u16);
                 state.flags &= !(SEEKING_IMMEDIATE | SKIPPED_QUANTIFIER);
                 did_match |= stop_on_definite && self.step(state.step).has(ROOT_PATTERN_GUARANTEED);
                 self.cursor.states[index] = state;
@@ -2592,7 +2585,7 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
             }
             if step.negated_field_list_id != NegatedFieldListIx(0) {
                 let fields = unsafe { query.compiled.view.negated_fields.as_slice() };
-                for field in fields[step.negated_field_list_id.raw() as usize..]
+                for field in fields[step.negated_field_list_id.ix()..]
                     .iter()
                     .copied()
                     .map_while(|field| field)
@@ -2873,11 +2866,10 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
             } else {
                 capture_id = Some(capture.index);
                 let quantifiers = unsafe {
-                    self.query.compiled.view.capture_quantifiers.as_slice()
-                        [state.pattern.raw() as usize]
+                    self.query.compiled.view.capture_quantifiers.as_slice()[state.pattern.ix()]
                         .as_slice()
                 };
-                if !matches!(quantifiers.get(capture.index.raw() as usize), Some(1 | 2)) {
+                if !matches!(quantifiers.get(capture.index.ix()), Some(1 | 2)) {
                     return false;
                 }
             }
@@ -2892,7 +2884,7 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
         }
         let slot = self.cursor.pool.get(id).last().unwrap().node.id.slot();
         let end = self.root.at(slot).end_byte() as u32;
-        self.cursor.pool.lists[id.raw() as usize].last_end = end;
+        self.cursor.pool.lists[id.ix()].last_end = end;
         end
     }
 
@@ -3146,7 +3138,7 @@ mod scan_tests {
             };
             let Some((result, index)) = next else { break };
             let captures = index.map_or(result.captures(), |index| {
-                &result.captures()[index.raw() as usize..index.raw() as usize + 1]
+                &result.captures()[index.ix()..index.ix() + 1]
             });
             results.push((
                 result.pattern_index,

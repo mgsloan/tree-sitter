@@ -273,7 +273,7 @@ fn child_iterators_preserve_cursor_state() {
     fn check<'tree, A: NodeLike<'tree>, B: NodeLike<'tree>>(actual: A, expected: B) {
         let mut actual_cursor = actual.walk();
         let mut expected_cursor = expected.walk();
-        for limit in 0..=actual.child_count().raw() as usize + 1 {
+        for limit in 0..=actual.child_count().ix() + 1 {
             for mode in 0..4 {
                 let field = FieldId::from_raw(1).unwrap();
                 let actual_nodes: Vec<_> = match mode {

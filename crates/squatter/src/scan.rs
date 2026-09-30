@@ -444,7 +444,7 @@ impl<'tree> GroupRef<'tree> {
             }
             let bytes = self.columns.slice(
                 self.columns.layout().symbol,
-                self.first_slot().raw() as usize,
+                self.first_slot().ix(),
                 GROUP_SIZE as usize,
             );
             candidates.intersection(Mask(equal_byte_ids(bytes, targets)))
@@ -462,7 +462,7 @@ impl<'tree> GroupRef<'tree> {
                     == target
             });
         }
-        let start = self.first_slot().raw() as usize * 2;
+        let start = self.first_slot().ix() * 2;
         let bytes = self
             .columns
             .slice(column, start, self.columns.group_size() as usize * 2);
@@ -499,7 +499,7 @@ impl<'tree> GroupRef<'tree> {
                 Mask::default()
             };
         }
-        let start = self.first_slot().raw() as usize * 2;
+        let start = self.first_slot().ix() * 2;
         let bytes = self
             .columns
             .slice(column, start, self.columns.group_size() as usize * 2);
@@ -1487,7 +1487,7 @@ fn column_deltas<'tree>(
 ) -> ColumnDeltas<'tree> {
     ColumnDeltas(group.columns.slice(
         column,
-        group.first_slot().raw() as usize * width,
+        group.first_slot().ix() * width,
         group.columns.group_size() as usize * width,
     ))
 }
@@ -1568,12 +1568,12 @@ fn retain_deltas<const WIDE: bool>(
     }
     candidates.retain(|slot| {
         let delta = if WIDE {
-            let offset = slot.raw() as usize * 2;
+            let offset = slot.ix() * 2;
             u32::from(u16::from_le_bytes(
                 deltas[offset..offset + 2].try_into().unwrap(),
             ))
         } else {
-            u32::from(deltas[slot.raw() as usize])
+            u32::from(deltas[slot.ix()])
         };
         bounds.contains(&delta)
     })
@@ -1601,13 +1601,13 @@ impl<const END: bool> PositionColumn for ByteColumn<'_, END> {
     fn get(&self, slot: GroupSlotIx) -> usize {
         let deltas = self.deltas.slice();
         if END {
-            let offset = slot.raw() as usize * 2;
+            let offset = slot.ix() * 2;
             self.base
                 - usize::from(u16::from_le_bytes(
                     deltas[offset..offset + 2].try_into().unwrap(),
                 ))
         } else {
-            self.base + usize::from(deltas[slot.raw() as usize])
+            self.base + usize::from(deltas[slot.ix()])
         }
     }
     #[inline(always)]
@@ -1647,12 +1647,12 @@ impl<const END: bool, const STORED: bool> PositionColumn for PointColumn<'_, END
     fn get(&self, slot: GroupSlotIx) -> PackedPoint {
         let deltas = self.deltas.slice();
         let delta = if STORED || END {
-            let offset = slot.raw() as usize * 2;
+            let offset = slot.ix() * 2;
             u64::from(u16::from_le_bytes(
                 deltas[offset..offset + 2].try_into().unwrap(),
             ))
         } else {
-            u64::from(deltas[slot.raw() as usize])
+            u64::from(deltas[slot.ix()])
         };
         // Rows occupy the high word, so unsigned comparison orders both components.
         let delta = if STORED {
@@ -3146,7 +3146,7 @@ fn retain_kind_set(group: &GroupRef<'_>, candidates: Mask, kinds: &KindSet) -> M
     if layout.symbol_width == 1 {
         return candidates.retain(|slot| kinds.contains(group.kind(slot)));
     }
-    let start = group.first_slot().raw() as usize * 2;
+    let start = group.first_slot().ix() * 2;
     let bytes = group
         .columns
         .slice(layout.symbol, start, group.used() as usize * 2);
@@ -3244,7 +3244,7 @@ fn retain_supertype_masks(masks: &[u8], candidates: Mask, bit: u16) -> Mask {
         return Mask(candidates.0 & !absent);
     }
     candidates.retain(|slot| {
-        let offset = slot.raw() as usize * 2;
+        let offset = slot.ix() * 2;
         u16::from_le_bytes(masks[offset..offset + 2].try_into().unwrap()) & bit != 0
     })
 }
@@ -3432,8 +3432,7 @@ mod tests {
                 ] {
                     for index in 0..8 {
                         let bit = 1 << index;
-                        let expected =
-                            candidates.retain(|slot| values[slot.raw() as usize] & bit != 0);
+                        let expected = candidates.retain(|slot| values[slot.ix()] & bit != 0);
                         assert_eq!(retain_supertype_masks(&bytes, candidates, bit), expected);
                     }
                 }

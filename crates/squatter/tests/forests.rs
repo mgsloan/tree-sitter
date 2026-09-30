@@ -369,7 +369,7 @@ fn matches<'forest>(
     sources: &[&[u8]],
 ) -> Vec<MatchDescription> {
     let provider = |node: Node<'_>| {
-        let source = sources[node.id().tree().raw() as usize];
+        let source = sources[node.id().tree().ix()];
         std::iter::once(&source[node.byte_range()])
     };
     let mut execution = cursor.execute(query, scope, provider);
@@ -452,9 +452,8 @@ fn region_queries_select_sources_by_tree() {
         assert!(wrong_language.next_match().is_none());
     }
     let mut cursor = QueryCursor::new();
-    let provider = |node: Node<'_>| {
-        std::iter::once(&sources[node.id().tree().raw() as usize][node.byte_range()])
-    };
+    let provider =
+        |node: Node<'_>| std::iter::once(&sources[node.id().tree().ix()][node.byte_range()]);
     let mut execution = cursor.execute(&query, regions[0], provider);
     let mut removed = None;
     let mut identities = HashSet::new();

@@ -283,9 +283,10 @@ impl Walk<'_> {
         if production == ProductionId(0) {
             ptr::null()
         } else {
-            self.tables.alias_sequences.cast::<KindId>().wrapping_add(
-                production.raw() as usize * self.tables.max_alias_sequence_length as usize,
-            )
+            self.tables
+                .alias_sequences
+                .cast::<KindId>()
+                .wrapping_add(production.ix() * self.tables.max_alias_sequence_length as usize)
         }
     }
 
@@ -296,13 +297,13 @@ impl Walk<'_> {
                 length: 0,
             }
         } else {
-            unsafe { *self.tables.production_fields.add(production.raw() as usize) }
+            unsafe { *self.tables.production_fields.add(production.ix()) }
         }
     }
 
     fn supertype(&self, symbol: GrammarId) -> SupertypeIx {
         if u32::from(symbol.raw()) < self.tables.symbol_count {
-            SupertypeIx(unsafe { *self.tables.supertype_indexes.add(symbol.raw() as usize) })
+            SupertypeIx(unsafe { *self.tables.supertype_indexes.add(symbol.ix()) })
         } else {
             SupertypeIx(0)
         }
@@ -339,7 +340,7 @@ impl Walk<'_> {
             masks.copy_within(mask.0 as usize..mask.0 as usize + self.words, offset);
         }
         if supertype != SupertypeIx(0) {
-            let index = usize::from(supertype.raw() - 1);
+            let index = supertype.ix() - 1;
             masks[offset + index / 64] |= 1 << (index % 64);
         }
         Ok(Mask(offset as u64))
@@ -670,7 +671,7 @@ pub(super) fn pack_reductions(
         reserve(&mut walk.scratch.masks, walk.words)?;
         walk.scratch.masks.resize(walk.words, 0);
     }
-    let reduction = &nodes[root.raw() as usize];
+    let reduction = &nodes[root.ix()];
     let node = Node {
         position: Position {
             bytes: reduction.start_byte,
@@ -687,14 +688,14 @@ pub(super) fn pack_reductions(
         if frame.next_child == ReductionIx::NONE {
             let frame = walk.scratch.reductions.last().unwrap();
             if frame.visible {
-                walk.emit_reduction(builder, &frame.node, &nodes[frame.index.raw() as usize])?;
+                walk.emit_reduction(builder, &frame.node, &nodes[frame.index.ix()])?;
             }
             walk.scratch.masks.truncate(frame.mask_mark);
             walk.scratch.reductions.pop();
             continue;
         }
         let mut index = frame.next_child;
-        let mut child = &nodes[index.raw() as usize];
+        let mut child = &nodes[index.ix()];
         frame.next_child = child.next_sibling;
         let mut field = if frame.visible || child.extra {
             None
@@ -708,8 +709,7 @@ pub(super) fn pack_reductions(
 
         if walk.words <= 1 {
             // Hidden reductions always have a child with visible output.
-            while !child.visible
-                && nodes[child.first_child.raw() as usize].next_sibling == ReductionIx::NONE
+            while !child.visible && nodes[child.first_child.ix()].next_sibling == ReductionIx::NONE
             {
                 if walk.words == 1 {
                     let supertype = walk.supertype(child.symbol);
@@ -718,7 +718,7 @@ pub(super) fn pack_reductions(
                     }
                 }
                 index = child.first_child;
-                child = &nodes[index.raw() as usize];
+                child = &nodes[index.ix()];
                 if child.extra {
                     field = None;
                 }

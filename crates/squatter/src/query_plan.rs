@@ -94,13 +94,11 @@ impl Program {
         for index in 0..compiled.entries().len() {
             let entry = compiled.entries()[index];
             if entry.flags & 1 != 0 && local_alternative(compiled, entry) {
-                compiled.steps_mut()[entry.step_index.raw() as usize].flags |= IS_LOCAL;
+                compiled.steps_mut()[entry.step_index.ix()].flags |= IS_LOCAL;
             }
 
             if index >= compiled.view.wildcard_root_pattern_count as usize {
-                let symbol = compiled.steps()[entry.step_index.raw() as usize]
-                    .symbol
-                    .raw() as usize;
+                let symbol = compiled.steps()[entry.step_index.ix()].symbol.ix();
                 let range = &mut result.pattern_map[symbol];
                 if range.length == 0 {
                     range.offset = index as u32;
@@ -151,9 +149,7 @@ impl Program {
             .enumerate()
             .skip(compiled.view.wildcard_root_pattern_count as usize)
         {
-            let symbol = compiled.steps()[entry.step_index.raw() as usize]
-                .symbol
-                .raw() as usize;
+            let symbol = compiled.steps()[entry.step_index.ix()].symbol.ix();
             let range = &mut self.pattern_map[symbol];
             if range.length == 0 {
                 range.offset = index as u32;
@@ -165,9 +161,11 @@ impl Program {
     fn prepare_scan(&mut self, compiled: &CompiledQuery) {
         // Root ?/* alternatives include an empty wildcard branch; every node
         // can start such a match, so symbol skipping would lose empty matches.
-        if compiled.entries().iter().any(|entry| {
-            compiled.steps()[entry.step_index.raw() as usize].symbol == SquatterKindId(0)
-        }) {
+        if compiled
+            .entries()
+            .iter()
+            .any(|entry| compiled.steps()[entry.step_index.ix()].symbol == SquatterKindId(0))
+        {
             return;
         }
 
@@ -185,8 +183,8 @@ impl Program {
 }
 
 fn local_alternative(compiled: &CompiledQuery, entry: PatternEntry) -> bool {
-    let step = compiled.steps()[entry.step_index.raw() as usize];
-    let pattern = compiled.patterns()[entry.pattern_index.raw() as usize];
+    let step = compiled.steps()[entry.step_index.ix()];
+    let pattern = compiled.patterns()[entry.pattern_index.ix()];
     let end = pattern.steps.end() - 1;
     if step.depth != 0
         || step.field.is_some()
@@ -204,7 +202,7 @@ fn local_alternative(compiled: &CompiledQuery, entry: PatternEntry) -> bool {
         return false;
     }
 
-    let mut next = entry.step_index.raw() as usize + 1;
+    let mut next = entry.step_index.ix() + 1;
     for _ in 0..pattern.steps.length {
         if next == end {
             return true;
@@ -212,7 +210,7 @@ fn local_alternative(compiled: &CompiledQuery, entry: PatternEntry) -> bool {
         if next >= end || !compiled.steps()[next].has(IS_DEAD_END) {
             return false;
         }
-        next = compiled.steps()[next].alternative_index.raw() as usize;
+        next = compiled.steps()[next].alternative_index.ix();
     }
     false
 }
@@ -221,14 +219,14 @@ fn presence_requirement(
     compiled: &CompiledQuery,
     entry: PatternEntry,
 ) -> Option<PresenceRequirement> {
-    let root = compiled.steps()[entry.step_index.raw() as usize];
+    let root = compiled.steps()[entry.step_index.ix()];
     if entry.flags & 1 == 0 || root.depth != 0 || root.alternative_index != QueryStepIx::NONE {
         return None;
     }
 
     let mut required = None;
-    let pattern = compiled.patterns()[entry.pattern_index.raw() as usize];
-    for step in &compiled.steps()[entry.step_index.raw() as usize + 1..pattern.steps.end()] {
+    let pattern = compiled.patterns()[entry.pattern_index.ix()];
+    for step in &compiled.steps()[entry.step_index.ix() + 1..pattern.steps.end()] {
         if step.depth == 0
             || step.depth == u16::MAX
             || step.alternative_index != QueryStepIx::NONE
@@ -275,28 +273,26 @@ impl DirectPlan {
             if entry.flags & 1 == 0 {
                 return None;
             }
-            let pattern = compiled.patterns()[entry.pattern_index.raw() as usize];
+            let pattern = compiled.patterns()[entry.pattern_index.ix()];
             let bit = 1 << entry.pattern_index.raw();
             let end = pattern.steps.end() - 1;
-            plan.end_steps[entry.pattern_index.raw() as usize] = QueryStepIx(end as u16);
+            plan.end_steps[entry.pattern_index.ix()] = QueryStepIx(end as u16);
 
-            let root = compiled.steps()[entry.step_index.raw() as usize];
+            let root = compiled.steps()[entry.step_index.ix()];
             if root.symbol != SquatterKindId(0) && local_alternative(compiled, entry) {
                 if patterns & bit != 0 {
-                    let first = compiled.steps()
-                        [plan.start_steps[entry.pattern_index.raw() as usize].raw() as usize];
+                    let first = compiled.steps()[plan.start_steps[entry.pattern_index.ix()].ix()];
                     if plan.local_patterns & bit == 0
                         || first.capture_ids != root.capture_ids
                         || compiled.entries()[..index].iter().any(|other| {
                             other.pattern_index == entry.pattern_index
-                                && compiled.steps()[other.step_index.raw() as usize].symbol
-                                    == root.symbol
+                                && compiled.steps()[other.step_index.ix()].symbol == root.symbol
                         })
                     {
                         return None;
                     }
                 } else {
-                    plan.start_steps[entry.pattern_index.raw() as usize] = entry.step_index;
+                    plan.start_steps[entry.pattern_index.ix()] = entry.step_index;
                 }
                 patterns |= bit;
                 plan.local_patterns |= bit;
@@ -311,7 +307,7 @@ impl DirectPlan {
                 return None;
             }
             patterns |= bit;
-            plan.start_steps[entry.pattern_index.raw() as usize] = entry.step_index;
+            plan.start_steps[entry.pattern_index.ix()] = entry.step_index;
 
             for step_index in pattern.steps.offset as usize..end {
                 let step = compiled.steps()[step_index];
@@ -378,7 +374,7 @@ impl DirectPlan {
             .resize(compiled.view.symbol_count as usize + 2, 0);
         for symbol in 1..=compiled.view.symbol_count as usize {
             for entry in compiled.entries() {
-                let step = compiled.steps()[entry.step_index.raw() as usize];
+                let step = compiled.steps()[entry.step_index.ix()];
                 if if step.symbol != SquatterKindId(0) {
                     step.symbol == SquatterKindId(symbol as u16)
                 } else {
