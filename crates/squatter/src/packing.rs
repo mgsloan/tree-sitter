@@ -17,7 +17,7 @@ pub struct PackOptions<'options> {
     pub initial_group_capacity: u32,
     pub repack: bool,
     /// Select coverage once per region after layout finalization. The default
-    /// selects regions with at least 64 groups, an initial size heuristic.
+    /// selects regions with at least 64 groups, an untuned size heuristic.
     pub symbol_presence: &'options dyn Fn(ForestRegion<'_>) -> bool,
     /// Checked between regions and groups while building presence data.
     pub cancellation_callback: Option<&'options dyn Fn() -> ControlFlow<()>>,
