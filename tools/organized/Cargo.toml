@@ -1,0 +1,13 @@
+[workspace]
+members = ["crates/squatter"]
+resolver = "2"
+
+[workspace.package]
+edition = "2024"
+license = "MIT"
+
+[workspace.dependencies]
+cc = "1.2.63"
+regex = "1.12.3"
+# Squatter uses private headers supplied by this exact Tree-sitter revision.
+tree-sitter = { git = "https://github.com/tree-sitter/tree-sitter", rev = "1b8407d1e718f2a26e2886c03cc55622d8d1d7bd" }

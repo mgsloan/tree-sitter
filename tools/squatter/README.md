@@ -1,5 +1,63 @@
 # Squatter checks and benchmarks
 
+## Publishing `organized`
+
+Development happens on `dev`. The `organized` branch contains only squatter,
+tree-feller, and their supporting files. Publication merges preserve the previous
+`organized` commit as first parent and the selected `dev` commit as second parent.
+Use `git log --first-parent organized` to browse publications.
+
+The publisher requires Python 3.11 or newer. Commit the development changes,
+then run:
+
+```sh
+python3 tools/publish.py check
+python3 tools/publish.py prepare
+git diff organized..publish/organized
+git worktree add ../organized-review publish/organized
+cargo test --locked --workspace --manifest-path ../organized-review/Cargo.toml
+python3 tools/publish.py publish
+```
+
+`prepare` creates the review branch; `publish` fast-forwards `organized` locally.
+Neither command pushes. The review worktree can be reused on subsequent runs;
+it must be clean when the script advances its branch. An unchanged exported tree
+does not create a commit. Source commits containing only excluded changes join
+the ancestry with the next changed publication.
+
+`--source`, `--target`, and `--candidate` override `dev`, `organized`, and
+`publish/<target>`. For a new output branch, first create it at the desired shared
+ancestor with `git branch organized <base>`. An unpublished review branch is never
+replaced: choose another `--candidate` or explicitly delete the abandoned branch.
+Preparing the same source and target again reuses the pending candidate.
+
+`tools/publish.toml` maps source files and directories to published paths. Directory
+mappings include new files automatically. Each export starts from an empty Git
+index, so deleted files and old destinations disappear. Moving a source outside
+its mapping requires updating the mapping. Missing sources and overlapping
+destinations are errors. File modes and symlinks are preserved.
+
+The public root files live in `tools/organized` on `dev`, including a separate
+manifest and lockfile. Tree-sitter comes from the revision pinned there; `dev`
+continues to use the local fork. To update public dependencies, regenerate the
+lockfile in a candidate worktree, copy it to `tools/organized/Cargo.lock`, and
+commit it on `dev` before preparing a new candidate.
+
+Exports read committed files, including the mapping and templates. Uncommitted
+changes are excluded. Run the exporter version committed at the selected source
+revision. Independent changes on `organized` are rejected unless their history
+has been incorporated into `dev`; normally make fixes on `dev` and publish again.
+Do not merge publication cleanup back into `dev`.
+
+The publisher checks Git state and exported contents; run the Cargo checks on
+the candidate before publishing. Its own regression tests use disposable repos:
+
+```sh
+python3 tools/publish_test.py
+```
+
+## Checks and benchmarks
+
 Rust `xtask` owns corpus selection, staging, grammar builds, and execution:
 
 ```sh
