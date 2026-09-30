@@ -494,6 +494,11 @@ impl PointsData {
     pub fn as_bytes(&self) -> &[u8] {
         self.0.bytes()
     }
+
+    pub(crate) fn copy(&self) -> Result<Self, SideDataError> {
+        Ok(Self(Sidecar(Slab::copy(self.as_bytes())?)))
+    }
+
     pub fn copy_from_bytes(forest: &Forest, bytes: &[u8]) -> Result<Self, SideDataError> {
         let points = Self::from_bytes(bytes)?;
         points.validate_loaded(forest)?;
@@ -587,6 +592,18 @@ impl Forest {
         self.data_mut().point_data = Some(points);
         Ok(())
     }
+
+    /// Point data must come from this forest's builder or a copy of the same core.
+    pub(crate) fn set_point_data_trusted(
+        &mut self,
+        points: PointsData,
+    ) -> Result<(), SideDataError> {
+        #[cfg(debug_assertions)]
+        points.validate_loaded(self)?;
+        self.data_mut().point_data = Some(points);
+        Ok(())
+    }
+
     /// Drops the optional cache. Scan results stay the same; scan
     /// cost can change.
     ///

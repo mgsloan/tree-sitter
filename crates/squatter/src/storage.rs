@@ -1061,7 +1061,7 @@ impl Forest {
             forest.set_presence_cache(PresenceCache::from_bytes(cache.as_bytes())?)?;
         }
         if let Some(points) = &self.data.point_data {
-            forest.set_point_data(PointsData::from_bytes(points.as_bytes())?)?;
+            forest.set_point_data_trusted(points.copy()?)?;
         }
         Ok(forest)
     }

@@ -348,6 +348,21 @@ fn sidecar_mapping_copy_and_failed_replacement() {
     invalid[root_start..root_start + 8].copy_from_slice(&u64::MAX.to_le_bytes());
     invalid[root_start + 16..root_start + 18].copy_from_slice(&1u16.to_le_bytes());
     assert!(PointsData::copy_from_bytes(&tree, &invalid).is_err());
+    assert!(
+        tree.set_point_data(PointsData::from_bytes(&invalid).unwrap())
+            .is_err()
+    );
+    let invalid_drops = Arc::new(AtomicUsize::new(0));
+    let invalid_owner = slab_owner(&invalid, invalid_drops.clone());
+    assert!(
+        tree.set_point_data(PointsData::from_retained(invalid_owner).unwrap())
+            .is_err()
+    );
+    assert_eq!(invalid_drops.load(Ordering::Relaxed), 1);
+    assert_eq!(
+        tree.point_data().unwrap().as_bytes().as_ptr(),
+        point_address
+    );
     assert_eq!(tree.root_node().start_position(), original_point);
     tree.drop_point_data();
     assert_eq!(drops.load(Ordering::Relaxed), 1);

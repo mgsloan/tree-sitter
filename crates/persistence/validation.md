@@ -31,6 +31,9 @@ dimensions and occupied-slot delta overflow in all builds; content ordering and
 unused-slot checks remain debug-only. Neither sidecar reconstructs core groups.
 Failed attachment preserves the previous side data.
 
+Internally packed point data and copies made by `detach` or `to_compacted` use
+debug-only attachment validation; release builds trust the matching core.
+
 ## Verification and remaining work
 
 Tests cover truncated headers and sections, deterministic slab mutations,

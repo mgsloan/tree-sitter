@@ -577,7 +577,7 @@ impl Builder {
             self.forest.set_presence_cache(cache)?;
         }
         if let Some(points) = self.points {
-            self.forest.set_point_data(points)?;
+            self.forest.set_point_data_trusted(points)?;
         }
         Ok(self.forest)
     }
