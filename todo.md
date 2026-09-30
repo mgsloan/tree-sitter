@@ -6,17 +6,17 @@ Lean
 
 # Todos
 
-- [ ] Private GroupIx / GroupSlotIx - generally private storage decisions
+- [ ] Sweep of debug-mode only checks / behaviors
 
-- [ ] newtype for SlotSpan?  slot.is_multiple_of(GROUP_SIZE) helper method - other such methods?
+- [ ] More general scan of overuse of namespace qualification
+
+- [ ] slot.is_multiple_of(GROUP_SIZE) helper method - other such methods?
 
 - [ ] Add `.ix()` for `.raw() as usize`
 
 - [ ] Update agent rules about documentation and refine documentation.  Should copy text from tree-sitter docs where sensible.  Should describe what's important / guaranteed to the user, not how it's implemented
 
 - [ ] Fuzz tests to help ensure that untrusted bytes don't cause wrong memory access etc.  To make this efficient the solution may be validation
-
-- [ ] set_point_data is called in some spots where validation shouldn't be needed
 
 ## Organization
 
@@ -25,14 +25,6 @@ Lean
 `main` branch which only has squatter and tree-feller and nothing else
 
 Script lives on `experimental` which helps out with merging back to `main` - handles any new deletions and new moves.
-
-## Forests
-
-- [ ] Figure out forest construction and supplying all grammars.  How many bytes are used for symbols / grammar id needs to be known upfront
-
-- [*] API for query scanning forest region
-
-- [*] API for query scanning subset of forest region
 
 ## Use in Zed
 
