@@ -6,26 +6,11 @@ Lean
 
 # Todos
 
-- [ ] Sweep of debug-mode only checks / behaviors
-
-- [ ] More general scan of overuse of namespace qualification
-
-- [ ] slot.is_multiple_of(GROUP_SIZE) helper method - other such methods?
-
-- [ ] Add `.ix()` for `.raw() as usize`
+- [ ] Reduce bounds checking?
 
 - [ ] Update agent rules about documentation and refine documentation.  Should copy text from tree-sitter docs where sensible.  Should describe what's important / guaranteed to the user, not how it's implemented
 
 - [ ] Fuzz tests to help ensure that untrusted bytes don't cause wrong memory access etc.  To make this efficient the solution may be validation
-
-## Organization
-
-`dev` branch which has tree-sitter / persistence / viz / lean. My development happens here.
-
-`organized` branch which only has squatter and tree-feller and nothing else
-
-`tools/publish.py` on `dev` exports the selected files and prepares publication
-merges into `organized`. See `tools/squatter/README.md` for the workflow.
 
 ## Use in Zed
 
