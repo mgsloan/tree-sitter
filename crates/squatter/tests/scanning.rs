@@ -112,6 +112,7 @@ fn orders_subtrees_groups_and_directions() {
     fn require_send_sync(_: impl Send + Sync) {}
     let root = tree.root_node();
     let kinds = KindSet::new([root.kind_id()]);
+    require_send_sync(root.walk());
     require_send_sync(root.preorder());
     require_send_sync(root.preorder().rev().nodes());
     require_send_sync(root.postorder().nodes());

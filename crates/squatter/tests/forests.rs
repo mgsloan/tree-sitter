@@ -103,6 +103,48 @@ fn grammar_caches_follow_cursor_resets_and_forest_copies() {
                     .collect::<Vec<_>>(),
                 nodes
             );
+
+            cursor.reset(tree.root_node());
+            let mut reference = native.walk();
+            let mut visited = Vec::new();
+            loop {
+                visited.push(cursor.node());
+                let saved = cursor.clone();
+                cursor.reset(initial);
+                cursor.reset_to(&saved);
+                assert_eq!(cursor.node(), *visited.last().unwrap());
+                assert_eq!(cursor.attributes(), NodeLike::attributes(reference.node()));
+                assert_eq!(cursor.depth(), reference.depth());
+                assert_eq!(
+                    cursor.field_id().map(|field| field.raw()),
+                    reference.field_id().map(|field| field.get())
+                );
+                assert_eq!(cursor.field_name(), reference.field_name());
+                let descended = cursor.goto_first_child();
+                assert_eq!(descended, reference.goto_first_child());
+                if descended {
+                    continue;
+                }
+                loop {
+                    let advanced = cursor.goto_next_sibling();
+                    assert_eq!(advanced, reference.goto_next_sibling());
+                    if advanced {
+                        break;
+                    }
+                    let ascended = cursor.goto_parent();
+                    assert_eq!(ascended, reference.goto_parent());
+                    if !ascended {
+                        break;
+                    }
+                }
+                if cursor.depth() == 0 {
+                    break;
+                }
+            }
+            assert_eq!(visited, nodes);
+            assert_eq!(cursor.node(), tree.root_node());
+            assert!(!cursor.goto_previous_sibling());
+            assert!(!cursor.goto_next_sibling());
         }
     }
 }

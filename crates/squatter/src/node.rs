@@ -1,5 +1,5 @@
 use crate::{
-    ChildIx, FieldId, Forest, GrammarId, KindId, NamedChildIx, NodeId, SlotIx,
+    ChildIx, FieldId, Forest, GrammarId, KindId, NamedChildIx, NodeId, SlotIx, TreeIx,
     native::GrammarView,
     scan::{self, Postorder, Preorder, Scan},
     storage::*,
@@ -544,12 +544,12 @@ impl<'tree> Node<'tree> {
             if !ready {
                 return None;
             }
-            let original = cursor.node;
+            let original = cursor.slot;
             while !cursor.node().is_named() {
                 if !cursor.goto_next_sibling() {
                     // Exhausting named children leaves the cursor after the last
                     // yielded child, even when unnamed children follow it.
-                    cursor.node = original;
+                    cursor.slot = original;
                     ready = false;
                     return None;
                 }
@@ -811,7 +811,9 @@ impl<'tree> Node<'tree> {
     /// cursor to retain its allocation.
     pub fn walk(&self) -> TreeCursor<'tree> {
         TreeCursor {
-            node: *self,
+            forest: self.data(),
+            tree: self.id().tree(),
+            slot: self.slot(),
             tables: self.tables(),
             parents: Vec::new(),
         }
@@ -1052,7 +1054,10 @@ impl std::iter::FusedIterator for Children<'_> {}
 /// stack without copying the tree.
 #[derive(Clone)]
 pub struct TreeCursor<'tree> {
-    node: Node<'tree>,
+    // Navigation changes only the slot; forest and tree stay fixed until reset.
+    forest: &'tree ForestData,
+    tree: TreeIx,
+    slot: SlotIx,
     tables: &'tree GrammarView,
     parents: Vec<SlotIx>,
 }
@@ -1067,7 +1072,7 @@ impl<'tree> TreeCursor<'tree> {
         if self.parents.is_empty() {
             None
         } else {
-            self.node.field_id()
+            self.node().field_id()
         }
     }
 
@@ -1089,7 +1094,9 @@ impl<'tree> TreeCursor<'tree> {
     /// destination capacity where possible. The two cursors move independently and borrow
     /// their trees.
     pub fn reset_to(&mut self, cursor: &Self) {
-        self.node = cursor.node;
+        self.forest = cursor.forest;
+        self.tree = cursor.tree;
+        self.slot = cursor.slot;
         self.tables = cursor.tables;
         self.parents.clone_from(&cursor.parents);
     }
@@ -1098,21 +1105,29 @@ impl<'tree> TreeCursor<'tree> {
     ///
     /// **Not in Tree-sitter**
     pub fn attributes(&mut self) -> traits::Attributes<'tree> {
-        self.node.attributes_with_tables(self.tables)
+        self.node().attributes_with_tables(self.tables)
     }
 
     /// Get the tree cursor's current [`Node`].
+    #[inline]
     pub fn node(&self) -> Node<'tree> {
-        self.node
+        self.node_at(self.slot)
+    }
+
+    #[inline]
+    fn node_at(&self, slot: SlotIx) -> Node<'tree> {
+        Node::new(self.forest, NodeId::new(self.tree, slot))
     }
 
     pub(crate) fn parent_node(&self) -> Option<Node<'tree>> {
-        self.parents.last().map(|slot| self.node.at(*slot))
+        self.parents.last().map(|slot| self.node_at(*slot))
     }
 
     /// Re-initialize this tree cursor to start at the given node.
     pub fn reset(&mut self, node: Node<'tree>) {
-        self.node = node;
+        self.forest = node.data();
+        self.tree = node.id().tree();
+        self.slot = node.slot();
         self.tables = node.tables();
         self.parents.clear();
     }
@@ -1128,11 +1143,11 @@ impl<'tree> TreeCursor<'tree> {
     /// This returns `true` if the cursor successfully moved, and returns
     /// `false` if there were no children.
     pub fn goto_first_child(&mut self) -> bool {
-        let Some(child) = self.node.first_child() else {
+        let Some(child) = self.node().first_child() else {
             return false;
         };
-        self.parents.push(self.node.slot());
-        self.node = child;
+        self.parents.push(self.slot);
+        self.slot = child.slot();
         true
     }
 
@@ -1163,10 +1178,10 @@ impl<'tree> TreeCursor<'tree> {
         if self.parents.is_empty() {
             return false;
         }
-        let Some(next) = self.node.next_sibling_including_empty() else {
+        let Some(next) = self.node().next_sibling_including_empty() else {
             return false;
         };
-        self.node = next;
+        self.slot = next.slot();
         true
     }
 
@@ -1182,7 +1197,7 @@ impl<'tree> TreeCursor<'tree> {
         let Some(slot) = self.parents.pop() else {
             return false;
         };
-        self.node = self.node.at(slot);
+        self.slot = slot;
         true
     }
 
@@ -1201,13 +1216,13 @@ impl<'tree> TreeCursor<'tree> {
         let previous = self.parent_node().and_then(|parent| {
             parent
                 .structural_children()
-                .take_while(|node| *node != self.node)
+                .take_while(|node| node.slot() != self.slot)
                 .last()
         });
         let Some(previous) = previous else {
             return false;
         };
-        self.node = previous;
+        self.slot = previous.slot();
         true
     }
 
@@ -1246,12 +1261,12 @@ impl<'tree> TreeCursor<'tree> {
         mut matches: impl FnMut(Node<'tree>) -> bool,
     ) -> Option<ChildIx> {
         let (index, child) = self
-            .node
+            .node()
             .structural_children()
             .enumerate()
             .find(|(_, node)| matches(*node))?;
-        self.parents.push(self.node.slot());
-        self.node = child;
+        self.parents.push(self.slot);
+        self.slot = child.slot();
         Some(ChildIx::new(index as u32))
     }
 }
@@ -1260,6 +1275,7 @@ impl<'tree> TreeCursor<'tree> {
 const _: () = {
     assert!(size_of::<Node<'_>>() == 16);
     assert!(size_of::<Option<Node<'_>>>() == 16);
+    assert!(size_of::<TreeCursor<'_>>() == 48);
 };
 
 #[cfg(test)]

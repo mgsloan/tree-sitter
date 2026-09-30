@@ -360,7 +360,9 @@ pub struct Node<'forest> {
 }
 
 pub struct TreeCursor<'forest> {
-    node: Node<'forest>,
+    forest: &'forest ForestData,
+    tree: TreeIx,
+    slot: SlotIx,
     tables: &'forest GrammarView,
     // traversal state
 }
@@ -405,6 +407,8 @@ native grammar retained by each region's language; cloning a language preserves
 the table address. Cursors and scans resolve tables once, and cursor resets
 refresh that reference. Bundled attributes reuse one table reference and decoded
 IDs. Returned nodes and captures retain the compact forest/ID representation.
+Cursor navigation updates a separate 32-bit slot; the forest and tree stay fixed
+until reset. Reading a cursor node combines the tree and slot into a `NodeId`.
 The reusable query cursor retains no forest borrow between executions. Column
 pointers are stored once in `ForestData`.
 
