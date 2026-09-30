@@ -1,14 +1,26 @@
 
-forests  ->  Viz
-         ->  Fuzz
-         ->  Docs
-         ->  Lean
+Viz
+Fuzz
+Docs
+Lean
 
 # Todos
+
+- [ ] Sweep of primitives for spots they should be newtypes
+
+- [ ] newtype for SlotSpan?  slot.is_multiple_of(GROUP_SIZE) helper method - other such methods?
+
+- [ ] Rename repack to "compact"?
+
+- [ ] Do not namespace qualify types that are unique to tree-squatter
+
+- [ ] Make SlotIx private
 
 - [ ] Update agent rules about documentation and refine documentation.  Should copy text from tree-sitter docs where sensible.  Should describe what's important / guaranteed to the user, not how it's implemented
 
 - [ ] Fuzz tests to help ensure that untrusted bytes don't cause wrong memory access etc.  To make this efficient the solution may be validation
+
+- [ ] set_point_data is called in some spots where validation shouldn't be needed
 
 ## Organization
 
@@ -38,6 +50,10 @@ Script lives on `experimental` which helps out with merging back to `main` - han
 
 
 # Post initial release
+
+## Injections
+
+* Consider having one forest per injection-depth.  Otherwise we need to run injection queries and then grow the forest.
 
 ## Cleanup
 
@@ -141,11 +157,26 @@ Parse only the needed info.
 
 # Backburner
 
+- [ ] Does a `grow` method make sense?  Forest::grow() is just plain appealing
+
 - [ ] Dedupe query compiler with upstream TS?
 
 - [ ] Parent / previous sibling links (slot counts)
 
 - [ ] Remap symbol IDs to make some queries able to check an interval?  Remapping is already happening, but it is deterministic based on grammar definitions.  For example, if the symbols matched at the top of highlighting queries were all a contiguous range, it could benefit from SIMD comparisons
+
+- [ ] `PointsData` could be treated as a cache where the inputs are the tree + source code (or
+  newline index). In other words, it's possible to build it after the fact. However, this can cause more slots to get wasted in groups due to points not fitting, though this should be rare in practice. So it would require being able to shift the data in the main slab and all other caches, and this would make anything that holds SlotIx potentially be invalid.  Doesn't seem worth the complexity.
+
+- [ ] Could use the scan API to allow for a pretty way to restrict queries. So, it would build up a
+  scan struct that implements a trait which outputs a struct with the restrictions. For now this
+  idea is discarded - complexity seems more than it's worth. Tree-sitter's semantics for query
+  restriction also make the story more complex than what such an API would imply.  For example, captures() filters by the restriction whereas matches may return captures outside the restriction.
+
+- [ ] Containment index for regions with nested ordering? This can potentially make range restricted
+  queries on injections a little faster. Deferring for now, as it may just use new regions at each nesting depth.
+
+- [ ] Scan APIs that scan over regions?
 
 ## Correctness
 
