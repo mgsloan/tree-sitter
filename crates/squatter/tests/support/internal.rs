@@ -461,6 +461,24 @@ fn synthetic_supertype_emission_and_persistence() {
                     Forest::from_bytes_safety_checked(slice::from_ref(grammar), &bytes).is_err()
                 );
             }
+            let mut bytes = tree.as_bytes().to_vec();
+            let offset = tree
+                .data()
+                .layout
+                .supertype
+                .offset(ptr::NonNull::from(tree.as_bytes()).cast());
+            let invalid = if bits > 8 {
+                grammar.tables().dictionary_count
+            } else {
+                1 << bits
+            };
+            bytes[offset..offset + 2].copy_from_slice(&(invalid as u16).to_le_bytes());
+            let loaded = Forest::from_bytes(slice::from_ref(grammar), &bytes);
+            if bits > 8 {
+                assert!(loaded.is_err());
+            } else {
+                assert_eq!(loaded.unwrap().validate(), Err(Error::InvalidSlab));
+            }
         }
     }
 }
@@ -767,13 +785,16 @@ fn synthetic_symbol_ids_and_optional_columns() {
                 if tree.data().layout.symbol_width == 1 {
                     // Zero is reserved and cannot be stored on a node.
                     invalid[offset] = 0;
+                    let loaded = Forest::from_bytes(slice::from_ref(grammar), &invalid).unwrap();
+                    assert_eq!(loaded.validate(), Err(Error::InvalidSlab));
                 } else {
                     invalid[offset..offset + 2].copy_from_slice(&u16::MAX.to_le_bytes());
+                    assert!(Forest::from_bytes(slice::from_ref(grammar), &invalid).is_err());
+                    assert!(
+                        Forest::from_bytes_safety_checked(slice::from_ref(grammar), &invalid)
+                            .is_err()
+                    );
                 }
-                assert!(Forest::from_bytes(slice::from_ref(grammar), &invalid).is_err());
-                assert!(
-                    Forest::from_bytes_safety_checked(slice::from_ref(grammar), &invalid).is_err()
-                );
             }
         }
     }

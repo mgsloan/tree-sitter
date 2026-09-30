@@ -40,7 +40,9 @@ point-search fallback are preserved.
 
 `core-lifecycle-bench` measures packing alone (cold/reused/dropped scratch), full and safety-only loads,
 borrowed/retained loads, compact copying, `to-compacted`, grammar preparation/cache
-loading, and query construction, destruction, and disabling. Each operation
+loading, and query construction, destruction, and disabling. `load-full` includes
+an explicit `Forest::validate()` call after safe loading; `load-safety` only runs
+the loader's memory-safety checks. Each operation
 includes destruction unless named `query-drop` or `query-disable-*`; those exclude
 compilation. Compact copying reuses its destination. Mutation/destruction batches
 retain at most 16 programs and bound untimed compilation work per sample.

@@ -317,8 +317,9 @@ never delete injection entries. Sidecar writes cannot resurrect source/artifacts
 Sidecar loading, validation, ownership, and publication follow
 [step 1](side-data.md#serialization-and-loading) and
 [forest serialization in step 2](forests-design.md#representation-and-serialization).
-Release loads only perform cheap count/size checks; they do not scan forest,
-manifest, or sidecar contents for validity. Debug builds perform those scans.
+Safe forest loads check memory-safety invariants in every build profile.
+Full forest and attached sidecar content validation is explicit through
+`Forest::validate()`; it never runs implicitly based on the build profile.
 This does not change validation of newly constructed parser requests before
 invoking the parser.
 

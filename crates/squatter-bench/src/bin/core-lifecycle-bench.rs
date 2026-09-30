@@ -108,12 +108,13 @@ impl Case<'_> {
                     black_box((node.start_position(), node.end_position()));
                 }
             }),
-            "load-full" => {
-                measure!(
+            "load-full" => measure!({
+                let forest =
                     Forest::from_bytes(std::slice::from_ref(&self.language), self.tree.as_bytes())
-                        .unwrap()
-                )
-            }
+                        .unwrap();
+                forest.validate().unwrap();
+                forest
+            }),
             "load-safety" => measure!(
                 Forest::from_bytes_safety_checked(
                     std::slice::from_ref(&self.language),

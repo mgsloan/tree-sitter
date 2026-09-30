@@ -68,8 +68,9 @@ Implemented:
   snapshot for aligned cache slabs. Misaligned hits and local reader pressure use
   owned copies. `LoadedFile::retains_transaction` reports the actual storage mode;
   `detach` copies without invalidating aliases. Sources remain owned disk captures.
-- Core header, extent, and root-span checks, with sidecar dimension checks
-  and point-delta overflow checks, plus debug topology and content checks; no slab checksum. Node source bounds are checked
+- Core memory-safety checks in every build profile, with sidecar dimension and
+  point-delta overflow checks. Full core and sidecar content validation is explicit
+  through `Forest::validate()`; no slab checksum. Node source bounds are checked
   before returning the pair. See [the validator audit](validation.md).
 - Fresh whole-file parsing through `Parser`. The parser-taking
   load methods accept this packed parser; `LoadContext` owns one for worker reuse.

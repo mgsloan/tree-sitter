@@ -122,12 +122,7 @@ fn packing_context_matches_fresh_packing_and_loading() {
                         let actual = context.pack_with_options(&grammar, &tree, options).unwrap();
                         assert_eq!(actual.has_points(), points);
                         assert_eq!(actual.presence_cache().is_some(), symbol_presence);
-                        if let Some(points) = actual.point_data() {
-                            points.validate_for(&actual).unwrap();
-                        }
-                        if let Some(cache) = actual.presence_cache() {
-                            cache.validate_for(&actual).unwrap();
-                        }
+                        actual.validate().unwrap();
                         assert_same_tree(&actual, &expected);
                         if let Some(core) = &core {
                             assert_eq!(actual.as_bytes(), core);
@@ -402,6 +397,7 @@ fn point_content_validation_is_explicit() {
     let grammar = Language::new(&language).unwrap();
     let native = support::parse_native(&language, "1");
     let mut tree = Forest::pack(&grammar, &native).unwrap();
+    tree.validate().unwrap();
     let points = tree.point_data().unwrap();
     points.validate_for(&tree).unwrap();
     let bytes = points.as_bytes();
@@ -417,12 +413,40 @@ fn point_content_validation_is_explicit() {
         let points = PointsData::copy_from_bytes(&tree, &invalid).unwrap();
         assert!(points.validate_for(&tree).is_err());
         tree.set_point_data(points).unwrap();
+        assert!(tree.validate().is_err());
         for copied in [tree.detach().unwrap(), tree.to_compacted().unwrap()] {
             let points = copied.point_data().unwrap();
             assert_eq!(points.as_bytes(), invalid);
             assert!(points.validate_for(&copied).is_err());
+            assert!(copied.validate().is_err());
         }
     }
+    tree.drop_point_data();
+    tree.validate().unwrap();
+}
+
+#[test]
+fn forest_validation_checks_attached_presence_contents() {
+    use tree_squatter::PresenceCache;
+
+    let language = json_language();
+    let grammar = Language::new(&language).unwrap();
+    let native = support::parse_native(&language, "[0,1]");
+    let mut tree = Forest::pack(&grammar, &native).unwrap();
+    let cache = PresenceCache::build(&tree).unwrap();
+    tree.set_presence_cache(cache).unwrap();
+    tree.validate().unwrap();
+
+    let mut bytes = tree.presence_cache().unwrap().as_bytes().to_vec();
+    bytes[16..].fill(0);
+    tree.set_presence_cache(PresenceCache::copy_from_bytes(&tree, &bytes).unwrap())
+        .unwrap();
+    assert!(tree.validate().is_err());
+    for copied in [tree.detach().unwrap(), tree.to_compacted().unwrap()] {
+        assert!(copied.validate().is_err());
+    }
+    tree.drop_presence_cache();
+    tree.validate().unwrap();
 }
 
 #[test]

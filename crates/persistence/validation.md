@@ -8,16 +8,26 @@ source or prove that a slab belongs to the supplied grammar bindings.
 
 ## Core checks
 
-Release loading checks header/version/layout compatibility, section sizes,
-region extents, and grammar bindings. Retained storage must be eight-byte aligned.
-Tree metadata is reconstructed backward from root spans, checking root accesses,
-span arithmetic, and strict progress within each region. Root byte bounds also
-establish the region's ordering classification.
+Safe loading performs the same memory-safety checks in every build profile:
+header/version/layout compatibility, section sizes, aligned region/tree bounds,
+nonempty groups, nested subtree spans, live sibling destinations, compact ID and
+supertype dictionary bounds, and coordinate arithmetic. Tree metadata is
+reconstructed backward from root spans with strict progress within each region.
+Root byte bounds establish region ordering. Borrowed and retained storage must
+be eight-byte aligned.
 
-Full descendant topology, symbols, fields, supertypes, coordinates, and boundary
-alignment are checked in debug builds. Release readers rely on those content
-invariants. Persistence additionally walks nodes to check their end bytes against
-the captured source length before returning the pair.
+`Forest::validate()` explicitly checks full core contents, including reserved IDs,
+field IDs, sibling flags, direct supertype masks, root metadata, and byte-range
+ordering. It then calls `validate_for` on each attached sidecar. These checks do
+not run automatically on load. Persistence additionally walks nodes to check their
+end bytes against the captured source length before returning the pair.
+
+The unsafe `from_bytes_unchecked`, `from_bytes_borrowed_unchecked`, and
+`from_retained_unchecked` loaders skip node validation in every profile. They
+still check header/layout metadata and reconstruct trees. Callers must establish
+the safety invariants for the supplied grammar bindings before using these APIs;
+unmodified bytes from packing or a successful safe load satisfy that contract.
+Persistence uses the safe loaders.
 
 ## Separate side data
 

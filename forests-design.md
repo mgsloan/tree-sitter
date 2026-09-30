@@ -632,7 +632,8 @@ valid cache containing only absent-region records.
 `from_bytes` copies serialized data into owned storage, matching `Forest::from_bytes`;
 `from_retained` retains immutable storage without copying. Both loaders validate
 the serialized format without a forest. Setters check compatibility with the
-destination forest and perform forest-dependent debug validation before attachment.
+destination forest. Content validation is explicit through `validate_for` or
+`Forest::validate()`.
 
 The forest presence cache concatenates one record per region in physical order
 into one allocation. Present records retain the existing region header and bitmap
@@ -681,10 +682,11 @@ or owners. Per-tree point attachment/removal remains outside this interface.
 Side data uses the `as_bytes` representation from step 1. Retained constructors
 read mapped payloads directly and retain their owners; copy constructors
 allocate aligned storage and memcpy the same layout. Neither path decodes fields
-into another representation or reconstructs indexes. Release loading checks format,
+into another representation or reconstructs indexes. Loading checks format,
 dimensions, alignment for retained storage, and payload sizes. Attachment compares
 the target kind, region counts, and dimensions with the forest, and checks
-point-delta overflow. Other content checks run only in debug builds. The caller supplies data built for the matching
+point-delta overflow. Other content checks are explicit through `validate_for` or
+`Forest::validate()`. The caller supplies data built for the matching
 forest and region order; count checks alone
 do not prove that pairing. Reordering trees/groups while rebuilding a core
 requires fresh side data or a correct remapping. Loading or setting side data
@@ -786,25 +788,25 @@ A single-tree region is `NonOverlapping`. Classification needs only adjacent roo
 bounds and constant scratch space, adding O(number of trees) work. It is neither
 caller-supplied nor serialized and requires no descendant traversal or source text.
 
-Serialize fields explicitly in little-endian form. Release loading checks
-header/count/size arithmetic and region extents. During tree reconstruction,
-check root accesses and span arithmetic, require tree starts within the region
-and strict backward progress, and bound the resulting tree count by `TreeIx`.
-These checks make reconstruction bounded without a full content scan.
-Do not traverse descendants or scan bitmap contents or descendant coordinates for
-validity in release builds. Ordering classification reads root bounds during
-metadata reconstruction in both release and debug builds.
+Serialize fields explicitly in little-endian form. Safe loading performs the same
+memory-safety checks in every build profile. Check header/count/size arithmetic,
+aligned region and tree bounds, nonempty groups, nested subtree spans, live sibling
+destinations, compact ID and supertype dictionary bounds, and coordinate arithmetic.
+Reconstruct trees backward from root spans with strict progress inside each region
+and bound the resulting count by `TreeIx`. Ordering classification reads root bounds.
 
-Under `#[cfg(debug_assertions)]`, scan descriptors and contents: check alignment,
-offsets, column/index/coordinate bounds, and grammar references. Reconstructed
-trees partition each region's groups; topology stays inside each tree. Check
-that serialized region ends and reconstructed region/tree bounds are on group
-boundaries. Release loading relies on this alignment invariant. Check strictly
-increasing region ends, the final end against the used slot count, and runtime
-tree-to-region mappings against the region intervals. Full topology and content
-validation remains debug-only. Loading retains supplied grammar
-handles; each grammar index selects a caller-supplied grammar. The caller must
-supply the matching grammars; persistent compatibility checks are separate work.
+The unsafe `from_bytes_unchecked`, `from_bytes_borrowed_unchecked`, and
+`from_retained_unchecked` APIs retain header/layout checks and tree reconstruction
+but skip node validation. Their callers must establish the safety invariants for
+the supplied grammar bindings.
+
+`Forest::validate()` explicitly checks full core contents and calls `validate_for`
+on each attached presence or point cache. Reserved IDs, field IDs, sibling flags,
+direct supertype masks, root metadata, and byte-range ordering are content checks.
+Loading never runs these checks implicitly, including in debug builds.
+Loading retains supplied grammar handles; each grammar index selects a
+caller-supplied grammar. The caller must supply the matching grammars;
+persistent compatibility checks are separate work.
 
 Symbols and fields remain grammar-local despite uniform widths. Prepared grammar
 tables and supertype dictionaries can be shared per exact grammar; per-node

@@ -29,6 +29,63 @@ fn retain(bytes: &[u8]) -> SlabOwner {
 }
 
 #[test]
+fn trusted_loaders_preserve_forest_storage() {
+    let native_languages = [support::json_language(), support::c_language()];
+    let languages = native_languages
+        .each_ref()
+        .map(|language| Language::new(language).unwrap());
+    let native = [
+        support::parse_native(&native_languages[0], "[0,1]"),
+        support::parse_native(&native_languages[1], "int value;"),
+    ];
+    for count in [0, 2] {
+        let (forest, _) = Packer::new()
+            .unwrap()
+            .pack_forest(
+                languages
+                    .iter()
+                    .zip(&native)
+                    .take(count)
+                    .map(|(language, tree)| PackRegion {
+                        language: language.clone(),
+                        roots: vec![tree.root_node()],
+                    })
+                    .collect::<Vec<_>>(),
+                PackOptions::default(),
+            )
+            .unwrap();
+        let owner = retain(forest.as_bytes());
+        let address = owner.bytes().as_ptr();
+        // Packing establishes the safety invariants for these grammar bindings.
+        let copied =
+            unsafe { Forest::from_bytes_unchecked(&languages, forest.as_bytes()) }.unwrap();
+        let borrowed =
+            unsafe { Forest::from_bytes_borrowed_unchecked(&languages, forest.as_bytes()) }
+                .unwrap();
+        let retained = unsafe { Forest::from_retained_unchecked(&languages, owner) }.unwrap();
+        assert_eq!(borrowed.as_bytes().as_ptr(), forest.as_bytes().as_ptr());
+        assert_eq!(retained.as_bytes().as_ptr(), address);
+        for loaded in [&copied, &borrowed, &retained] {
+            loaded.validate().unwrap();
+            assert_eq!(loaded.as_bytes(), forest.as_bytes());
+            assert_eq!(loaded.trees().len(), count);
+            for (actual, expected) in loaded.trees().zip(forest.trees()) {
+                assert_eq!(describe(actual.root_node()), describe(expected.root_node()));
+            }
+        }
+        if count == 2 {
+            let mut bytes = forest.as_bytes().to_vec();
+            let offset = bytes.len() - 12;
+            let end = u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap());
+            bytes[offset..offset + 4].copy_from_slice(&(end - 1).to_le_bytes());
+            assert!(Forest::from_bytes(&languages, &bytes).is_err());
+            assert!(Forest::from_bytes_borrowed(&languages, &bytes).is_err());
+            assert!(Forest::from_retained(&languages, retain(&bytes)).is_err());
+        }
+    }
+}
+
+#[test]
 fn grammar_caches_follow_cursor_resets_and_forest_copies() {
     use tree_squatter::traits::NodeLike;
 

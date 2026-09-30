@@ -813,30 +813,81 @@ impl Forest {
         Ok(forest)
     }
 
-    /// Copies core bytes. Supply grammar bindings in the same order used to pack
-    /// regions; repeated grammars may share a binding. Side data loads separately.
+    /// Copies core bytes and checks the invariants needed for memory-safe access.
+    /// Supply grammar bindings in the same order used to pack regions; repeated
+    /// grammars may share a binding. Side data loads separately.
+    ///
+    /// Checks are identical in every build profile. Use [`Self::validate`] for
+    /// full content validation, including any subsequently attached side data.
     pub fn from_bytes(languages: &[Language], bytes: &[u8]) -> Result<Self, Error> {
         if bytes.len() < 16 || bytes.len() > u32::MAX as usize {
             return Err(Error::InvalidSlab);
         }
-        Self::load(languages, Slab::copy(bytes)?)
+        Self::load::<false>(languages, Slab::copy(bytes)?)
     }
 
+    /// Equivalent to [`Self::from_bytes`].
     pub fn from_bytes_safety_checked(languages: &[Language], bytes: &[u8]) -> Result<Self, Error> {
         Self::from_bytes(languages, bytes)
     }
 
-    /// Retains immutable aligned storage; byte access never calls the owner again.
-    pub fn from_retained(languages: &[Language], owner: impl StableSlab) -> Result<Self, Error> {
-        Self::load(languages, Slab::retained(owner)?)
+    /// Copies trusted core bytes without scanning node contents.
+    /// Header/layout checks and tree metadata reconstruction still run.
+    ///
+    /// # Safety
+    /// The bytes must satisfy the memory-safety invariants checked by
+    /// [`Self::from_bytes`] for the supplied grammar bindings: valid group bounds,
+    /// nested spans and live sibling destinations, in-range table indexes, and
+    /// byte coordinates that do not overflow. Unmodified bytes
+    /// from packing or a successful safe load with those bindings satisfy them.
+    pub unsafe fn from_bytes_unchecked(
+        languages: &[Language],
+        bytes: &[u8],
+    ) -> Result<Self, Error> {
+        if bytes.len() < 16 || bytes.len() > u32::MAX as usize {
+            return Err(Error::InvalidSlab);
+        }
+        Self::load::<true>(languages, Slab::copy(bytes)?)
     }
 
+    /// Retains immutable aligned storage with the checks of [`Self::from_bytes`].
+    /// Byte access never calls the owner again.
+    pub fn from_retained(languages: &[Language], owner: impl StableSlab) -> Result<Self, Error> {
+        Self::load::<false>(languages, Slab::retained(owner)?)
+    }
+
+    /// Retains trusted immutable aligned storage without scanning node contents.
+    ///
+    /// # Safety
+    /// The owner's bytes must meet the requirements of [`Self::from_bytes_unchecked`].
+    pub unsafe fn from_retained_unchecked(
+        languages: &[Language],
+        owner: impl StableSlab,
+    ) -> Result<Self, Error> {
+        Self::load::<true>(languages, Slab::retained(owner)?)
+    }
+
+    /// Borrows aligned core bytes with the checks of [`Self::from_bytes`].
     pub fn from_bytes_borrowed<'bytes>(
         languages: &[Language],
         bytes: &'bytes [u8],
     ) -> Result<BorrowedForest<'bytes>, Error> {
         Ok(BorrowedForest {
-            forest: Self::load(languages, Slab::borrowed(bytes)?)?,
+            forest: Self::load::<false>(languages, Slab::borrowed(bytes)?)?,
+            bytes: PhantomData,
+        })
+    }
+
+    /// Borrows trusted aligned core bytes without scanning node contents.
+    ///
+    /// # Safety
+    /// The bytes must meet the requirements of [`Self::from_bytes_unchecked`].
+    pub unsafe fn from_bytes_borrowed_unchecked<'bytes>(
+        languages: &[Language],
+        bytes: &'bytes [u8],
+    ) -> Result<BorrowedForest<'bytes>, Error> {
+        Ok(BorrowedForest {
+            forest: Self::load::<true>(languages, Slab::borrowed(bytes)?)?,
             bytes: PhantomData,
         })
     }
@@ -1066,7 +1117,7 @@ impl Forest {
         Ok(forest)
     }
 
-    fn load(languages: &[Language], storage: Slab) -> Result<Self, Error> {
+    fn load<const TRUSTED: bool>(languages: &[Language], storage: Slab) -> Result<Self, Error> {
         let bytes = storage.bytes();
         if bytes.len() < 16 || bytes.len() > u32::MAX as usize {
             return Err(Error::InvalidSlab);
@@ -1104,6 +1155,7 @@ impl Forest {
                 .ok_or(Error::InvalidSlab)?;
             if end <= start
                 || end > groups * GROUP_SIZE
+                || !SlotIx(end).is_group_start()
                 || (flags & BYTE_IDS != 0 && id_width_flags([language]) == 0)
             {
                 return Err(Error::InvalidSlab);
@@ -1121,9 +1173,10 @@ impl Forest {
             return Err(Error::InvalidSlab);
         }
         forest.reconstruct_trees()?;
+        if !TRUSTED {
+            forest.validate_nodes::<false>()?;
+        }
         forest.classify_regions();
-        #[cfg(debug_assertions)]
-        forest.validate_nodes()?;
         Ok(forest)
     }
 
@@ -1152,17 +1205,7 @@ impl Forest {
                 if start < slots.start || start.raw() >= end || !start.is_group_start() {
                     return Err(Error::InvalidSlab);
                 }
-                let byte_start = self
-                    .data
-                    .word(self.data.layout.start_byte_base, group.raw())
-                    .checked_add(self.data.byte(self.data.layout.start_byte_delta, root) as u32)
-                    .ok_or(Error::InvalidSlab)?;
-                let byte_end = self
-                    .data
-                    .word(self.data.layout.end_byte_base, group.raw())
-                    .checked_sub(self.data.short(self.data.layout.end_byte_delta, root) as u32)
-                    .ok_or(Error::InvalidSlab)?;
-                if byte_start > byte_end || self.data.trees.len() >= u32::MAX as usize {
+                if self.data.trees.len() >= u32::MAX as usize {
                     return Err(Error::InvalidSlab);
                 }
                 self.data
@@ -1241,9 +1284,26 @@ pub unsafe trait StableSlab: Send + Sync + 'static {
 }
 
 impl Forest {
-    #[cfg(debug_assertions)]
-    fn validate_nodes(&self) -> Result<(), Error> {
+    /// Checks core topology, IDs, fields, supertype encodings and byte ranges,
+    /// then validates each attached presence and point cache against the forest.
+    /// Does not reparse or compare coordinates with source text.
+    ///
+    /// This content check is explicit in every build profile. Safe loading only
+    /// checks the invariants needed for memory-safe access.
+    pub fn validate(&self) -> Result<(), Error> {
+        self.validate_nodes::<true>()?;
+        if let Some(cache) = self.presence_cache() {
+            cache.validate_for(self)?;
+        }
+        if let Some(points) = self.point_data() {
+            points.validate_for(self)?;
+        }
+        Ok(())
+    }
+
+    fn validate_nodes<const FULL: bool>(&self) -> Result<(), Error> {
         let data = self.data();
+        let mut ends = SmallVec::<[u32; 64]>::new();
         for region in &data.regions {
             if !region.slots.start.is_group_start() || !region.slots.end.is_group_start() {
                 return Err(Error::InvalidSlab);
@@ -1263,7 +1323,7 @@ impl Forest {
                 }
             }
             let root = data.group_end(slots.end.group() - 1) - 1;
-            let mut ends = Vec::with_capacity(64);
+            ends.clear();
             for group in groups.rev() {
                 let span_max = data.span_max(group);
                 let start_base = data.word(data.layout.start_byte_base, group.raw()) as u64;
@@ -1285,47 +1345,56 @@ impl Forest {
                         return Err(Error::InvalidSlab);
                     }
                     let last = data.bit(data.layout.last, slot);
-                    let field = data.short(data.layout.field, slot) as u32;
+                    // Sibling access subtracts one without a bounds check.
+                    if end == slots.start.raw() && !last {
+                        return Err(Error::InvalidSlab);
+                    }
+                    // Reverse postorder follows child spans to the parent's boundary.
                     if slot == root.raw() {
-                        if end != slots.start.raw()
-                            || !last
-                            || field != 0
-                            || data.short(data.layout.supertype, slot) != 0
-                        {
+                        if end != slots.start.raw() {
                             return Err(Error::InvalidSlab);
                         }
                     } else if !ends
                         .last()
-                        .is_some_and(|parent| end >= *parent && last == (end == *parent))
+                        .is_some_and(|parent| end >= *parent && (!FULL || last == (end == *parent)))
                     {
                         return Err(Error::InvalidSlab);
                     }
                     let symbol = u32::from(data.symbol_index(SlotIx(slot)).raw());
-                    if symbol == 0 || symbol >= symbols || field > tables.field_count {
+                    if symbol >= symbols || (FULL && symbol == 0) {
                         return Err(Error::InvalidSlab);
                     }
                     let grammar = u32::from(data.grammar_index(SlotIx(slot)).raw());
-                    if grammar == 0 || grammar >= tables.compact_grammar_count + 2 {
+                    if grammar >= tables.compact_grammar_count + 2 || (FULL && grammar == 0) {
                         return Err(Error::InvalidSlab);
                     }
                     let supertype = data.short(data.layout.supertype, slot) as u32;
                     if supertype
                         >= if tables.supertype_count > 8 {
                             tables.dictionary_count
-                        } else {
+                        } else if FULL {
                             1 << tables.supertype_count
+                        } else {
+                            1 << 16
                         }
                     {
                         return Err(Error::InvalidSlab);
                     }
                     let start = start_base + data.byte(data.layout.start_byte_delta, slot) as u64;
                     let end_delta = data.short(data.layout.end_byte_delta, slot) as u32;
-                    if start > u32::MAX as u64
-                        || end_delta > end_base
-                        || start > (end_base - end_delta) as u64
-                    {
+                    if start > u32::MAX as u64 || end_delta > end_base {
                         return Err(Error::InvalidSlab);
                     }
+                    if FULL {
+                        let field = data.short(data.layout.field, slot) as u32;
+                        if start > (end_base - end_delta) as u64
+                            || field > tables.field_count
+                            || (slot == root.raw() && (field != 0 || supertype != 0))
+                        {
+                            return Err(Error::InvalidSlab);
+                        }
+                    }
+                    ends.try_reserve(1).map_err(|_| Error::Allocation)?;
                     ends.push(end);
                 }
             }
@@ -1337,6 +1406,131 @@ impl Forest {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct SlabOwner(Slab);
+
+    unsafe impl StableSlab for SlabOwner {
+        fn bytes(&self) -> &[u8] {
+            self.0.bytes()
+        }
+    }
+
+    fn assert_loaders_reject(languages: &[Language], bytes: &[u8]) {
+        assert!(Forest::from_bytes(languages, bytes).is_err());
+        assert!(Forest::from_bytes_safety_checked(languages, bytes).is_err());
+        assert!(Forest::from_bytes_borrowed(languages, bytes).is_err());
+        assert!(Forest::from_retained(languages, SlabOwner(Slab::copy(bytes).unwrap())).is_err());
+    }
+
+    #[test]
+    fn safe_loaders_reject_invalid_addresses_and_table_indexes() {
+        let language = unsafe {
+            tree_sitter::Language::from_raw(tree_sitter_json::LANGUAGE.into_raw()().cast())
+        };
+        let grammar = Language::new(&language).unwrap();
+        let languages = slice::from_ref(&grammar);
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&language).unwrap();
+        let source = format!("[{}0]", "0,".repeat(64));
+        let original = Forest::parse(&grammar, &mut parser, &source).unwrap();
+        assert!(original.group_count() > 1);
+
+        let mutations: &[fn(&mut ForestData)] = &[
+            |data| data.put_byte(data.layout.symbol, 0, u8::MAX),
+            |data| data.put_short(data.layout.waste, 0, GROUP_SIZE as u16),
+            |data| data.put_short(data.layout.span_delta, 0, u16::MAX),
+            |data| data.put_word(data.layout.span_max, 0, u32::MAX),
+            |data| data.put_bit(data.layout.last, 0, false),
+            |data| {
+                data.put_word(data.layout.start_byte_base, 0, u32::MAX);
+                data.put_byte(data.layout.start_byte_delta, 0, 1);
+            },
+            |data| {
+                data.put_word(data.layout.end_byte_base, 0, 0);
+                data.put_short(data.layout.end_byte_delta, 0, 1);
+            },
+        ];
+        for mutation in mutations {
+            let mut forest = original.detach().unwrap();
+            mutation(forest.data_mut());
+            assert_loaders_reject(languages, forest.as_bytes());
+        }
+    }
+
+    #[test]
+    fn safe_loaders_reject_crossing_subtrees_and_waste_boundaries() {
+        let language = unsafe {
+            tree_sitter::Language::from_raw(tree_sitter_json::LANGUAGE.into_raw()().cast())
+        };
+        let grammar = Language::new(&language).unwrap();
+        let languages = slice::from_ref(&grammar);
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&language).unwrap();
+        let mut forest = Forest::parse(&grammar, &mut parser, "[[0],[1]]").unwrap();
+        let array = forest
+            .root_node()
+            .named_child(crate::NamedChildIx::new(0))
+            .unwrap();
+        let left = array.named_child(crate::NamedChildIx::new(0)).unwrap();
+        let child = left.named_child(crate::NamedChildIx::new(0)).unwrap();
+        let slot = child.slot();
+        let boundary = left.first_slot() - 1;
+        let maximum = forest.data().span_max(slot.group());
+        let delta = (maximum - (slot - boundary)).raw() as u16;
+        let data = forest.data_mut();
+        data.put_short(data.layout.span_delta, slot.raw(), delta);
+        assert_loaders_reject(languages, forest.as_bytes());
+
+        let source = format!("[\"{}\",0]", "x".repeat(400));
+        let mut forest = Forest::parse(&grammar, &mut parser, &source).unwrap();
+        let boundary = (1..forest.group_count())
+            .map(GroupIx)
+            .find(|group| forest.data().waste(*group - 1) != 0)
+            .unwrap()
+            .first_slot();
+        let maximum = forest.data().span_max(boundary.group()).raw();
+        // A leaf at a group boundary must include the preceding padding in its span.
+        let data = forest.data_mut();
+        data.put_short(data.layout.span_delta, boundary.raw(), maximum as u16);
+        assert_loaders_reject(languages, forest.as_bytes());
+    }
+
+    #[test]
+    fn full_core_validation_is_explicit() {
+        let language = unsafe {
+            tree_sitter::Language::from_raw(tree_sitter_json::LANGUAGE.into_raw()().cast())
+        };
+        let grammar = Language::new(&language).unwrap();
+        let languages = slice::from_ref(&grammar);
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&language).unwrap();
+        let original = Forest::parse(&grammar, &mut parser, "[0,1]").unwrap();
+        original.validate().unwrap();
+
+        let mutations: &[fn(&mut ForestData)] = &[
+            |data| data.put_byte(data.layout.symbol, 0, 0),
+            |data| data.put_short(data.layout.field, 0, u16::MAX),
+            |data| data.put_short(data.layout.supertype, 0, u16::MAX),
+            |data| data.put_byte(data.layout.start_byte_delta, 0, u8::MAX),
+            |data| data.put_bit(data.layout.last, 1, true),
+        ];
+        for mutation in mutations {
+            let mut forest = original.detach().unwrap();
+            mutation(forest.data_mut());
+            let copied = Forest::from_bytes(languages, forest.as_bytes()).unwrap();
+            let safety = Forest::from_bytes_safety_checked(languages, forest.as_bytes()).unwrap();
+            let borrowed = Forest::from_bytes_borrowed(languages, forest.as_bytes()).unwrap();
+            let retained =
+                Forest::from_retained(languages, SlabOwner(Slab::copy(forest.as_bytes()).unwrap()))
+                    .unwrap();
+            for loaded in [&copied, &safety, &borrowed, &retained] {
+                assert_eq!(loaded.validate(), Err(Error::InvalidSlab));
+                for node in loaded.root_node().preorder().nodes() {
+                    let _ = node.attributes();
+                }
+            }
+        }
+    }
 
     #[test]
     fn column_copies_initialize_gaps_and_unused_capacity() {
