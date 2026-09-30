@@ -316,11 +316,8 @@ impl Walk<'_> {
         }
         let supertype = self.supertype(symbol);
         if self.words == 1 {
-            let mut bits = if visible { 0 } else { mask.0 };
-            if supertype != SupertypeIx(0) {
-                bits |= 1 << (supertype.raw() - 1);
-            }
-            return Ok(Mask(bits));
+            let (_, bit) = supertype.word_and_bit();
+            return Ok(Mask((if visible { 0 } else { mask.0 }) | bit));
         }
         self.child_mask_words(mask, visible, supertype)
     }
@@ -339,10 +336,8 @@ impl Walk<'_> {
         if !visible {
             masks.copy_within(mask.0 as usize..mask.0 as usize + self.words, offset);
         }
-        if supertype != SupertypeIx(0) {
-            let index = supertype.ix() - 1;
-            masks[offset + index / 64] |= 1 << (index % 64);
-        }
+        let (word, bit) = supertype.word_and_bit();
+        masks[offset + word] |= bit;
         Ok(Mask(offset as u64))
     }
 
@@ -493,10 +488,8 @@ impl Walk<'_> {
                 }
             }
             if self.words == 1 {
-                let supertype = self.supertype(symbol);
-                if supertype != SupertypeIx(0) {
-                    node.mask.0 |= 1 << (supertype.raw() - 1);
-                }
+                let (_, bit) = self.supertype(symbol).word_and_bit();
+                node.mask.0 |= bit;
             }
             *subtree = child;
             node.alias = alias;
@@ -712,10 +705,8 @@ pub(super) fn pack_reductions(
             while !child.visible && nodes[child.first_child.ix()].next_sibling == ReductionIx::NONE
             {
                 if walk.words == 1 {
-                    let supertype = walk.supertype(child.symbol);
-                    if supertype != SupertypeIx(0) {
-                        mask.0 |= 1 << (supertype.raw() - 1);
-                    }
+                    let (_, bit) = walk.supertype(child.symbol).word_and_bit();
+                    mask.0 |= bit;
                 }
                 index = child.first_child;
                 child = &nodes[index.ix()];

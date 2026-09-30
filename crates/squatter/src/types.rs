@@ -532,6 +532,16 @@ index_type!(pub(crate) SupertypeIx(u16));
 integer_type!(#[derive(Default)]
     pub(crate) SupertypeMask(u16));
 
+impl SupertypeIx {
+    /// Returns the word index and bit mask, or `(0, 0)` for no supertype.
+    #[inline]
+    pub(crate) fn word_and_bit(self) -> (usize, u64) {
+        let index = self.ix().saturating_sub(1);
+        let bit = u64::from(self.raw() != 0) << (index % 64);
+        (index / 64, bit)
+    }
+}
+
 impl ReductionIx {
     pub(crate) const NONE: Self = Self(u32::MAX);
 }
