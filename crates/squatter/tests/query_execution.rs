@@ -448,7 +448,7 @@ fn cancellation_with_match_limit() {
         &query,
         tree.root_node(),
         source.as_bytes(),
-        QueryCursorOptions::new().progress_callback(&mut stop),
+        QueryCursorOptions::default().progress_callback(&mut stop),
     );
     let mut completed_matches = 0;
     while execution.next_match().is_some() {
@@ -1041,7 +1041,7 @@ where
                     query,
                     tree.root_node(),
                     provider,
-                    QueryCursorOptions::new(),
+                    QueryCursorOptions::default(),
                 )
             };
             while let Some(found) = execution.next_match() {
@@ -1057,7 +1057,7 @@ where
                     query,
                     tree.root_node(),
                     provider,
-                    QueryCursorOptions::new(),
+                    QueryCursorOptions::default(),
                 )
             };
             while let Some(found) = matches.next() {
@@ -1072,7 +1072,7 @@ where
                     query,
                     tree.root_node(),
                     provider,
-                    QueryCursorOptions::new(),
+                    QueryCursorOptions::default(),
                 )
             };
             while let Some((found, index)) = captures.next() {
@@ -1522,7 +1522,8 @@ fn progress_cancellation_resumes_every_entry_point() {
                             ControlFlow::Continue(())
                         }
                     };
-                    let mut options = QueryCursorOptions::new().progress_callback(&mut progress);
+                    let mut options =
+                        QueryCursorOptions::default().progress_callback(&mut progress);
                     let mut cursor = QueryCursor::new();
                     cursor.set_optimized(optimized);
                     let mut actual = Vec::new();
@@ -1648,7 +1649,7 @@ fn optimized_capture_progress_tracks_later_subtrees() {
             &query,
             tree.root_node(),
             source.as_bytes(),
-            QueryCursorOptions::new().progress_callback(&mut progress),
+            QueryCursorOptions::default().progress_callback(&mut progress),
         );
         let mut actual = Vec::new();
         let mut stops = 0;

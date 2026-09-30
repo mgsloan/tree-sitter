@@ -246,7 +246,7 @@ impl Queries {
                 &pair.squat,
                 root,
                 source,
-                tree_squatter::QueryCursorOptions::new().progress_callback(&mut progress),
+                tree_squatter::QueryCursorOptions::default().progress_callback(&mut progress),
             );
             loop {
                 let next = if captures {

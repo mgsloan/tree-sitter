@@ -726,9 +726,6 @@ pub struct QueryCursorOptions<'options> {
     pub progress_callback: Option<&'options mut dyn FnMut(&QueryCursorState) -> ControlFlow<()>>,
 }
 impl<'options> QueryCursorOptions<'options> {
-    pub fn new() -> Self {
-        Self::default()
-    }
     pub fn progress_callback<Callback>(mut self, callback: &'options mut Callback) -> Self
     where
         Callback: FnMut(&QueryCursorState) -> ControlFlow<()>,

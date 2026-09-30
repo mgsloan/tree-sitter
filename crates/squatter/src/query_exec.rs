@@ -873,7 +873,7 @@ impl QueryCursor {
         Provider: TextProvider<Chunk>,
         Chunk: AsRef<[u8]>,
     {
-        self.execute_with_options(query, root, text_provider, QueryCursorOptions::new())
+        self.execute_with_options(query, root, text_provider, QueryCursorOptions::default())
     }
 
     /// Start a fresh execution with a resumable progress callback.
@@ -987,7 +987,7 @@ impl QueryCursor {
 /// # use tree_squatter::{Query, QueryCursor, QueryCursorOptions, QueryCursorState, Node};
 /// # fn example(cursor: &mut QueryCursor, query: &Query, root: Node<'_>, text: &[u8]) {
 /// let mut callback = |_: &QueryCursorState| std::ops::ControlFlow::Continue(());
-/// let mut options = QueryCursorOptions::new().progress_callback(&mut callback);
+/// let mut options = QueryCursorOptions::default().progress_callback(&mut callback);
 /// let mut execution = cursor.execute_with_options(query, root, text, options.reborrow());
 /// options.reborrow();
 /// execution.next_match();
@@ -1224,7 +1224,7 @@ impl QueryCursor {
         Provider: TextProvider<Chunk>,
         Chunk: AsRef<[u8]>,
     {
-        self.matches_with_options(query, root, text_provider, QueryCursorOptions::new())
+        self.matches_with_options(query, root, text_provider, QueryCursorOptions::default())
     }
     /// Start a fresh stream with a resumable progress callback.
     pub fn matches_with_options<'cursor, 'query, 'tree, 'options, Provider, Chunk>(
@@ -1315,7 +1315,7 @@ impl QueryCursor {
         Provider: TextProvider<Chunk>,
         Chunk: AsRef<[u8]>,
     {
-        self.captures_with_options(query, root, text_provider, QueryCursorOptions::new())
+        self.captures_with_options(query, root, text_provider, QueryCursorOptions::default())
     }
     /// Start a fresh stream with a resumable progress callback.
     pub fn captures_with_options<'cursor, 'query, 'tree, 'options, Provider, Chunk>(
