@@ -1788,14 +1788,14 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
             if self.poll_at(start.slot(total)) {
                 return start;
             }
-            let index = start.slot(total).group().raw();
+            let index = start.slot(total).group();
             let group_end = PreorderIx((start.raw() / GROUP_SIZE + 1) * GROUP_SIZE).min(end);
-            if self.root.presence().is_none_or(|cache| {
-                targets
-                    .iter()
-                    .any(|symbol| cache.has(GroupIx(index), *symbol))
-            }) {
-                let group = groups.at_group(GroupIx(index));
+            if self
+                .root
+                .presence()
+                .is_none_or(|cache| targets.iter().any(|symbol| cache.has(index, *symbol)))
+            {
+                let group = groups.at_group(index);
                 let base = group.first_slot().raw();
                 let mut hits = group.equal_kind_ids(&targets, group.valid_mask()).bits();
                 let first = total - group_end.raw() - base;
@@ -1832,15 +1832,14 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
             if self.poll_at(start.slot(total)) {
                 return start;
             }
-            let group = start.slot(total).group().raw();
+            let group = start.slot(total).group();
             let group_end = PreorderIx((start.raw() / GROUP_SIZE + 1) * GROUP_SIZE).min(end);
             if !targets.is_empty()
                 && targets.len() <= 4
-                && self.root.presence().is_some_and(|cache| {
-                    !targets
-                        .iter()
-                        .any(|symbol| cache.has(GroupIx(group), *symbol))
-                })
+                && self
+                    .root
+                    .presence()
+                    .is_some_and(|cache| !targets.iter().any(|symbol| cache.has(group, *symbol)))
             {
                 start = self.normalize_position(group_end);
                 continue;
@@ -2013,7 +2012,7 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
             let group = position.raw() / group_size;
             let group_start = PreorderIx(group * group_size);
             let end = (group_start + group_size).min(scanned_end);
-            let physical_group = data.groups() - 1 - group;
+            let physical_group = GroupIx(data.groups() - 1 - group);
             let mut hits = {
                 let mut hits = u64::MAX;
                 if requirement.symbol != SquatterKindId(0) {
@@ -3090,25 +3089,22 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
 fn equal_column(
     data: &crate::storage::ForestData,
     address: ColumnPointer,
-    group: u32,
+    group: GroupIx,
     value: u16,
     mask: u16,
     width: u32,
 ) -> u64 {
     use crate::storage::GROUP_SIZE;
+    let first = group.first_slot();
     if width == 1 {
-        let bytes = data.column_slice(address, (group * GROUP_SIZE) as usize, GROUP_SIZE as usize);
+        let bytes = data.column_slice(address, first.ix(), GROUP_SIZE as usize);
         return crate::scan::equal_byte_ids(bytes, &[SquatterKindId(value)])
-            & (u64::MAX >> (64 - GROUP_SIZE + data.waste(GroupIx(group))));
+            & (u64::MAX >> (64 - GROUP_SIZE + data.waste(group)));
     }
     let mut matches = 0;
     #[cfg(target_arch = "x86_64")]
     {
-        let column = data.column_slice(
-            address,
-            (group * GROUP_SIZE) as usize * 2,
-            GROUP_SIZE as usize * 2,
-        );
+        let column = data.column_slice(address, first.ix() * 2, GROUP_SIZE as usize * 2);
         let simd = Level::baseline().as_sse2().unwrap();
         for (index, bytes) in column.chunks_exact(32).enumerate() {
             matches |= (sse2_equal_column(simd, bytes, value, mask) as u64) << (index * 16);
@@ -3116,10 +3112,9 @@ fn equal_column(
     }
     #[cfg(not(target_arch = "x86_64"))]
     for lane in 0..GROUP_SIZE {
-        matches |=
-            ((data.short(address, group * GROUP_SIZE + lane) & mask == value) as u64) << lane;
+        matches |= ((data.short(address, (first + lane).raw()) & mask == value) as u64) << lane;
     }
-    matches & (u64::MAX >> (64 - GROUP_SIZE + data.waste(GroupIx(group))))
+    matches & (u64::MAX >> (64 - GROUP_SIZE + data.waste(group)))
 }
 
 #[cfg(test)]

@@ -417,7 +417,7 @@ impl<'tree> Node<'tree> {
     pub fn next_preorder(self) -> Option<Self> {
         let slot = self.slot();
         // Only group crossings can leave the current tree.
-        if slot.in_group().raw() != 0 {
+        if !slot.is_group_start() {
             return Some(self.at(slot - 1));
         }
         self.data()
@@ -440,7 +440,7 @@ impl<'tree> Node<'tree> {
         if slot < self.data().group_end(self.slot().group()) {
             slot
         } else {
-            SlotIx((self.slot().group().raw() + 1) * GROUP_SIZE)
+            (self.slot().group() + 1).first_slot()
         }
     }
 
