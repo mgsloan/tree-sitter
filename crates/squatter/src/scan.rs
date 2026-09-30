@@ -1014,9 +1014,9 @@ impl<'tree> Preorder<'tree> {
     }
     #[inline]
     fn mask(&self) -> Mask {
-        let base = self.group.first_slot().raw();
-        let first = self.slots.start.raw().saturating_sub(base);
-        let end = (self.slots.end.raw() - base).min(self.group.used());
+        let base = self.group.first_slot();
+        let first = (self.slots.start.max(base) - base).raw();
+        let end = (self.slots.end - base).raw().min(self.group.used());
         Mask(Mask::lower(end).0 & !Mask::lower(first).0)
     }
     #[inline]
@@ -1027,9 +1027,9 @@ impl<'tree> Preorder<'tree> {
             } else {
                 self.groups.next_back()?
             });
-            let base = self.group.first_slot().raw();
-            let first = self.slots.start.raw().saturating_sub(base);
-            let end = (self.slots.end.raw() - base).min(self.group.used());
+            let base = self.group.first_slot();
+            let first = (self.slots.start.max(base) - base).raw();
+            let end = (self.slots.end - base).raw().min(self.group.used());
             if first < end {
                 return Some(first..end);
             }
@@ -1176,9 +1176,9 @@ impl<'tree> ScanSource<'tree> for Preorder<'tree> {
         self.groups
             .map(|index| {
                 let group = self.group.columns.group(GroupIx(index));
-                let base = group.first_slot().raw();
-                let first = self.slots.start.raw().saturating_sub(base);
-                let end = (self.slots.end.raw() - base).min(group.used());
+                let base = group.first_slot();
+                let first = (self.slots.start.max(base) - base).raw();
+                let end = (self.slots.end - base).raw().min(group.used());
                 end.saturating_sub(first) as usize
             })
             .sum()

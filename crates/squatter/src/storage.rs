@@ -2,7 +2,7 @@ use crate::{
     Error, Language, Node, NodeId, RegionIx, RepresentationId, SlotIx, TreeCursor, TreeIx,
     native::GrammarView,
     side_data::{PointsData, PresenceCache},
-    types::{GroupIx, SlabOffset, SquatterGrammarId, SquatterKindId},
+    types::{GroupIx, SlabOffset, SlotSpan, SquatterGrammarId, SquatterKindId},
 };
 use smallvec::SmallVec;
 use std::{
@@ -418,7 +418,7 @@ pub(crate) struct RegionData {
 
 impl RegionData {
     pub(crate) fn group_count(&self) -> u32 {
-        (self.slots.end.raw() - self.slots.start.raw()) / GROUP_SIZE
+        (self.slots.end - self.slots.start).raw() / GROUP_SIZE
     }
 }
 
@@ -588,7 +588,12 @@ impl ForestData {
 
     #[inline]
     pub fn first_slot(&self, slot: SlotIx) -> SlotIx {
-        slot - (self.word(self.layout.span_max, slot.group().raw()) - self.span_delta(slot))
+        slot - (self.span_max(slot.group()) - self.span_delta(slot))
+    }
+
+    #[inline]
+    pub fn span_max(&self, group: GroupIx) -> SlotSpan {
+        SlotSpan(self.word(self.layout.span_max, group.raw()))
     }
 
     #[inline]
@@ -1142,10 +1147,13 @@ impl Forest {
                 }
                 let span = self
                     .data
-                    .word(self.data.layout.span_max, group)
+                    .span_max(GroupIx(group))
                     .checked_sub(self.data.span_delta(SlotIx(root)))
                     .ok_or(Error::InvalidSlab)?;
-                let start = root.checked_sub(span).ok_or(Error::InvalidSlab)?;
+                let start = SlotIx(root)
+                    .checked_sub(span)
+                    .ok_or(Error::InvalidSlab)?
+                    .raw();
                 if start < slots.start.raw() || start >= end || !start.is_multiple_of(GROUP_SIZE) {
                     return Err(Error::InvalidSlab);
                 }
@@ -1263,7 +1271,7 @@ impl Forest {
             let root = data.group_end(GroupIx(slots.end.raw() / GROUP_SIZE - 1)) - 1;
             let mut ends = Vec::with_capacity(64);
             for group in (slots.start.raw() / GROUP_SIZE..slots.end.raw() / GROUP_SIZE).rev() {
-                let span_max = data.word(data.layout.span_max, group) as u64;
+                let span_max = data.span_max(GroupIx(group));
                 let start_base = data.word(data.layout.start_byte_base, group) as u64;
                 let end_base = data.word(data.layout.end_byte_base, group);
                 for slot in (group * GROUP_SIZE..data.group_end(GroupIx(group)).raw()).rev() {
@@ -1271,12 +1279,12 @@ impl Forest {
                         ends.pop();
                     }
                     let span = span_max
-                        .checked_sub(data.span_delta(SlotIx(slot)) as u64)
+                        .checked_sub(data.span_delta(SlotIx(slot)))
                         .ok_or(Error::InvalidSlab)?;
-                    if span > (slot - slots.start.raw()) as u64 {
+                    if span > SlotIx(slot) - slots.start {
                         return Err(Error::InvalidSlab);
                     }
-                    let end = slot - span as u32;
+                    let end = (SlotIx(slot) - span).raw();
                     if end != slots.start.raw()
                         && end > data.group_end(GroupIx((end - 1) / GROUP_SIZE)).raw()
                     {

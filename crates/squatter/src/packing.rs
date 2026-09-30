@@ -1,4 +1,4 @@
-use crate::types::{GroupIx, ReductionIx, SupertypeMask};
+use crate::types::{GroupIx, ReductionIx, SlotSpan, SupertypeMask};
 use crate::{
     Error, FieldId, Forest, ForestRegion, Language, RegionIx, SlotIx, TreeIx,
     native::{Point, Reduction},
@@ -231,7 +231,7 @@ struct Values {
     end_row: u32,
     start_column: u32,
     end_column: u32,
-    span: u32,
+    span: SlotSpan,
     start_byte: u32,
     end_byte: u32,
 }
@@ -311,13 +311,10 @@ impl Builder {
 
         // Reverse preorder makes start bytes nonincreasing; end bytes need both extrema.
         base.start_byte = value.start_byte;
+        base.span = base.span.min(value.span);
+        maximum.span = maximum.span.max(value.span);
         if maximum.start_byte - base.start_byte > 255
-            || !extend(
-                value.span,
-                &mut base.span,
-                &mut maximum.span,
-                (1 << SPAN_BITS) - 1,
-            )
+            || (maximum.span - base.span).raw() > (1 << SPAN_BITS) - 1
             || !extend(
                 value.end_byte,
                 &mut base.end_byte,
@@ -442,7 +439,7 @@ impl Builder {
         let layout = data.layout;
         data.put_word(SlabOffset(0), 1, group + 1);
         data.put_short(layout.waste, group, (GROUP_SIZE - self.count) as u16);
-        data.put_word(layout.span_max, group, self.maximum.span);
+        data.put_word(layout.span_max, group, self.maximum.span.raw());
         data.put_word(layout.start_byte_base, group, self.base.start_byte);
         data.put_word(layout.end_byte_base, group, self.maximum.end_byte);
 
@@ -490,13 +487,13 @@ impl Builder {
                 writer.put_short(
                     layout.span_delta,
                     slot.raw(),
-                    (self.maximum.span - value.span) as u16,
+                    (self.maximum.span - value.span).raw() as u16,
                 );
             } else {
                 writer.put_byte(
                     layout.span_delta,
                     slot.raw(),
-                    (self.maximum.span - value.span) as u8,
+                    (self.maximum.span - value.span).raw() as u8,
                 );
             }
             writer.put_byte(

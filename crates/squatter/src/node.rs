@@ -406,7 +406,7 @@ impl<'tree> Node<'tree> {
         let waste: u32 = (first.group().raw()..self.slot().group().raw())
             .map(|group| self.data().waste(GroupIx(group)))
             .sum();
-        (self.slot() - first + 1 - waste) as usize
+        ((self.slot() - first).raw() + 1 - waste) as usize
     }
 
     /// Returns the next node in tree-wide preorder, which may leave
@@ -468,25 +468,24 @@ impl<'tree> Node<'tree> {
     /// cursor retains ancestry for repeated navigation.
     pub fn parent(&self) -> Option<Self> {
         let data = self.data();
-        let mut slot = self.slot().raw() + 1;
-        while slot < self.tree_data().slots.end.raw() {
-            let group = slot / GROUP_SIZE;
-            let end = data.group_end(GroupIx(group));
-            let maximum = data.word(data.layout.span_max, group) as u64;
+        let target = self.slot();
+        let mut slot = target + 1;
+        while slot < self.tree_data().slots.end {
+            let group = slot.group();
+            let end = data.group_end(group);
+            let maximum = data.span_max(group);
 
             // Reject a whole group if even its largest possible span cannot
             // reach this node. The first enclosing span is the nearest parent.
-            if slot as u64 <= self.slot().raw() as u64 + maximum {
-                while slot < end.raw() {
-                    if slot as u64
-                        <= self.slot().raw() as u64 + maximum - data.span_delta(SlotIx(slot)) as u64
-                    {
-                        return Some(self.at(SlotIx::from_raw(slot)));
+            if slot - target <= maximum {
+                while slot < end {
+                    if slot - target <= maximum - data.span_delta(slot) {
+                        return Some(self.at(slot));
                     }
                     slot += 1;
                 }
             }
-            slot = (group + 1) * GROUP_SIZE;
+            slot = (group + 1).first_slot();
         }
         None
     }
@@ -975,7 +974,7 @@ impl<'tree> Node<'tree> {
 
         // Long point end scans can skip whole intervening subtrees through
         // their parent spans. Byte end scans use the compact delta columns.
-        if POINTS && self.slot().raw() - candidate.slot().raw() > 512 * GROUP_SIZE {
+        if POINTS && (self.slot() - candidate.slot()).raw() > 512 * GROUP_SIZE {
             while candidate.slot() < self.slot() {
                 let candidate_end = candidate.end_key::<true>();
                 if candidate_end >= end && candidate_end > start && (!named || candidate.is_named())

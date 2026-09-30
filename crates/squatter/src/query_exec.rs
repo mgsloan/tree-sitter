@@ -1936,7 +1936,7 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
             break target;
         };
 
-        self.cursor.scan_sparse_samples += (target - current_position >= 2) as u32;
+        self.cursor.scan_sparse_samples += ((target - current_position).raw() >= 2) as u32;
         self.cursor.scan_samples += 1;
         if self.cursor.scan_samples == 32 {
             if self.cursor.scan_sparse_samples == 0 {
@@ -1974,14 +1974,14 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
         let group_size = crate::storage::GROUP_SIZE;
         if requirement.symbol != SquatterKindId(0) {
             if let Some(presence) = root.presence() {
-                let slot = root.slot().raw();
-                let group = slot / group_size;
-                let maximum = data.word(data.layout.span_max, group);
+                let slot = root.slot();
+                let group = slot.group();
+                let maximum = data.span_max(group);
                 // The maximum covers this subtree without loading its span delta.
                 let first = slot
                     .saturating_sub(maximum)
-                    .max(root.tree_data().slots.start.raw());
-                let groups = GroupIx(first / group_size)..GroupIx(group + 1);
+                    .max(root.tree_data().slots.start);
+                let groups = first.group()..group + 1;
                 let found = presence
                     .find_matching_group(groups, requirement.symbol, false)
                     .is_some();
@@ -2013,7 +2013,7 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
 
         // Only a completed scan proves absence. Hitting the budget preserves
         // the ordinary matcher, and the known-empty prefix can be reused later.
-        let scanned_end = begin + (limit - begin).min(256);
+        let scanned_end = begin + (limit - begin).raw().min(256);
         let mut position = begin;
         while position < scanned_end {
             let group = position.raw() / group_size;
@@ -2045,8 +2045,8 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
                 hits
             };
             // Physical slots run opposite to preorder, so the highest hit comes first.
-            hits &= u64::MAX << (group_size - (end - group_start));
-            hits &= u64::MAX >> (64 - group_size + (position - group_start));
+            hits &= u64::MAX << (group_size - (end - group_start).raw());
+            hits &= u64::MAX >> (64 - group_size + (position - group_start).raw());
             if hits != 0 {
                 cache.next = group_start + (hits.leading_zeros() - (64 - group_size));
                 cache.found = true;

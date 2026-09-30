@@ -51,6 +51,11 @@ integer_type!(
     /// **Not in Tree-sitter**
     #[derive(Default)]
     pub(crate) SlotIx(u32));
+integer_type!(
+    /// A physical slot distance, including padding. A node's subtree span is
+    /// its distance to the lower storage boundary, excluding the node itself.
+    #[derive(Default)]
+    pub(crate) SlotSpan(u32));
 
 integer_type!(
     /// A physical tree index, local to one forest.
@@ -227,11 +232,51 @@ impl PackedPoint {
 }
 
 impl SlotIx {
+    pub(crate) fn checked_sub(self, span: SlotSpan) -> Option<Self> {
+        self.0.checked_sub(span.0).map(Self)
+    }
+    pub(crate) fn saturating_sub(self, span: SlotSpan) -> Self {
+        Self(self.0.saturating_sub(span.0))
+    }
     pub(crate) fn group(self) -> GroupIx {
         GroupIx(self.0 / crate::storage::GROUP_SIZE)
     }
     pub(crate) fn in_group(self) -> GroupSlotIx {
         GroupSlotIx(self.0 % crate::storage::GROUP_SIZE)
+    }
+}
+impl From<u32> for SlotSpan {
+    fn from(value: u32) -> Self {
+        Self(value)
+    }
+}
+impl SlotSpan {
+    pub(crate) fn checked_sub(self, delta: u32) -> Option<Self> {
+        self.0.checked_sub(delta).map(Self)
+    }
+}
+impl std::ops::Sub for SlotSpan {
+    type Output = Self;
+    fn sub(self, other: Self) -> Self {
+        Self(self.0 - other.0)
+    }
+}
+impl std::ops::Sub<u32> for SlotSpan {
+    type Output = Self;
+    fn sub(self, delta: u32) -> Self {
+        Self(self.0 - delta)
+    }
+}
+impl std::ops::Add<SlotSpan> for SlotIx {
+    type Output = Self;
+    fn add(self, span: SlotSpan) -> Self {
+        Self(self.0 + span.0)
+    }
+}
+impl std::ops::Sub<SlotSpan> for SlotIx {
+    type Output = Self;
+    fn sub(self, span: SlotSpan) -> Self {
+        Self(self.0 - span.0)
     }
 }
 impl GroupIx {
@@ -439,6 +484,9 @@ impl std::ops::AddAssign<u32> for MatchCaptureIx {
 
 macro_rules! index_arithmetic {
     ($name:ident, $integer:ty) => {
+        index_arithmetic!($name, $integer, $integer);
+    };
+    ($name:ident, $integer:ty, $difference:ty) => {
         impl std::ops::Add<$integer> for $name {
             type Output = Self;
             fn add(self, count: $integer) -> Self {
@@ -452,9 +500,9 @@ macro_rules! index_arithmetic {
             }
         }
         impl std::ops::Sub for $name {
-            type Output = $integer;
-            fn sub(self, other: Self) -> $integer {
-                self.0 - other.0
+            type Output = $difference;
+            fn sub(self, other: Self) -> $difference {
+                (self.0 - other.0).into()
             }
         }
         impl std::ops::AddAssign<$integer> for $name {
@@ -470,7 +518,7 @@ macro_rules! index_arithmetic {
     };
 }
 
-index_arithmetic!(SlotIx, u32);
+index_arithmetic!(SlotIx, u32, SlotSpan);
 index_arithmetic!(GroupIx, u32);
 index_arithmetic!(TreeIx, u32);
 index_arithmetic!(QueryStepIx, u16);
@@ -495,4 +543,4 @@ impl DirectStateIx {
     pub(crate) const NONE: Self = Self(u32::MAX);
 }
 
-index_arithmetic!(PreorderIx, u32);
+index_arithmetic!(PreorderIx, u32, SlotSpan);
