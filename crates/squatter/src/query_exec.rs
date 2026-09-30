@@ -1,8 +1,8 @@
 use crate::{
-    FieldId, ForestRegion, GrammarId, MatchCaptureIx, Node, NodeId, PatternIx, Query, QueryCapture,
+    FieldId, ForestRegion, GrammarId, MatchCaptureIx, Node, PatternIx, Query, QueryCapture,
     QueryCursorOptions, QueryCursorState, QueryExecutionError, QueryMatch, QueryScope, RawNode,
     SlotIx, StreamingIterator, TextProvider, TreeIx,
-    native::{Pattern, PatternEntry, Step, flags::*},
+    native::{GrammarView, Pattern, PatternEntry, Step, flags::*},
     query::Scope,
     storage::{ColumnPointer, RegionOrder},
     types::{
@@ -694,8 +694,8 @@ pub struct QueryCursor {
     comparison_blocks: Vec<ComparisonBlock>,
     finished: Vec<State>,
     finished_heap_size: usize,
-    parents: Vec<NodeId>,
-    position: NodeId,
+    parents: Vec<SlotIx>,
+    position: SlotIx,
     ascending: bool,
     halted: bool,
     error: Option<QueryExecutionError>,
@@ -746,7 +746,7 @@ impl QueryCursor {
             finished: Vec::with_capacity(8),
             finished_heap_size: 0,
             parents: Vec::new(),
-            position: NodeId::new(TreeIx::from_raw(0), SlotIx::from_raw(0)),
+            position: SlotIx::from_raw(0),
             ascending: false,
             halted: false,
             error: None,
@@ -844,7 +844,7 @@ impl QueryCursor {
         }
 
         self.halted = self.error.is_some();
-        self.position = root.id();
+        self.position = root.slot();
         self.ascending = false;
         self.dirty_patterns = 0;
         self.states_need_sort = false;
@@ -951,6 +951,7 @@ impl QueryCursor {
             containing_unrestricted,
             root_has_error: root.has_error(),
             total_slots: root.data().groups() * crate::storage::GROUP_SIZE,
+            tables: root.tables(),
             root,
             remaining,
             text_provider,
@@ -1014,6 +1015,7 @@ where
     root_has_error: bool,
     total_slots: u32,
     root: Node<'tree>,
+    tables: &'tree GrammarView,
     remaining: Option<RegionTrees<'tree>>,
     text_provider: Provider,
     options: QueryCursorOptions<'options>,
@@ -1127,24 +1129,22 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
         };
         self.cursor.start_tree(self.query, root);
         self.root = root;
+        self.tables = root.tables();
         self.root_has_error = root.has_error();
         self.scan_resume = None;
         true
     }
 
     fn current(&self) -> Node<'tree> {
-        Node::new(self.root.data(), self.cursor.position)
+        self.root.at(self.cursor.position)
     }
 
     fn parent(&self) -> Option<Node<'tree>> {
-        self.cursor
-            .parents
-            .last()
-            .map(|&id| Node::new(self.root.data(), id))
+        self.cursor.parents.last().map(|&slot| self.root.at(slot))
     }
 
     fn poll(&mut self) -> bool {
-        self.poll_at(self.cursor.position.slot())
+        self.poll_at(self.cursor.position)
     }
 
     fn poll_at(&mut self, slot: SlotIx) -> bool {
@@ -1698,11 +1698,11 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
     }
 
     fn goto_first_child(&mut self) -> bool {
-        let Some(child) = self.current().child(crate::ChildIx::new(0)) else {
+        let Some(child) = self.current().first_child() else {
             return false;
         };
         self.cursor.parents.push(self.cursor.position);
-        self.cursor.position = child.id();
+        self.cursor.position = child.slot();
         true
     }
 
@@ -1713,7 +1713,7 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
         let Some(next) = self.current().next_sibling_including_empty() else {
             return false;
         };
-        self.cursor.position = next.id();
+        self.cursor.position = next.slot();
         true
     }
 
@@ -1884,8 +1884,7 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
     }
 
     fn scan_seek(&mut self) -> bool {
-        let current_position =
-            PreorderIx::from_slot(self.cursor.position.slot(), self.total_slots());
+        let current_position = PreorderIx::from_slot(self.cursor.position, self.total_slots());
         let end = self.node_end(self.root);
         let mut start = self.scan_resume.take().unwrap_or(current_position);
         let target = 'search: loop {
@@ -1904,7 +1903,7 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
 
             // With no partial states, skipped enter/exit events cannot affect a
             // match. Restore only the ancestor path needed by the next root.
-            while PreorderIx::from_slot(self.cursor.position.slot(), self.total_slots()) != target {
+            while PreorderIx::from_slot(self.cursor.position, self.total_slots()) != target {
                 let node = self.current();
                 if target < self.node_end(node) {
                     // A symbol hit must not re-enter a subtree that ordinary
@@ -2184,7 +2183,7 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
             self.cursor.direct_position = self.normalize_position(position + 1);
             let node = self.position_node(position);
             // Shared capture bookkeeping polls the node currently being processed.
-            self.cursor.position = node.id();
+            self.cursor.position = node.slot();
             let symbol = node.data().symbol_index(node.slot()).raw();
             let mut roots = self.direct_roots(node);
             while roots != 0 {
@@ -2434,7 +2433,7 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
         let query = self.query;
         let depth = self.cursor.parents.len() as u32;
         let symbol = node.data().symbol_index(node.slot());
-        let named = node.tables().named_index(symbol);
+        let named = self.tables.named_index(symbol);
         let is_error = symbol.raw() as u32 == query.compiled.view.symbol_count;
         let field = if query.program.needs_fields && depth != 0 {
             node.field_id()
@@ -2738,13 +2737,17 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
         }
     }
 
-    fn needs_comparison_blocks(&self) -> bool {
+    fn needs_comparison_blocks(&self, dirty: u64) -> bool {
         if self.cursor.states.len() < 256 {
             return false;
         }
         let mut previous = None;
         let mut run = 0;
         for state in &self.cursor.states {
+            if dirty & (1 << (state.pattern.raw() % 64)) == 0 {
+                run = 0;
+                continue;
+            }
             let captures = self.cursor.pool.list(state.captures);
             if captures.prefix == CapturePrefixId(0) {
                 run = 0;
@@ -2763,22 +2766,22 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
         false
     }
 
-    fn index_captures(&mut self) {
-        self.cursor.comparison_index.clear();
+    fn index_captures(&mut self, dirty: u64, dirty_count: usize) {
         self.cursor.comparison_blocks.clear();
-        let count = self.cursor.states.len();
-        if count < 64 {
+        if dirty_count < 64 {
+            self.cursor.comparison_index.clear();
             return;
         }
+        let count = self.cursor.states.len();
         self.cursor
             .comparison_index
             .resize(count, ComparisonEntry::default());
-        if self.needs_comparison_blocks() {
+        if self.needs_comparison_blocks(dirty) {
             self.cursor
                 .comparison_blocks
                 .resize_with(count.div_ceil(64), ComparisonBlock::new);
         }
-        let buckets = count.next_power_of_two().clamp(256, 65536);
+        let buckets = dirty_count.next_power_of_two().clamp(256, 65536);
         self.cursor.comparison_heads.resize(buckets, count);
         self.cursor.comparison_heads.fill(count);
 
@@ -2786,6 +2789,9 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
         // collisions merely add candidates; exact containment decides removal.
         for index in (0..count).rev() {
             let state = self.cursor.states[index];
+            if dirty & (1 << (state.pattern.raw() % 64)) == 0 {
+                continue;
+            }
             let captures = self.cursor.pool.list(state.captures);
             let mut entry = ComparisonEntry {
                 next: count,
@@ -2896,16 +2902,20 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
             return false;
         }
         self.cursor.dirty_patterns = 0;
+        let mut dirty_count = 0;
         for state in &mut self.cursor.states {
             if dirty & (1 << (state.pattern.raw() % 64)) != 0 {
                 state.flags &= !HAS_ALTERNATIVES;
+                dirty_count += 1;
             }
         }
         if self.cursor.states_need_sort {
             self.sort_states();
             self.cursor.states_need_sort = false;
         }
-        self.index_captures();
+        // Only changed patterns undergo comparisons in this pass. Other index
+        // entries may be stale; comparisons stay within a depth/pattern group.
+        self.index_captures(dirty, dirty_count);
         if self.cursor.comparison_index.is_empty() {
             self.compare_states::<false>(dirty)
         } else {

@@ -444,7 +444,7 @@ impl<'tree> Node<'tree> {
         }
     }
 
-    fn first_child(self) -> Option<Self> {
+    pub(crate) fn first_child(self) -> Option<Self> {
         self.data()
             .previous_slot(self.slot())
             .filter(|&slot| slot >= self.first_slot())

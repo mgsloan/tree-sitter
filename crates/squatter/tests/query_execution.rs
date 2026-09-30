@@ -117,6 +117,45 @@ fn queries_match_with_and_without_plans() {
 }
 
 #[test]
+fn deduplication_preserves_unchanged_patterns() {
+    let language = json_language();
+    let grammar = Language::new(&language).unwrap();
+    let source = format!("[{}true,false,\"done\"]", "1,2,3,4,".repeat(32));
+    let native = support::parse_native(&language, &source);
+    let tree = Forest::pack(&grammar, &native).unwrap();
+    // Long sibling searches retain states while other patterns change captures.
+    let pattern = "((number) @first (true) @second)
+                   ((number) @first (false) @second)
+                   ((number) @first (string) @second)
+                   (number) @number";
+    let query = Query::new(&grammar, pattern).unwrap();
+    let reference = tree_sitter::Query::new(&language, pattern).unwrap();
+    let mut cursor = QueryCursor::new();
+    for optimized in [false, true] {
+        cursor.set_optimized(optimized);
+        for captures in [false, true] {
+            let mut expected = support::native_query_results(
+                &reference,
+                native.root_node(),
+                source.as_bytes(),
+                captures,
+            );
+            let mut actual = query_results(
+                &mut cursor,
+                &query,
+                tree.root_node(),
+                source.as_bytes(),
+                captures,
+            );
+            expected.sort();
+            actual.sort();
+            assert!(!expected.is_empty());
+            assert_eq!(actual, expected);
+        }
+    }
+}
+
+#[test]
 fn error_queries_survive_native_mutations() {
     for (language, source) in [
         (tree_sitter_json::LANGUAGE, "[1, ?, 2]"),
