@@ -33,7 +33,7 @@ fn main() {
         .write_to_file(PathBuf::from(env::var_os("OUT_DIR").unwrap()).join("subtree.rs"))
         .unwrap();
     println!("cargo:rerun-if-changed={}", source.display());
-    let feller = PathBuf::from("../../lib/tree_feller");
+    let feller = PathBuf::from("native/tree_feller");
     let mut build = cc::Build::new();
     build
         .std("c11")

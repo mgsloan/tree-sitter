@@ -1,5 +1,4 @@
 [paths]
 "crates/squatter" = "crates/squatter"
-"lib/tree_feller" = "lib/tree_feller"
 "LICENSE" = "LICENSE"
 "tools/organized" = "."
