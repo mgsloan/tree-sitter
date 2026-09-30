@@ -1,0 +1,4 @@
+[paths]
+"crates/squatter" = "crates/squatter"
+"LICENSE" = "LICENSE"
+"tools/organized" = "."

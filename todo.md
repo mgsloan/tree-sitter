@@ -20,11 +20,12 @@ Lean
 
 ## Organization
 
-`experimental` branch which has tree-sitter / persistence / viz / lean. My development happens here.
+`dev` branch which has tree-sitter / persistence / viz / lean. My development happens here.
 
-`main` branch which only has squatter and tree-feller and nothing else
+`organized` branch which only has squatter and tree-feller and nothing else
 
-Script lives on `experimental` which helps out with merging back to `main` - handles any new deletions and new moves.
+`tools/publish.py` on `dev` exports the selected files and prepares publication
+merges into `organized`. See `tools/squatter/README.md` for the workflow.
 
 ## Use in Zed
 

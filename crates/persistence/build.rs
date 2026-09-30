@@ -33,7 +33,6 @@ fn main() {
         "lib/src",
         "lib/include",
         "lib/binding_rust/build.rs",
-        "lib/tree_feller",
         "crates/squatter",
         "Cargo.toml",
         "Cargo.lock",
