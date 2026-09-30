@@ -42,6 +42,10 @@ fn main() {
         .include("native")
         .include(feller.join("include"))
         .include(feller.join("src"));
+    if !cfg!(debug_assertions) {
+        build.define("NDEBUG", None);
+    }
+
     let mut names = BTreeSet::new();
     for file in [
         "include/tree_feller.h",
