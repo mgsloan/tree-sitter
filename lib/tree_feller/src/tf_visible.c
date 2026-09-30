@@ -128,6 +128,7 @@ static TFVisibleNode tf_filter__parent(const TFFilter *self, const TFReduction *
       .symbol = tf_public_symbol(self->lang, reduction->symbol),
       .production_id = reduction->production_id,
       .named = named,
+      .extra = reduction->extra,
       .start_byte = reduction->start_byte,
       .end_byte = reduction->end_byte,
       .start_point = reduction->start_point,

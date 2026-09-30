@@ -9,5 +9,7 @@
 //   input with split UTF-8 decoding and buffer invalidation across private replays.
 // - tf_language.c, tf_lexer.*, tf_parser.c, and tf_parser_spec.h support native
 //   external scanners, including branch snapshots and private replay.
+// - tree_feller.h, tf_language.c, tf_parser.c, tf_parser_spec.h, and tf_visible.c
+//   support non-terminal extras and preserve their flags through replay.
 // Other upstream sources are unmodified. See LICENSE for MIT terms.
 // Only tf_language.c, tf_lexer.c, and tf_parser.c are linked by tree-squatter.

@@ -315,7 +315,7 @@ impl From<Error> for ParseError {
 
 /// Reusable direct parser retaining its language and worker-local scratch.
 ///
-/// Requires an ABI 15 language without nonterminal extras.
+/// Requires an ABI 15 language.
 /// Native external scanners are supported.
 /// Syntax errors are returned rather than recovered; no mainline tree is built.
 /// Raw reductions are buffered for the whole parse before column encoding.

@@ -362,6 +362,63 @@ fn direct_callback_failures_and_reuse() {
     );
 }
 
+#[test]
+fn non_terminal_extras_match_rust() {
+    let native_language =
+        unsafe { tree_sitter::Language::from_raw(tree_sitter_rust::LANGUAGE.into_raw()().cast()) };
+    let language = Language::new(&native_language).unwrap();
+    let mut mainline = tree_sitter::Parser::new();
+    mainline.set_language(&native_language).unwrap();
+    let mut parser = TreeFellerParser::new(&language).unwrap();
+    for source in [
+        "",
+        "fn main() {}",
+        "/**/",
+        "/* only */ /* another */\n",
+        "//",
+        "// only",
+        "// only\n",
+        "/* leading */ fn main() {} /* trailing */\n",
+        "// leading\nfn main() {} // trailing",
+        "fn/*a*/main/*b*/(/*c*/)/*d*/{/*e*/let/*f*/value/*g*/=/*h*/1/*i*/;/*j*/}",
+        "fn main() { let value = /* outer /* inner */ end */ 1; }",
+        "\u{feff}/* π😀\nsecond line */ fn main() {}\n",
+        "//! inner line docs\n/*! inner block docs */\n/// outer line docs\n/** outer block docs */\nfn main() {}",
+        "/***/ /*!*/ //// ordinary\nfn main() {}",
+        "macro_rules! example { ($value:expr) => { /* expansion */ $value }; }\nexample!(/* argument */ 1);",
+        "fn main() { let closure = |/* parameter */ value| /* body */ value; let pair = (/* first */ 1, /* second */ 2); }",
+        "fn main() { let value = object.method::<Vec</* type */ u8>>(); let item = value < /* comparison */ limit; }",
+    ] {
+        let native = mainline.parse(source, None).unwrap();
+        assert!(!native.root_node().has_error(), "{source:?}");
+        let expected = Forest::pack(&language, &native).unwrap();
+        let actual = parser
+            .parse(source)
+            .unwrap_or_else(|error| panic!("{source:?}: {error}"));
+        assert_same_tree(&actual, &expected);
+        for chunk_size in [1, 3, 8] {
+            let actual = parser
+                .parse_with_options(
+                    &mut |byte, point| {
+                        check_point(source.as_bytes(), byte, point);
+                        source.as_bytes()[byte..(byte + chunk_size).min(source.len())].to_vec()
+                    },
+                    PackedParseOptions::default(),
+                )
+                .unwrap_or_else(|error| panic!("{source:?}: {error}"));
+            assert_same_tree(&actual, &expected);
+        }
+    }
+    for source in [
+        "/* unterminated",
+        "fn main() { /* nested /* closed */",
+        "/* ok */ @",
+    ] {
+        assert_eq!(parser.parse(source).unwrap_err().code, Error::Parse);
+        assert!(parser.parse("/* reused */ fn main() {}").is_ok());
+    }
+}
+
 fn check_packed<P>(parser: &mut P, source: &str) -> Forest
 where
     P: Parse<Tree = Forest>,

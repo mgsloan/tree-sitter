@@ -29,7 +29,7 @@ typedef struct {
 
 typedef struct TFLanguage TFLanguage;
 
-// Loads generated grammar tables. Requires ABI 15 and no nonterminal extras.
+// Loads generated grammar tables. Requires ABI 15.
 // Native external scanners are supported. `error` may be NULL.
 // `ts` must outlive the result.
 // A loaded language is immutable and shareable.
@@ -56,7 +56,7 @@ typedef struct {
 // A shifted token or completed reduction on the parse stack.
 typedef struct {
   TSSymbol symbol;
-  bool extra;  // an `extra` token: whitespace or a comment, not a real child
+  bool extra;  // whitespace or a comment, excluded from grammar child counts
   uint32_t start_byte;
   uint32_t end_byte;
   TFPoint start_point;
@@ -67,6 +67,7 @@ typedef struct {
 typedef struct {
   TSSymbol symbol;
   uint16_t production_id;
+  bool extra;
   // Grammar children exclude extras. `children` contains `node_count` grammar
   // children and intervening extras, and is valid only during the callback.
   uint32_t child_count;

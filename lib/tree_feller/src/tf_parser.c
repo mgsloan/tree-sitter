@@ -23,7 +23,7 @@ struct TFParser {
   uint32_t depth;
   uint32_t capacity;
 
-  // Extras shifted before any real content sit at the bottom of the stack and
+  // Extras completed before any real content sit at the bottom of the stack and
   // stay there; the root absorbs them (see tf_parser__reduce).
   uint32_t leading;
 #ifndef NDEBUG
@@ -154,7 +154,8 @@ static void tf_parser__fail_unexpected(TFParser *self, TSStateId state, const TF
 // hands them to the sink, and pushes the result in their place. `lookahead` is
 // the token that will follow, where the caller knows it.
 static bool tf_parser__reduce(TFParser *self, TSSymbol symbol, uint32_t child_count,
-                              uint16_t production_id, const TFToken *lookahead) {
+                              uint16_t production_id, const TFToken *lookahead,
+                              bool end_of_non_terminal_extra) {
   // The extras above the last real child are exactly the run this scan crosses
   // before it reaches one, so counting them here saves walking the top of the
   // stack a second time.
@@ -191,9 +192,11 @@ static bool tf_parser__reduce(TFParser *self, TSSymbol symbol, uint32_t child_co
   }
 
   TSStateId state = tf_next_state(self->lang, self->states[base], symbol);
+  reduction.extra = end_of_non_terminal_extra && state == self->states[base];
 
   TFNode parent = {
       .symbol = symbol,
+      .extra = reduction.extra,
       .start_byte = reduction.start_byte,
       .end_byte = reduction.end_byte,
       .start_point = reduction.start_point,
@@ -246,6 +249,9 @@ static bool tf_parser__reduce(TFParser *self, TSSymbol symbol, uint32_t child_co
   }
   self->nodes[base] = parent;
   self->depth = base + 1 + trailing_count;
+  if (parent.extra && base == self->leading) {
+    self->leading = self->depth;
+  }
   for (uint32_t i = base + 1; i <= self->depth; i++) {
     self->states[i] = state;
   }
@@ -280,7 +286,12 @@ static TF_ALWAYS_INLINE bool tf_parser__parse(TFParser *self, void **root,
 
   for (;;) {
     TSStateId state = self->states[self->depth];
-    if (!lex(&self->lexer, state, &token)) {
+    bool end_of_non_terminal_extra = tf_lex_mode(lang, state).lex_state == UINT16_MAX;
+    if (end_of_non_terminal_extra) {
+      // This EOF entry completes an extra without consuming any lookahead.
+      token = (TFToken){.start_byte = self->lexer.byte, .end_byte = self->lexer.byte,
+                         .start_point = self->lexer.point, .end_point = self->lexer.point};
+    } else if (!lex(&self->lexer, state, &token)) {
       tf_parser__fail(self, self->lexer.byte, self->lexer.point, "unexpected character");
       return false;
     }
@@ -302,6 +313,7 @@ static TF_ALWAYS_INLINE bool tf_parser__parse(TFParser *self, void **root,
           return false;
         }
         state = self->states[self->depth];
+        end_of_non_terminal_extra = tf_lex_mode(lang, state).lex_state == UINT16_MAX;
         continue;
       }
 
@@ -317,9 +329,12 @@ static TF_ALWAYS_INLINE bool tf_parser__parse(TFParser *self, void **root,
 
       if (action.type == TSParseActionTypeReduce) {
         if (!tf_parser__reduce(self, action.reduce.symbol, action.reduce.child_count,
-                               action.reduce.production_id, &token)) {
+                               action.reduce.production_id,
+                               end_of_non_terminal_extra ? NULL : &token,
+                               end_of_non_terminal_extra)) {
           goto oom;
         }
+        if (end_of_non_terminal_extra) break;
         state = self->states[self->depth];
         continue;
       }
@@ -460,6 +475,7 @@ static void *tf_capture__reduce(void *payload, const TFReduction *reduction) {
                                                         .start_point = reduction->start_point,
                                                         .end_point = reduction->end_point},
                                               .first_child = first,
+                                              .extra = reduction->extra,
                                               .child_count = reduction->node_count});
   // Stable arena handle carried in the sink value; never dereferenced.
   // NOLINTNEXTLINE(performance-no-int-to-ptr)

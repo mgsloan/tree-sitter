@@ -287,6 +287,71 @@ static const TSLanguage ambiguous_language = {
 
 const TSLanguage *sq_test_ambiguous_language(void) { return &ambiguous_language; }
 
+static bool lex_non_terminal_extra(TSLexer *lexer, TSStateId state) {
+  assert(state != UINT16_MAX);
+  while (lexer->lookahead == ' ' || lexer->lookahead == '\n') lexer->advance(lexer, true);
+  if (lexer->lookahead != '[' && lexer->lookahead != ']') return lex_expression(lexer, state);
+  lexer->result_symbol = lexer->lookahead == '[' ? 3 : 4;
+  lexer->advance(lexer, false);
+  lexer->mark_end(lexer);
+  return true;
+}
+
+// The ambiguous expression grammar with comment = '[' ']'. The same comment
+// can be a structural expression at the start and an extra everywhere else.
+const TSLanguage *sq_test_non_terminal_extra_language(bool structural, bool conflict) {
+  typedef struct {
+    TSLanguage language;
+    uint16_t table[9][8];
+  } ExtraFixture;
+  ExtraFixture *fixture = malloc(sizeof(*fixture));
+  assert(fixture);
+  *fixture = (ExtraFixture){.language = {
+      .abi_version = 15, .symbol_count = 8, .token_count = 5,
+      .state_count = 9, .large_state_count = 9, .production_id_count = 1,
+      .lex_fn = lex_non_terminal_extra,
+  }, .table = {
+      {0, 0, 0, 0, 0, 0, 0, 0},
+      {0, 1, 0, 16, 0, 6, 3, 1},
+      {3, 0, 3, 16, 0, 0, 0, 2},
+      {7, 0, 5, 16, 0, 0, 0, 3},
+      {0, 1, 0, 16, 0, 0, 5, 4},
+      {12, 0, 9, 16, 0, 0, 0, 5},
+      {14, 0, 0, 16, 0, 0, 0, 6},
+      {0, 0, 0, 0, 18, 0, 0, 0},
+      {20, 0, 0, 0, 0, 0, 0, 0},
+  }};
+  static const char *const names[] = {"end", "x", "+", "[", "]", "root", "expression", "comment"};
+  static const TSSymbolMetadata metadata[] = {{0}, {.visible = true}, {.visible = true},
+      {.visible = true}, {.visible = true}, {.visible = true, .named = true},
+      {.visible = true, .named = true}, {.visible = true, .named = true}};
+  static const TSSymbol symbols[] = {0, 1, 2, 3, 4, 5, 6, 7}, aliases[] = {0};
+  static const TSLexerMode modes[9] = {[8] = {.lex_state = UINT16_MAX}};
+  static const TSParseActionEntry actions[] = {
+      {.entry = {0}}, {.entry = {.count = 1}}, SHIFT(2),
+      {.entry = {.count = 1}}, REDUCE(6, 1, 0, 0),
+      {.entry = {.count = 1}}, SHIFT(4),
+      {.entry = {.count = 1}}, REDUCE(5, 1, 0, 0),
+      {.entry = {.count = 2}}, REDUCE(6, 3, 0, 0), SHIFT(4),
+      {.entry = {.count = 1}}, REDUCE(6, 3, 0, 0),
+      {.entry = {.count = 1}}, ACCEPT_INPUT(),
+      {.entry = {.count = 1}}, SHIFT(7),
+      {.entry = {.count = 1}}, SHIFT(8),
+      {.entry = {.count = 1}}, REDUCE(7, 2, 0, 0),
+      {.entry = {.count = 2}}, REDUCE(7, 2, 1, 0), REDUCE(7, 2, 0, 0),
+  };
+  fixture->language.symbol_names = names;
+  fixture->language.symbol_metadata = metadata;
+  fixture->language.public_symbol_map = symbols;
+  fixture->language.alias_map = aliases;
+  fixture->language.parse_table = &fixture->table[0][0];
+  fixture->language.parse_actions = actions;
+  fixture->language.lex_modes = modes;
+  if (structural) fixture->table[1][7] = 2;
+  if (conflict) fixture->table[8][0] = 22;
+  return &fixture->language;
+}
+
 typedef struct {
   unsigned count;
 } ScannerFixture;
@@ -713,12 +778,10 @@ void sq_test_grammar_limits(void) {
 #include "reductions.h"
 
 void sq_test_unsupported_parsers(void) {
-  for (unsigned variant = 0; variant < 3; variant++) {
+  for (unsigned variant = 0; variant < 2; variant++) {
     TSLanguage unsupported = language;
-    const TSLexerMode modes[] = {{0}, {.lex_state = UINT16_MAX}, {0}, {0}};
     if (variant == 0) unsupported.abi_version = 14;
     if (variant == 1) unsupported.external_token_count = 1;
-    if (variant == 2) unsupported.lex_modes = modes;
     SQError error;
     SQGrammar *grammar = sq_native_grammar_new(&unsupported, &error);
     assert(grammar);

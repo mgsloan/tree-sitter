@@ -648,7 +648,7 @@ static void tf_spec__pop(TFSpec *s, uint32_t version, uint32_t goal) {
 }
 
 static uint32_t tf_spec__reduce(TFSpec *s, const TFLanguage *lang, uint32_t version,
-                                TSParseAction action) {
+                                TSParseAction action, bool end_of_non_terminal_extra) {
   uint32_t initial = s->head_count, removed = 0, halted = 0;
   for (uint32_t i = 0; i < s->head_count; i++) {
     halted += s->heads[i].halted && !s->heads[i].errored;
@@ -691,6 +691,7 @@ static uint32_t tf_spec__reduce(TFSpec *s, const TFLanguage *lang, uint32_t vers
     }
     s->trees[parent].precedence += action.reduce.dynamic_precedence;
     TSStateId next = tf_next_state(lang, s->nodes[base].state, action.reduce.symbol);
+    s->trees[parent].extra = end_of_non_terminal_extra && next == s->nodes[base].state;
     uint32_t top = tf_spec__push(s, base, parent, next);
     for (uint32_t j = 0; j < trailing_count && !s->failed; j++) {
       top = tf_spec__push(s, top, s->children[trailing_first + j], next);
@@ -726,6 +727,16 @@ static void tf_spec__error(TFSpec *s, uint32_t byte, TFPoint point, TSStateId st
 static bool tf_spec__lex(TFSpec *s, TFParser *p, uint32_t node, uint32_t scanner_state,
                          TFToken *token, bool *keyword) {
   TFSpecNode n = s->nodes[node];
+  if (tf_lex_mode(p->lang, n.state).lex_state == UINT16_MAX) {
+    // No token is read or cached at the end of a non-terminal extra.
+    *token = (TFToken){.start_byte = n.byte, .end_byte = n.byte,
+                       .start_point = n.point, .end_point = n.point};
+    *keyword = false;
+    if (p->lexer.scanner) {
+      tf_spec__load_scanner(s, scanner_state, tf_scanner_state(p->lexer.scanner));
+    }
+    return true;
+  }
   if (s->has_cache && s->cached_byte == n.byte &&
       tf_spec__same_scanner(s, s->cached_before, scanner_state)) {
     uint32_t count;
@@ -845,15 +856,20 @@ static void tf_spec__accept(TFSpec *s, uint32_t version, TFToken eof) {
 // parser.c:ts_parser__advance, with failed heads halted instead of recovered.
 static void tf_spec__advance(TFSpec *s, TFParser *p, uint32_t version) {
   TFToken token;
-  bool keyword;
+  bool keyword, end_of_non_terminal_extra;
+  uint32_t scanner_after;
+  bool external;
+lex:
+  end_of_non_terminal_extra =
+      tf_lex_mode(p->lang, s->nodes[s->heads[version].node].state).lex_state == UINT16_MAX;
   if (!tf_spec__lex(s, p, s->heads[version].node, s->heads[version].scanner_state,
                     &token, &keyword)) {
     s->heads[version].halted = true;
     s->heads[version].errored = true;
     return;
   }
-  uint32_t scanner_after = s->cached_after;
-  bool external = s->cached_external;
+  scanner_after = s->cached_after;
+  external = s->cached_external;
   for (;;) {
     TSStateId state = s->nodes[s->heads[version].node].state;
     uint32_t count, last = TF_SPEC_NONE;
@@ -878,7 +894,7 @@ static void tf_spec__advance(TFSpec *s, TFParser *p, uint32_t version) {
         return;
       }
       if (action.type == TSParseActionTypeReduce) {
-        uint32_t v = tf_spec__reduce(s, p->lang, version, action);
+        uint32_t v = tf_spec__reduce(s, p->lang, version, action, end_of_non_terminal_extra);
         if (s->failed) {
           return;
         }
@@ -894,6 +910,7 @@ static void tf_spec__advance(TFSpec *s, TFParser *p, uint32_t version) {
     if (last != TF_SPEC_NONE) {
       s->heads[version] = s->heads[last];
       tf_spec__remove_head(s, last);
+      if (end_of_non_terminal_extra) goto lex;
       continue;
     }
     if (reduced) {
@@ -969,7 +986,7 @@ TF_NOINLINE static bool tf_spec__replay(TFSpec *s, TFParser *p, uint32_t first, 
       if (item & 0x80000000U) {
         const TFSpecTree *done = &s->trees[item & 0x7fffffffU];
         if (!tf_parser__reduce(p, done->token.symbol, done->structural_count, done->production_id,
-                               NULL)) {
+                               NULL, done->extra)) {
           return false;
         }
         break;
@@ -1051,9 +1068,12 @@ static bool tf_parser__split(TFParser *p, TFToken token, TFToken *next) {
     }
   }
   TFSpec *s = p->spec;
+  bool end_of_non_terminal_extra =
+      tf_lex_mode(p->lang, p->states[p->depth]).lex_state == UINT16_MAX;
   s->scanner_length = 1;
   s->cached_before = s->cached_after = 0;
-  s->cached_external = p->lexer.scanner && p->lexer.scanner->token_external;
+  s->cached_external = !end_of_non_terminal_extra && p->lexer.scanner &&
+                       p->lexer.scanner->token_external;
   s->tree_count = 0;
   s->node_count = 0;
   s->link_count = 0;
@@ -1061,7 +1081,9 @@ static bool tf_parser__split(TFParser *p, TFToken token, TFToken *next) {
   s->child_count = 0;
   s->failed = false;
   if (p->lexer.scanner) {
-    s->cached_before = tf_spec__save_scanner(s, tf_scanner_before(p->lexer.scanner));
+    s->cached_before = tf_spec__save_scanner(s, end_of_non_terminal_extra
+                                                ? tf_scanner_state(p->lexer.scanner)
+                                                : tf_scanner_before(p->lexer.scanner));
     s->cached_after = tf_spec__save_scanner(s, tf_scanner_state(p->lexer.scanner));
     if (s->failed) goto oom;
   }
@@ -1074,7 +1096,7 @@ static bool tf_parser__split(TFParser *p, TFToken token, TFToken *next) {
   s->cached = token;
   s->cached_state = p->lexer.token_lex_state;
   s->cached_keyword = p->lexer.token_is_keyword;
-  s->has_cache = true;
+  s->has_cache = !end_of_non_terminal_extra;
   s->cached_byte = p->depth ? p->nodes[p->depth - 1].end_byte : 0;
   s->prefix_count = 0;
   s->prefix_depth = p->depth;
@@ -1156,7 +1178,7 @@ static bool tf_parser__split(TFParser *p, TFToken token, TFToken *next) {
     const TFSpecTree *root = &s->trees[s->finished];
     if (p->lexer.scanner) p->lexer.scanner->token_external = false;
     if (!tf_parser__reduce(p, root->token.symbol, root->structural_count, root->production_id,
-                           next)) {
+                           next, false)) {
       goto oom;
     }
     tf_lexer_seek(&p->lexer, next->end_byte, next->end_point);

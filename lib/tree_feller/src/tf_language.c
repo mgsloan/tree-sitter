@@ -70,16 +70,6 @@ TFLanguage *tf_language_load_parser(const TSLanguage *ts, const char **error) {
   }
   self->ts = ts;
 
-  // A 0xFFFF lex state marks a non-terminal extra rule, where the parser takes a
-  // fixed reduction from the EOF entry instead of lexing (parser.c:1605). The
-  // driver does not implement this reduction.
-  for (uint32_t state = 0; state < ts->state_count; state++) {
-    if (ts->lex_modes[state].lex_state == UINT16_MAX) {
-      *error = "grammars with non-terminal extras are not supported";
-      goto fail;
-    }
-  }
-
   // Expand the parse table to one row per state.
   //
   // tree-sitter packs states with few entries into `small_parse_table` as

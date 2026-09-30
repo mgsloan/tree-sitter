@@ -12,6 +12,7 @@ unsafe extern "C" {
     fn sq_test_parser_language() -> *const c_void;
     fn sq_test_external_language(branches: bool) -> *const c_void;
     fn sq_test_ambiguous_language() -> *const c_void;
+    fn sq_test_non_terminal_extra_language(structural: bool, conflict: bool) -> *const c_void;
     fn sq_test_supertypes(count: u32, connected: bool) -> *const c_void;
     fn sq_test_supertypes_delete(language: *const c_void);
     fn sq_test_symbols(count: u32) -> *const c_void;
@@ -146,6 +147,54 @@ fn callback_input_during_ambiguity_replay() {
         parser.parse(source).unwrap().as_bytes(),
         expected.as_bytes()
     );
+}
+
+#[test]
+fn non_terminal_extras_during_ambiguity_replay() {
+    for structural in [false, true] {
+        for conflict in [false, true] {
+            let pointer = unsafe { sq_test_non_terminal_extra_language(structural, conflict) };
+            let fixture = unsafe { Fixture::new(pointer, sq_test_supertypes_delete) };
+            let mut mainline = tree_sitter::Parser::new();
+            mainline
+                .set_language(&fixture.grammar.tree_sitter_language())
+                .unwrap();
+            let source = if structural {
+                "[] + x + x + x []\n"
+            } else {
+                "[] [] x + x + x + x []\n"
+            };
+            let native = mainline.parse(source, None).unwrap();
+            assert!(!native.root_node().has_error());
+            let expected = Forest::pack(&fixture.grammar, &native).unwrap();
+            let mut parser = TreeFellerParser::new(&fixture.grammar).unwrap();
+            for chunk_size in [1, 3, 8] {
+                let mut maximum = 0;
+                let mut replays = 0;
+                let actual = parser
+                    .parse_with_options(
+                        &mut |byte, _| {
+                            if byte == 0 && maximum > 0 {
+                                replays += 1;
+                            }
+                            maximum = maximum.max(byte);
+                            source.as_bytes()[byte..(byte + chunk_size).min(source.len())].to_vec()
+                        },
+                        PackedParseOptions::default(),
+                    )
+                    .unwrap();
+                assert!(
+                    replays > 0,
+                    "structural={structural}, conflict={conflict}, chunk_size={chunk_size}"
+                );
+                assert_eq!(actual.as_bytes(), expected.as_bytes());
+                assert_eq!(
+                    actual.point_data().unwrap().as_bytes(),
+                    expected.point_data().unwrap().as_bytes()
+                );
+            }
+        }
+    }
 }
 
 #[test]
