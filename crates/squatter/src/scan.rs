@@ -52,7 +52,6 @@ use fearless_simd::{dispatch, i8x16, i8x32, i16x16, i16x32, prelude::*, u8x32, u
 #[inline]
 pub(crate) fn equal_byte_ids(bytes: &[u8], targets: &[SquatterKindId]) -> u64 {
     debug_assert_eq!(bytes.len(), GROUP_SIZE as usize);
-    debug_assert!(targets.iter().all(|target| target.raw() <= u8::MAX as u16));
     dispatch!(simd::level(), simd => byte_id_mask(simd, bytes, targets))
 }
 

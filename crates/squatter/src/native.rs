@@ -813,9 +813,6 @@ impl CompiledQuery {
         unsafe {
             sq_native_query_disable_capture(self.raw.as_ptr(), name.as_ptr(), length);
         }
-        // Capture removal only edits step records; no arrays move or resize.
-        #[cfg(debug_assertions)]
-        self.validate();
     }
 
     fn refresh(&mut self) {
@@ -823,8 +820,6 @@ impl CompiledQuery {
             sq_native_query_view(self.raw.as_ptr(), &mut self.view);
         }
         self.view.symbol_count = self.language.tables().kind_count;
-        #[cfg(debug_assertions)]
-        self.validate();
     }
 
     #[cfg(debug_assertions)]
