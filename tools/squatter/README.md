@@ -143,7 +143,7 @@ and parsing benchmarks validate direct-parser slabs against Tree-sitter packing.
 
 ## Endian compatibility
 
-The Rust probe exchanges all 16 packing variants between the host and a
+The Rust probe exchanges all 8 packing variants between the host and a
 big-endian PowerPC64 process under QEMU. It checks exact bytes, copied and borrowed
 loads, attributes, navigation, and compact copying. It requires Zig, `qemu-ppc64`,
 a little-endian host, and the Rust target:

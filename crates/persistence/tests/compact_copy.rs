@@ -23,7 +23,6 @@ fn compact_copy_matches_to_compacted_for_padded_and_compact_trees() {
                     &language,
                     &native,
                     PackOptions {
-                        initial_group_capacity: 1024,
                         compact,
                         symbol_presence: &|_| presence,
                         points,

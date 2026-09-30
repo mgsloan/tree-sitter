@@ -75,7 +75,6 @@ impl Forest {
 impl<'forest> ForestRegion<'forest> {
     pub fn index(&self) -> RegionIx;
     pub fn language(&self) -> &'forest Language;
-    pub fn group_count(&self) -> u32;
     pub fn trees(&self) -> impl Iterator<Item = Tree<'forest>>;
 }
 
@@ -123,7 +122,7 @@ context within the subtree remain intact. Queries on the detached tree need not
 match queries that depended on its original ancestors.
 
 `PackOptions::symbol_presence` is a region predicate, evaluated after the core
-layout is finalized. It defaults to `|region| region.group_count() >= 64`;
+layout is finalized. Its internal default selects regions with at least 64 groups;
 `points` continues to default to true. The group threshold is an initial heuristic,
 not a measured break-even point. Callers can select by language, size, or workload,
 or use `|_| true` / `|_| false` for all / no regions.
@@ -608,7 +607,6 @@ neither the forest nor the cache retains them.
 let queried_language = language.tree_sitter_language();
 let select_presence = |region: ForestRegion<'_>| {
     region.language().tree_sitter_language() == queried_language
-        && region.group_count() >= 64
 };
 let options = PackOptions {
     symbol_presence: &select_presence,

@@ -436,7 +436,6 @@ where
     let mut options = PackedParseOptions {
         parse: ParseOptions::new().progress_callback(&mut progress),
         pack: PackOptions {
-            initial_group_capacity: 1,
             compact: true,
             ..Default::default()
         },
@@ -462,7 +461,6 @@ fn packed_options_progress_and_equivalence() {
             &mut |byte, _| &source.as_bytes()[byte..],
             PackedParseOptions {
                 pack: PackOptions {
-                    initial_group_capacity: 1,
                     compact: true,
                     ..Default::default()
                 },
@@ -541,7 +539,7 @@ fn check_cancellation<P: Parse<Error = ParserError>>(parser: &mut P, source: &st
 }
 
 #[test]
-fn cancellation_and_packing_failure_allow_reuse() {
+fn parse_and_packing_cancellation_allow_reuse() {
     let language = Language::new(&c_language()).unwrap();
     let source = "int value = 123;\n".repeat(1000);
     let mut parser = compatible(&language);
@@ -552,7 +550,7 @@ fn cancellation_and_packing_failure_allow_reuse() {
 
     let options = PackedParseOptions {
         pack: PackOptions {
-            initial_group_capacity: u32::MAX,
+            cancellation_callback: Some(&|| ControlFlow::Break(())),
             ..Default::default()
         },
         ..Default::default()
@@ -561,7 +559,7 @@ fn cancellation_and_packing_failure_allow_reuse() {
         parser
             .parse_with_options(&mut |byte, _| &b"int value;"[byte..], options)
             .unwrap_err(),
-        ParserError::Pack(Error::Overflow)
+        ParserError::Canceled
     );
     assert!(!parser.parse("int reused;").unwrap().root_node().has_error());
 }

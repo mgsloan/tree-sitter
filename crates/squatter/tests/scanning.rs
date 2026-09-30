@@ -96,14 +96,7 @@ fn orders_subtrees_groups_and_directions() {
         "{{\"a\": [1, {{\"b\": true}}, null], \"wide\": [{}0]}}",
         "[1,2],".repeat(90)
     );
-    let (native, tree) = pack_native(
-        &json_language(),
-        &source,
-        PackOptions {
-            initial_group_capacity: 1,
-            ..Default::default()
-        },
-    );
+    let (native, tree) = pack_native(&json_language(), &source, PackOptions::default());
     fn require_send_sync(_: impl Send + Sync) {}
     let root = tree.root_node();
     let kinds = KindSet::new([root.kind_id()]);
@@ -273,7 +266,7 @@ fn ranges_filters_waste_and_storage_variants() {
                 PackOptions {
                     points,
                     symbol_presence: &|_| symbol_presence,
-                    initial_group_capacity: 1,
+
                     ..Default::default()
                 },
             );
@@ -381,7 +374,7 @@ fn range_seeks_across_subtrees() {
             &source,
             PackOptions {
                 points,
-                initial_group_capacity: 1,
+
                 ..Default::default()
             },
         );
@@ -657,7 +650,7 @@ fn range_and_position_relations() {
                 &source,
                 PackOptions {
                     points,
-                    initial_group_capacity: 1,
+
                     ..Default::default()
                 },
             );
@@ -803,7 +796,6 @@ fn sparse_cursor_pipelines() {
                 ..Default::default()
             },
         );
-        assert!(tree.group_count().div_ceil(32) >= 12);
         {
             let root = tree.root_node();
             let booleans = [truth, falsity];
@@ -996,7 +988,6 @@ fn indexed_kind_filters() {
                 ..Default::default()
             },
         );
-        assert!(packed.group_count() > 32);
         let borrowed =
             Forest::from_bytes_borrowed(std::slice::from_ref(&grammar), packed.as_bytes()).unwrap();
         for tree in [&packed, &borrowed] {

@@ -181,7 +181,7 @@ fn forest_packing_and_round_trip() {
     let select = |region: tree_squatter::ForestRegion<'_>| {
         visits
             .borrow_mut()
-            .push((region.index().raw(), region.group_count()));
+            .push((region.index().raw(), region.trees().len()));
         region.index().raw() != 1
     };
     let (mut forest, mapping) = Packer::new()
@@ -219,7 +219,7 @@ fn forest_packing_and_round_trip() {
             .collect::<Vec<_>>(),
         [1, 1, 2]
     );
-    assert_eq!(visited.len(), 3);
+    assert_eq!(visited, [(0, 1), (1, 1), (2, 2)]);
     let mut identities = HashSet::new();
     for (tree, native) in forest.trees().zip(roots) {
         let root = tree.root_node();

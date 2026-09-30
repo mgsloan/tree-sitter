@@ -264,11 +264,10 @@ fn deferred_attempts_use_fresh_options() {
     let visits = Cell::new(0);
     let select = |region: ForestRegion<'_>| {
         visits.set(visits.get() + 1);
-        region.group_count() == 1
+        region.trees().len() == 1
     };
     let mut options = LoadOptions {
         pack: PackOptions {
-            initial_group_capacity: 128,
             points: false,
             symbol_presence: &select,
             ..Default::default()
@@ -282,7 +281,6 @@ fn deferred_attempts_use_fresh_options() {
     assert_eq!(visits.get(), 1);
     assert!(!result.file.cache_hit());
     assert!(!result.file.tree().has_points());
-    assert_eq!(result.file.tree().group_capacity(), 128);
     assert!(result.file.tree().presence_cache().is_some());
     assert_eq!(
         result.pending_write.unwrap().publish().unwrap(),

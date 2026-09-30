@@ -21,7 +21,6 @@ fn miss_hit_and_old_reader_survives_update() {
             &mut Parser::new(),
             LoadOptions {
                 pack: PackOptions {
-                    initial_group_capacity: 128,
                     symbol_presence: &|_| true,
                     ..Default::default()
                 },
@@ -31,10 +30,9 @@ fn miss_hit_and_old_reader_survives_update() {
         .unwrap()
         .file;
     assert!(!first.cache_hit());
-    assert!(first.tree().group_capacity() > first.tree().group_count());
     let reader = load(&cache);
     assert!(reader.cache_hit());
-    assert_eq!(reader.tree().group_capacity(), reader.tree().group_count());
+    assert_eq!(reader.tree().as_bytes().len(), reader.tree().compact_size());
     assert_eq!(
         reader.tree().as_bytes(),
         first.tree().to_compacted().unwrap().as_bytes()
@@ -792,7 +790,7 @@ fn borrowed_presence_policy_and_cancellation_apply_to_cache_hits() {
         let visits = Cell::new(0);
         let select = |region: ForestRegion<'_>| {
             visits.set(visits.get() + 1);
-            region.group_count() == 1
+            region.trees().len() == 1
         };
         let mut options = LoadOptions {
             pack: PackOptions {

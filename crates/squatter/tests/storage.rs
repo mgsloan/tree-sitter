@@ -108,56 +108,50 @@ fn packing_context_matches_fresh_packing_and_loading() {
             let tree = parser.parse(source, None).unwrap();
             for points in [false, true] {
                 for compact in [false, true] {
-                    for initial_group_capacity in [0, 1] {
-                        let mut core = None;
-                        for symbol_presence in [false, true] {
-                            let options = PackOptions {
-                                initial_group_capacity,
-                                compact,
-                                symbol_presence: &|_| symbol_presence,
-                                points,
-                                ..Default::default()
-                            };
-                            let expected =
-                                Forest::pack_with_options(&fresh_grammar, &tree, options).unwrap();
-                            let actual =
-                                context.pack_with_options(&grammar, &tree, options).unwrap();
-                            assert_eq!(actual.has_points(), points);
-                            assert_eq!(actual.presence_cache().is_some(), symbol_presence);
-                            assert_same_tree(&actual, &expected);
-                            if let Some(core) = &core {
-                                assert_eq!(actual.as_bytes(), core);
-                            } else {
-                                core = Some(actual.as_bytes().to_vec());
-                            }
-
-                            let loaded = Forest::from_bytes(
-                                std::slice::from_ref(&grammar),
-                                expected.as_bytes(),
-                            )
-                            .unwrap();
-                            assert!(!loaded.has_points());
-                            assert!(loaded.presence_cache().is_none());
-                            let borrowed = Forest::from_bytes_borrowed(
-                                std::slice::from_ref(&grammar),
-                                expected.as_bytes(),
-                            )
-                            .unwrap();
-                            assert_eq!(loaded.as_bytes(), borrowed.as_bytes());
-                            tree_squatter::Forest::from_bytes(
-                                std::slice::from_ref(&fresh_grammar),
-                                actual.as_bytes(),
-                            )
-                            .unwrap();
-
-                            let compact = actual.to_compacted().unwrap();
-                            assert_eq!(compact.has_points(), points);
-                            assert_eq!(compact.presence_cache().is_some(), symbol_presence);
-                            assert_eq!(
-                                compact.as_bytes(),
-                                expected.to_compacted().unwrap().as_bytes()
-                            );
+                    let mut core = None;
+                    for symbol_presence in [false, true] {
+                        let options = PackOptions {
+                            compact,
+                            symbol_presence: &|_| symbol_presence,
+                            points,
+                            ..Default::default()
+                        };
+                        let expected =
+                            Forest::pack_with_options(&fresh_grammar, &tree, options).unwrap();
+                        let actual = context.pack_with_options(&grammar, &tree, options).unwrap();
+                        assert_eq!(actual.has_points(), points);
+                        assert_eq!(actual.presence_cache().is_some(), symbol_presence);
+                        assert_same_tree(&actual, &expected);
+                        if let Some(core) = &core {
+                            assert_eq!(actual.as_bytes(), core);
+                        } else {
+                            core = Some(actual.as_bytes().to_vec());
                         }
+
+                        let loaded =
+                            Forest::from_bytes(std::slice::from_ref(&grammar), expected.as_bytes())
+                                .unwrap();
+                        assert!(!loaded.has_points());
+                        assert!(loaded.presence_cache().is_none());
+                        let borrowed = Forest::from_bytes_borrowed(
+                            std::slice::from_ref(&grammar),
+                            expected.as_bytes(),
+                        )
+                        .unwrap();
+                        assert_eq!(loaded.as_bytes(), borrowed.as_bytes());
+                        tree_squatter::Forest::from_bytes(
+                            std::slice::from_ref(&fresh_grammar),
+                            actual.as_bytes(),
+                        )
+                        .unwrap();
+
+                        let compact = actual.to_compacted().unwrap();
+                        assert_eq!(compact.has_points(), points);
+                        assert_eq!(compact.presence_cache().is_some(), symbol_presence);
+                        assert_eq!(
+                            compact.as_bytes(),
+                            expected.to_compacted().unwrap().as_bytes()
+                        );
                     }
                 }
             }
@@ -317,7 +311,6 @@ fn sidecar_mapping_copy_and_failed_replacement() {
     let other_source = format!("[{}0]", "1,".repeat(500));
     let other_native = parser.parse(&other_source, None).unwrap();
     let other = Forest::pack(&grammar, &other_native).unwrap();
-    assert_ne!(tree.group_count(), other.group_count());
     assert!(
         tree.set_presence_cache(PresenceCache::build(&other).unwrap())
             .is_err()
@@ -447,22 +440,23 @@ fn point_bounded_queries_follow_attachment() {
 fn compaction_preserves_nodes_and_side_data() {
     let language = json_language();
     let grammar = Language::new(&language).unwrap();
-    let native = support::parse_native(&language, "[1,\n2, 3]");
+    let source = format!("[{}\n2, 3]", "1,".repeat(48));
+    let native = support::parse_native(&language, &source);
     let mut tree = Forest::pack_with_options(
         &grammar,
         &native,
         PackOptions {
-            initial_group_capacity: 32,
             symbol_presence: &|_| true,
             ..Default::default()
         },
     )
     .unwrap();
     let expected = tree.to_compacted().unwrap();
+    assert!(tree.as_bytes().len() > expected.as_bytes().len());
     let presence = tree.presence_cache().unwrap().as_bytes().as_ptr();
     let points = tree.point_data().unwrap().as_bytes().as_ptr();
     tree.compact().unwrap();
-    assert_eq!(tree.group_capacity(), tree.group_count());
+    assert_eq!(tree.as_bytes().len(), tree.compact_size());
     assert_eq!(tree.presence_cache().unwrap().as_bytes().as_ptr(), presence);
     assert_eq!(tree.point_data().unwrap().as_bytes().as_ptr(), points);
     for (actual, expected) in tree

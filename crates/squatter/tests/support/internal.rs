@@ -259,7 +259,6 @@ fn lexer_fallback_and_concurrent_parser_preparation() {
     parser.set_language(&language).unwrap();
     let native = parser.parse("\nx", None).unwrap();
     let options = PackOptions {
-        initial_group_capacity: 1,
         compact: true,
         ..Default::default()
     };
@@ -280,7 +279,6 @@ fn lexer_fallback_and_concurrent_parser_preparation() {
                                     &mut |byte, _| &b"\nx"[byte..],
                                     PackedParseOptions {
                                         pack: PackOptions {
-                                            initial_group_capacity: 1,
                                             compact: true,
                                             ..Default::default()
                                         },
@@ -1053,7 +1051,7 @@ fn invalid_waste_and_absent_fields() {
 }
 
 #[test]
-fn packing_rejects_wrong_grammar_and_recovers_after_overflow() {
+fn packing_rejects_wrong_grammar_and_recovers_after_cancellation() {
     unsafe extern "C" {
         fn sq_test_clone_language(language: *const c_void) -> *const c_void;
     }
@@ -1077,12 +1075,12 @@ fn packing_rejects_wrong_grammar_and_recovers_after_overflow() {
                 &grammar,
                 &native,
                 PackOptions {
-                    initial_group_capacity: u32::MAX,
+                    cancellation_callback: Some(&|| std::ops::ControlFlow::Break(())),
                     ..Default::default()
                 }
             )
             .unwrap_err(),
-        Error::Overflow
+        Error::Canceled
     );
     assert_eq!(context.pack(&grammar, &native).unwrap().as_bytes(), bytes);
     context.drop_scratch();

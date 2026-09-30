@@ -2,7 +2,6 @@ use std::{env, fs, mem::MaybeUninit};
 use tree_squatter::{Forest, Language, PackOptions, PointsData, PresenceCache};
 
 fn compare(expected: &Forest, actual: &Forest) {
-    assert_eq!(expected.slot_count(), actual.slot_count());
     assert_eq!(expected.has_points(), actual.has_points());
     let expected_root = expected.root_node();
     let actual_root = actual.root_node();
@@ -44,15 +43,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut parser = tree_sitter::Parser::new();
     parser.set_language(&tree_sitter_language)?;
     let parsed = parser.parse(&source, None).unwrap();
-    for variant in 0..16 {
+    for variant in 0..8 {
         let tree = Forest::pack_with_options(
             &language,
             &parsed,
             PackOptions {
-                initial_group_capacity: variant & 1,
-                compact: variant & 2 != 0,
-                points: variant & 4 == 0,
-                symbol_presence: &|_| variant & 8 == 0,
+                compact: variant & 1 != 0,
+                points: variant & 2 == 0,
+                symbol_presence: &|_| variant & 4 == 0,
                 ..Default::default()
             },
         )?;

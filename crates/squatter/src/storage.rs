@@ -471,7 +471,7 @@ impl<'forest> ForestRegion<'forest> {
     pub fn language(&self) -> &'forest Language {
         &self.data().language
     }
-    pub fn group_count(&self) -> u32 {
+    pub(crate) fn group_count(&self) -> u32 {
         self.data().group_count()
     }
     pub fn trees(
@@ -743,14 +743,11 @@ impl Forest {
     pub fn as_bytes(&self) -> &[u8] {
         self.data.slice()
     }
-    pub fn group_count(&self) -> u32 {
+    pub(crate) fn group_count(&self) -> u32 {
         self.data.groups()
     }
-    pub fn group_capacity(&self) -> u32 {
+    pub(crate) fn group_capacity(&self) -> u32 {
         self.data.capacity()
-    }
-    pub fn slot_count(&self) -> u32 {
-        self.group_count() * GROUP_SIZE
     }
     pub fn has_points(&self) -> bool {
         self.data.has_points()
@@ -1215,7 +1212,7 @@ impl std::fmt::Debug for Forest {
             .debug_struct("Forest")
             .field("trees", &self.data.trees.len())
             .field("regions", &self.data.regions.len())
-            .field("groups", &self.group_count())
+            .field("bytes", &self.as_bytes().len())
             .finish()
     }
 }

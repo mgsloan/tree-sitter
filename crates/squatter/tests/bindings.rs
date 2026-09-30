@@ -37,7 +37,6 @@ fn error_flags_match_each_native_node() -> Result<(), Box<dyn Error>> {
                 &grammar,
                 &native,
                 PackOptions {
-                    initial_group_capacity: 1,
                     points,
                     ..Default::default()
                 },
@@ -321,14 +320,7 @@ fn fixture() -> Result<(tree_sitter::Language, tree_sitter::Tree, Forest), Box<d
     let language = json_language();
     let grammar = tree_squatter::Language::new(&language)?;
     let native = parse_native(&language, SOURCE);
-    let packed = Forest::pack_with_options(
-        &grammar,
-        &native,
-        PackOptions {
-            initial_group_capacity: 1,
-            ..Default::default()
-        },
-    )?;
+    let packed = Forest::pack_with_options(&grammar, &native, PackOptions::default())?;
     Ok((language, native, packed))
 }
 
@@ -387,7 +379,7 @@ fn owned_and_borrowed_storage() -> Result<(), Box<dyn Error>> {
         .nodes()
         .map(|node| (node.kind().to_owned(), node.byte_range()))
         .collect();
-    assert_eq!(compact.group_count(), compact.group_capacity());
+    assert_eq!(compact.as_bytes().len(), compact.compact_size());
     drop(borrowed);
     drop(compact);
     drop(packed);
@@ -440,7 +432,6 @@ fn direct_parser_matches_mainline_packing() -> Result<(), Box<dyn Error>> {
         for points in [false, true] {
             for symbol_presence in [false, true] {
                 let options = PackOptions {
-                    initial_group_capacity: 1,
                     compact: true,
                     symbol_presence: &|_| symbol_presence,
                     points,

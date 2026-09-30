@@ -10,15 +10,14 @@ use std::{ops::ControlFlow, ptr::NonNull};
 
 mod traversal;
 
-/// Controls slab capacity, compaction, and optional presence/point data.
+/// Controls compaction and optional presence/point data.
 ///
 /// **Not in Tree-sitter**
 #[derive(Clone, Copy)]
 pub struct PackOptions<'options> {
-    pub initial_group_capacity: u32,
     pub compact: bool,
     /// Select coverage once per region after layout finalization. The default
-    /// selects regions with at least 64 groups, an untuned size heuristic.
+    /// uses an internal size heuristic.
     pub symbol_presence: &'options dyn Fn(ForestRegion<'_>) -> bool,
     /// Checked between regions and groups while building presence data.
     pub cancellation_callback: Option<&'options dyn Fn() -> ControlFlow<()>>,
@@ -29,7 +28,6 @@ pub struct PackOptions<'options> {
 impl Default for PackOptions<'_> {
     fn default() -> Self {
         Self {
-            initial_group_capacity: 0,
             compact: false,
             symbol_presence: &|region| region.group_count() >= 64,
             cancellation_callback: None,
@@ -124,7 +122,7 @@ impl Packer {
         let capacity = if inputs.is_empty() {
             0
         } else {
-            initial_capacity(expected_nodes, &options)
+            initial_capacity(expected_nodes)
         };
         let mut builder = Builder::new_forest(&languages, capacity, options.points)?;
         let mut mapping = Vec::new();
@@ -265,11 +263,7 @@ impl Builder {
         expected_nodes: u32,
         options: &PackOptions<'_>,
     ) -> Result<Self, Error> {
-        Self::new(
-            language,
-            initial_capacity(expected_nodes, options),
-            options.points,
-        )
+        Self::new(language, initial_capacity(expected_nodes), options.points)
     }
 
     fn new(language: &Language, capacity: u32, points: bool) -> Result<Self, Error> {
@@ -583,12 +577,8 @@ impl Builder {
     }
 }
 
-fn initial_capacity(expected_nodes: u32, options: &PackOptions<'_>) -> u32 {
-    if options.initial_group_capacity == 0 {
-        expected_nodes / (GROUP_SIZE * 3 / 4) + 1
-    } else {
-        options.initial_group_capacity
-    }
+fn initial_capacity(expected_nodes: u32) -> u32 {
+    expected_nodes / (GROUP_SIZE * 3 / 4) + 1
 }
 
 #[cfg(test)]

@@ -52,25 +52,26 @@ mod tests {
         );
         let mut parser = tree_sitter::Parser::new();
         parser.set_language(&tree_sitter_language).unwrap();
-        let native = parser.parse(b"[1]", None).unwrap();
+        let source = format!("[{}0]", "1,".repeat(48));
+        let source = source.as_bytes();
+        let native = parser.parse(source, None).unwrap();
         let tree = Forest::pack_with_options(
             &language.prepared,
             &native,
             PackOptions {
-                initial_group_capacity: 128,
                 symbol_presence: &|_| true,
                 ..Default::default()
             },
         )
         .unwrap();
-        assert!(tree.group_capacity() > tree.group_count());
+        assert!(tree.as_bytes().len() > tree.compact_size());
         let original = tree.as_bytes().to_vec();
-        let request = Request::new(b"test.json".to_vec(), b"[1]", &language, true, true);
+        let request = Request::new(b"test.json".to_vec(), source, &language, true, true);
         // Cancel after the reservation has been filled, immediately before
         // commit: no source, tree, path, or current-generation record may escape.
         let checks = std::cell::Cell::new(0);
         assert!(matches!(
-            store.publish(&request, b"[1]", &tree, &language, || {
+            store.publish(&request, source, &tree, &language, || {
                 checks.set(checks.get() + 1);
                 checks.get() == 2
             }),
@@ -92,7 +93,7 @@ mod tests {
         }
         assert_eq!(
             store
-                .publish(&request, b"[1]", &tree, &language, || false)
+                .publish(&request, source, &tree, &language, || false)
                 .unwrap(),
             WriteOutcome::Published
         );
@@ -110,7 +111,7 @@ mod tests {
         assert_eq!(tree.as_bytes(), original);
         assert_eq!(
             store.sources.get(&after, &request.source_key).unwrap(),
-            Some(b"[1]".as_slice())
+            Some(source)
         );
         assert!(
             store
@@ -144,7 +145,7 @@ mod tests {
             store
                 .get(
                     &request,
-                    b"[1]",
+                    source,
                     &language,
                     PackOptions {
                         symbol_presence: &|_| true,
@@ -156,7 +157,7 @@ mod tests {
         );
         assert_eq!(
             store
-                .publish(&request, b"[1]", &tree, &language, || false)
+                .publish(&request, source, &tree, &language, || false)
                 .unwrap(),
             WriteOutcome::Published
         );
@@ -164,7 +165,7 @@ mod tests {
             store
                 .get(
                     &request,
-                    b"[1]",
+                    source,
                     &language,
                     PackOptions {
                         symbol_presence: &|_| true,
@@ -178,7 +179,7 @@ mod tests {
         let guard = gate(&store.writer).unwrap().unwrap();
         assert_eq!(
             store
-                .publish(&request, b"[1]", &tree, &language, || false)
+                .publish(&request, source, &tree, &language, || false)
                 .unwrap(),
             WriteOutcome::Busy
         );

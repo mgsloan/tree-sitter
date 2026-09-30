@@ -1102,7 +1102,7 @@ fn main() -> Result<()> {
             .count();
         descriptions.push(serde_json::json!({
             "input": input, "source_bytes": source.len(), "slab_bytes": tree.as_bytes().len(),
-            "nodes": nodes, "groups": tree.group_count(), "slots": tree.slot_count(), "kind_id": u16::from(kind),
+            "nodes": nodes, "kind_id": u16::from(kind),
             "kind": language.node_kind_for_id(u16::from(kind)), "kind_matches": kind_matches,
             "multiple_kind_matches": multiple_kind_matches,
             "field_id": raw_field(field), "field_matches": field_matches,
