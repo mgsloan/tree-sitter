@@ -565,10 +565,10 @@ impl Builder {
             options.symbol_presence,
             options.cancellation_callback,
         )? {
-            self.forest.set_presence_cache(cache)?;
+            self.forest.set_presence_cache_trusted(cache);
         }
         if let Some(points) = self.points {
-            self.forest.set_point_data_trusted(points)?;
+            self.forest.set_point_data_trusted(points);
         }
         Ok(self.forest)
     }

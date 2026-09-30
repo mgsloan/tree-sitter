@@ -1060,10 +1060,10 @@ impl Forest {
                 presence: None,
             }));
         if let Some(cache) = &self.data.presence_cache {
-            forest.set_presence_cache(PresenceCache::from_bytes(cache.as_bytes())?)?;
+            forest.set_presence_cache_trusted(cache.copy()?);
         }
         if let Some(points) = &self.data.point_data {
-            forest.set_point_data_trusted(points.copy()?)?;
+            forest.set_point_data_trusted(points.copy()?);
         }
         Ok(forest)
     }

@@ -254,6 +254,12 @@ fn forest_packing_and_round_trip() {
         .map(|tree| describe(tree.root_node()))
         .collect();
     let core = forest.to_bytes().unwrap();
+    forest
+        .presence_cache()
+        .unwrap()
+        .validate_for(&forest)
+        .unwrap();
+    forest.point_data().unwrap().validate_for(&forest).unwrap();
     let presence = forest.presence_cache().unwrap().as_bytes().to_vec();
     let points = forest.point_data().unwrap().as_bytes().to_vec();
     let mut checks = 0;
@@ -303,6 +309,12 @@ fn forest_packing_and_round_trip() {
         loaded
             .set_point_data(PointsData::from_bytes(&points).unwrap())
             .unwrap();
+        loaded
+            .presence_cache()
+            .unwrap()
+            .validate_for(&loaded)
+            .unwrap();
+        loaded.point_data().unwrap().validate_for(&loaded).unwrap();
         assert_eq!(
             loaded
                 .trees()

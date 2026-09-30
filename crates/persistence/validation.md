@@ -22,17 +22,19 @@ the captured source length before returning the pair.
 ## Separate side data
 
 Presence loading validates the concatenated region records and bitmap extents.
-Attachment checks region counts and grammar dimensions; debug attachment also
-checks bitmap contents against the core. Absent records select ordinary symbol
-scanning. Incorrect bitmap contents can change query results in release builds.
+Attachment checks region counts and grammar dimensions. `PresenceCache::validate_for`
+also checks bitmap contents against the core. Absent records select ordinary symbol
+scanning. Incorrect bitmap contents can change query results in any build profile.
 
 Point loading validates its header and payload size. Attachment checks forest
-dimensions and occupied-slot delta overflow in all builds; content ordering and
-unused-slot checks remain debug-only. Neither sidecar reconstructs core groups.
+dimensions and occupied-slot delta overflow. `PointsData::validate_for` also checks
+content ordering and unused slots. Neither sidecar reconstructs core groups or
+verifies coordinates against source text.
 Failed attachment preserves the previous side data.
 
-Internally packed point data and copies made by `detach` or `to_compacted` use
-debug-only attachment validation; release builds trust the matching core.
+Both `validate_for` methods are explicit and identical in debug and release builds.
+Packing and copies made by `detach` or `to_compacted` trust their matching sidecars
+without validation.
 
 ## Verification and remaining work
 

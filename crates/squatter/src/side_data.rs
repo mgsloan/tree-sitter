@@ -15,7 +15,7 @@ const ABSENT_PRESENCE_FORMAT: u32 = slab_format(0xfc, 0);
 const POINT_FORMAT: u32 = slab_format(0xfd, 0);
 const HEADER_BYTES: usize = 16;
 
-/// Failure to build, load, or attach separate tree data.
+/// Failure to build, load, validate, or attach separate tree data.
 ///
 /// **Not in Tree-sitter**
 #[derive(Debug)]
@@ -282,8 +282,12 @@ impl PresenceCache {
         self.0.bytes()
     }
 
-    /// Validates the record layout without a forest. Attachment checks dimensions
-    /// and, in debug builds, contents against the destination forest.
+    pub(crate) fn copy(&self) -> Result<Self, SideDataError> {
+        Ok(Self(Sidecar(Slab::copy(self.as_bytes())?)))
+    }
+
+    /// Checks record layout without a forest. Attachment checks dimensions;
+    /// [`Self::validate_for`] also checks bitmap contents.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, SideDataError> {
         presence_records(bytes)?;
         Ok(Self(Sidecar(Slab::copy(bytes)?)))
@@ -291,7 +295,7 @@ impl PresenceCache {
 
     pub fn copy_from_bytes(forest: &Forest, bytes: &[u8]) -> Result<Self, SideDataError> {
         let cache = Self::from_bytes(bytes)?;
-        cache.views(forest)?;
+        cache.validate_loaded(forest)?;
         Ok(cache)
     }
 
@@ -301,37 +305,32 @@ impl PresenceCache {
         Ok(Self(sidecar))
     }
 
-    fn views(&self, forest: &Forest) -> Result<Vec<Option<PresenceView>>, SideDataError> {
+    /// Checks layout and forest compatibility, then rebuilds selected bitmaps
+    /// to verify their contents. This check is explicit in every build profile.
+    pub fn validate_for(&self, forest: &Forest) -> Result<(), SideDataError> {
+        let records = self.validate_loaded(forest)?;
+        let expected = Self::build_selected(forest, |region| {
+            records[region.index().raw() as usize].1.format == PRESENCE_FORMAT
+        })?;
+        if expected.as_bytes() != self.as_bytes() {
+            return Err(SideDataError::InvalidTarget);
+        }
+        Ok(())
+    }
+
+    fn validate_loaded(&self, forest: &Forest) -> Result<Vec<(usize, Header)>, SideDataError> {
         let records = presence_records(self.as_bytes())?;
         if records.len() != forest.data().regions.len() {
             return Err(SideDataError::InvalidTarget);
         }
-        let mut views = Vec::new();
-        views
-            .try_reserve_exact(records.len())
-            .map_err(|_| Error::Allocation)?;
-        for (region, (offset, header)) in forest.regions().zip(&records) {
+        for (region, (_, header)) in forest.regions().zip(&records) {
             if header.groups != region.group_count()
                 || header.dimension != region.language().tables().kind_count + 2
             {
                 return Err(SideDataError::InvalidTarget);
             }
-            views.push((header.format == PRESENCE_FORMAT).then(|| PresenceView {
-                payload: NonNull::from(&self.as_bytes()[offset + HEADER_BYTES..]).cast(),
-                first_group: region.data().slots.start.group(),
-                groups: region.group_count(),
-            }));
         }
-        #[cfg(debug_assertions)]
-        {
-            let expected = Self::build_selected(forest, |region| {
-                records[region.index().raw() as usize].1.format == PRESENCE_FORMAT
-            })?;
-            if expected.as_bytes() != self.as_bytes() {
-                return Err(SideDataError::InvalidTarget);
-            }
-        }
-        Ok(views)
+        Ok(records)
     }
 }
 
@@ -516,6 +515,31 @@ impl PointsData {
         Ok(Self(Sidecar(Slab::copy(bytes)?)))
     }
 
+    /// Checks layout, forest dimensions, coordinate arithmetic and ordering,
+    /// and unused slots. Does not verify coordinates against source text.
+    /// This check is explicit in every build profile.
+    pub fn validate_for(&self, forest: &Forest) -> Result<(), SideDataError> {
+        self.validate_loaded(forest)?;
+        for group in 0..forest.group_count() {
+            let end = forest.data().group_end(GroupIx(group));
+            let used = (end.raw() - group * GROUP_SIZE) as usize;
+            for (_, deltas) in [
+                self.column::<false>(GroupIx(group)),
+                self.column::<true>(GroupIx(group)),
+            ] {
+                if deltas[used * 2..].iter().any(|&byte| byte != 0) {
+                    return Err(SideDataError::InvalidTarget);
+                }
+            }
+            for slot in group * GROUP_SIZE..end.raw() {
+                if self.start(SlotIx(slot)) > self.end(SlotIx(slot)) {
+                    return Err(SideDataError::InvalidTarget);
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn validate_loaded(&self, tree: &Forest) -> Result<(), SideDataError> {
         let header = validate_points(self.as_bytes())?;
         if header.groups != tree.group_count()
@@ -542,16 +566,6 @@ impl PointsData {
                         return Err(SideDataError::InvalidTarget);
                     }
                 }
-                #[cfg(debug_assertions)]
-                if deltas[used * 2..].iter().any(|&byte| byte != 0) {
-                    return Err(SideDataError::InvalidTarget);
-                }
-            }
-            #[cfg(debug_assertions)]
-            for slot in group * GROUP_SIZE..tree.data().group_end(GroupIx(group)).raw() {
-                if self.start(SlotIx(slot)) > self.end(SlotIx(slot)) {
-                    return Err(SideDataError::InvalidTarget);
-                }
             }
         }
         Ok(())
@@ -571,37 +585,52 @@ impl Forest {
     pub fn point_data(&self) -> Option<&PointsData> {
         self.data().point_data.as_ref()
     }
-    /// Validates and attaches separately loaded symbol-presence
-    /// data. Release borrowed tree views before replacing side data.
+    /// Checks dimensions and attaches separately loaded symbol-presence data.
+    /// Use [`PresenceCache::validate_for`] to check bitmap contents.
+    /// Release borrowed tree views before replacing side data.
     ///
     /// **Not in Tree-sitter**
     pub fn set_presence_cache(&mut self, cache: PresenceCache) -> Result<(), SideDataError> {
-        let views = cache.views(self)?;
-        for (region, view) in self.data_mut().regions.iter_mut().zip(views) {
-            region.presence = view;
-        }
-        self.data_mut().presence_cache = Some(cache);
+        cache.validate_loaded(self)?;
+        self.set_presence_cache_trusted(cache);
         Ok(())
     }
-    /// Validates and attaches separately loaded point data. Release
-    /// borrowed tree views before replacing side data.
+
+    /// Cache records must match this forest's regions and grammars.
+    pub(crate) fn set_presence_cache_trusted(&mut self, cache: PresenceCache) {
+        let mut offset = 0;
+        for region in &mut self.data_mut().regions {
+            let present = cache.0.word(offset) as u32 == PRESENCE_FORMAT;
+            let groups = region.group_count();
+            offset += HEADER_BYTES;
+            region.presence = present.then(|| PresenceView {
+                payload: NonNull::from(&cache.as_bytes()[offset..]).cast(),
+                first_group: region.slots.start.group(),
+                groups,
+            });
+            if present {
+                offset += (groups as usize).div_ceil(64)
+                    * (region.language.tables().kind_count as usize + 2)
+                    * 8;
+            }
+        }
+        self.data_mut().presence_cache = Some(cache);
+    }
+
+    /// Checks dimensions and coordinate arithmetic, then attaches point data.
+    /// Use [`PointsData::validate_for`] to check ordering and unused slots.
+    /// Release borrowed tree views before replacing side data.
     ///
     /// **Not in Tree-sitter**
     pub fn set_point_data(&mut self, points: PointsData) -> Result<(), SideDataError> {
         points.validate_loaded(self)?;
-        self.data_mut().point_data = Some(points);
+        self.set_point_data_trusted(points);
         Ok(())
     }
 
-    /// Point data must come from this forest's builder or a copy of the same core.
-    pub(crate) fn set_point_data_trusted(
-        &mut self,
-        points: PointsData,
-    ) -> Result<(), SideDataError> {
-        #[cfg(debug_assertions)]
-        points.validate_loaded(self)?;
+    /// Point dimensions and coordinate arithmetic must be valid for this forest.
+    pub(crate) fn set_point_data_trusted(&mut self, points: PointsData) {
         self.data_mut().point_data = Some(points);
-        Ok(())
     }
 
     /// Drops the optional cache. Scan results stay the same; scan

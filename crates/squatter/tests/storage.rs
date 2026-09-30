@@ -121,6 +121,12 @@ fn packing_context_matches_fresh_packing_and_loading() {
                         let actual = context.pack_with_options(&grammar, &tree, options).unwrap();
                         assert_eq!(actual.has_points(), points);
                         assert_eq!(actual.presence_cache().is_some(), symbol_presence);
+                        if let Some(points) = actual.point_data() {
+                            points.validate_for(&actual).unwrap();
+                        }
+                        if let Some(cache) = actual.presence_cache() {
+                            cache.validate_for(&actual).unwrap();
+                        }
                         assert_same_tree(&actual, &expected);
                         if let Some(core) = &core {
                             assert_eq!(actual.as_bytes(), core);
@@ -385,6 +391,37 @@ fn sidecar_mapping_copy_and_failed_replacement() {
     assert_eq!(core_drops.load(Ordering::Relaxed), 0);
     drop(retained);
     assert_eq!(core_drops.load(Ordering::Relaxed), 1);
+}
+
+#[test]
+fn point_content_validation_is_explicit() {
+    use tree_squatter::PointsData;
+
+    let language = json_language();
+    let grammar = Language::new(&language).unwrap();
+    let native = support::parse_native(&language, "1");
+    let mut tree = Forest::pack(&grammar, &native).unwrap();
+    let points = tree.point_data().unwrap();
+    points.validate_for(&tree).unwrap();
+    let bytes = points.as_bytes();
+    assert_eq!(bytes.len(), 16 + 16 + 32 * 4);
+
+    let mut reversed = bytes.to_vec();
+    // Row one starts after every end point in this single-line tree.
+    reversed[16..24].copy_from_slice(&(1u64 << 32).to_le_bytes());
+    let mut unused = bytes.to_vec();
+    unused[16 + 16 + 31 * 2] = 1;
+
+    for invalid in [reversed, unused] {
+        let points = PointsData::copy_from_bytes(&tree, &invalid).unwrap();
+        assert!(points.validate_for(&tree).is_err());
+        tree.set_point_data(points).unwrap();
+        for copied in [tree.detach().unwrap(), tree.to_compacted().unwrap()] {
+            let points = copied.point_data().unwrap();
+            assert_eq!(points.as_bytes(), invalid);
+            assert!(points.validate_for(&copied).is_err());
+        }
+    }
 }
 
 #[test]

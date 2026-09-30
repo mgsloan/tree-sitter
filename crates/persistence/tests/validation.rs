@@ -100,7 +100,7 @@ fn pack(tree_sitter_language: &tree_sitter::Language, source: &str, presence: bo
 }
 
 #[test]
-fn presence_sidecar_is_separate_and_debug_loading_checks_membership() {
+fn presence_sidecar_is_separate_and_membership_validation_is_explicit() {
     let tree_sitter_language = tree_sitter_language();
     let language = Language::new(&tree_sitter_language).unwrap();
     let source = format!("[{}0]", "1,".repeat(4096));
@@ -110,16 +110,23 @@ fn presence_sidecar_is_separate_and_debug_loading_checks_membership() {
     let cache = original.presence_cache().unwrap();
     let mut corrupted = cache.as_bytes().to_vec();
     corrupted[16..].fill(0);
-    let loaded =
+    let mut loaded =
         Forest::from_bytes_safety_checked(std::slice::from_ref(&language), original.as_bytes())
             .unwrap();
     assert!(!loaded.has_points());
     assert!(loaded.presence_cache().is_none());
-    assert_eq!(
-        PresenceCache::copy_from_bytes(&loaded, &corrupted).is_err(),
-        cfg!(debug_assertions),
-    );
-    assert!(PresenceCache::copy_from_bytes(&loaded, cache.as_bytes()).is_ok());
+    let invalid = PresenceCache::copy_from_bytes(&loaded, &corrupted).unwrap();
+    assert!(invalid.validate_for(&loaded).is_err());
+    loaded.set_presence_cache(invalid).unwrap();
+    for copied in [loaded.detach().unwrap(), loaded.to_compacted().unwrap()] {
+        let cache = copied.presence_cache().unwrap();
+        assert_eq!(cache.as_bytes(), corrupted);
+        assert!(cache.validate_for(&copied).is_err());
+    }
+    PresenceCache::copy_from_bytes(&loaded, cache.as_bytes())
+        .unwrap()
+        .validate_for(&loaded)
+        .unwrap();
 }
 
 #[test]
