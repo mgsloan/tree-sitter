@@ -1,5 +1,5 @@
 use crate::{
-    Error, FieldId, GrammarId, KindId, PatternIx, QueryError,
+    Error, FieldId, GrammarId, KindId, ParseError, PatternIx, QueryError,
     types::{
         NegatedFieldListIx, PatternIndex, PresenceRequirementIx, QueryCaptureIx, QueryStepIx,
         ReductionIx, SquatterGrammarId, SquatterKindId,
@@ -7,10 +7,12 @@ use crate::{
 };
 use std::{
     ffi::{CStr, c_char, c_void},
-    mem::MaybeUninit,
-    ptr::NonNull,
+    mem::{self, MaybeUninit},
+    panic, ptr, slice,
 };
-use tree_sitter::Language as TreeSitterLanguage;
+use tree_sitter::{
+    Language as TreeSitterLanguage, LanguageError, LanguageMetadata, QueryErrorKind,
+};
 use xxhash_rust::xxh3::Xxh3;
 
 /// XXH3 of generated grammar tables, embedded name/version metadata, and the
@@ -39,7 +41,7 @@ pub fn language_hash(
 ) -> LanguageHash {
     unsafe extern "C" fn visit(bytes: *const c_void, length: usize, context: *mut c_void) {
         let hasher = unsafe { &mut *context.cast::<Xxh3>() };
-        let bytes = unsafe { std::slice::from_raw_parts(bytes.cast::<u8>(), length) };
+        let bytes = unsafe { slice::from_raw_parts(bytes.cast::<u8>(), length) };
         hasher.update(bytes);
     }
 
@@ -143,7 +145,7 @@ impl GrammarView {
             return &[];
         }
         // The native owner retains these immutable arrays with the view.
-        unsafe { std::slice::from_raw_parts(self.supertypes.cast(), self.supertype_count as usize) }
+        unsafe { slice::from_raw_parts(self.supertypes.cast(), self.supertype_count as usize) }
     }
 
     pub fn supertype_masks(&self) -> &[u64] {
@@ -151,7 +153,7 @@ impl GrammarView {
         if length == 0 {
             return &[];
         }
-        unsafe { std::slice::from_raw_parts(self.supertype_masks, length) }
+        unsafe { slice::from_raw_parts(self.supertype_masks, length) }
     }
 
     #[inline]
@@ -245,8 +247,8 @@ impl GrammarView {
 /// tables are prepared on first use.
 pub struct Language {
     language: TreeSitterLanguage,
-    pub(crate) raw: NonNull<GrammarHandle>,
-    view: NonNull<GrammarView>,
+    pub(crate) raw: ptr::NonNull<GrammarHandle>,
+    view: ptr::NonNull<GrammarView>,
 }
 
 // Native ownership and lazy parser-table publication are atomic; published views are immutable.
@@ -306,8 +308,8 @@ impl Language {
             }
         };
         drop(unsafe { TreeSitterLanguage::from_raw(language) });
-        let raw = NonNull::new(raw).ok_or_else(|| Error::from_code(error))?;
-        let view = NonNull::new(unsafe { sq_native_grammar_view(raw.as_ptr()).cast_mut() })
+        let raw = ptr::NonNull::new(raw).ok_or_else(|| Error::from_code(error))?;
+        let view = ptr::NonNull::new(unsafe { sq_native_grammar_view(raw.as_ptr()).cast_mut() })
             .expect("valid grammar has a view");
         Ok(Self {
             language: owned_language,
@@ -356,7 +358,7 @@ impl Language {
     /// the language's `tree-sitter.json` file.
     ///
     /// See also [`tree_sitter::LanguageMetadata`].
-    pub fn metadata(&self) -> Option<tree_sitter::LanguageMetadata> {
+    pub fn metadata(&self) -> Option<LanguageMetadata> {
         self.language.metadata()
     }
 
@@ -551,7 +553,7 @@ impl<T> NativeSlice<T> {
         if self.length == 0 {
             &[]
         } else {
-            unsafe { std::slice::from_raw_parts(self.data, self.length as usize) }
+            unsafe { slice::from_raw_parts(self.data, self.length as usize) }
         }
     }
 }
@@ -650,7 +652,7 @@ pub(crate) struct QueryView {
 }
 const _: () = {
     assert!(size_of::<Step>() == 20);
-    assert!(std::mem::offset_of!(Step, flags) == 18);
+    assert!(mem::offset_of!(Step, flags) == 18);
     assert!(size_of::<PatternEntry>() == 8);
     assert!(size_of::<Pattern>() == 28);
 };
@@ -658,7 +660,7 @@ const _: () = {
 pub(crate) struct CompiledQuery {
     // The view borrows this allocation. Mutation requires exclusive access and
     // refreshes the view because native arrays may move.
-    raw: NonNull<QueryHandle>,
+    raw: ptr::NonNull<QueryHandle>,
     pub view: QueryView,
     pub language: Language,
 }
@@ -679,7 +681,7 @@ impl CompiledQuery {
             row: 0,
             column: 0,
             offset: 0,
-            kind: tree_sitter::QueryErrorKind::Syntax,
+            kind: QueryErrorKind::Syntax,
             message: "query exceeds u32 size".into(),
         })?;
         let tables = language.tables();
@@ -694,17 +696,15 @@ impl CompiledQuery {
                 &mut kind,
             )
         };
-        let raw = NonNull::new(raw).ok_or_else(|| {
+        let raw = ptr::NonNull::new(raw).ok_or_else(|| {
             if kind == 6 {
                 QueryError {
                     row: 0,
                     column: 0,
                     offset: 0,
-                    message: tree_sitter::LanguageError::Version(
-                        language.tree_sitter_language().abi_version(),
-                    )
-                    .to_string(),
-                    kind: tree_sitter::QueryErrorKind::Language,
+                    message: LanguageError::Version(language.tree_sitter_language().abi_version())
+                        .to_string(),
+                    kind: QueryErrorKind::Language,
                 }
             } else {
                 QueryError::compile(source, offset as usize, kind)
@@ -730,7 +730,7 @@ impl CompiledQuery {
                         row: 0,
                         column: 0,
                         offset: 0,
-                        kind: tree_sitter::QueryErrorKind::Structure,
+                        kind: QueryErrorKind::Structure,
                         message: "query kind cannot occur in packed storage".into(),
                     })?;
             }
@@ -741,7 +741,7 @@ impl CompiledQuery {
     }
 
     pub fn deep_clone(&self) -> Self {
-        let raw = NonNull::new(unsafe { sq_native_query_copy(self.raw.as_ptr()) }).unwrap();
+        let raw = ptr::NonNull::new(unsafe { sq_native_query_copy(self.raw.as_ptr()) }).unwrap();
         let mut view = MaybeUninit::uninit();
         unsafe {
             sq_native_query_view(raw.as_ptr(), view.as_mut_ptr());
@@ -778,7 +778,7 @@ impl CompiledQuery {
             &mut []
         } else {
             unsafe {
-                std::slice::from_raw_parts_mut(
+                slice::from_raw_parts_mut(
                     self.view.steps.data.cast_mut(),
                     self.view.steps.length as usize,
                 )
@@ -791,7 +791,7 @@ impl CompiledQuery {
             &mut []
         } else {
             unsafe {
-                std::slice::from_raw_parts_mut(
+                slice::from_raw_parts_mut(
                     self.view.pattern_entries.data.cast_mut(),
                     self.view.pattern_entries.length as usize,
                 )
@@ -966,13 +966,13 @@ impl ParseStatus {
         }
     }
 
-    fn into_error(self) -> crate::ParseError {
+    fn into_error(self) -> ParseError {
         let length = self
             .message
             .iter()
             .position(|byte| *byte == 0)
             .unwrap_or(512);
-        crate::ParseError {
+        ParseError {
             code: Error::from_code(self.code),
             byte: self.byte,
             point: tree_sitter::Point::new(self.point.row as usize, self.point.column as usize),
@@ -982,7 +982,7 @@ impl ParseStatus {
 }
 
 pub(crate) struct NativeParser {
-    raw: NonNull<ParserHandle>,
+    raw: ptr::NonNull<ParserHandle>,
     language: Language,
 }
 
@@ -997,10 +997,10 @@ impl Drop for NativeParser {
 }
 
 impl NativeParser {
-    pub fn new(language: &Language) -> Result<Self, crate::ParseError> {
+    pub fn new(language: &Language) -> Result<Self, ParseError> {
         let mut status = ParseStatus::new();
         let raw = unsafe { sq_native_parser_new(language.raw.as_ptr(), &mut status) };
-        let raw = NonNull::new(raw).ok_or_else(|| status.into_error())?;
+        let raw = ptr::NonNull::new(raw).ok_or_else(|| status.into_error())?;
 
         Ok(Self {
             raw,
@@ -1012,8 +1012,8 @@ impl NativeParser {
         &self.language
     }
 
-    pub fn parse(&mut self, source: &[u8]) -> Result<Reductions<'_>, crate::ParseError> {
-        let length = u32::try_from(source.len()).map_err(|_| crate::ParseError {
+    pub fn parse(&mut self, source: &[u8]) -> Result<Reductions<'_>, ParseError> {
+        let length = u32::try_from(source.len()).map_err(|_| ParseError {
             code: Error::Overflow,
             byte: 0,
             point: tree_sitter::Point::default(),
@@ -1032,7 +1032,7 @@ impl NativeParser {
     pub fn parse_chunks<T: AsRef<[u8]>, F: FnMut(usize, tree_sitter::Point) -> T>(
         &mut self,
         callback: &mut F,
-    ) -> Result<Reductions<'_>, crate::ParseError> {
+    ) -> Result<Reductions<'_>, ParseError> {
         struct Payload<'a, F, T> {
             callback: &'a mut F,
             text: Option<T>,
@@ -1049,11 +1049,11 @@ impl NativeParser {
             let payload = unsafe { &mut *payload.cast::<Payload<F, T>>() };
             unsafe { *size = 0 };
             if payload.panic.is_some() || payload.overflow.is_some() {
-                return std::ptr::null();
+                return ptr::null();
             }
             // Keep owned chunks alive until the next read. Unwind only after C
             // has released its parse state and stopped borrowing the callback.
-            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
                 payload.text = Some((payload.callback)(
                     byte as usize,
                     tree_sitter::Point::new(point.row as usize, point.column as usize),
@@ -1061,7 +1061,7 @@ impl NativeParser {
                 let source = payload.text.as_ref().unwrap().as_ref();
                 if source.len() > (u32::MAX - byte) as usize {
                     payload.overflow = Some((byte, point));
-                    return std::ptr::null();
+                    return ptr::null();
                 }
                 unsafe { *size = source.len() as u32 };
                 source.as_ptr()
@@ -1070,7 +1070,7 @@ impl NativeParser {
                 Ok(source) => source,
                 Err(panic) => {
                     payload.panic = Some(panic);
-                    std::ptr::null()
+                    ptr::null()
                 }
             }
         }
@@ -1096,10 +1096,10 @@ impl NativeParser {
             unsafe { sq_native_parser_clear(self.raw.as_ptr()) };
         }
         if let Some(panic) = payload.panic {
-            std::panic::resume_unwind(panic);
+            panic::resume_unwind(panic);
         }
         if let Some((byte, point)) = payload.overflow {
-            return Err(crate::ParseError {
+            return Err(ParseError {
                 code: Error::Overflow,
                 byte,
                 point: tree_sitter::Point::new(point.row as usize, point.column as usize),
@@ -1144,7 +1144,7 @@ impl Reductions<'_> {
         // Successful parsing retains a nonempty arena until this guard drops.
         debug_assert!(root < count);
         (
-            unsafe { std::slice::from_raw_parts(nodes, count as usize) },
+            unsafe { slice::from_raw_parts(nodes, count as usize) },
             ReductionIx(root),
         )
     }

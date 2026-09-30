@@ -6,8 +6,9 @@ use crate::{
 };
 use smallvec::SmallVec;
 use std::{
-    ops::ControlFlow,
-    ptr::{self, NonNull},
+    error, fmt,
+    ops::{ControlFlow, Range},
+    ptr,
 };
 
 const PRESENCE_FORMAT: u32 = slab_format(0xfe, 0);
@@ -38,12 +39,12 @@ impl From<SideDataError> for Error {
     }
 }
 
-impl std::fmt::Display for SideDataError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for SideDataError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(formatter, "{self:?}")
     }
 }
-impl std::error::Error for SideDataError {}
+impl error::Error for SideDataError {}
 
 struct Sidecar(Slab);
 
@@ -337,7 +338,7 @@ impl PresenceCache {
 // Resolved once on attachment, with group indices relative to this region.
 #[derive(Clone, Copy)]
 pub(crate) struct PresenceView {
-    payload: NonNull<u8>,
+    payload: ptr::NonNull<u8>,
     first_group: GroupIx,
     groups: u32,
 }
@@ -363,7 +364,7 @@ impl PresenceView {
     }
     pub(crate) fn find_matching_group(
         &self,
-        range: std::ops::Range<GroupIx>,
+        range: Range<GroupIx>,
         symbol: SquatterKindId,
         reverse: bool,
     ) -> Option<GroupIx> {
@@ -599,7 +600,7 @@ impl Forest {
             let groups = region.group_count();
             offset += HEADER_BYTES;
             region.presence = present.then(|| PresenceView {
-                payload: NonNull::from(&cache.as_bytes()[offset..]).cast(),
+                payload: ptr::NonNull::from(&cache.as_bytes()[offset..]).cast(),
                 first_group: region.slots.start.group(),
                 groups,
             });

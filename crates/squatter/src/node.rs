@@ -1,12 +1,23 @@
 use crate::{
-    ChildIx, FieldId, Forest, GrammarId, KindId, NamedChildIx, NodeId, SlotIx, TreeIx,
+    ChildIx, FieldId, Forest, GrammarId, KindId, Language, NamedChildIx, NodeId, SlotIx,
+    SquatterGrammarId, SquatterKindId, TreeIx,
     native::GrammarView,
-    scan::{self, Postorder, Preorder, Scan},
+    scan::{Filtered, GroupRef, IdSelection, Nodes, Postorder, Preorder, Scan},
+    side_data::PresenceView,
+    simd,
     storage::*,
-    traits,
+    traits::Attributes,
     types::{GroupIx, GroupSlotIx, PackedPoint},
 };
-use std::{marker::PhantomData, ops::Range, ptr::NonNull};
+use std::{
+    fmt,
+    hash::{Hash, Hasher},
+    iter::{self, FusedIterator},
+    marker::PhantomData,
+    ops::Range,
+    ptr,
+    str::Utf8Error,
+};
 use tree_sitter::Point;
 
 use fearless_simd::{dispatch, prelude::*, u8x32};
@@ -16,7 +27,7 @@ use fearless_simd::{dispatch, prelude::*, u8x32};
 pub(crate) struct RawNode {
     // Every node borrows a live descriptor. Encoding that invariant also lets
     // Option<Node> use null for None without a separate discriminant.
-    pub forest: NonNull<ForestData>,
+    pub forest: ptr::NonNull<ForestData>,
     pub id: NodeId,
 }
 
@@ -43,15 +54,15 @@ impl PartialEq for Node<'_> {
 
 impl Eq for Node<'_> {}
 
-impl std::hash::Hash for Node<'_> {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+impl Hash for Node<'_> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
         self.raw.forest.hash(state);
         self.raw.id.hash(state);
     }
 }
 
-impl std::fmt::Debug for Node<'_> {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Debug for Node<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("Node")
             .field("slot", &self.slot().raw())
@@ -65,7 +76,7 @@ impl<'tree> Node<'tree> {
     pub(crate) fn new(forest: &'tree ForestData, id: NodeId) -> Self {
         Self {
             raw: RawNode {
-                forest: NonNull::from(forest),
+                forest: ptr::NonNull::from(forest),
                 id,
             },
             lifetime: PhantomData,
@@ -89,7 +100,7 @@ impl<'tree> Node<'tree> {
         self.tree_data().tables()
     }
 
-    pub(crate) fn presence(self) -> Option<crate::side_data::PresenceView> {
+    pub(crate) fn presence(self) -> Option<PresenceView> {
         self.region_data().presence
     }
 
@@ -134,7 +145,7 @@ impl<'tree> Node<'tree> {
     /// Get the [`crate::Language`] that was used to parse this node's syntax tree.
     ///
     /// **Different than Tree-sitter:** Borrows the prepared grammar wrapper.
-    pub fn language(&self) -> &'tree crate::Language {
+    pub fn language(&self) -> &'tree Language {
         &self.region_data().language
     }
 
@@ -166,10 +177,7 @@ impl<'tree> Node<'tree> {
 
     /// Returns the UTF-8 source slice for this node. Invalid UTF-8 returns an error;
     /// out-of-bounds byte offsets panic.
-    pub fn utf8_text<'source>(
-        &self,
-        source: &'source [u8],
-    ) -> Result<&'source str, std::str::Utf8Error> {
+    pub fn utf8_text<'source>(&self, source: &'source [u8]) -> Result<&'source str, Utf8Error> {
         std::str::from_utf8(&source[self.byte_range()])
     }
 
@@ -199,10 +207,10 @@ impl<'tree> Node<'tree> {
     ///
     /// **Not in Tree-sitter**. Scans this subtree in preorder for the selected public kind
     /// IDs. Missing presence caches affect cost, not results.
-    pub fn descendants_matching_kinds<K: scan::IdSelection>(
+    pub fn descendants_matching_kinds<K: IdSelection>(
         self,
         kinds: K,
-    ) -> scan::Nodes<'tree, scan::Filtered<Preorder<'tree>, K::KindPredicate>> {
+    ) -> Nodes<'tree, Filtered<Preorder<'tree>, K::KindPredicate>> {
         self.preorder().filter_kind_ids(kinds).nodes()
     }
 
@@ -219,7 +227,7 @@ impl<'tree> Node<'tree> {
     ///
     /// Cheaper to access than [`Self::kind_id`]. Use IDs from the same language
     /// version; use [`Self::kind_id`] when comparing with Tree-sitter IDs.
-    pub fn squatter_kind_id(&self) -> crate::SquatterKindId {
+    pub fn squatter_kind_id(&self) -> SquatterKindId {
         self.data().symbol_index(self.slot())
     }
 
@@ -227,7 +235,7 @@ impl<'tree> Node<'tree> {
     ///
     /// Cheaper to access than [`Self::grammar_id`]. Use IDs from the same language
     /// version; use [`Self::grammar_id`] when comparing with Tree-sitter IDs.
-    pub fn squatter_grammar_id(&self) -> crate::SquatterGrammarId {
+    pub fn squatter_grammar_id(&self) -> SquatterGrammarId {
         self.data().grammar_index(self.slot())
     }
 
@@ -515,7 +523,7 @@ impl<'tree> Node<'tree> {
     ) -> impl Iterator<Item = Self> + 'cursor {
         cursor.reset(*self);
         let mut ready = cursor.goto_first_child();
-        std::iter::from_fn(move || {
+        iter::from_fn(move || {
             if !ready {
                 return None;
             }
@@ -538,7 +546,7 @@ impl<'tree> Node<'tree> {
     ) -> impl Iterator<Item = Self> + 'cursor {
         cursor.reset(*self);
         let mut ready = cursor.goto_first_child();
-        std::iter::from_fn(move || {
+        iter::from_fn(move || {
             if !ready {
                 return None;
             }
@@ -593,7 +601,7 @@ impl<'tree> Node<'tree> {
             cursor.reset(*self);
             ready = cursor.goto_first_child();
         }
-        std::iter::from_fn(move || {
+        iter::from_fn(move || {
             while ready {
                 let node = cursor.node();
                 let matches = cursor.field_id() == field;
@@ -775,15 +783,15 @@ impl<'tree> Node<'tree> {
     ///
     /// **Not in Tree-sitter**. Bundles constant-time node attributes; child and descendant
     /// counts are separate.
-    pub fn attributes(self) -> traits::Attributes<'tree> {
+    pub fn attributes(self) -> Attributes<'tree> {
         self.attributes_with_tables(self.tables())
     }
 
-    fn attributes_with_tables(self, tables: &'tree GrammarView) -> traits::Attributes<'tree> {
+    fn attributes_with_tables(self, tables: &'tree GrammarView) -> Attributes<'tree> {
         let symbol = self.squatter_kind_id();
         let kind_id = tables.decode_kind(symbol);
         let grammar_id = tables.decode_grammar_kind(self.squatter_grammar_id());
-        traits::Attributes {
+        Attributes {
             kind: tables.kind_name(kind_id),
             grammar_name: tables.grammar_name(grammar_id),
             kind_id,
@@ -940,7 +948,7 @@ impl<'tree> Node<'tree> {
         let mut slot = group.first_slot().max(first);
         let limit = data.group_end(group).min(self.slot() + 1);
         if POINTS {
-            let view = scan::GroupRef::new(self).at_group(group);
+            let view = GroupRef::new(self).at_group(group);
             slot = group
                 .slot(view.first_point_start_before(PackedPoint(start), slot.in_group()))
                 .min(limit);
@@ -999,7 +1007,7 @@ impl<'tree> Node<'tree> {
         while candidate.slot() < self.slot() {
             let group = candidate.slot().group();
             let limit = data.group_end(group).min(self.slot());
-            let view = scan::GroupRef::new(self).at_group(group);
+            let view = GroupRef::new(self).at_group(group);
             let mut first = candidate.slot().in_group();
             while let Some(offset) = view.first_end_after::<POINTS>(start, end, first) {
                 let slot = group.slot(offset);
@@ -1024,7 +1032,7 @@ fn start_mask(data: &ForestData, group: GroupIx, threshold: u8) -> u64 {
         group.first_slot().ix(),
         GROUP_SIZE as usize,
     );
-    dispatch!(crate::simd::level(), simd => start_delta_mask(simd, deltas, threshold))
+    dispatch!(simd::level(), simd => start_delta_mask(simd, deltas, threshold))
 }
 
 #[inline(always)]
@@ -1048,7 +1056,7 @@ impl<'tree> Iterator for Children<'tree> {
     }
 }
 
-impl std::iter::FusedIterator for Children<'_> {}
+impl FusedIterator for Children<'_> {}
 
 /// A stateful object for walking a syntax [`Tree`] efficiently.
 ///
@@ -1106,7 +1114,7 @@ impl<'tree> TreeCursor<'tree> {
     /// Reads the current node’s bundled attributes.
     ///
     /// **Not in Tree-sitter**
-    pub fn attributes(&mut self) -> traits::Attributes<'tree> {
+    pub fn attributes(&mut self) -> Attributes<'tree> {
         self.node().attributes_with_tables(self.tables)
     }
 
@@ -1286,7 +1294,7 @@ mod tests {
 
     #[test]
     fn start_masks_match_scalar() {
-        for level in crate::simd::test_levels() {
+        for level in simd::test_levels() {
             dispatch!(level, simd => check_start_masks(simd));
         }
     }

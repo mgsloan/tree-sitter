@@ -1,6 +1,6 @@
 mod support;
 
-use std::error::Error;
+use std::{error::Error, iter, ptr, slice};
 use tree_squatter::{FieldId, GrammarId, KindId, SquatterGrammarId, SquatterKindId};
 use tree_squatter::{
     Forest, KindSet, PackOptions,
@@ -43,9 +43,9 @@ fn error_flags_match_each_native_node() -> Result<(), Box<dyn Error>> {
             )?;
             tree.compact()?;
             let compact = tree.to_compacted()?;
-            let copy = Forest::from_bytes(std::slice::from_ref(&grammar), compact.as_bytes())?;
+            let copy = Forest::from_bytes(slice::from_ref(&grammar), compact.as_bytes())?;
             let borrowed =
-                Forest::from_bytes_borrowed(std::slice::from_ref(&grammar), compact.as_bytes())?;
+                Forest::from_bytes_borrowed(slice::from_ref(&grammar), compact.as_bytes())?;
             for tree in [&tree, &compact, &copy, &*borrowed] {
                 let actual: Vec<_> = tree
                     .root_node()
@@ -162,7 +162,7 @@ fn check_shared_navigation<'tree, N: NodeLike<'tree>>(
                     == filtered
             );
         }
-        for child in std::iter::once(node).chain(children.iter().copied().take(16)) {
+        for child in iter::once(node).chain(children.iter().copied().take(16)) {
             for byte in [child.start_byte(), child.end_byte(), usize::MAX] {
                 cursor.reset(node);
                 let expected_index = children.iter().position(|node| {
@@ -365,8 +365,8 @@ fn owned_and_borrowed_storage() -> Result<(), Box<dyn Error>> {
     let (language, native, packed) = fixture()?;
     let grammar = tree_squatter::Language::new(&language)?;
     let compact = packed.to_compacted()?;
-    let decoded = Forest::from_bytes(std::slice::from_ref(&grammar), compact.as_bytes())?;
-    let borrowed = Forest::from_bytes_borrowed(std::slice::from_ref(&grammar), compact.as_bytes())?;
+    let decoded = Forest::from_bytes(slice::from_ref(&grammar), compact.as_bytes())?;
+    let borrowed = Forest::from_bytes_borrowed(slice::from_ref(&grammar), compact.as_bytes())?;
     assert_eq!(borrowed.as_bytes().as_ptr(), compact.as_bytes().as_ptr());
     assert_eq!(
         borrowed.root_node().byte_range(),
@@ -451,7 +451,7 @@ fn direct_parser_matches_mainline_packing() -> Result<(), Box<dyn Error>> {
     }
     let tree = Forest::parse_direct(&grammar, "int direct;")?;
     assert_eq!(tree.root_node().byte_range(), 0..11);
-    Forest::from_bytes(std::slice::from_ref(&grammar), tree.as_bytes())?;
+    Forest::from_bytes(slice::from_ref(&grammar), tree.as_bytes())?;
     Ok(())
 }
 
@@ -720,7 +720,7 @@ fn tree_views_and_text_access() {
         )
         .unwrap();
         assert_eq!(tree.language().abi_version(), language.abi_version());
-        assert!(std::ptr::eq(tree.root_node().language(), tree.language()));
+        assert!(ptr::eq(tree.root_node().language(), tree.language()));
         assert_eq!(tree.walk().node(), tree.root_node());
         for (node, expected) in tree
             .root_node()

@@ -1,4 +1,4 @@
-use std::{env, fs, mem::MaybeUninit};
+use std::{env, error, fs, mem::MaybeUninit, slice};
 use tree_squatter::{Forest, Language, PackOptions, PointsData, PresenceCache};
 
 fn compare(expected: &Forest, actual: &Forest) {
@@ -23,7 +23,7 @@ fn compare(expected: &Forest, actual: &Forest) {
     }
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> Result<(), Box<dyn error::Error>> {
     let arguments: Vec<_> = env::args().collect();
     assert!(
         arguments.len() == 3 || arguments.len() == 4,
@@ -73,11 +73,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 bytes == tree.as_bytes(),
                 "different bytes for variant {variant}"
             );
-            let mut copied = Forest::from_bytes(std::slice::from_ref(&language), &bytes)?;
+            let mut copied = Forest::from_bytes(slice::from_ref(&language), &bytes)?;
             let borrowed =
-                Forest::from_bytes_borrowed(std::slice::from_ref(&language), copied.as_bytes())?;
+                Forest::from_bytes_borrowed(slice::from_ref(&language), copied.as_bytes())?;
             let mut checked =
-                Forest::from_bytes_safety_checked(std::slice::from_ref(&language), &bytes)?;
+                Forest::from_bytes_safety_checked(slice::from_ref(&language), &bytes)?;
             assert!(!copied.has_points());
             assert!(copied.presence_cache().is_none());
             compare(&copied, &borrowed);

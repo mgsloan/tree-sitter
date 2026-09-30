@@ -380,7 +380,7 @@ impl DirectPlan {
                 } else {
                     symbol != compiled.view.symbol_count as usize
                         && (!step.has(IS_NAMED)
-                            || tables.named_index(crate::SquatterKindId(symbol as u16)))
+                            || tables.named_index(SquatterKindId(symbol as u16)))
                 } {
                     plan.roots[symbol] |= 1 << entry.pattern_index.raw();
                 }

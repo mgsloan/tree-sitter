@@ -6,7 +6,7 @@ use support::{
 };
 use support::{c_language, json_language};
 
-use std::ops::ControlFlow;
+use std::{iter, ops::ControlFlow};
 use tree_squatter::QueryCursorOptions;
 use tree_squatter::{Forest, Language, Query, QueryCursor};
 
@@ -1194,8 +1194,8 @@ fn chunked_predicates_and_streaming_entry_points() {
     ] {
         let query = Query::new(&grammar, &format!("((string) @text (#{predicate}))")).unwrap();
         for mode in 0..7 {
-            let empty = |_: tree_squatter::Node<'_>| std::iter::empty::<Vec<u8>>();
-            let empty_chunk = |_: tree_squatter::Node<'_>| std::iter::once(Vec::<u8>::new());
+            let empty = |_: tree_squatter::Node<'_>| iter::empty::<Vec<u8>>();
+            let empty_chunk = |_: tree_squatter::Node<'_>| iter::once(Vec::<u8>::new());
             let expected = provider_results(&query, &tree, empty_chunk, mode, true);
             assert!(!expected.is_empty());
             assert_eq!(provider_results(&query, &tree, empty, mode, true), expected);
@@ -1801,9 +1801,7 @@ fn cursor_and_iterator_ranges_narrow_validate_and_persist() {
         cursor.set_max_start_depth(None);
         if usize::BITS > 32 {
             let wide = (u32::MAX as usize) + 1;
-            cursor.set_point_range(
-                tree_sitter::Point::new(wide, wide + 5)..tree_sitter::Point::new(wide, wide + 6),
-            );
+            cursor.set_point_range(Point::new(wide, wide + 5)..Point::new(wide, wide + 6));
             assert_eq!(
                 cursor
                     .matches(&query, tree.root_node(), source.as_bytes())
@@ -1814,7 +1812,7 @@ fn cursor_and_iterator_ranges_narrow_validate_and_persist() {
                     .start_byte(),
                 5
             );
-            cursor.set_point_range(tree_sitter::Point::new(0, 0)..tree_sitter::Point::new(0, 0));
+            cursor.set_point_range(Point::new(0, 0)..Point::new(0, 0));
         }
         {
             let mut matches = cursor.matches(&query, tree.root_node(), source.as_bytes());

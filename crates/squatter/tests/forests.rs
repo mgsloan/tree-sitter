@@ -1,6 +1,6 @@
 mod support;
 
-use std::{collections::HashSet, ops::ControlFlow};
+use std::{collections::HashSet, iter, ops::ControlFlow, slice};
 use tree_squatter::{
     Forest, Language, Node, PackOptions, PackRegion, Packer, PointsData, PresenceCache, StableSlab,
     TreeIx,
@@ -16,7 +16,7 @@ fn describe(root: Node<'_>) -> Vec<(tree_squatter::KindId, tree_sitter::Range)> 
 struct SlabOwner(Box<[u64]>);
 unsafe impl StableSlab for SlabOwner {
     fn bytes(&self) -> &[u8] {
-        unsafe { std::slice::from_raw_parts(self.0.as_ptr().cast(), self.0.len() * 8) }
+        unsafe { slice::from_raw_parts(self.0.as_ptr().cast(), self.0.len() * 8) }
     }
 }
 fn retain(bytes: &[u8]) -> SlabOwner {
@@ -78,7 +78,7 @@ fn grammar_caches_follow_cursor_resets_and_forest_copies() {
         for (tree, native) in forest.trees().zip(&native) {
             let nodes: Vec<_> = tree.preorder().nodes().collect();
             assert_eq!(
-                std::iter::successors(Some(tree.root_node()), |node| node.next_preorder())
+                iter::successors(Some(tree.root_node()), |node| node.next_preorder())
                     .collect::<Vec<_>>(),
                 nodes
             );
@@ -370,7 +370,7 @@ fn matches<'forest>(
 ) -> Vec<MatchDescription> {
     let provider = |node: Node<'_>| {
         let source = sources[node.id().tree().ix()];
-        std::iter::once(&source[node.byte_range()])
+        iter::once(&source[node.byte_range()])
     };
     let mut execution = cursor.execute(query, scope, provider);
     let mut results = Vec::new();
@@ -452,8 +452,7 @@ fn region_queries_select_sources_by_tree() {
         assert!(wrong_language.next_match().is_none());
     }
     let mut cursor = QueryCursor::new();
-    let provider =
-        |node: Node<'_>| std::iter::once(&sources[node.id().tree().ix()][node.byte_range()]);
+    let provider = |node: Node<'_>| iter::once(&sources[node.id().tree().ix()][node.byte_range()]);
     let mut execution = cursor.execute(&query, regions[0], provider);
     let mut removed = None;
     let mut identities = HashSet::new();
@@ -521,8 +520,7 @@ fn bounded_region_queries_preserve_ordering_semantics() {
                 },
             )
             .unwrap();
-        let loaded =
-            Forest::from_bytes(std::slice::from_ref(&language), forest.as_bytes()).unwrap();
+        let loaded = Forest::from_bytes(slice::from_ref(&language), forest.as_bytes()).unwrap();
         let query = Query::new(&language, "(document (string) @value) @root").unwrap();
         for forest in [&forest, &loaded] {
             for optimized in [false, true] {

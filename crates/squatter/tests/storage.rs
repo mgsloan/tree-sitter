@@ -1,5 +1,6 @@
 mod support;
 
+use std::{ptr, slice};
 use support::assert_same_tree;
 use support::{c_language, c_sharp_language, json_language};
 
@@ -40,10 +41,10 @@ fn slab_headers_reject_incompatible_formats() {
             let rejected = match expected {
                 0xff00_0000 => {
                     assert!(
-                        Forest::from_bytes_safety_checked(std::slice::from_ref(&grammar), &invalid)
+                        Forest::from_bytes_safety_checked(slice::from_ref(&grammar), &invalid)
                             .is_err()
                     );
-                    Forest::from_bytes(std::slice::from_ref(&grammar), &invalid).is_err()
+                    Forest::from_bytes(slice::from_ref(&grammar), &invalid).is_err()
                 }
                 0xfe00_0000 => PresenceCache::copy_from_bytes(&tree, &invalid).is_err(),
                 _ => PointsData::copy_from_bytes(&tree, &invalid).is_err(),
@@ -135,18 +136,18 @@ fn packing_context_matches_fresh_packing_and_loading() {
                         }
 
                         let loaded =
-                            Forest::from_bytes(std::slice::from_ref(&grammar), expected.as_bytes())
+                            Forest::from_bytes(slice::from_ref(&grammar), expected.as_bytes())
                                 .unwrap();
                         assert!(!loaded.has_points());
                         assert!(loaded.presence_cache().is_none());
                         let borrowed = Forest::from_bytes_borrowed(
-                            std::slice::from_ref(&grammar),
+                            slice::from_ref(&grammar),
                             expected.as_bytes(),
                         )
                         .unwrap();
                         assert_eq!(loaded.as_bytes(), borrowed.as_bytes());
                         tree_squatter::Forest::from_bytes(
-                            std::slice::from_ref(&fresh_grammar),
+                            slice::from_ref(&fresh_grammar),
                             actual.as_bytes(),
                         )
                         .unwrap();
@@ -252,19 +253,19 @@ fn sidecar_mapping_copy_and_failed_replacement() {
     }
     unsafe impl StableSlab for SlabOwner {
         fn bytes(&self) -> &[u8] {
-            unsafe { std::slice::from_raw_parts(self.words.as_ptr().cast(), self.words.len() * 8) }
+            unsafe { slice::from_raw_parts(self.words.as_ptr().cast(), self.words.len() * 8) }
         }
     }
     struct MisalignedSlab(Box<[u64]>, usize);
     unsafe impl StableSlab for MisalignedSlab {
         fn bytes(&self) -> &[u8] {
-            unsafe { std::slice::from_raw_parts(self.0.as_ptr().cast::<u8>().add(1), self.1) }
+            unsafe { slice::from_raw_parts(self.0.as_ptr().cast::<u8>().add(1), self.1) }
         }
     }
     fn slab_owner(bytes: &[u8], drops: Arc<AtomicUsize>) -> SlabOwner {
         let mut words = vec![0u64; bytes.len() / 8].into_boxed_slice();
         unsafe {
-            std::ptr::copy_nonoverlapping(bytes.as_ptr(), words.as_mut_ptr().cast(), bytes.len());
+            ptr::copy_nonoverlapping(bytes.as_ptr(), words.as_mut_ptr().cast(), bytes.len());
         }
         SlabOwner { words, drops }
     }
@@ -375,7 +376,7 @@ fn sidecar_mapping_copy_and_failed_replacement() {
     let core_drops = Arc::new(AtomicUsize::new(0));
     let owner = slab_owner(tree.as_bytes(), core_drops.clone());
     let core_address = owner.bytes().as_ptr();
-    let mut retained = Forest::from_retained(std::slice::from_ref(&grammar), owner).unwrap();
+    let mut retained = Forest::from_retained(slice::from_ref(&grammar), owner).unwrap();
     retained
         .set_presence_cache(PresenceCache::build(&retained).unwrap())
         .unwrap();
@@ -508,6 +509,6 @@ fn compaction_preserves_nodes_and_side_data() {
         assert_eq!(actual.start_position(), expected.start_position());
         assert_eq!(actual.end_position(), expected.end_position());
     }
-    Forest::from_bytes(std::slice::from_ref(&grammar), tree.as_bytes()).unwrap();
+    Forest::from_bytes(slice::from_ref(&grammar), tree.as_bytes()).unwrap();
     tree.compact().unwrap();
 }

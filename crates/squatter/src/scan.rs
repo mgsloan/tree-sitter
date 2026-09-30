@@ -32,16 +32,17 @@
 //! # }
 //! ```
 use crate::{
-    FieldId, FieldSet, GrammarId, KindId, KindSet, Node, SlotIx,
+    FieldId, FieldSet, Forest, GrammarId, Id, KindId, KindSet, Node, SlotIx,
     native::GrammarView,
     simd::{self, WordMask, load_words},
-    storage::{ColumnPointer, ForestData, GROUP_SIZE, Layout},
+    storage::{ColumnPointer, EXTRAS, ForestData, GROUP_SIZE, Layout, MISSING},
     types::{GroupIx, GroupSlotIx, PackedPoint, SquatterKindId},
 };
 use std::{
-    iter::FusedIterator,
+    iter::{FusedIterator, Rev},
     marker::PhantomData,
     ops::{Bound, Bound::*, Range, RangeBounds},
+    slice,
 };
 use tree_sitter::Point;
 
@@ -66,7 +67,7 @@ fn byte_id_mask<S: Simd>(simd: S, bytes: &[u8], targets: &[SquatterKindId]) -> u
 }
 
 #[inline(always)]
-fn id_mask<S: Simd, I: crate::Id>(simd: S, bytes: &[u8], targets: &[I]) -> u64 {
+fn id_mask<S: Simd, I: Id>(simd: S, bytes: &[u8], targets: &[I]) -> u64 {
     let values = load_words::<_, u16x32<S>>(simd, bytes);
     let mut matches = values.simd_eq(targets[0].raw());
     for target in &targets[1..] {
@@ -470,12 +471,7 @@ impl<'tree> GroupRef<'tree> {
         candidates.intersection(Mask(matches))
     }
     #[inline(always)]
-    fn equal_id_set<I: crate::Id>(
-        &self,
-        column: ColumnPointer,
-        targets: &[I],
-        candidates: Mask,
-    ) -> Mask {
+    fn equal_id_set<I: Id>(&self, column: ColumnPointer, targets: &[I], candidates: Mask) -> Mask {
         if targets.is_empty() {
             return Mask::default();
         }
@@ -762,7 +758,7 @@ fn count_groups<'tree, S: GroupScan<'tree>, P: ScanPredicate>(
 /// **Not in Tree-sitter**
 pub struct Scan<'tree, S> {
     source: S,
-    lifetime: PhantomData<&'tree crate::Forest>,
+    lifetime: PhantomData<&'tree Forest>,
 }
 impl<'tree, S> Scan<'tree, S> {
     fn new(source: S) -> Self {
@@ -882,7 +878,7 @@ impl<'tree, S: GroupScan<'tree>> IntoIterator for Scan<'tree, S> {
     }
 }
 
-pub struct Groups<'tree, S>(S, PhantomData<&'tree crate::Forest>);
+pub struct Groups<'tree, S>(S, PhantomData<&'tree Forest>);
 impl<'tree, S: GroupScan<'tree>> Iterator for Groups<'tree, S> {
     type Item = GroupMatches<'tree>;
     #[inline]
@@ -901,7 +897,7 @@ pub struct Nodes<'tree, S: GroupScan<'tree>> {
     source: S,
     base: SlotIx,
     slots: S::Slots,
-    lifetime: PhantomData<&'tree crate::Forest>,
+    lifetime: PhantomData<&'tree Forest>,
 }
 impl<'tree, S: GroupScan<'tree>> Iterator for Nodes<'tree, S> {
     type Item = Node<'tree>;
@@ -1154,7 +1150,7 @@ impl<'tree> GroupScan<'tree> for Preorder<'tree> {
     type Reversed = ReversePreorder<'tree>;
 }
 impl<'tree> ScanSource<'tree> for Preorder<'tree> {
-    type Slots = std::iter::Rev<GroupSlots>;
+    type Slots = Rev<GroupSlots>;
     const DESCENDING: bool = true;
     #[inline]
     fn slots(matches: Mask) -> Self::Slots {
@@ -2967,7 +2963,7 @@ impl KindStrategy<'_> {
     ) -> impl Iterator<Item = SquatterKindId> + 'scan {
         let (encoded, public): (&[SquatterKindId], &[KindId]) = match self {
             Self::Empty => (&[], &[]),
-            Self::Single(single) => (std::slice::from_ref(&single.target), &[]),
+            Self::Single(single) => (slice::from_ref(&single.target), &[]),
             Self::Small { ids, length, .. } => (&ids[..usize::from(*length)], &[]),
             Self::Multiple(kinds) => (&[], &kinds.ids),
         };
@@ -3209,7 +3205,7 @@ pub struct Extra(bool);
 impl ScanPredicate for Extra {
     #[inline]
     fn retain_matches(&self, group: &GroupRef<'_>, candidates: Mask) -> Mask {
-        let flags = if group.columns.tree().flags() & crate::storage::EXTRAS != 0 {
+        let flags = if group.columns.tree().flags() & EXTRAS != 0 {
             group.bitmap(group.columns.layout().extra)
         } else {
             0
@@ -3221,7 +3217,7 @@ pub struct Missing(bool);
 impl ScanPredicate for Missing {
     #[inline]
     fn retain_matches(&self, group: &GroupRef<'_>, candidates: Mask) -> Mask {
-        let flags = if group.columns.tree().flags() & crate::storage::MISSING != 0 {
+        let flags = if group.columns.tree().flags() & MISSING != 0 {
             group.bitmap(group.columns.layout().missing)
         } else {
             0
@@ -3293,6 +3289,8 @@ impl ScanPredicate for SupertypeId {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Language;
+    use std::array;
 
     #[test]
     fn simd_kernels_match_scalar() {
@@ -3303,7 +3301,7 @@ mod tests {
 
     #[inline(always)]
     fn check_simd_kernels<S: Simd>(simd: S) {
-        let values: [u16; 32] = std::array::from_fn(|slot| {
+        let values: [u16; 32] = array::from_fn(|slot| {
             [0, 1, 127, 128, 255, 256, 32767, 32768, 65534, 65535][slot % 10]
         });
         let mut storage = [0u8; 128];
@@ -3363,7 +3361,7 @@ mod tests {
         let targets = [SquatterKindId(0), SquatterKindId(128), SquatterKindId(255)];
         for base in 0..=255u8 {
             let bytes: [u8; GROUP_SIZE as usize] =
-                std::array::from_fn(|slot| base.wrapping_add(slot as u8));
+                array::from_fn(|slot| base.wrapping_add(slot as u8));
             for length in 0..=targets.len() {
                 let targets = &targets[..length];
                 let expected = bytes.iter().enumerate().fold(0, |mask, (slot, &value)| {
@@ -3383,8 +3381,8 @@ mod tests {
         parser.set_language(&language).unwrap();
         let source = format!("[{}0]", "0,".repeat(4096));
         let native = parser.parse(&source, None).unwrap();
-        let grammar = crate::Language::new(&language).unwrap();
-        let tree = crate::Forest::pack(&grammar, &native).unwrap();
+        let grammar = Language::new(&language).unwrap();
+        let tree = Forest::pack(&grammar, &native).unwrap();
         let root = tree.root_node();
         let columns = Columns::new(root);
         let group = columns.group(GroupIx(0));

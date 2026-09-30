@@ -1,6 +1,6 @@
 mod support;
 
-use std::ops::ControlFlow;
+use std::{fmt, ops::ControlFlow, panic};
 use support::{assert_same_tree, c_language, json_language};
 use tree_squatter::{
     Error, Forest, Language, PackOptions, PackedParseOptions, ParseOptions, Parser, ParserError,
@@ -16,7 +16,7 @@ fn compatible(language: &Language) -> Parser {
 
 fn check_generic<P: Parse>(parser: &mut P)
 where
-    P::Error: std::fmt::Debug,
+    P::Error: fmt::Debug,
 {
     let source = "int value;";
     let tree = Parse::parse(parser, source).unwrap();
@@ -113,7 +113,7 @@ fn direct_traits_ignore_progress_callbacks() {
 
 fn callback_tree<P: Parse>(parser: &mut P, source: &[u8]) -> P::Tree
 where
-    P::Error: std::fmt::Debug,
+    P::Error: fmt::Debug,
 {
     let mut reads = 0;
     let tree = parser
@@ -323,7 +323,7 @@ fn direct_callback_failures_and_reuse() {
             }
         }
     }
-    let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    let panic = panic::catch_unwind(panic::AssertUnwindSafe(|| {
         parser.parse_with_options(
             &mut |byte, _| {
                 assert!(byte == 0, "input callback panic");
@@ -423,7 +423,7 @@ fn check_packed<P>(parser: &mut P, source: &str) -> Forest
 where
     P: Parse<Tree = Forest>,
     for<'a> P: Parse<Options<'a> = PackedParseOptions<'a>>,
-    P::Error: std::fmt::Debug,
+    P::Error: fmt::Debug,
 {
     let mut parsing = false;
     let mut progress = |state: &dyn ParseStateLike| {

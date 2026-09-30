@@ -1,4 +1,10 @@
-use std::num::NonZeroU16;
+use crate::storage::GROUP_SIZE;
+use std::{
+    num::NonZeroU16,
+    ops::{Add, AddAssign, Sub, SubAssign},
+    slice,
+};
+use tree_sitter::Point;
 
 macro_rules! integer_type {
     ($(#[$attribute:meta])* $visibility:vis $name:ident(pub $integer:ty)) => {
@@ -194,14 +200,14 @@ const _: () = {
     assert!(align_of::<Option<FieldId>>() == align_of::<u16>());
 };
 
-impl std::ops::Add<u32> for SlabOffset {
+impl Add<u32> for SlabOffset {
     type Output = Self;
     fn add(self, bytes: u32) -> Self {
         Self(self.0 + bytes)
     }
 }
 
-impl std::ops::Sub<u32> for SlabOffset {
+impl Sub<u32> for SlabOffset {
     type Output = Self;
     fn sub(self, bytes: u32) -> Self {
         Self(self.0 - bytes)
@@ -230,19 +236,19 @@ impl PackedPoint {
         Self::from_parts((delta >> 8) as u32, (delta & 255) as u32).raw()
     }
 
-    pub(crate) fn from_point_cast(point: tree_sitter::Point) -> Self {
+    pub(crate) fn from_point_cast(point: Point) -> Self {
         Self::from_parts(point.row as u32, point.column as u32)
     }
 
-    pub(crate) fn from_point(point: tree_sitter::Point) -> Option<Self> {
+    pub(crate) fn from_point(point: Point) -> Option<Self> {
         Some(Self::from_parts(
             u32::try_from(point.row).ok()?,
             u32::try_from(point.column).ok()?,
         ))
     }
 
-    pub(crate) fn point(self) -> tree_sitter::Point {
-        tree_sitter::Point::new(self.row() as usize, self.column() as usize)
+    pub(crate) fn point(self) -> Point {
+        Point::new(self.row() as usize, self.column() as usize)
     }
 }
 
@@ -252,13 +258,13 @@ impl From<FieldId> for u16 {
     }
 }
 
-impl std::ops::Add<u64> for PackedPoint {
+impl Add<u64> for PackedPoint {
     type Output = Self;
     fn add(self, delta: u64) -> Self {
         Self(self.0 + delta)
     }
 }
-impl std::ops::Sub<u64> for PackedPoint {
+impl Sub<u64> for PackedPoint {
     type Output = Self;
     fn sub(self, delta: u64) -> Self {
         Self(self.0 - delta)
@@ -275,7 +281,7 @@ impl PackedPoint {
 
 impl SlotIx {
     pub(crate) fn is_group_start(self) -> bool {
-        self.0.is_multiple_of(crate::storage::GROUP_SIZE)
+        self.0.is_multiple_of(GROUP_SIZE)
     }
     pub(crate) fn next_group_start(self) -> Self {
         (self.group() + 1).first_slot()
@@ -287,10 +293,10 @@ impl SlotIx {
         Self(self.0.saturating_sub(span.0))
     }
     pub(crate) fn group(self) -> GroupIx {
-        GroupIx(self.0 / crate::storage::GROUP_SIZE)
+        GroupIx(self.0 / GROUP_SIZE)
     }
     pub(crate) fn in_group(self) -> GroupSlotIx {
-        GroupSlotIx(self.0 % crate::storage::GROUP_SIZE)
+        GroupSlotIx(self.0 % GROUP_SIZE)
     }
 }
 impl From<u32> for SlotSpan {
@@ -303,25 +309,25 @@ impl SlotSpan {
         self.0.checked_sub(delta).map(Self)
     }
 }
-impl std::ops::Sub for SlotSpan {
+impl Sub for SlotSpan {
     type Output = Self;
     fn sub(self, other: Self) -> Self {
         Self(self.0 - other.0)
     }
 }
-impl std::ops::Sub<u32> for SlotSpan {
+impl Sub<u32> for SlotSpan {
     type Output = Self;
     fn sub(self, delta: u32) -> Self {
         Self(self.0 - delta)
     }
 }
-impl std::ops::Add<SlotSpan> for SlotIx {
+impl Add<SlotSpan> for SlotIx {
     type Output = Self;
     fn add(self, span: SlotSpan) -> Self {
         Self(self.0 + span.0)
     }
 }
-impl std::ops::Sub<SlotSpan> for SlotIx {
+impl Sub<SlotSpan> for SlotIx {
     type Output = Self;
     fn sub(self, span: SlotSpan) -> Self {
         Self(self.0 - span.0)
@@ -329,7 +335,7 @@ impl std::ops::Sub<SlotSpan> for SlotIx {
 }
 impl GroupIx {
     pub(crate) fn first_slot(self) -> SlotIx {
-        SlotIx(self.0 * crate::storage::GROUP_SIZE)
+        SlotIx(self.0 * GROUP_SIZE)
     }
     pub(crate) fn slot(self, slot: GroupSlotIx) -> SlotIx {
         SlotIx(self.first_slot().raw() + slot.raw())
@@ -365,7 +371,7 @@ impl KindId {
 impl GrammarId {
     pub(crate) fn from_slice(symbols: &[u16]) -> &[Self] {
         // GrammarId is transparent over u16 and accepts every symbol value.
-        unsafe { std::slice::from_raw_parts(symbols.as_ptr().cast(), symbols.len()) }
+        unsafe { slice::from_raw_parts(symbols.as_ptr().cast(), symbols.len()) }
     }
 
     /// Wrap a raw ID without checking membership in a grammar.
@@ -542,7 +548,7 @@ impl From<QueryCaptureIx> for CaptureIx {
     }
 }
 
-impl std::ops::AddAssign<u32> for MatchCaptureIx {
+impl AddAssign<u32> for MatchCaptureIx {
     fn add_assign(&mut self, captures: u32) {
         self.0 += captures;
     }
@@ -553,30 +559,30 @@ macro_rules! index_arithmetic {
         index_arithmetic!($name, $integer, $integer);
     };
     ($name:ident, $integer:ty, $difference:ty) => {
-        impl std::ops::Add<$integer> for $name {
+        impl Add<$integer> for $name {
             type Output = Self;
             fn add(self, count: $integer) -> Self {
                 Self(self.0 + count)
             }
         }
-        impl std::ops::Sub<$integer> for $name {
+        impl Sub<$integer> for $name {
             type Output = Self;
             fn sub(self, count: $integer) -> Self {
                 Self(self.0 - count)
             }
         }
-        impl std::ops::Sub for $name {
+        impl Sub for $name {
             type Output = $difference;
             fn sub(self, other: Self) -> $difference {
                 (self.0 - other.0).into()
             }
         }
-        impl std::ops::AddAssign<$integer> for $name {
+        impl AddAssign<$integer> for $name {
             fn add_assign(&mut self, count: $integer) {
                 self.0 += count;
             }
         }
-        impl std::ops::SubAssign<$integer> for $name {
+        impl SubAssign<$integer> for $name {
             fn sub_assign(&mut self, count: $integer) {
                 self.0 -= count;
             }
@@ -597,12 +603,12 @@ index_type!(pub(crate) DirectStateIx(u32));
 
 impl PreorderIx {
     pub(crate) fn group_start(self) -> Self {
-        let group_size = crate::storage::GROUP_SIZE;
+        let group_size = GROUP_SIZE;
         Self(self.0 / group_size * group_size)
     }
 
     pub(crate) fn next_group_start(self) -> Self {
-        self.group_start() + crate::storage::GROUP_SIZE
+        self.group_start() + GROUP_SIZE
     }
 
     pub(crate) fn from_slot(slot: SlotIx, total_slots: u32) -> Self {

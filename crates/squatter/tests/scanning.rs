@@ -1,6 +1,6 @@
 mod support;
 
-use std::collections::HashSet;
+use std::{collections::HashSet, ops::Range, slice};
 use tree_sitter::Point;
 use tree_squatter::{
     FieldId, FieldSet, Forest, GrammarId, KindId, KindSet, Language, Node, PackOptions,
@@ -274,8 +274,7 @@ fn ranges_filters_waste_and_storage_variants() {
             let compact = tree.to_compacted().unwrap();
             let grammar = Language::new(&language).unwrap();
             let borrowed =
-                Forest::from_bytes_borrowed(std::slice::from_ref(&grammar), compact.as_bytes())
-                    .unwrap();
+                Forest::from_bytes_borrowed(slice::from_ref(&grammar), compact.as_bytes()).unwrap();
             check_ranges(&borrowed, source.len());
         }
     }
@@ -438,8 +437,8 @@ fn check_position_selections(root: Node<'_>) {
 
 fn check_range_selections(
     root: Node<'_>,
-    byte_ranges: Vec<std::ops::Range<usize>>,
-    point_ranges: Vec<std::ops::Range<Point>>,
+    byte_ranges: Vec<Range<usize>>,
+    point_ranges: Vec<Range<Point>>,
 ) {
     let preorder = reference_preorder(root);
     let postorder = root.postorder().nodes().collect::<Vec<_>>();
@@ -657,8 +656,7 @@ fn range_and_position_relations() {
             let compact = tree.to_compacted().unwrap();
             let grammar = Language::new(&language).unwrap();
             let borrowed =
-                Forest::from_bytes_borrowed(std::slice::from_ref(&grammar), compact.as_bytes())
-                    .unwrap();
+                Forest::from_bytes_borrowed(slice::from_ref(&grammar), compact.as_bytes()).unwrap();
             for tree in [&tree, &borrowed] {
                 let roots = reference_preorder(tree.root_node());
                 for root in [roots[0], roots[roots.len() / 2], roots[roots.len() - 1]]
@@ -989,7 +987,7 @@ fn indexed_kind_filters() {
             },
         );
         let borrowed =
-            Forest::from_bytes_borrowed(std::slice::from_ref(&grammar), packed.as_bytes()).unwrap();
+            Forest::from_bytes_borrowed(slice::from_ref(&grammar), packed.as_bytes()).unwrap();
         for tree in [&packed, &borrowed] {
             let nodes = reference_preorder(tree.root_node());
             let subtree = nodes

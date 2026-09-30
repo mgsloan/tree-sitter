@@ -6,7 +6,7 @@ use crate::{
         ProductionId, ReductionIx, SquatterGrammarId, SquatterKindId, SupertypeIx, SupertypeMask,
     },
 };
-use std::{ffi::c_void, marker::PhantomData, ptr};
+use std::{ffi::c_void, marker::PhantomData, ptr, slice};
 
 #[allow(warnings, clippy::all)]
 mod ffi {
@@ -357,7 +357,7 @@ impl Walk<'_> {
     #[inline(never)]
     fn lookup_mask(&self, mask: Mask) -> Result<SupertypeMask, Error> {
         let words = if self.words == 1 {
-            std::slice::from_ref(&mask.0)
+            slice::from_ref(&mask.0)
         } else {
             &self.scratch.masks[mask.0 as usize..mask.0 as usize + self.words]
         };
@@ -376,7 +376,7 @@ impl Walk<'_> {
             }
             let index = entry - 1;
             let stored = unsafe {
-                std::slice::from_raw_parts(
+                slice::from_raw_parts(
                     self.tables.supertype_masks.add(index as usize * self.words),
                     self.words,
                 )

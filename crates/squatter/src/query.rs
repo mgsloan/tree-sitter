@@ -28,10 +28,13 @@
 
 pub use crate::query_exec::{QueryCaptures, QueryCursor, QueryExecution, QueryMatches};
 use crate::{
-    CaptureIx, ForestRegion, Language, MatchId, Node, PatternIx, Tree, types::QueryStringId,
+    CaptureIx, ForestRegion, Language, MatchId, Node, PatternIx, Tree,
+    native::{CompiledQuery, StringTable},
+    query_plan::Program,
+    types::QueryStringId,
 };
 use regex::bytes::Regex;
-use std::{cell::Cell, ops::ControlFlow};
+use std::{cell::Cell, error, fmt, iter, mem, ops::ControlFlow};
 pub use tree_sitter::{CaptureQuantifier, QueryErrorKind, StreamingIterator};
 
 /// A node, borrowed tree, or homogeneous region. Whole forests and scans are
@@ -89,17 +92,17 @@ pub enum QueryExecutionError {
     InvalidExecution,
 }
 
-impl std::fmt::Display for QueryExecutionError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for QueryExecutionError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
             Self::InvalidExecution => "query and node must use the same language",
         })
     }
 }
 
-impl std::error::Error for QueryExecutionError {}
-impl std::fmt::Display for QueryError {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+impl error::Error for QueryExecutionError {}
+impl fmt::Display for QueryError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let prefix = match self.kind {
             QueryErrorKind::Field => "Invalid field name ",
             QueryErrorKind::NodeType => "Invalid node type ",
@@ -124,7 +127,7 @@ impl std::fmt::Display for QueryError {
     }
 }
 
-impl std::error::Error for QueryError {}
+impl error::Error for QueryError {}
 
 #[derive(Clone, Debug)]
 enum Predicate {
@@ -137,8 +140,8 @@ enum Predicate {
 /// Retains its language. Text predicates are compiled once; unknown predicates
 /// remain available to the host through `general_predicates`.
 pub struct Query {
-    pub(crate) compiled: crate::native::CompiledQuery,
-    pub(crate) program: crate::query_plan::Program,
+    pub(crate) compiled: CompiledQuery,
+    pub(crate) program: Program,
     capture_names: Box<[&'static str]>,
     quantifiers: Box<[Box<[CaptureQuantifier]>]>,
     settings: Box<[Box<[QueryProperty]>]>,
@@ -152,8 +155,8 @@ impl Query {
     /// It can only run on nodes using that language; queries may be shared
     /// across threads and executions without cloning.
     pub fn new(language: &Language, source: &str) -> Result<Self, QueryError> {
-        let mut compiled = crate::native::CompiledQuery::new(language, source)?;
-        let program = crate::query_plan::Program::new(&mut compiled);
+        let mut compiled = CompiledQuery::new(language, source)?;
+        let program = Program::new(&mut compiled);
         let mut query = Self {
             compiled,
             program,
@@ -381,7 +384,7 @@ impl Query {
                 let text = std::str::from_utf8(bytes).expect("query strings originate in UTF-8");
                 // The native allocation is stable until Query drops; public borrows
                 // are shortened to &self. Clones rebuild these references.
-                unsafe { std::mem::transmute::<&str, &'static str>(text) }
+                unsafe { mem::transmute::<&str, &'static str>(text) }
             })
             .collect()
     }
@@ -390,7 +393,7 @@ impl Query {
         self.string(&self.compiled.view.predicate_values, id.ix())
     }
 
-    fn string(&self, table: &crate::native::StringTable, index: usize) -> String {
+    fn string(&self, table: &StringTable, index: usize) -> String {
         String::from_utf8(unsafe { table.get(index) }.to_vec())
             .expect("query strings originate in UTF-8")
     }
@@ -656,9 +659,9 @@ pub trait TextProvider<Chunk: AsRef<[u8]>> {
     fn text(&mut self, node: Node<'_>) -> Self::I;
 }
 impl<'text> TextProvider<&'text [u8]> for &'text [u8] {
-    type I = std::iter::Once<&'text [u8]>;
+    type I = iter::Once<&'text [u8]>;
     fn text(&mut self, node: Node<'_>) -> Self::I {
-        std::iter::once(&self[node.byte_range()])
+        iter::once(&self[node.byte_range()])
     }
 }
 impl<Function, Chunks, Chunk> TextProvider<Chunk> for Function

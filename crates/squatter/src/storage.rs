@@ -1,15 +1,16 @@
 use crate::{
     Error, Language, Node, NodeId, RegionIx, RepresentationId, SlotIx, TreeCursor, TreeIx,
     native::GrammarView,
-    side_data::{PointsData, PresenceCache},
+    side_data::{PointsData, PresenceCache, PresenceView},
     types::{GroupIx, SlabOffset, SlotSpan, SquatterGrammarId, SquatterKindId},
 };
 use smallvec::SmallVec;
 use std::{
+    fmt,
     marker::PhantomData,
     mem::MaybeUninit,
     ops::{Deref, Range},
-    ptr::{self, NonNull},
+    ptr, slice,
 };
 
 // implied by forest storage version 0
@@ -134,7 +135,7 @@ impl Layout<SlabOffset> {
         Ok(result)
     }
 
-    fn resolve(self, bytes: NonNull<u8>) -> Layout<ColumnPointer> {
+    fn resolve(self, bytes: ptr::NonNull<u8>) -> Layout<ColumnPointer> {
         Layout {
             symbol_width: self.symbol_width,
             waste: ColumnPointer(self.waste.pointer(bytes)),
@@ -228,25 +229,25 @@ impl ColumnPointer {
     }
 
     #[cfg(test)]
-    pub fn offset(self, bytes: NonNull<u8>) -> usize {
+    pub fn offset(self, bytes: ptr::NonNull<u8>) -> usize {
         self.0 as usize - bytes.as_ptr() as usize
     }
 }
 
 pub(crate) trait SlabAddress: Copy {
-    fn pointer(self, bytes: NonNull<u8>) -> *mut u8;
+    fn pointer(self, bytes: ptr::NonNull<u8>) -> *mut u8;
 }
 
 impl SlabAddress for SlabOffset {
     #[inline]
-    fn pointer(self, bytes: NonNull<u8>) -> *mut u8 {
+    fn pointer(self, bytes: ptr::NonNull<u8>) -> *mut u8 {
         bytes.as_ptr().wrapping_add(self.ix())
     }
 }
 
 impl SlabAddress for ColumnPointer {
     #[inline]
-    fn pointer(self, _bytes: NonNull<u8>) -> *mut u8 {
+    fn pointer(self, _bytes: ptr::NonNull<u8>) -> *mut u8 {
         self.0
     }
 }
@@ -260,7 +261,7 @@ enum Storage {
 
 pub(crate) struct Slab {
     storage: Storage,
-    bytes: NonNull<u8>,
+    bytes: ptr::NonNull<u8>,
     length: usize,
 }
 
@@ -282,7 +283,7 @@ impl Slab {
         words
             .try_reserve_exact(length / 8)
             .map_err(|_| Error::Allocation)?;
-        let bytes = NonNull::new(words.as_mut_ptr().cast()).unwrap();
+        let bytes = ptr::NonNull::new(words.as_mut_ptr().cast()).unwrap();
         // Keep unfinished storage outside the length, including during unwinding.
         initialize(bytes.as_ptr())?;
         unsafe {
@@ -322,7 +323,7 @@ impl Slab {
         {
             return Err(Error::InvalidArgument);
         }
-        let pointer = NonNull::from(bytes).cast();
+        let pointer = ptr::NonNull::from(bytes).cast();
         let length = bytes.len();
         Ok(Self {
             storage: Storage::Retained(owner),
@@ -339,19 +340,19 @@ impl Slab {
         }
         Ok(Self {
             storage: Storage::Retained(Box::new(())),
-            bytes: NonNull::from(bytes).cast(),
+            bytes: ptr::NonNull::from(bytes).cast(),
             length: bytes.len(),
         })
     }
 
     #[inline]
     pub(crate) fn bytes(&self) -> &[u8] {
-        unsafe { std::slice::from_raw_parts(self.bytes.as_ptr(), self.length) }
+        unsafe { slice::from_raw_parts(self.bytes.as_ptr(), self.length) }
     }
 
     pub(crate) fn bytes_mut(&mut self) -> &mut [u8] {
         assert!(matches!(self.storage, Storage::Owned(_)));
-        unsafe { std::slice::from_raw_parts_mut(self.bytes.as_ptr(), self.length) }
+        unsafe { slice::from_raw_parts_mut(self.bytes.as_ptr(), self.length) }
     }
 
     pub(crate) fn grow(&mut self, length: usize) -> Result<(), Error> {
@@ -365,7 +366,7 @@ impl Slab {
             .try_reserve(length / 8 - words.len())
             .map_err(|_| Error::Allocation)?;
         words.resize(length / 8, 0);
-        self.bytes = NonNull::new(words.as_mut_ptr().cast()).unwrap();
+        self.bytes = ptr::NonNull::new(words.as_mut_ptr().cast()).unwrap();
         self.length = length;
         Ok(())
     }
@@ -385,7 +386,7 @@ pub(crate) struct ForestData {
 #[derive(Clone)]
 pub(crate) struct TreeData {
     pub region: RegionIx,
-    pub tables: NonNull<GrammarView>,
+    pub tables: ptr::NonNull<GrammarView>,
     // trees occupy whole groups; the final group may contain waste
     pub slots: Range<SlotIx>,
 }
@@ -413,7 +414,7 @@ pub(crate) struct RegionData {
     pub trees: Range<TreeIx>,
     pub language: Language,
     pub order: RegionOrder,
-    pub presence: Option<crate::side_data::PresenceView>,
+    pub presence: Option<PresenceView>,
 }
 
 impl RegionData {
@@ -494,7 +495,7 @@ impl ForestData {
 // Capture the slab address once: raw stores otherwise make LLVM reload it
 // from the descriptor. The borrow excludes resizing while the writer is used.
 pub(crate) struct SlabWriter<'tree> {
-    bytes: NonNull<u8>,
+    bytes: ptr::NonNull<u8>,
     borrow: PhantomData<&'tree mut [u8]>,
 }
 
@@ -644,13 +645,13 @@ impl ForestData {
     }
 
     pub fn slice(&self) -> &[u8] {
-        unsafe { std::slice::from_raw_parts(self.storage.bytes.as_ptr(), self.storage.length) }
+        unsafe { slice::from_raw_parts(self.storage.bytes.as_ptr(), self.storage.length) }
     }
 
     #[inline]
     pub(crate) fn column_slice(&self, column: ColumnPointer, start: usize, length: usize) -> &[u8] {
         // Resolved column pointers and group offsets remain within the retained slab.
-        unsafe { std::slice::from_raw_parts(column.as_ptr().add(start), length) }
+        unsafe { slice::from_raw_parts(column.as_ptr().add(start), length) }
     }
 
     pub(crate) fn writer(&mut self) -> SlabWriter<'_> {
@@ -878,9 +879,11 @@ impl Forest {
                 self.group_count(),
             );
         }
-        Ok(unsafe {
-            std::slice::from_raw_parts_mut(destination.as_mut_ptr().cast(), destination.len())
-        })
+        Ok(
+            unsafe {
+                slice::from_raw_parts_mut(destination.as_mut_ptr().cast(), destination.len())
+            },
+        )
     }
 
     unsafe fn copy_columns(
@@ -1003,7 +1006,7 @@ impl Forest {
         let excess = allocated - storage.length;
         if excess != 0 && excess >= threshold.min(allocated / 2) {
             words.shrink_to_fit();
-            storage.bytes = NonNull::new(words.as_mut_ptr().cast()).unwrap();
+            storage.bytes = ptr::NonNull::new(words.as_mut_ptr().cast()).unwrap();
             self.data.layout = layout.resolve(storage.bytes);
         }
         Ok(())
@@ -1127,7 +1130,7 @@ impl Forest {
     fn reconstruct_trees(&mut self) -> Result<(), Error> {
         for region_index in 0..self.data.regions.len() {
             let slots = self.data.regions[region_index].slots.clone();
-            let tables = NonNull::from(self.data.regions[region_index].language.tables());
+            let tables = ptr::NonNull::from(self.data.regions[region_index].language.tables());
             let first_tree = self.data.trees.len();
             let mut end = slots.end.raw();
             while end > slots.start.raw() {
@@ -1206,8 +1209,8 @@ fn slab_length(layout: Layout<SlabOffset>, regions: u32) -> Result<usize, Error>
     Ok(u32::try_from(length).map_err(|_| Error::Overflow)? as usize)
 }
 
-impl std::fmt::Debug for Forest {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Debug for Forest {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("Forest")
             .field("trees", &self.data.trees.len())
@@ -1345,7 +1348,7 @@ mod tests {
             for width in [0, BYTE_IDS] {
                 let flags = FOREST_FORMAT | optional | width;
                 let layout = Layout::new(5, flags).unwrap();
-                let mut tree = Forest::empty(std::slice::from_ref(&language), 5).unwrap();
+                let mut tree = Forest::empty(slice::from_ref(&language), 5).unwrap();
                 unsafe {
                     tree.resize(5, flags).unwrap();
                     ptr::write_bytes(tree.data().storage.bytes.as_ptr(), 0x5a, layout.end.ix());

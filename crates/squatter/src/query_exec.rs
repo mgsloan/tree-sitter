@@ -2,16 +2,20 @@ use crate::{
     FieldId, ForestRegion, GrammarId, MatchCaptureIx, Node, PatternIx, Query, QueryCapture,
     QueryCursorOptions, QueryCursorState, QueryExecutionError, QueryMatch, QueryScope, RawNode,
     SlotIx, StreamingIterator, TextProvider, TreeIx,
-    native::{GrammarView, Pattern, PatternEntry, Step, flags::*},
+    native::{self, GrammarView, Pattern, PatternEntry, Step, flags::*},
     query::Scope,
-    storage::{ColumnPointer, RegionOrder},
+    query_plan::Relation,
+    scan::equal_byte_ids,
+    storage::{ColumnPointer, ForestData, GROUP_SIZE, RegionOrder},
     types::{
         CaptureIx, CaptureListIx, CapturePrefixId, CaptureStorageIx, DirectStateIx, GroupIx,
         MatchId, NegatedFieldListIx, PackedPoint, PatternIndex, PreorderIx, PresenceRequirementIx,
         QueryCaptureIx, QueryStepIx, SquatterKindId,
     },
 };
-use std::{cell::Cell, cmp::Ordering, marker::PhantomData, rc::Rc};
+use std::{
+    array, cell::Cell, cmp::Ordering, marker::PhantomData, mem, ops::Range, ptr, rc::Rc, slice,
+};
 use tree_sitter::Point;
 
 #[cfg(target_arch = "x86_64")]
@@ -145,7 +149,7 @@ struct CaptureList {
 impl CaptureList {
     const fn empty() -> Self {
         Self {
-            contents: std::ptr::null(),
+            contents: ptr::null(),
             length: 0,
             storage: CaptureStorageIx::NONE,
             first_byte: 0,
@@ -247,7 +251,7 @@ impl CapturePool {
                 self.storage[list.storage.ix()].values.as_ptr()
             );
             debug_assert!(list.length as usize <= self.storage[list.storage.ix()].values.len());
-            unsafe { std::slice::from_raw_parts(list.contents, list.length as usize) }
+            unsafe { slice::from_raw_parts(list.contents, list.length as usize) }
         }
     }
 
@@ -310,7 +314,7 @@ impl CapturePool {
                 target
             };
             let source = if list.length == 0 {
-                std::ptr::null()
+                ptr::null()
             } else {
                 self.storage[list.storage.ix()].values.as_ptr()
             };
@@ -321,7 +325,7 @@ impl CapturePool {
                 // A free target cannot be the referenced source. Reallocating
                 // its Vec leaves the source buffer and initialized prefix intact.
                 unsafe {
-                    std::ptr::copy_nonoverlapping(
+                    ptr::copy_nonoverlapping(
                         source,
                         storage.values.as_mut_ptr(),
                         list.length as usize,
@@ -502,7 +506,7 @@ impl Default for QueryRange {
 }
 
 impl QueryRange {
-    fn set_byte_range(&mut self, range: std::ops::Range<usize>) {
+    fn set_byte_range(&mut self, range: Range<usize>) {
         let start = range.start as u32;
         let end = match range.end as u32 {
             0 => NONE,
@@ -514,7 +518,7 @@ impl QueryRange {
         }
     }
 
-    fn set_point_range(&mut self, range: std::ops::Range<Point>) {
+    fn set_point_range(&mut self, range: Range<Point>) {
         let start = PackedPoint::from_point_cast(range.start);
         let mut end = PackedPoint::from_point_cast(range.end);
         if end == PackedPoint(0) {
@@ -823,7 +827,7 @@ impl QueryCursor {
 
     /// Restrict matches to nodes intersecting this byte range. Zero end is
     /// unbounded. Coordinates narrow to u32; reversed ranges leave it unchanged.
-    pub fn set_byte_range(&mut self, range: std::ops::Range<usize>) -> &mut Self {
+    pub fn set_byte_range(&mut self, range: Range<usize>) -> &mut Self {
         self.range.set_byte_range(range);
         self
     }
@@ -831,7 +835,7 @@ impl QueryCursor {
     /// Restrict matches to nodes intersecting this point range, using the same
     /// narrowing and validation rules as `set_byte_range`.
     /// Without point data, nodes use row zero and byte offsets as columns.
-    pub fn set_point_range(&mut self, range: std::ops::Range<Point>) -> &mut Self {
+    pub fn set_point_range(&mut self, range: Range<Point>) -> &mut Self {
         self.range.set_point_range(range);
         self
     }
@@ -840,7 +844,7 @@ impl QueryCursor {
     /// Can be combined with the intersecting range set by `set_byte_range`.
     /// Zero end is unbounded. Coordinates narrow to u32; reversed ranges leave
     /// the previous containing range unchanged.
-    pub fn set_containing_byte_range(&mut self, range: std::ops::Range<usize>) -> &mut Self {
+    pub fn set_containing_byte_range(&mut self, range: Range<usize>) -> &mut Self {
         self.containing_range.set_byte_range(range);
         self
     }
@@ -849,7 +853,7 @@ impl QueryCursor {
     /// Can be combined with `set_point_range`, using the same narrowing and
     /// validation rules. Without point data, nodes use row zero and byte
     /// offsets as columns. A zero end point is unbounded.
-    pub fn set_containing_point_range(&mut self, range: std::ops::Range<Point>) -> &mut Self {
+    pub fn set_containing_point_range(&mut self, range: Range<Point>) -> &mut Self {
         self.containing_range.set_point_range(range);
         self
     }
@@ -883,10 +887,8 @@ impl QueryCursor {
             && query.program.direct.is_some()
             && self.max_start_depth == NONE
             && !self.halted;
-        self.direct_position = PreorderIx::from_slot(
-            root.slot(),
-            root.data().groups() * crate::storage::GROUP_SIZE,
-        );
+        self.direct_position =
+            PreorderIx::from_slot(root.slot(), root.data().groups() * GROUP_SIZE);
         self.direct_free = DirectStateIx::NONE;
     }
 
@@ -943,7 +945,7 @@ impl QueryCursor {
 
         // Root searches reuse word-wide comparisons across scanned groups.
         let byte_ids = root.data().layout.symbol_width == 1;
-        let scan_filter = std::array::from_fn(|index| {
+        let scan_filter = array::from_fn(|index| {
             query
                 .program
                 .scan_filter
@@ -975,7 +977,7 @@ impl QueryCursor {
             unrestricted,
             containing_unrestricted,
             root_has_error: root.has_error(),
-            total_slots: root.data().groups() * crate::storage::GROUP_SIZE,
+            total_slots: root.data().groups() * GROUP_SIZE,
             tables: root.tables(),
             root,
             remaining,
@@ -1115,7 +1117,7 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
                 &[]
             } else {
                 unsafe {
-                    std::slice::from_raw_parts(
+                    slice::from_raw_parts(
                         output.captures.cast::<QueryCapture<'tree>>(),
                         output.count,
                     )
@@ -1211,13 +1213,13 @@ impl<Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
     QueryMatches<'_, '_, '_, '_, Provider, Chunk>
 {
     /// Update the cursor's persistent byte range for subsequent advancement.
-    pub fn set_byte_range(&mut self, range: std::ops::Range<usize>) {
+    pub fn set_byte_range(&mut self, range: Range<usize>) {
         self.execution.cursor.set_byte_range(range);
         self.execution.unrestricted = self.execution.cursor.range.unrestricted();
         self.execution.cursor.first_capture_valid = false;
     }
     /// Update the cursor's persistent point range for subsequent advancement.
-    pub fn set_point_range(&mut self, range: std::ops::Range<Point>) {
+    pub fn set_point_range(&mut self, range: Range<Point>) {
         self.execution.cursor.set_point_range(range);
         self.execution.unrestricted = self.execution.cursor.range.unrestricted();
         self.execution.cursor.first_capture_valid = false;
@@ -1235,7 +1237,7 @@ impl<'cursor, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>> Streamin
         self.current = self
             .execution
             .next_match()
-            .map(|item| unsafe { std::mem::transmute::<_, Self::Item>(item) });
+            .map(|item| unsafe { mem::transmute::<_, Self::Item>(item) });
     }
     fn get(&self) -> Option<&Self::Item> {
         self.current.as_ref()
@@ -1302,13 +1304,13 @@ impl<Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
     QueryCaptures<'_, '_, '_, '_, Provider, Chunk>
 {
     /// Update the cursor's persistent byte range for subsequent advancement.
-    pub fn set_byte_range(&mut self, range: std::ops::Range<usize>) {
+    pub fn set_byte_range(&mut self, range: Range<usize>) {
         self.execution.cursor.set_byte_range(range);
         self.execution.unrestricted = self.execution.cursor.range.unrestricted();
         self.execution.cursor.first_capture_valid = false;
     }
     /// Update the cursor's persistent point range for subsequent advancement.
-    pub fn set_point_range(&mut self, range: std::ops::Range<Point>) {
+    pub fn set_point_range(&mut self, range: Range<Point>) {
         self.execution.cursor.set_point_range(range);
         self.execution.unrestricted = self.execution.cursor.range.unrestricted();
         self.execution.cursor.first_capture_valid = false;
@@ -1326,7 +1328,7 @@ impl<'cursor, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>> Streamin
         self.current = self
             .execution
             .next_capture()
-            .map(|item| unsafe { std::mem::transmute::<_, Self::Item>(item) });
+            .map(|item| unsafe { mem::transmute::<_, Self::Item>(item) });
     }
     fn get(&self) -> Option<&Self::Item> {
         self.current.as_ref()
@@ -1368,9 +1370,7 @@ impl QueryCursor {
 const _: () = {
     assert!(size_of::<Capture>() == size_of::<QueryCapture<'static>>());
     assert!(align_of::<Capture>() == align_of::<QueryCapture<'static>>());
-    assert!(
-        std::mem::offset_of!(Capture, index) == std::mem::offset_of!(QueryCapture<'static>, index)
-    );
+    assert!(mem::offset_of!(Capture, index) == mem::offset_of!(QueryCapture<'static>, index));
 };
 
 impl QueryCursor {
@@ -1987,7 +1987,7 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
         cache.samples += 1;
 
         let data = root.data();
-        let group_size = crate::storage::GROUP_SIZE;
+        let group_size = GROUP_SIZE;
         if requirement.symbol != SquatterKindId(0) {
             if let Some(presence) = root.presence() {
                 let slot = root.slot();
@@ -2282,7 +2282,7 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
                     did_match = true;
                 } else {
                     let start = match plan.steps[state.step.ix()].relation {
-                        crate::query_plan::Relation::FirstNamedChild => position + 1,
+                        Relation::FirstNamedChild => position + 1,
                         _ => sibling,
                     };
                     self.cursor.direct_states[state.order as usize].next =
@@ -2473,7 +2473,7 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
             .pattern_map
             .get(symbol.ix())
             .copied()
-            .unwrap_or(crate::native::Range {
+            .unwrap_or(native::Range {
                 offset: 0,
                 length: 0,
             });
@@ -2918,7 +2918,7 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
     // Keep the large comparison pass out of the per-node matcher's register set.
     #[inline(never)]
     fn deduplicate(&mut self) -> bool {
-        let dirty = std::mem::take(&mut self.cursor.dirty_patterns);
+        let dirty = mem::take(&mut self.cursor.dirty_patterns);
         if dirty.is_empty() {
             return false;
         }
@@ -3108,18 +3108,17 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
 }
 
 fn equal_column(
-    data: &crate::storage::ForestData,
+    data: &ForestData,
     address: ColumnPointer,
     group: GroupIx,
     value: u16,
     mask: u16,
     width: u32,
 ) -> u64 {
-    use crate::storage::GROUP_SIZE;
     let first = group.first_slot();
     if width == 1 {
         let bytes = data.column_slice(address, first.ix(), GROUP_SIZE as usize);
-        return crate::scan::equal_byte_ids(bytes, &[SquatterKindId(value)])
+        return equal_byte_ids(bytes, &[SquatterKindId(value)])
             & (u64::MAX >> (64 - GROUP_SIZE + data.waste(group)));
     }
     let mut matches = 0;

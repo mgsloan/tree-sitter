@@ -1,3 +1,5 @@
+use std::{error, fmt};
+
 mod types;
 pub(crate) use types::SlotIx;
 pub use types::{
@@ -46,8 +48,8 @@ pub enum Error {
     Canceled = 8,
 }
 
-impl std::fmt::Display for Error {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
             Self::InvalidArgument => "invalid argument",
             Self::Allocation => "allocation failed",
@@ -61,7 +63,7 @@ impl std::fmt::Display for Error {
     }
 }
 
-impl std::error::Error for Error {}
+impl error::Error for Error {}
 impl Error {
     pub(crate) fn from_code(code: i32) -> Error {
         match code {
@@ -87,8 +89,8 @@ pub trait Id: Copy + Ord + private::Id {
 mod private {
     pub trait Id {}
 }
-impl private::Id for types::SquatterKindId {}
-impl Id for types::SquatterKindId {
+impl private::Id for SquatterKindId {}
+impl Id for SquatterKindId {
     #[inline]
     fn raw(self) -> u16 {
         self.raw()

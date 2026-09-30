@@ -6,7 +6,7 @@ use crate::{
     storage::*,
     types::{PackedPoint, SlabOffset, SquatterGrammarId, SquatterKindId},
 };
-use std::{ops::ControlFlow, ptr::NonNull};
+use std::{ops::ControlFlow, ptr, slice};
 
 mod traversal;
 
@@ -267,7 +267,7 @@ impl Builder {
     }
 
     fn new(language: &Language, capacity: u32, points: bool) -> Result<Self, Error> {
-        Self::new_forest(std::slice::from_ref(language), capacity, points)
+        Self::new_forest(slice::from_ref(language), capacity, points)
     }
 
     fn new_forest(languages: &[Language], capacity: u32, points: bool) -> Result<Self, Error> {
@@ -530,7 +530,7 @@ impl Builder {
         data.trees.try_reserve(1).map_err(|_| Error::Allocation)?;
         data.trees.push(TreeData {
             region,
-            tables: NonNull::from(data.regions[region.ix()].language.tables()),
+            tables: ptr::NonNull::from(data.regions[region.ix()].language.tables()),
             slots: start..self.slot_base,
         });
         let region = &mut data.regions[region.ix()];

@@ -1,4 +1,4 @@
-use std::ops::ControlFlow;
+use std::{error, fmt, ops::ControlFlow};
 use tree_sitter::Point;
 
 use crate::{
@@ -127,8 +127,8 @@ pub enum ParserError {
     Pack(Error),
 }
 
-impl std::fmt::Display for ParserError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for ParserError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::NoLanguage => formatter.write_str("no language selected"),
             Self::Canceled => formatter.write_str("parse canceled"),
@@ -137,8 +137,8 @@ impl std::fmt::Display for ParserError {
     }
 }
 
-impl std::error::Error for ParserError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+impl error::Error for ParserError {
+    fn source(&self) -> Option<&(dyn error::Error + 'static)> {
         match self {
             Self::Pack(error) => Some(error),
             _ => None,
@@ -290,8 +290,8 @@ pub struct ParseError {
     pub message: String,
 }
 
-impl std::fmt::Display for ParseError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for ParseError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             formatter,
             "{} at byte {}: {}",
@@ -300,7 +300,7 @@ impl std::fmt::Display for ParseError {
     }
 }
 
-impl std::error::Error for ParseError {}
+impl error::Error for ParseError {}
 
 impl From<Error> for ParseError {
     fn from(code: Error) -> Self {

@@ -11,10 +11,16 @@
 //! }
 //! ```
 use crate::{
-    ChildIx, FieldId, Forest, GrammarId, KindId, NamedChildIx, Node, NodeId, Tree, TreeCursor,
-    scan::IdSelection,
+    ChildIx, FieldId, Forest, GrammarId, KindId, NamedChildIx, Node, NodeId, ParseOptions, Tree,
+    TreeCursor, scan::IdSelection,
 };
-use std::ops::Range;
+use std::{
+    hash::Hash,
+    iter::{self, FusedIterator},
+    num::NonZeroU16,
+    ops::Range,
+    str::Utf8Error,
+};
 use tree_sitter::Point;
 
 /// Parses a fresh UTF-8 document without incremental reuse.
@@ -22,7 +28,7 @@ use tree_sitter::Point;
 pub trait Parse {
     type Tree: TreeLike;
     type Error;
-    type Options<'a>: Default + From<crate::ParseOptions<'a>>;
+    type Options<'a>: Default + From<ParseOptions<'a>>;
 
     /// Parses chunks starting at the requested byte offset and point.
     /// An empty chunk ends input; reads may seek backward.
@@ -96,7 +102,7 @@ pub trait TreeLike {
 pub trait NodeLike<'tree>: Copy + Eq {
     type Cursor: CursorLike<'tree, Node = Self>;
     /// Stable within this tree; not comparable across representations.
-    type Id: Copy + Eq + std::hash::Hash;
+    type Id: Copy + Eq + Hash;
     /// Get a numeric id for this node that is unique.
     ///
     /// Within a given syntax tree, no two nodes have the same id.
@@ -127,10 +133,7 @@ pub trait NodeLike<'tree>: Copy + Eq {
     fn range(&self) -> tree_sitter::Range;
     /// Returns the UTF-8 source slice for this node. Invalid UTF-8 returns an error;
     /// out-of-bounds byte offsets panic.
-    fn utf8_text<'source>(
-        &self,
-        source: &'source [u8],
-    ) -> Result<&'source str, std::str::Utf8Error>;
+    fn utf8_text<'source>(&self, source: &'source [u8]) -> Result<&'source str, Utf8Error>;
     /// Returns the source slice indexed by this node’s byte offsets divided by two. Supply
     /// the UTF-16 input used to parse the tree; out-of-bounds offsets panic.
     fn utf16_text<'source>(&self, source: &'source [u16]) -> &'source [u16];
@@ -512,10 +515,7 @@ macro_rules! node_attributes {
         fn range(&self) -> tree_sitter::Range {
             <$node>::range(self)
         }
-        fn utf8_text<'source>(
-            &self,
-            source: &'source [u8],
-        ) -> Result<&'source str, std::str::Utf8Error> {
+        fn utf8_text<'source>(&self, source: &'source [u8]) -> Result<&'source str, Utf8Error> {
             <$node>::utf8_text(self, source)
         }
         fn utf16_text<'source>(&self, source: &'source [u16]) -> &'source [u16] {
@@ -596,7 +596,7 @@ impl<'tree> NodeLike<'tree> for tree_sitter::Node<'tree> {
         Self: 'cursor,
     {
         let mut children = tree_sitter::Node::children(self, cursor);
-        std::iter::from_fn(move || children.next())
+        iter::from_fn(move || children.next())
     }
     fn named_children<'cursor>(
         &self,
@@ -606,7 +606,7 @@ impl<'tree> NodeLike<'tree> for tree_sitter::Node<'tree> {
         Self: 'cursor,
     {
         let mut children = tree_sitter::Node::named_children(self, cursor);
-        std::iter::from_fn(move || children.next())
+        iter::from_fn(move || children.next())
     }
     fn children_by_field_id<'cursor>(
         &self,
@@ -618,10 +618,10 @@ impl<'tree> NodeLike<'tree> for tree_sitter::Node<'tree> {
     {
         let mut children = tree_sitter::Node::children_by_field_id(
             self,
-            std::num::NonZeroU16::new(field.raw()).unwrap(),
+            NonZeroU16::new(field.raw()).unwrap(),
             cursor,
         );
-        std::iter::from_fn(move || children.next())
+        iter::from_fn(move || children.next())
     }
     fn children_by_field_name<'cursor>(
         &self,
@@ -632,7 +632,7 @@ impl<'tree> NodeLike<'tree> for tree_sitter::Node<'tree> {
         Self: 'cursor,
     {
         let mut children = tree_sitter::Node::children_by_field_name(self, name, cursor);
-        std::iter::from_fn(move || children.next())
+        iter::from_fn(move || children.next())
     }
     fn field_name_for_child(&self, index: ChildIx) -> Option<&'tree str> {
         tree_sitter::Node::field_name_for_child(self, index.raw())
@@ -861,4 +861,4 @@ impl<'tree> Iterator for NativePreorder<'tree> {
         Some(self.cursor.node())
     }
 }
-impl std::iter::FusedIterator for NativePreorder<'_> {}
+impl FusedIterator for NativePreorder<'_> {}

@@ -1,5 +1,6 @@
 mod support;
 
+use std::{iter, slice};
 use support::{c_language, json_language};
 
 use tree_squatter::{Forest, Language, PackOptions};
@@ -27,7 +28,7 @@ fn navigation_and_indexed_ranges_survive_loading() {
         )
         .unwrap();
         let mut expected =
-            Forest::from_bytes(std::slice::from_ref(&grammar), actual.as_bytes()).unwrap();
+            Forest::from_bytes(slice::from_ref(&grammar), actual.as_bytes()).unwrap();
         assert_eq!(actual.as_bytes(), expected.as_bytes());
         if let Some(points) = actual.point_data() {
             let points =
@@ -190,7 +191,7 @@ fn indexed_points_follow_attachment_across_wide_trees() {
     parser.set_language(&language).unwrap();
     let source = format!("[{}0]\n", "\"é\",\r\n".repeat(20_000));
     let native = parser.parse(&source, None).unwrap();
-    let line_starts: Vec<_> = std::iter::once(0)
+    let line_starts: Vec<_> = iter::once(0)
         .chain(
             source
                 .bytes()
