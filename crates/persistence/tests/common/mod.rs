@@ -6,7 +6,7 @@ use std::{
     path::Path,
     process::{Child, Command, Stdio},
 };
-use tree_squatter::LanguageHash;
+use tree_squatter::{Language, LanguageHash, Parser};
 use tree_squatter_persistence::{IdentifiedLanguage, LanguageIdentity, LoadedFile, Persistence};
 
 pub fn language() -> IdentifiedLanguage {
@@ -20,18 +20,14 @@ pub fn grammar_with_identity(identity: u8) -> IdentifiedLanguage {
     let mut language_identity = LanguageIdentity::new(&tree_sitter_language, "json");
     language_identity.hash = LanguageHash::from_raw_digest(identity as u64);
     IdentifiedLanguage::new(
-        tree_squatter::Language::new(&tree_sitter_language).unwrap(),
+        Language::new(&tree_sitter_language).unwrap(),
         language_identity,
     )
 }
 
 pub fn load(cache: &Persistence) -> LoadedFile {
     cache
-        .load(
-            Path::new("file.json"),
-            &language(),
-            &mut tree_squatter::Parser::new(),
-        )
+        .load(Path::new("file.json"), &language(), &mut Parser::new())
         .unwrap()
 }
 

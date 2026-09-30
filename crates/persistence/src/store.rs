@@ -8,6 +8,9 @@ use std::{
 
 use crate::identity::{CurrentGuard, IdentifiedLanguage, Request};
 use heed::{Env, EnvOpenOptions, WithoutTls, types::Bytes};
+use tree_squatter::{
+    Error, Forest, Language, LanguageHash, PackOptions, PointsData, PresenceCache,
+};
 
 pub(crate) type Database = heed::Database<Bytes, Bytes>;
 
@@ -44,16 +47,16 @@ mod tests {
             tree_sitter::Language::from_raw(tree_sitter_json::LANGUAGE.into_raw()().cast())
         };
         let language = IdentifiedLanguage::new(
-            tree_squatter::Language::new(&tree_sitter_language).unwrap(),
+            Language::new(&tree_sitter_language).unwrap(),
             LanguageIdentity::new(&tree_sitter_language, "json"),
         );
         let mut parser = tree_sitter::Parser::new();
         parser.set_language(&tree_sitter_language).unwrap();
         let native = parser.parse(b"[1]", None).unwrap();
-        let tree = tree_squatter::Forest::pack_with_options(
+        let tree = Forest::pack_with_options(
             &language.prepared,
             &native,
-            tree_squatter::PackOptions {
+            PackOptions {
                 initial_group_capacity: 128,
                 symbol_presence: &|_| true,
                 ..Default::default()
@@ -143,7 +146,7 @@ mod tests {
                     &request,
                     b"[1]",
                     &language,
-                    tree_squatter::PackOptions {
+                    PackOptions {
                         symbol_presence: &|_| true,
                         ..Default::default()
                     }
@@ -163,7 +166,7 @@ mod tests {
                     &request,
                     b"[1]",
                     &language,
-                    tree_squatter::PackOptions {
+                    PackOptions {
                         symbol_presence: &|_| true,
                         ..Default::default()
                     }
@@ -216,16 +219,16 @@ mod tests {
             tree_sitter::Language::from_raw(tree_sitter_c_sharp::LANGUAGE.into_raw()().cast())
         };
         let language = IdentifiedLanguage::new(
-            tree_squatter::Language::new(&tree_sitter_language).unwrap(),
+            Language::new(&tree_sitter_language).unwrap(),
             LanguageIdentity::new(&tree_sitter_language, "json"),
         );
         let mut parser = tree_sitter::Parser::new();
         parser.set_language(&tree_sitter_language).unwrap();
         let native = parser.parse(b"class C {}", None).unwrap();
-        let tree = tree_squatter::Forest::pack_with_options(
+        let tree = Forest::pack_with_options(
             &language.prepared,
             &native,
-            tree_squatter::PackOptions {
+            PackOptions {
                 symbol_presence: &|_| true,
                 ..Default::default()
             },
@@ -245,12 +248,7 @@ mod tests {
         assert_eq!(restored.cache().unwrap(), expected);
         assert!(
             store
-                .get(
-                    &request,
-                    b"class C {}",
-                    &language,
-                    tree_squatter::PackOptions::default()
-                )
+                .get(&request, b"class C {}", &language, PackOptions::default())
                 .unwrap()
                 .is_some()
         );
@@ -549,8 +547,8 @@ impl Store {
         request: &Request,
         source: &[u8],
         language: &IdentifiedLanguage,
-        options: tree_squatter::PackOptions<'_>,
-    ) -> Result<Option<(tree_squatter::Forest, bool)>, tree_squatter::Error> {
+        options: PackOptions<'_>,
+    ) -> Result<Option<(Forest, bool)>, Error> {
         let Ok(tx) = self.env.read_txn() else {
             return Ok(None);
         };
@@ -563,11 +561,9 @@ impl Store {
             let value = self.trees.get(&tx, &request.tree_key).ok()??;
             let slab = request.decode(value)?;
             // Core validation is independent of optional sidecar contents.
-            let tree = tree_squatter::Forest::from_bytes_safety_checked(
-                std::slice::from_ref(&language.prepared),
-                slab,
-            )
-            .ok()?;
+            let tree =
+                Forest::from_bytes_safety_checked(std::slice::from_ref(&language.prepared), slab)
+                    .ok()?;
             if tree
                 .root_node()
                 .preorder()
@@ -588,7 +584,7 @@ impl Store {
                 .get(&tx, &request.tree_key)
                 .ok()
                 .flatten()
-                .and_then(|bytes| tree_squatter::PresenceCache::copy_from_bytes(&tree, bytes).ok());
+                .and_then(|bytes| PresenceCache::copy_from_bytes(&tree, bytes).ok());
             complete &= loaded.is_some();
             let cache = match loaded {
                 Some(cache) => cache,
@@ -604,7 +600,7 @@ impl Store {
                 .get(&tx, &request.tree_key)
                 .ok()
                 .flatten()
-                .and_then(|bytes| tree_squatter::PointsData::copy_from_bytes(&tree, bytes).ok());
+                .and_then(|bytes| PointsData::copy_from_bytes(&tree, bytes).ok());
             let Some(points) = points else {
                 return Ok(None);
             };
@@ -618,21 +614,21 @@ impl Store {
     pub fn prepare_language(
         &self,
         tree_sitter_language: &tree_sitter::Language,
-        hash: tree_squatter::LanguageHash,
-    ) -> Option<tree_squatter::Language> {
+        hash: LanguageHash,
+    ) -> Option<Language> {
         let tx = self.env.read_txn().ok()?;
         let bytes = self
             .grammars
             .get(&tx, &crate::identity::language_key(hash))
             .ok()??;
-        tree_squatter::Language::from_cache(tree_sitter_language, bytes).ok()
+        Language::from_cache(tree_sitter_language, bytes).ok()
     }
 
     fn publication_state(
         &self,
         request: &Request,
         source: &[u8],
-        tree: &tree_squatter::Forest,
+        tree: &Forest,
         language: &IdentifiedLanguage,
     ) -> Option<(bool, bool)> {
         let tx = self.env.read_txn().ok()?;
@@ -642,15 +638,12 @@ impl Store {
             return None;
         }
         let slab = request.decode(self.trees.get(&tx, &request.tree_key).ok()??)?;
-        let borrowed = tree_squatter::Forest::from_bytes_borrowed(
-            std::slice::from_ref(&language.prepared),
-            slab,
-        );
+        let borrowed = Forest::from_bytes_borrowed(std::slice::from_ref(&language.prepared), slab);
         let copied;
         let existing = match &borrowed {
             Ok(tree) => &**tree,
             Err(_) => {
-                copied = tree_squatter::Forest::from_bytes_safety_checked(
+                copied = Forest::from_bytes_safety_checked(
                     std::slice::from_ref(&language.prepared),
                     slab,
                 )
@@ -689,7 +682,7 @@ impl Store {
         &self,
         request: &Request,
         source: &[u8],
-        tree: &tree_squatter::Forest,
+        tree: &Forest,
         language: &IdentifiedLanguage,
         mut cancelled: impl FnMut() -> bool,
     ) -> Result<WriteOutcome, CacheError> {

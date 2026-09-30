@@ -26,7 +26,8 @@ use std::{
 };
 use store::Store;
 use tree_squatter::{
-    PackOptions, PackedParseOptions, ParseOptions, Parser, ParserError, traits::ParseStateLike,
+    Error, Forest, Language, PackOptions, PackedParseOptions, ParseOptions, Parser, ParserError,
+    PresenceCache, traits::ParseStateLike,
 };
 
 /// Cache directory path for the target's native byte order.
@@ -72,24 +73,24 @@ pub enum ReadPolicy {
 
 #[derive(Clone)]
 struct LoadedTree {
-    forest: Arc<tree_squatter::Forest>,
+    forest: Arc<Forest>,
     retained: bool,
 }
 
 impl LoadedTree {
-    fn owned(forest: Arc<tree_squatter::Forest>) -> Self {
+    fn owned(forest: Arc<Forest>) -> Self {
         Self {
             forest,
             retained: false,
         }
     }
-    fn retained(forest: Arc<tree_squatter::Forest>) -> Self {
+    fn retained(forest: Arc<Forest>) -> Self {
         Self {
             forest,
             retained: true,
         }
     }
-    fn tree(&self) -> &tree_squatter::Forest {
+    fn tree(&self) -> &Forest {
         &self.forest
     }
 }
@@ -162,12 +163,9 @@ fn check(options: &mut ParseOptions<'_>, byte: usize, has_error: bool) -> Result
     }
 }
 
-fn build_presence_cache(
-    forest: &tree_squatter::Forest,
-    options: PackOptions<'_>,
-) -> Result<tree_squatter::PresenceCache, tree_squatter::Error> {
+fn build_presence_cache(forest: &Forest, options: PackOptions<'_>) -> Result<PresenceCache, Error> {
     use std::ops::ControlFlow;
-    tree_squatter::PresenceCache::build_selected_with_cancellation(
+    PresenceCache::build_selected_with_cancellation(
         forest,
         |_| true,
         || {
@@ -176,7 +174,7 @@ fn build_presence_cache(
                 .map_or(ControlFlow::Continue(()), |callback| callback())
         },
     )
-    .map_err(tree_squatter::Error::from)
+    .map_err(Error::from)
 }
 
 #[derive(Debug)]
@@ -187,7 +185,7 @@ pub enum LoadError {
     Language(tree_sitter::LanguageError),
     Cancelled,
     ParseFailed,
-    Pack(tree_squatter::Error),
+    Pack(Error),
 }
 impl std::fmt::Display for LoadError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -222,7 +220,7 @@ impl LoadedFile {
     pub fn source(&self) -> &[u8] {
         &self.source
     }
-    pub fn tree(&self) -> &tree_squatter::Forest {
+    pub fn tree(&self) -> &Forest {
         self.tree.tree()
     }
     pub fn retains_transaction(&self) -> bool {
@@ -230,7 +228,7 @@ impl LoadedFile {
     }
     /// Return an owned copy. Existing aliases keep their snapshots until dropped.
     /// Auxiliary semantics are not revalidated while detaching.
-    pub fn detach(&self) -> Result<Self, tree_squatter::Error> {
+    pub fn detach(&self) -> Result<Self, Error> {
         if !self.tree.retained {
             return Ok(self.clone());
         }
@@ -354,7 +352,7 @@ impl Persistence {
         &self,
         tree_sitter_language: &tree_sitter::Language,
         fallback_name: &str,
-    ) -> Result<IdentifiedLanguage, tree_squatter::Error> {
+    ) -> Result<IdentifiedLanguage, Error> {
         let identity = LanguageIdentity::new(tree_sitter_language, fallback_name);
         self.prepare_identified_language(tree_sitter_language, identity)
     }
@@ -365,7 +363,7 @@ impl Persistence {
         tree_sitter_language: &tree_sitter::Language,
         fallback_name: &str,
         fallback_version: LanguageVersion,
-    ) -> Result<IdentifiedLanguage, tree_squatter::Error> {
+    ) -> Result<IdentifiedLanguage, Error> {
         let identity = LanguageIdentity::new_with_version(
             tree_sitter_language,
             fallback_name,
@@ -378,14 +376,14 @@ impl Persistence {
         &self,
         tree_sitter_language: &tree_sitter::Language,
         identity: LanguageIdentity,
-    ) -> Result<IdentifiedLanguage, tree_squatter::Error> {
+    ) -> Result<IdentifiedLanguage, Error> {
         let prepared = match self
             .store
             .as_ref()
             .and_then(|store| store.prepare_language(tree_sitter_language, identity.hash))
         {
             Some(prepared) => prepared,
-            None => tree_squatter::Language::new(tree_sitter_language)?,
+            None => Language::new(tree_sitter_language)?,
         };
         Ok(IdentifiedLanguage::new(prepared, identity))
     }

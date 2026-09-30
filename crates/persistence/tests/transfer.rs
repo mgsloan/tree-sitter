@@ -2,6 +2,7 @@ mod common;
 use common::grammar_with_identity as language;
 
 use std::{fs, path::Path};
+use tree_squatter::{PackOptions, Parser};
 use tree_squatter_persistence::*;
 
 fn load(cache: &Persistence, write: WritePolicy) -> LoadResult {
@@ -9,9 +10,9 @@ fn load(cache: &Persistence, write: WritePolicy) -> LoadResult {
         .load_with_options(
             Path::new("file.json"),
             &language(42),
-            &mut tree_squatter::Parser::new(),
+            &mut Parser::new(),
             LoadOptions {
-                pack: tree_squatter::PackOptions {
+                pack: PackOptions {
                     symbol_presence: &|_| true,
                     ..Default::default()
                 },
@@ -167,9 +168,9 @@ fn transfer_preserves_points_policy() {
             .load_with_options(
                 Path::new("file.json"),
                 &language(42),
-                &mut tree_squatter::Parser::new(),
+                &mut Parser::new(),
                 LoadOptions {
-                    pack: tree_squatter::PackOptions {
+                    pack: PackOptions {
                         points,
                         ..Default::default()
                     },

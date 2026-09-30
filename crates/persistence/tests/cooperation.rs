@@ -4,7 +4,7 @@ mod common;
 use common::{ChildProcess, language, load};
 
 use std::{fs, ops::ControlFlow, os::fd::AsRawFd, path::Path};
-use tree_squatter::{ParseOptions, traits::ParseStateLike};
+use tree_squatter::{PackOptions, ParseOptions, Parser, traits::ParseStateLike};
 use tree_squatter_persistence::*;
 
 #[test]
@@ -107,7 +107,7 @@ fn wait_budget_bypasses_live_owner_and_cancellation_stops_deferred_work() {
         .load_step(
             Path::new("file.json"),
             &language(),
-            &mut tree_squatter::Parser::new(),
+            &mut Parser::new(),
             LoadOptions::default(),
         )
         .unwrap()
@@ -116,7 +116,7 @@ fn wait_budget_bypasses_live_owner_and_cancellation_stops_deferred_work() {
     };
     assert!(matches!(
         pending.resume(
-            &mut tree_squatter::Parser::new(),
+            &mut Parser::new(),
             LoadOptions {
                 parse: ParseOptions::new()
                     .progress_callback(&mut |_: &dyn ParseStateLike| ControlFlow::Break(())),
@@ -178,7 +178,7 @@ fn deferred_contender_reuses_winner_publication() {
         .load_step(
             Path::new("file.json"),
             &language(),
-            &mut tree_squatter::Parser::new(),
+            &mut Parser::new(),
             LoadOptions::default(),
         )
         .unwrap()
@@ -189,7 +189,7 @@ fn deferred_contender_reuses_winner_publication() {
         .load_step(
             Path::new("file.json"),
             &language(),
-            &mut tree_squatter::Parser::new(),
+            &mut Parser::new(),
             LoadOptions::default(),
         )
         .unwrap()
@@ -207,7 +207,7 @@ fn deferred_contender_reuses_winner_publication() {
             .cache_hit()
     );
     // No language is installed: a hit must not need to initialize this parser.
-    let mut parser = tree_squatter::Parser::new();
+    let mut parser = Parser::new();
     let LoadStep::Ready(result) = contender
         .resume(&mut parser, LoadOptions::default())
         .unwrap()
@@ -222,7 +222,7 @@ fn deferred_contender_reuses_winner_publication() {
 #[test]
 fn deferred_attempts_use_fresh_options() {
     use std::{cell::Cell, rc::Rc};
-    use tree_squatter::PackOptions;
+    use tree_squatter::ForestRegion;
 
     let root = tempfile::tempdir().unwrap();
     fs::write(root.path().join("file.json"), "[1]").unwrap();
@@ -262,7 +262,7 @@ fn deferred_attempts_use_fresh_options() {
     drop(owner);
 
     let visits = Cell::new(0);
-    let select = |region: tree_squatter::ForestRegion<'_>| {
+    let select = |region: ForestRegion<'_>| {
         visits.set(visits.get() + 1);
         region.group_count() == 1
     };
@@ -325,7 +325,7 @@ fn changed_options_preserve_the_capture_guard() {
         .resume_with_context(
             &mut context,
             LoadOptions {
-                pack: tree_squatter::PackOptions {
+                pack: PackOptions {
                     points: false,
                     ..Default::default()
                 },

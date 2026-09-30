@@ -8,7 +8,7 @@ use std::{
     ptr::NonNull,
     sync::{Arc, atomic::Ordering},
 };
-use tree_squatter::{Forest, StableSlab};
+use tree_squatter::{Error, Forest, PackOptions, PointsData, PresenceCache, StableSlab};
 
 // Leave most of the 256 environment reader slots available for short operations.
 pub(crate) const MAX_RETAINED_READERS: usize = 32;
@@ -71,8 +71,8 @@ pub(crate) fn get(
     request: &Request,
     source: &[u8],
     language: &IdentifiedLanguage,
-    options: tree_squatter::PackOptions<'_>,
-) -> Result<Option<(Forest, bool)>, tree_squatter::Error> {
+    options: PackOptions<'_>,
+) -> Result<Option<(Forest, bool)>, Error> {
     let Some(snapshot) = Snapshot::open(store) else {
         return Ok(None);
     };
@@ -128,9 +128,9 @@ pub(crate) fn get(
                     length: bytes.len(),
                     _snapshot: snapshot.clone(),
                 };
-                tree_squatter::PresenceCache::from_retained(owner)
+                PresenceCache::from_retained(owner)
                     .ok()
-                    .or_else(|| tree_squatter::PresenceCache::copy_from_bytes(&tree, bytes).ok())
+                    .or_else(|| PresenceCache::copy_from_bytes(&tree, bytes).ok())
             });
         complete &= loaded.is_some();
         let cache = match loaded {
@@ -153,9 +153,9 @@ pub(crate) fn get(
                     length: bytes.len(),
                     _snapshot: snapshot.clone(),
                 };
-                tree_squatter::PointsData::from_retained(owner)
+                PointsData::from_retained(owner)
                     .ok()
-                    .or_else(|| tree_squatter::PointsData::copy_from_bytes(&tree, bytes).ok())
+                    .or_else(|| PointsData::copy_from_bytes(&tree, bytes).ok())
             });
         let Some(points) = points else {
             return Ok(None);

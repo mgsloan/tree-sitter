@@ -54,7 +54,7 @@ Implemented:
 - `LoadedFile::evict_sidecar` deletes presence or points independently, preserving
   the core, other sidecar, and existing readers. Subsequent loads or publishers
   can rebuild evicted presence data; missing requested points require reparsing.
-- `LoadOptions::pack` uses `tree_squatter::PackOptions` on both cache hits and
+- `LoadOptions::pack` uses `PackOptions` on both cache hits and
   misses, including borrowed region predicates and presence cancellation.
   Its default presence policy selects regions with at least 64 groups. The simple
   `load` method uses the side-data defaults in `Options`. Points affect grouping,
@@ -71,7 +71,7 @@ Implemented:
 - Core header, extent, and root-span checks, with sidecar dimension checks
   and point-delta overflow checks, plus debug topology and content checks; no slab checksum. Node source bounds are checked
   before returning the pair. See [the validator audit](validation.md).
-- Fresh whole-file parsing through `tree_squatter::Parser`. The parser-taking
+- Fresh whole-file parsing through `Parser`. The parser-taking
   load methods accept this packed parser; `LoadContext` owns one for worker reuse.
 - `LoadOptions::parse` accepts shared `ParseOptions` and its
   `FnMut(&dyn ParseStateLike) -> ControlFlow<()>` progress callback. Parsing forwards parser states. Other checks report bytes

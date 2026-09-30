@@ -5,6 +5,7 @@ use crate::{
 };
 use std::io::{self, Read, Write};
 use std::sync::Arc;
+use tree_squatter::{Forest, PointsData, PresenceCache};
 
 // Prototype formats stay at version 0; no persisted data needs backward compatibility.
 const TRANSFER_SIGNATURE: &[u8; 8] = b"TSQXFR00";
@@ -122,7 +123,7 @@ impl Persistence {
         if request.header.as_slice() != &prefix[40..] {
             return Err(invalid().into());
         }
-        let mut tree = tree_squatter::Forest::from_bytes_safety_checked(
+        let mut tree = Forest::from_bytes_safety_checked(
             std::slice::from_ref(&language.prepared),
             &bytes[path_len + source_len..path_len + source_len + tree_len],
         )
@@ -136,18 +137,16 @@ impl Persistence {
             return Err(invalid().into());
         }
         if request.presence {
-            let cache = tree_squatter::PresenceCache::build(&tree).map_err(io::Error::other)?;
+            let cache = PresenceCache::build(&tree).map_err(io::Error::other)?;
             tree.set_presence_cache(cache).map_err(io::Error::other)?;
         }
         if request.points != (points_len != 0) {
             return Err(invalid().into());
         }
         if request.points {
-            let points = tree_squatter::PointsData::copy_from_bytes(
-                &tree,
-                &bytes[path_len + source_len + tree_len..],
-            )
-            .map_err(io::Error::other)?;
+            let points =
+                PointsData::copy_from_bytes(&tree, &bytes[path_len + source_len + tree_len..])
+                    .map_err(io::Error::other)?;
             tree.set_point_data(points).map_err(io::Error::other)?;
         }
         let store = self
