@@ -6,6 +6,8 @@ Lean
 
 # Todos
 
+- [x] Move core crate to `crates/core/tree-squatter/`
+
 - [ ] Reduce bounds checking?
 
 - [ ] Update agent rules about documentation and refine documentation.  Should copy text from tree-sitter docs where sensible.  Should describe what's important / guaranteed to the user, not how it's implemented

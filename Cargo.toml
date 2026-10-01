@@ -9,7 +9,7 @@ members = [
   "crates/tags",
   "crates/xtask",
   "crates/language",
-  "crates/squatter",
+  "crates/core/tree-squatter",
   "crates/persistence",
   "crates/corpus-analysis",
   "crates/squatter-bench",
