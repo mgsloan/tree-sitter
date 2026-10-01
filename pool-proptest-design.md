@@ -19,10 +19,16 @@ and packed parsers are created by operations. Each forest entry retains source
 and Tree-sitter reference trees for every packed root, ordered region grammars,
 packing options, and expected side-data state.
 
-The outer pools contain owned values:
+Use one static, immutable language pool shared by all cases. Each entry holds
+paired Tree-sitter and Squatter language handles, fixture/generation metadata,
+and direct-parser support. Documents, parsers, queries, and forest regions refer
+to stable indices in this pool. Operations never add or drop languages.
+
+The language pool and mutable outer pools contain:
 
 | Pool | Values and model facts |
 | --- | --- |
+| Languages (static) | JSON, C, C#, Python, and Rust; paired language handles and supported input fixtures |
 | Documents | UTF-8 source and grammar; edits produce new entries |
 | Parsers | Tree-sitter parsers, compatible `Parser` values, and restricted `TreeFellerParser` values; backend and grammar |
 | Packers | Reusable `Packer` values |
@@ -31,19 +37,27 @@ The outer pools contain owned values:
 | Queries | Squatter and Tree-sitter queries, source, grammar, disabled patterns/captures |
 | Query cursors | Reusable optimized, unoptimized, and Tree-sitter cursors plus configuration |
 
-Use fixed grammar fixtures from `tests/support/mod.rs`: JSON first, then C and
-C#. Direct parsing gets an explicit subset of supported grammars and documents;
-include bounded Python/Rust fixtures from `tests/parser.rs` and `bindings.rs`
-for external scanners and non-terminal extras. Grammar handles can initially be
-fixture-owned; testing their destruction is already covered by `bindings.rs`.
+Initialize the language pool from the JSON, C, and C# fixtures in
+`tests/support/mod.rs` and the Python/Rust fixtures in `tests/parser.rs` and
+`bindings.rs`. Direct parsing gets an explicit subset of supported grammars and
+documents, including external scanners and non-terminal extras. Language
+destruction remains covered by `bindings.rs`.
 
 `Forest` owns storage; `Tree<'forest>` and `ForestRegion<'forest>` are borrowed
-views. `Forest::from_retained` also returns a `Forest`. Start with single-tree
-forests, then generate ordered `PackRegion` lists with multiple roots, mixed
-grammars, and repeated grammars in separate regions. Check the returned
-`Vec<TreeIx>` against flattened input order. Empty forests are valid; empty
+views. `Forest::from_retained` also returns a `Forest`. Generate both single-tree
+forests and ordered `PackRegion` lists with multiple roots. A dedicated
+generation branch requires at least two distinct languages in one forest;
+each region is homogeneous. Include repeated languages in separate regions.
+Check the returned `Vec<TreeIx>` against flattened input order. Empty forests
+are valid; empty
 regions are explicit negative cases. Use `trees()`/`tree()` for general forests:
 the `root_node()`, `walk()`, and `language()` conveniences require one tree.
+
+Include a fixed JSON/C/C#/JSON forest so mixed-language coverage does not depend
+on generated operation sequences surviving repair. Exercise its navigation,
+scans, compaction, loading, side-data changes, and per-region queries. Resolve
+kind, field, and supertype IDs through each tree's language; equal numeric IDs
+across languages do not establish compatibility.
 
 ### Borrowed values
 
@@ -138,7 +152,9 @@ Generate raw operations with weighted `prop_oneof!` strategies and small scalar
 arguments. Map the case through `repair`, as the old test does. Repair runs a
 metadata model, without invoking the library:
 
-1. Resolve pool selectors to actual indices among compatible live entries.
+1. Resolve language selectors against the static pool and other selectors
+   among compatible live entries. Preserve the distinct-language requirement
+   of mixed-language packing operations.
 2. Drop an operation only when required inputs are absent or incompatible.
 3. Apply its pool/metadata effects, including nested view operations.
 4. Store the resolved indices in the repaired case.
@@ -347,8 +363,9 @@ iterations, and persist failures beside the test in
 `pool_proptest.proptest-regressions`. Start with the old test's `TestRunner`
 pattern so one summary can report generated/admitted/executed operations,
 repairs by reason, successful/failed navigation, parser failures, storage modes,
-scan results, and completed query matches. Exclude shrink attempts from normal
-coverage counts. Tune weights using actual executed coverage.
+mixed-language forests, scan results, and completed query matches. Exclude
+shrink attempts from normal coverage counts. Tune weights using actual executed
+coverage.
 
 Failure output includes the repaired case, operation and nested-step indices,
 source/query text, region grammars/options, forest/root provenance, resolved
@@ -358,9 +375,10 @@ trace; promote useful minimized failures to focused regression tests.
 ## Implementation sequence
 
 1. Add `proptest` as a squatter dev-dependency and the single integration test.
-   Implement repair, paired single-tree forest validation, parser/packer
-   ownership operations, and scoped node/cursor pools. Reuse existing fixtures.
-2. Add multiple roots/regions, storage variants, saved sidecars, selective
+   Implement the static language pool, repair, paired forest validation,
+   parser/packer ownership operations, and scoped node/cursor pools. Include
+   mixed-language forest generation and the fixed JSON/C/C#/JSON case.
+2. Add further root/region variations, storage variants, saved sidecars, selective
    presence, boundary-focused documents, callback parsing, and scan recipes.
    Include fixed cases for parse/pack, reuse/`drop_scratch`/drop, and copy/drop/read
    lifecycles.
