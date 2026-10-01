@@ -6,13 +6,11 @@ Lean
 
 # Todos
 
-- [x] Move core crate to `crates/core/tree-squatter/`
-
-- [ ] Reduce bounds checking?
-
 - [ ] Update agent rules about documentation and refine documentation.  Should copy text from tree-sitter docs where sensible.  Should describe what's important / guaranteed to the user, not how it's implemented
 
 - [ ] Fuzz tests to help ensure that untrusted bytes don't cause wrong memory access etc.  To make this efficient the solution may be validation
+
+- [ ] Consider making API a bit more storage agnostic - remove `RegionIx` and instead require that language -> region mapping exists?  Main reasons to keep that a multimap is to support growing / appending to a forest, or to have regions with non-overlapping intervals (support range queries quickly + nesting)
 
 ## Use in Zed
 
@@ -198,6 +196,8 @@ Parse only the needed info.
   code.
 
 - [ ] Explicit memory prefetching?
+
+- [ ] Reduce bounds checking?
 
 # Misc
 
