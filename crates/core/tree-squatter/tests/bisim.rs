@@ -3,7 +3,8 @@ mod support;
 
 use proptest::{
     prelude::*,
-    test_runner::{Config, FileFailurePersistence, RngSeed, TestCaseError, TestRunner},
+    strategy::{NewTree, ValueTree},
+    test_runner::{Config, FileFailurePersistence, RngSeed, TestCaseError, TestError, TestRunner},
 };
 use std::{
     cell::{Cell, RefCell},
@@ -13,7 +14,7 @@ use std::{
     slice,
     sync::{
         Arc, LazyLock,
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
 };
 use tree_sitter::{Point, StreamingIterator};
@@ -748,6 +749,8 @@ fn compatible(index: &mut usize, choices: impl Iterator<Item = usize>) -> bool {
 
 #[derive(Default, Debug)]
 struct Coverage {
+    // includes regression replays
+    cases: usize,
     generated: usize,
     admitted: usize,
     executed: usize,
@@ -3498,6 +3501,7 @@ fn case_strategy() -> BoxedStrategy<Case> {
 }
 
 fn record(total: &mut Coverage, coverage: &Coverage) {
+    total.cases += coverage.cases;
     total.generated += coverage.generated;
     total.admitted += coverage.admitted;
     total.executed += coverage.executed;
@@ -3537,11 +3541,65 @@ fn pool_config() -> Config {
     config
 }
 
-fn pool_worker(config: Config) -> (Coverage, Result<(), String>) {
+#[derive(Debug)]
+struct Interruptible<'a, S> {
+    strategy: S,
+    interrupted: &'a AtomicBool,
+}
+
+struct InterruptibleTree<'a, V> {
+    tree: V,
+    interrupted: &'a AtomicBool,
+}
+
+impl<'a, S: Strategy> Strategy for Interruptible<'a, S> {
+    type Tree = InterruptibleTree<'a, S::Tree>;
+    type Value = S::Value;
+
+    fn new_tree(&self, runner: &mut TestRunner) -> NewTree<Self> {
+        if self.interrupted.load(Ordering::Relaxed) {
+            // generation errors abort without shrinking or persisting a failure
+            return Err("interrupted".into());
+        }
+        Ok(InterruptibleTree {
+            tree: self.strategy.new_tree(runner)?,
+            interrupted: self.interrupted,
+        })
+    }
+}
+
+impl<V: ValueTree> ValueTree for InterruptibleTree<'_, V> {
+    type Value = V::Value;
+
+    fn current(&self) -> Self::Value {
+        self.tree.current()
+    }
+
+    fn simplify(&mut self) -> bool {
+        !self.interrupted.load(Ordering::Relaxed) && self.tree.simplify()
+    }
+
+    fn complicate(&mut self) -> bool {
+        !self.interrupted.load(Ordering::Relaxed) && self.tree.complicate()
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum Outcome {
+    Passed,
+    Interrupted,
+    Failed(String),
+}
+
+fn pool_worker(config: Config, interrupted: &AtomicBool) -> (Coverage, Outcome) {
     let mut runner = TestRunner::new(config);
     let total = RefCell::new(Coverage::default());
     let shrinking = Cell::new(false);
-    let result = runner.run(&case_strategy(), |raw| {
+    let strategy = Interruptible {
+        strategy: case_strategy(),
+        interrupted,
+    };
+    let result = runner.run(&strategy, |raw| {
         let mut coverage = Coverage::default();
         let case = repair(&raw, &mut coverage);
         let result = catch_unwind(AssertUnwindSafe(|| execute(&case, &mut coverage)))
@@ -3555,23 +3613,24 @@ fn pool_worker(config: Config) -> (Coverage, Result<(), String>) {
             shrinking.set(true);
         }
         if !shrinking.get() {
+            coverage.cases = 1;
             record(&mut total.borrow_mut(), &coverage);
         }
         result
     });
-    (
-        total.into_inner(),
-        result.map_err(|error| error.to_string()),
-    )
+    let outcome = match result {
+        Ok(()) => Outcome::Passed,
+        Err(TestError::Abort(_)) if interrupted.load(Ordering::Relaxed) => Outcome::Interrupted,
+        Err(error) => Outcome::Failed(error.to_string()),
+    };
+    (total.into_inner(), outcome)
 }
 
 #[test]
 fn bisim() {
-    let (total, result) = pool_worker(pool_config());
+    let (total, outcome) = pool_worker(pool_config(), &AtomicBool::new(false));
     eprintln!("pool coverage (excluding shrinking): {total:?}");
-    if let Err(error) = result {
-        panic!("{error}");
-    }
+    assert_eq!(outcome, Outcome::Passed);
 }
 
 fn parse_jobs(arguments: impl IntoIterator<Item = String>) -> Result<usize, String> {
@@ -3606,8 +3665,6 @@ fn worker_config(config: &Config, worker: usize, jobs: usize) -> Config {
 
 #[cfg(not(test))]
 pub(crate) fn run_cli() -> std::process::ExitCode {
-    use proptest::strategy::ValueTree;
-
     let arguments: Vec<_> = std::env::args().skip(1).collect();
     if arguments.iter().any(|argument| argument == "--help") {
         println!(
@@ -3622,7 +3679,22 @@ pub(crate) fn run_cli() -> std::process::ExitCode {
             return std::process::ExitCode::from(2);
         }
     };
-    run_fixed_cases();
+    let interrupted = Arc::new(AtomicBool::new(false));
+    let signal_interrupted = interrupted.clone();
+    if let Err(error) = ctrlc::set_handler(move || {
+        if signal_interrupted.swap(true, Ordering::Relaxed) {
+            eprintln!("forcing exit");
+            std::process::exit(130);
+        }
+        eprintln!("interrupt requested; finishing active cases (Ctrl-C again to force exit)");
+    }) {
+        eprintln!("install interrupt handler: {error}");
+        return std::process::ExitCode::from(2);
+    }
+    run_fixed_cases(&interrupted);
+    if interrupted.load(Ordering::Relaxed) {
+        return std::process::ExitCode::from(130);
+    }
     let mut config = pool_config();
     if config.fork() {
         eprintln!("fork/timeout options require the cargo test entry point");
@@ -3648,26 +3720,32 @@ pub(crate) fn run_cli() -> std::process::ExitCode {
         let workers: Vec<_> = (0..jobs)
             .map(|worker| {
                 let config = worker_config(&config, worker, jobs);
+                let interrupted = &interrupted;
                 std::thread::Builder::new()
                     .name(format!("bisim-worker-{worker}"))
                     .spawn_scoped(scope, move || {
                         let cases = config.cases;
                         let seed = config.rng_seed;
-                        let (coverage, result) = pool_worker(config);
+                        let (coverage, outcome) = pool_worker(config, interrupted);
+                        let status = match &outcome {
+                            Outcome::Passed => "passed",
+                            Outcome::Interrupted => "interrupted",
+                            Outcome::Failed(_) => "FAILED",
+                        };
                         eprintln!(
-                            "worker {worker}: target {cases} cases; seed {seed}; {}",
-                            if result.is_ok() { "passed" } else { "FAILED" }
+                            "worker {worker}: target {cases} cases; seed {seed}; {status}; {} completed trials (including regression replays)",
+                            coverage.cases,
                         );
-                        (coverage, result)
+                        (coverage, outcome)
                     })
                     .expect("spawn pool worker")
             })
             .collect();
         for worker in workers {
             match worker.join() {
-                Ok((coverage, result)) => {
+                Ok((coverage, outcome)) => {
                     record(&mut total, &coverage);
-                    if let Err(error) = result {
+                    if let Outcome::Failed(error) = outcome {
                         failed = true;
                         eprintln!("{error}");
                     }
@@ -3683,9 +3761,44 @@ pub(crate) fn run_cli() -> std::process::ExitCode {
     eprintln!("elapsed: {:.2?}", start.elapsed());
     if failed {
         std::process::ExitCode::FAILURE
+    } else if interrupted.load(Ordering::Relaxed) {
+        eprintln!(
+            "interrupted; completed {} trials (including regression replays)",
+            total.cases
+        );
+        std::process::ExitCode::from(130)
     } else {
         std::process::ExitCode::SUCCESS
     }
+}
+
+#[cfg_attr(test, test)]
+fn interruption_aborts_generation_and_shrinking() {
+    let interrupted = AtomicBool::new(true);
+    let (coverage, outcome) = pool_worker(
+        Config {
+            failure_persistence: None,
+            ..pool_config()
+        },
+        &interrupted,
+    );
+    assert_eq!(outcome, Outcome::Interrupted);
+    assert_eq!(coverage.cases, 0);
+    assert_eq!(coverage.executed, 0);
+
+    let mut runner = TestRunner::default();
+    let interrupted = AtomicBool::new(false);
+    let strategy = Interruptible {
+        strategy: 0usize..100,
+        interrupted: &interrupted,
+    };
+    let mut tree = strategy.new_tree(&mut runner).unwrap();
+    let original = tree.current();
+    interrupted.store(true, Ordering::Relaxed);
+    assert!(strategy.new_tree(&mut runner).is_err());
+    assert!(!tree.simplify());
+    assert!(!tree.complicate());
+    assert_eq!(tree.current(), original);
 }
 
 #[cfg_attr(test, test)]
@@ -3726,8 +3839,12 @@ fn concurrent_runner_configuration() {
 }
 
 #[cfg(not(test))]
-fn run_fixed_cases() {
+fn run_fixed_cases(interrupted: &AtomicBool) {
     let tests: &[(&str, fn())] = &[
+        (
+            "interruption_aborts_generation_and_shrinking",
+            interruption_aborts_generation_and_shrinking,
+        ),
         (
             "concurrent_runner_configuration",
             concurrent_runner_configuration,
@@ -3761,6 +3878,9 @@ fn run_fixed_cases() {
         ),
     ];
     for &(name, test) in tests {
+        if interrupted.load(Ordering::Relaxed) {
+            break;
+        }
         test();
         eprintln!("{name}: passed");
     }

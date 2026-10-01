@@ -379,6 +379,13 @@ independent pools, divide `PROPTEST_CASES`, and use the printed base seed plus
 their worker index. Run fixed regressions once and combine worker coverage;
 each worker shrinks and persists its failures independently.
 
+Ctrl-C stops generation and shrinking, lets active cases finish, and joins all
+workers. Report completed trials (including regression replays) and accumulated
+coverage, then exit with status 130. Interruption must not create a failing seed.
+A second Ctrl-C forces exit. LLVM profiles are written on normal exit; after an
+interrupted coverage run, use `cargo llvm-cov report` to generate the report from
+those profiles without rerunning cases.
+
 Failure output includes the repaired case, operation and nested-step indices,
 source/query text, region grammars/options, forest/root provenance, resolved
 arguments, and both answers. Persist the seed and print a readable operation
