@@ -50,6 +50,16 @@ pub struct PackRegion<'tree> {
     pub roots: Vec<tree_sitter::Node<'tree>>,
 }
 
+pub enum PackRoot<'tree> {
+    Sitter(tree_sitter::Node<'tree>),
+    Squatter(crate::Node<'tree>),
+}
+
+pub struct MixedPackRegion<'tree> {
+    pub language: Language,
+    pub roots: Vec<PackRoot<'tree>>,
+}
+
 struct InputNode {
     start_byte: u32,
     end_byte: u32,
@@ -106,6 +116,25 @@ impl Packer {
         inputs: Vec<PackRegion<'_>>,
         options: PackOptions<'_>,
     ) -> Result<(Forest, Vec<TreeIx>), Error> {
+        self.pack_mixed_forest(
+            inputs
+                .into_iter()
+                .map(|input| MixedPackRegion {
+                    language: input.language,
+                    roots: input.roots.into_iter().map(PackRoot::Sitter).collect(),
+                })
+                .collect(),
+            options,
+        )
+    }
+
+    /// Packs native and packed roots together, preserving their order and coordinates.
+    /// Packed roots must share their region's prepared language instance.
+    pub fn pack_mixed_forest(
+        &mut self,
+        inputs: Vec<MixedPackRegion<'_>>,
+        options: PackOptions<'_>,
+    ) -> Result<(Forest, Vec<TreeIx>), Error> {
         if inputs.iter().any(|input| input.roots.is_empty()) {
             return Err(Error::InvalidArgument);
         }
@@ -113,8 +142,12 @@ impl Packer {
         let mut expected_nodes = 0u64;
         for input in &inputs {
             for root in &input.roots {
+                let descendants = match root {
+                    PackRoot::Sitter(root) => root.descendant_count(),
+                    PackRoot::Squatter(root) => root.descendant_count(),
+                };
                 expected_nodes = expected_nodes
-                    .checked_add(root.descendant_count() as u64)
+                    .checked_add(descendants as u64)
                     .ok_or(Error::Overflow)?;
             }
         }
@@ -129,14 +162,25 @@ impl Packer {
         for (index, input) in inputs.into_iter().enumerate() {
             let region = RegionIx(index as u32);
             for node in input.roots {
-                let root = traversal::Root::new(node, input.language.tables(), options.points)?;
                 let start = builder.distance();
-                traversal::pack(
-                    &mut builder,
-                    input.language.tables(),
-                    &mut self.traversal,
-                    root,
-                )?;
+                match node {
+                    PackRoot::Sitter(node) => {
+                        let root =
+                            traversal::Root::new(node, input.language.tables(), options.points)?;
+                        traversal::pack(
+                            &mut builder,
+                            input.language.tables(),
+                            &mut self.traversal,
+                            root,
+                        )?;
+                    }
+                    PackRoot::Squatter(node) => {
+                        if !ptr::eq(node.tables(), input.language.tables()) {
+                            return Err(Error::Language);
+                        }
+                        traversal::pack_packed(&mut builder, &mut self.traversal, node)?;
+                    }
+                }
                 let tree = builder.finish_root(start, region)?;
                 mapping.try_reserve(1).map_err(|_| Error::Allocation)?;
                 mapping.push(tree);

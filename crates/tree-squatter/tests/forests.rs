@@ -13,6 +13,66 @@ fn describe(root: Node<'_>) -> Vec<(tree_squatter::KindId, tree_sitter::Range)> 
         .collect()
 }
 
+#[test]
+fn mixed_direct_and_native_roots_match_native_forest() -> Result<(), Box<dyn std::error::Error>> {
+    use tree_squatter::{MixedPackRegion, PackRoot, TreeFellerParser};
+
+    let c = Language::new(&support::c_language())?;
+    let json = Language::new(&support::json_language())?;
+    let source = "/* π */ int answer(int value) { return value + 1; }";
+    let native = support::parse_native(&support::c_language(), source);
+    let malformed = support::parse_native(&support::c_language(), "int main( {");
+    let json_tree = support::parse_native(&support::json_language(), "[true, null]");
+    let direct = TreeFellerParser::new(&c)?.parse(source)?;
+    let malformed_packed = Forest::pack(&c, &malformed)?;
+    let mut packer = Packer::new()?;
+    for points in [false, true] {
+        let options = PackOptions {
+            points,
+            symbol_presence: &|_| true,
+            ..Default::default()
+        };
+        let (expected, expected_mapping) = packer.pack_forest(
+            vec![
+                PackRegion {
+                    language: c.clone(),
+                    roots: vec![
+                        native.root_node(),
+                        malformed.root_node(),
+                        malformed.root_node(),
+                    ],
+                },
+                PackRegion {
+                    language: json.clone(),
+                    roots: vec![json_tree.root_node()],
+                },
+            ],
+            options,
+        )?;
+        let (actual, mapping) = packer.pack_mixed_forest(
+            vec![
+                MixedPackRegion {
+                    language: c.clone(),
+                    roots: vec![
+                        PackRoot::Squatter(direct.root_node()),
+                        PackRoot::Sitter(malformed.root_node()),
+                        PackRoot::Squatter(malformed_packed.root_node()),
+                    ],
+                },
+                MixedPackRegion {
+                    language: json.clone(),
+                    roots: vec![PackRoot::Sitter(json_tree.root_node())],
+                },
+            ],
+            options,
+        )?;
+        assert_eq!(mapping, expected_mapping);
+        support::assert_same_tree(&actual, &expected);
+        actual.validate()?;
+    }
+    Ok(())
+}
+
 struct SlabOwner(Box<[u64]>);
 unsafe impl StableSlab for SlabOwner {
     fn bytes(&self) -> &[u8] {
