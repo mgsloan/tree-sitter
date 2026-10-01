@@ -14,10 +14,13 @@ packing, side data, storage ownership, scans, and reusable scratch.
 ## Case structure
 
 A case contains generated documents and a `Vec<Operation>`. Start with one
-Tree-sitter parser, one `Packer`, and a paired single-tree JSON forest. Queries
-and packed parsers are created by operations. Each forest entry retains source
-and Tree-sitter reference trees for every packed root, ordered region grammars,
-packing options, and expected side-data state.
+parser tuple, one `Packer`, and a paired single-tree JSON forest. `NewParser`
+takes a language and creates a tuple: a Tree-sitter reference parser, a
+Squatter `Parser`, a Tree-sitter parser with a reusable `Packer`, and a direct
+parser when the grammar supports it. Queries and additional parser tuples are
+created by operations. Each forest entry retains source and Tree-sitter
+reference trees for every packed root, ordered region grammars, packing options,
+and expected side-data state.
 
 Use one static, immutable language pool shared by all cases. Each entry holds
 paired Tree-sitter and Squatter language handles, fixture/generation metadata,
@@ -30,7 +33,7 @@ The language pool and mutable outer pools contain:
 | --- | --- |
 | Languages (static) | JSON, C, C#, Python, and Rust; paired language handles and supported input fixtures |
 | Documents | UTF-8 source and grammar; edits produce new entries |
-| Parsers | Tree-sitter parsers, compatible `Parser` values, and restricted `TreeFellerParser` values; backend and grammar |
+| Parsers | Tuples of reference, parse-and-pack, explicit-pack, and optional direct parsers; grammar |
 | Packers | Reusable `Packer` values |
 | Forests | `Forest` values with owned or retained core storage; reference roots/sources, stable identity, region order, point state, presence coverage |
 | Saved sidecars | Serialized `PointsData`/`PresenceCache` bytes and the layout provenance needed to restore them |
@@ -39,9 +42,9 @@ The language pool and mutable outer pools contain:
 
 Initialize the language pool from the JSON, C, and C# fixtures in
 `tests/support/mod.rs` and the Python/Rust fixtures in `tests/parser.rs` and
-`bindings.rs`. Direct parsing gets an explicit subset of supported grammars and
-documents, including external scanners and non-terminal extras. Language
-destruction remains covered by `bindings.rs`.
+`bindings.rs`. Direct parsing requires a supported grammar and attempts every
+document, including edits, malformed input, external scanners, and non-terminal
+extras. Language destruction remains covered by `bindings.rs`.
 
 `Forest` owns storage; `Tree<'forest>` and `ForestRegion<'forest>` are borrowed
 views. `Forest::from_retained` also returns a `Forest`. Generate both single-tree
@@ -117,8 +120,12 @@ scratch. Squatter currently has no edit registration or incremental parsing
 API. Exercise both contiguous input and bounded chunk callbacks through the
 implemented `Parse` trait and `PackedParseOptions`. Chunks may split UTF-8 and
 reads may go backward; each callback exposes one immutable document. Compare
-outputs, not callback event sequences. Keep database persistence, threading,
-arbitrary slab corruption, and callback panics outside this test.
+outputs, not callback event sequences. Each parse exercises all parsers in its
+tuple under the same options. Compare core slab, points, and presence bytes
+against packing the reference tree, then retain one forest and its reference.
+Direct parsing may return a syntax error; successful output must be byte-identical.
+Keep database persistence, threading, arbitrary slab corruption, and callback
+panics outside this test.
 
 ### Results and predictable pool sizes
 
@@ -130,13 +137,13 @@ discarding useful out-of-range child/field/range calls.
 Use separate operations for expected failures: reject a known malformed query,
 reject a known-invalid direct-parser input or empty packing region, or execute
 a query against a different grammar. These append no value. An unexpected
-parse/pack/load error fails the case; it never silently truncates execution or
-substitutes a forest.
+parse/pack/load error fails the case, except for direct-parser syntax errors;
+it never silently truncates execution or substitutes a forest.
 
 Malformed documents still receive full coverage through Tree-sitter parsing
-and packing. Direct parsing must succeed on its supported valid-input subset,
-and must return the expected error class on its invalid fixtures. After a
-failure, reuse that parser on valid input and compare the result.
+and packing. Direct parsing must return the expected error class on its invalid
+fixtures. After a failure, reuse that parser on valid input and compare the
+result.
 
 Use deterministic cancellation recipes for compatible parsing and presence
 construction, followed by successful reuse. A canceled presence build leaves
@@ -249,9 +256,9 @@ dimensions, not complete contents; use `validate_for` or `Forest::validate`
 explicitly. Points validation does not establish agreement with source text,
 which remains the reference-tree oracle's job. Known dimension-mismatch
 replacements must fail without changing the previous attachment. Compare a
-reused packer with fresh packing under identical options; semantic equality
-remains the cross-representation requirement, including direct parsing and
-loaded forests.
+reused packer with fresh packing under identical options. Parser outputs must
+have identical core and sidecar bytes; loaded forests preserve the core bytes
+and any sidecars explicitly restored to them.
 
 Retained-slab tests use an aligned immutable owner with a drop counter, following
 the existing storage fixtures. Release all external owner handles, exercise

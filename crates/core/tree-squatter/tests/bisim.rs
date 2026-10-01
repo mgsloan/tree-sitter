@@ -62,7 +62,6 @@ struct Fixture {
     native: tree_sitter::Language,
     packed: Language,
     sources: &'static [&'static str],
-    direct: bool,
     invalid: &'static str,
 }
 
@@ -83,7 +82,6 @@ static LANGUAGES: LazyLock<Vec<Fixture>> = LazyLock::new(|| {
                 "[\r\n\"π😀\", 2]",
                 "{\"x\": [[], {}]}",
             ] as &[_],
-            false,
             "{",
         ),
         (
@@ -96,7 +94,6 @@ static LANGUAGES: LazyLock<Vec<Fixture>> = LazyLock::new(|| {
                 "int broken = ;",
                 "int f() { return 1 }",
             ],
-            true,
             "int broken = ;",
         ),
         (
@@ -108,7 +105,6 @@ static LANGUAGES: LazyLock<Vec<Fixture>> = LazyLock::new(|| {
                 "class C { int x = ; }",
                 "// π😀\r\nclass C {}",
             ],
-            false,
             "class {",
         ),
         (
@@ -120,7 +116,6 @@ static LANGUAGES: LazyLock<Vec<Fixture>> = LazyLock::new(|| {
                 "def f(value):\n\treturn f'hello {value!r:>10} π😀'\n",
                 "text = f'unterminated {",
             ],
-            true,
             "text = f'unterminated {",
         ),
         (
@@ -132,17 +127,15 @@ static LANGUAGES: LazyLock<Vec<Fixture>> = LazyLock::new(|| {
                 "fn main() { let value = /* outer /* inner */ end */ 1; }",
                 "/* unterminated",
             ],
-            true,
             "/* unterminated",
         ),
     ]
     .into_iter()
-    .map(|(name, native, sources, direct, invalid)| Fixture {
+    .map(|(name, native, sources, invalid)| Fixture {
         packed: Language::new(&native).unwrap(),
         name,
         native,
         sources,
-        direct,
         invalid,
     })
     .collect()
@@ -152,7 +145,6 @@ static LANGUAGES: LazyLock<Vec<Fixture>> = LazyLock::new(|| {
 struct Document {
     language: usize,
     source: Arc<str>,
-    direct: bool,
     valid: bool,
 }
 
@@ -160,7 +152,6 @@ fn fixture(language: usize, source: usize) -> Document {
     Document {
         language,
         source: LANGUAGES[language].sources[source].into(),
-        direct: LANGUAGES[language].direct && source < 3,
         valid: match language {
             0 => source != 1 && source != 2,
             1 => source < 3,
@@ -168,13 +159,6 @@ fn fixture(language: usize, source: usize) -> Document {
             _ => source < 3,
         },
     }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Backend {
-    Native,
-    Compatible,
-    Direct,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -345,7 +329,6 @@ enum Operation {
     },
     NewParser {
         language: usize,
-        backend: Backend,
     },
     ParserScratch(usize),
     ResetParser(usize),
@@ -498,7 +481,7 @@ struct Case {
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Model {
     documents: Vec<Document>,
-    parsers: Vec<(Backend, usize)>,
+    parsers: Vec<usize>,
     packers: usize,
     forests: Vec<ForestMetadata>,
     saved: Vec<SavedMetadata>,
@@ -511,7 +494,7 @@ impl Model {
     fn new(documents: Vec<Document>) -> Self {
         Self {
             documents,
-            parsers: vec![(Backend::Native, 0)],
+            parsers: vec![0],
             packers: 1,
             forests: vec![ForestMetadata {
                 identity: 0,
@@ -616,11 +599,10 @@ impl Model {
                 self.documents.push(Document {
                     language: original.language,
                     source: source.into(),
-                    direct: false,
                     valid: false,
                 });
             }
-            Operation::NewParser { backend, language } => self.parsers.push((*backend, *language)),
+            Operation::NewParser { language } => self.parsers.push(*language),
             Operation::DropParser(index) => {
                 self.parsers.remove(*index);
             }
@@ -773,7 +755,9 @@ struct Coverage {
     budget: usize,
     views: usize,
     navigation: [usize; 2],
-    parses: [usize; 3],
+    // native, parse-and-pack, explicit pack, direct attempts
+    parses: [usize; 4],
+    direct_failures: usize,
     copies: [usize; 7],
     mixed: usize,
     nodes: usize,
@@ -803,28 +787,13 @@ fn repair(case: &Case, coverage: &mut Coverage) -> Case {
                 *insertion %= INSERTIONS.len();
                 select(document, model.documents.len())
             }
-            Operation::NewParser { language, backend } => {
+            Operation::NewParser { language } => {
                 *language %= LANGUAGES.len();
-                *backend != Backend::Direct || LANGUAGES[*language].direct
+                true
             }
-            Operation::ParserScratch(index) => compatible(
-                index,
-                model
-                    .parsers
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, (backend, _))| *backend != Backend::Native)
-                    .map(|(index, _)| index),
-            ),
-            Operation::ResetParser(index) => compatible(
-                index,
-                model
-                    .parsers
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, (backend, _))| *backend != Backend::Direct)
-                    .map(|(index, _)| index),
-            ),
+            Operation::ParserScratch(index) | Operation::ResetParser(index) => {
+                select(index, model.parsers.len())
+            }
             Operation::DropParser(index) => select(index, model.parsers.len()),
             Operation::NewPacker | Operation::NewQueryCursor => true,
             Operation::PackerScratch(index)
@@ -840,11 +809,7 @@ fn repair(case: &Case, coverage: &mut Coverage) -> Case {
                             .documents
                             .iter()
                             .enumerate()
-                            .filter(|(_, document)| {
-                                document.language == model.parsers[*parser].1
-                                    && (model.parsers[*parser].0 != Backend::Direct
-                                        || document.direct)
-                            })
+                            .filter(|(_, document)| document.language == model.parsers[*parser])
                             .map(|(index, _)| index),
                     )
             }
@@ -890,18 +855,10 @@ fn repair(case: &Case, coverage: &mut Coverage) -> Case {
                     .parsers
                     .iter()
                     .enumerate()
-                    .filter(|(_, (backend, _))| *backend == Backend::Direct)
+                    .filter(|(_, language)| LANGUAGES[**language].native.abi_version() >= 15)
                     .map(|(index, _)| index),
             ),
-            Operation::CancelParse(index) => compatible(
-                index,
-                model
-                    .parsers
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, (backend, _))| *backend == Backend::Compatible)
-                    .map(|(index, _)| index),
-            ),
+            Operation::CancelParse(index) => select(index, model.parsers.len()),
             Operation::Copy { forest, .. }
             | Operation::Compact(forest)
             | Operation::DropForest(forest)
@@ -1373,27 +1330,35 @@ fn retain(bytes: &[u8], counters: &mut Vec<Arc<AtomicUsize>>) -> SlabOwner {
     }
 }
 
-enum ParserValue {
-    Native(tree_sitter::Parser),
-    ParseAndPack(tree_squatter::Parser),
-    Direct(TreeFellerParser),
+struct ParserValue {
+    native: tree_sitter::Parser,
+    parse_and_pack: tree_squatter::Parser,
+    via_pack: (tree_sitter::Parser, Packer),
+    direct: Option<TreeFellerParser>,
 }
 
-fn parser(backend: Backend, language: usize) -> ParserValue {
-    match backend {
-        Backend::Native => {
-            let mut parser = tree_sitter::Parser::new();
-            parser.set_language(&LANGUAGES[language].native).unwrap();
-            ParserValue::Native(parser)
+fn parser(language: usize) -> ParserValue {
+    let fixture = &LANGUAGES[language];
+    let native = || {
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&fixture.native).unwrap();
+        parser
+    };
+    let mut parse_and_pack = tree_squatter::Parser::new();
+    parse_and_pack.set_language(&fixture.packed).unwrap();
+    let direct = match TreeFellerParser::new(&fixture.packed) {
+        Ok(parser) => Some(parser),
+        Err(error) => {
+            assert_eq!(error.code, Error::Language);
+            assert!(fixture.native.abi_version() < 15);
+            None
         }
-        Backend::Compatible => {
-            let mut parser = tree_squatter::Parser::new();
-            parser.set_language(&LANGUAGES[language].packed).unwrap();
-            ParserValue::ParseAndPack(parser)
-        }
-        Backend::Direct => {
-            ParserValue::Direct(TreeFellerParser::new(&LANGUAGES[language].packed).unwrap())
-        }
+    };
+    ParserValue {
+        native: native(),
+        parse_and_pack,
+        via_pack: (native(), Packer::new().unwrap()),
+        direct,
     }
 }
 
@@ -1499,7 +1464,7 @@ impl World {
         let entry = ForestEntry::new(forest, model.forests[0].clone(), roots, &model.documents);
         Self {
             model,
-            parsers: vec![parser(Backend::Native, 0)],
+            parsers: vec![parser(0)],
             packers: vec![Packer::new().unwrap()],
             forests: vec![entry],
             saved: Vec::new(),
@@ -1567,19 +1532,21 @@ impl World {
         next.apply(operation);
         match operation {
             Operation::Add { .. } | Operation::Splice { .. } => {}
-            Operation::NewParser { language, backend } => {
-                self.parsers.push(parser(*backend, *language))
+            Operation::NewParser { language } => self.parsers.push(parser(*language)),
+            Operation::ParserScratch(index) => {
+                let parser = &mut self.parsers[*index];
+                parser.parse_and_pack.drop_scratch();
+                parser.via_pack.1.drop_scratch();
+                if let Some(direct) = &mut parser.direct {
+                    direct.drop_scratch();
+                }
             }
-            Operation::ParserScratch(index) => match &mut self.parsers[*index] {
-                ParserValue::Native(_) => panic!("invalid scratch backend"),
-                ParserValue::ParseAndPack(parser) => parser.drop_scratch(),
-                ParserValue::Direct(parser) => parser.drop_scratch(),
-            },
-            Operation::ResetParser(index) => match &mut self.parsers[*index] {
-                ParserValue::Native(parser) => parser.reset(),
-                ParserValue::ParseAndPack(parser) => parser.reset(),
-                ParserValue::Direct(_) => panic!("invalid reset backend"),
-            },
+            Operation::ResetParser(index) => {
+                let parser = &mut self.parsers[*index];
+                parser.native.reset();
+                parser.parse_and_pack.reset();
+                parser.via_pack.0.reset();
+            }
             Operation::DropParser(index) => {
                 self.parsers.remove(*index);
             }
@@ -1607,53 +1574,64 @@ impl World {
                         (byte + *chunk as usize).min(source.len())
                     }]
                 };
-                let forest = match &mut self.parsers[*parser] {
-                    ParserValue::Native(parser) => {
-                        let native =
-                            Parse::parse_with_options(parser, &mut callback, Default::default())
-                                .unwrap();
-                        coverage.parses[0] += 1;
-                        Forest::pack_with_options(
-                            &LANGUAGES[document.language].packed,
-                            &native,
-                            pack,
-                        )
-                        .unwrap()
-                    }
-                    ParserValue::ParseAndPack(parser) => {
-                        coverage.parses[1] += 1;
-                        Parse::parse_with_options(
-                            parser,
-                            &mut callback,
-                            PackedParseOptions {
-                                pack,
-                                ..Default::default()
-                            },
-                        )
-                        .unwrap()
-                    }
-                    ParserValue::Direct(parser) => {
-                        coverage.parses[2] += 1;
-                        Parse::parse_with_options(
-                            parser,
-                            &mut callback,
-                            PackedParseOptions {
-                                pack,
-                                ..Default::default()
-                            },
-                        )
-                        .unwrap()
-                    }
-                };
-                let metadata = next.forests.last().unwrap().clone();
-                let reference = self.reference(&metadata.regions[0][0]);
-                let fresh = Forest::pack_with_options(
-                    &LANGUAGES[document.language].packed,
-                    &reference.tree,
-                    pack,
+                let parser = &mut self.parsers[*parser];
+                let native = Parse::parse_with_options(
+                    &mut parser.native,
+                    &mut callback,
+                    Default::default(),
                 )
                 .unwrap();
-                support::assert_same_tree(&forest, &fresh);
+                coverage.parses[0] += 1;
+                let forest = parser
+                    .parse_and_pack
+                    .parse_with_options(
+                        &mut callback,
+                        PackedParseOptions {
+                            pack,
+                            ..Default::default()
+                        },
+                    )
+                    .unwrap();
+                coverage.parses[1] += 1;
+                let via_pack = Parse::parse_with_options(
+                    &mut parser.via_pack.0,
+                    &mut callback,
+                    Default::default(),
+                )
+                .unwrap();
+                let packed = parser
+                    .via_pack
+                    .1
+                    .pack_with_options(&LANGUAGES[document.language].packed, &via_pack, pack)
+                    .unwrap();
+                coverage.parses[2] += 1;
+                support::assert_same_tree(&forest, &packed);
+                let expected =
+                    Forest::pack_with_options(&LANGUAGES[document.language].packed, &native, pack)
+                        .unwrap();
+                support::assert_same_tree(&forest, &expected);
+                if let Some(direct) = &mut parser.direct {
+                    coverage.parses[3] += 1;
+                    match direct.parse_with_options(
+                        &mut callback,
+                        PackedParseOptions {
+                            pack,
+                            ..Default::default()
+                        },
+                    ) {
+                        Ok(direct) => support::assert_same_tree(&forest, &direct),
+                        Err(error) => {
+                            assert_eq!(error.code, Error::Parse);
+                            coverage.direct_failures += 1;
+                        }
+                    }
+                }
+                let metadata = next.forests.last().unwrap().clone();
+                let reference = ReferenceRoot {
+                    specification: metadata.regions[0][0].clone(),
+                    tree: native,
+                    path: Vec::new(),
+                };
                 self.forests.push(ForestEntry::new(
                     forest,
                     metadata,
@@ -1721,10 +1699,8 @@ impl World {
                 ));
             }
             Operation::InvalidParse(index) => {
-                let language = self.model.parsers[*index].1;
-                let ParserValue::Direct(parser) = &mut self.parsers[*index] else {
-                    panic!("invalid repaired backend")
-                };
+                let language = self.model.parsers[*index];
+                let parser = self.parsers[*index].direct.as_mut().unwrap();
                 assert_eq!(
                     parser.parse(LANGUAGES[language].invalid).unwrap_err().code,
                     Error::Parse
@@ -1764,16 +1740,14 @@ impl World {
                 coverage.failures += 1;
             }
             Operation::CancelParse(index) => {
-                let language = self.model.parsers[*index].1;
+                let language = self.model.parsers[*index];
                 let source = LANGUAGES[language].sources[0].as_bytes();
                 let calls = Cell::new(0);
                 let mut stop = |_: &dyn ParseStateLike| {
                     calls.set(calls.get() + 1);
                     ControlFlow::Break(())
                 };
-                let ParserValue::ParseAndPack(parser) = &mut self.parsers[*index] else {
-                    panic!("invalid repaired backend")
-                };
+                let parser = &mut self.parsers[*index].parse_and_pack;
                 let result = parser.parse_with_options(
                     &mut |byte, _| &source[byte..],
                     tree_squatter::ParseOptions::new()
@@ -3401,7 +3375,7 @@ fn operation_strategy() -> BoxedStrategy<Operation> {
         ),
     ];
     let parsers = prop_oneof![
-        3 => (0usize..5, 0u8..3).prop_map(|(language, backend)| Operation::NewParser { language, backend: [Backend::Native, Backend::Compatible, Backend::Direct][backend as usize] }),
+        3 => (0usize..5).prop_map(|language| Operation::NewParser { language }),
         1 => (0usize..48).prop_map(Operation::ParserScratch),
         1 => (0usize..48).prop_map(Operation::ResetParser),
         1 => (0usize..48).prop_map(Operation::DropParser),
@@ -3481,7 +3455,6 @@ fn case_strategy() -> BoxedStrategy<Case> {
                 documents.extend(sources.into_iter().map(|source| Document {
                     language: 0,
                     source: source.into(),
-                    direct: false,
                     valid: true,
                 }));
                 let mut prefix = Vec::new();
@@ -3534,12 +3507,13 @@ fn record(total: &mut Coverage, coverage: &Coverage) {
     for index in 0..2 {
         total.navigation[index] += coverage.navigation[index];
     }
-    for index in 0..3 {
+    for index in 0..4 {
         total.parses[index] += coverage.parses[index];
     }
     for index in 0..7 {
         total.copies[index] += coverage.copies[index];
     }
+    total.direct_failures += coverage.direct_failures;
     total.mixed += coverage.mixed;
     total.nodes += coverage.nodes;
     total.slab_bytes += coverage.slab_bytes;
@@ -4012,47 +3986,37 @@ fn mixed_forest_lifecycles() {
 #[cfg_attr(test, test)]
 fn parser_and_packer_reuse() {
     for language in 0..LANGUAGES.len() {
-        for backend in [Backend::Native, Backend::Compatible, Backend::Direct] {
-            if backend == Backend::Direct && !LANGUAGES[language].direct {
-                continue;
-            }
-            let mut operations = vec![
-                Operation::NewParser { language, backend },
-                Operation::NewPacker,
-            ];
-            for (index, points) in [true, false, true].into_iter().enumerate() {
-                operations.push(Operation::Parse {
-                    parser: 1,
-                    document: language,
-                    options: Options {
-                        points,
-                        compact: index % 2 == 0,
-                        presence: Presence::All,
-                    },
-                    chunk: [0, 1, 3][index],
-                });
-                if backend != Backend::Native {
-                    operations.push(Operation::ParserScratch(1));
-                }
-                if backend != Backend::Direct {
-                    operations.push(Operation::ResetParser(1));
-                }
-            }
-            if backend == Backend::Direct {
-                operations.push(Operation::InvalidParse(1));
-            }
-            if backend == Backend::Compatible {
-                operations.push(Operation::CancelParse(1));
-            }
-            operations.extend([
-                Operation::DropParser(1),
-                Operation::PackerScratch(1),
-                Operation::InvalidRegion(1),
-                Operation::DropPacker(1),
-                Operation::Explore(vec![ViewOperation::Read(2)]),
-            ]);
-            check_fixed(fixed_case(operations));
+        let mut operations = vec![Operation::NewParser { language }, Operation::NewPacker];
+        for (index, _) in LANGUAGES[language].sources.iter().enumerate() {
+            operations.push(Operation::Add {
+                language,
+                source: index,
+            });
+            operations.push(Operation::Parse {
+                parser: 1,
+                document: index + 1,
+                options: Options {
+                    points: index % 2 == 0,
+                    compact: index % 2 == 0,
+                    presence: Presence::All,
+                },
+                chunk: [0, 1, 3][index % 3],
+            });
+            operations.push(Operation::ParserScratch(1));
+            operations.push(Operation::ResetParser(1));
         }
+        if LANGUAGES[language].native.abi_version() >= 15 {
+            operations.push(Operation::InvalidParse(1));
+        }
+        operations.push(Operation::CancelParse(1));
+        operations.extend([
+            Operation::DropParser(1),
+            Operation::PackerScratch(1),
+            Operation::InvalidRegion(1),
+            Operation::DropPacker(1),
+            Operation::Explore(vec![ViewOperation::Read(2)]),
+        ]);
+        check_fixed(fixed_case(operations));
     }
 }
 
