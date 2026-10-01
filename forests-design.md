@@ -54,7 +54,7 @@ pub struct ForestRegion<'forest> {
 
 pub struct PackRegion<'tree> {
     pub language: Language,
-    pub roots: Vec<tree_sitter::Node<'tree>>,
+    pub roots: Vec<PackRoot<'tree>>,
 }
 
 impl Packer {
@@ -157,15 +157,15 @@ let third_subtree = third.root_node().named_child(0).unwrap();
 let inputs = vec![
     PackRegion {
         language: language_a.clone(),
-        roots: vec![first.root_node()],
+        roots: vec![PackRoot::Sitter(first.root_node())],
     },
     PackRegion {
         language: language_b,
-        roots: vec![positioned_second],
+        roots: vec![PackRoot::Sitter(positioned_second)],
     },
     PackRegion {
         language: language_a,
-        roots: vec![third_subtree],
+        roots: vec![PackRoot::Sitter(third_subtree)],
     },
 ];
 let options = PackOptions {

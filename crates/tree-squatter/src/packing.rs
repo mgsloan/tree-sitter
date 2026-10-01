@@ -47,7 +47,7 @@ impl PackOptions<'_> {
 /// also allow seeking to the first relevant tree. Neither establishes a shared source.
 pub struct PackRegion<'tree> {
     pub language: Language,
-    pub roots: Vec<tree_sitter::Node<'tree>>,
+    pub roots: Vec<PackRoot<'tree>>,
 }
 
 #[derive(Clone, Copy)]
@@ -55,11 +55,6 @@ pub enum PackRoot<'tree> {
     Sitter(tree_sitter::Node<'tree>),
     Squatter(crate::Tree<'tree>),
     Reductions(&'tree crate::ReductionTree),
-}
-
-pub struct MixedPackRegion<'tree> {
-    pub language: Language,
-    pub roots: Vec<PackRoot<'tree>>,
 }
 
 struct InputNode {
@@ -105,37 +100,19 @@ impl Packer {
         let (forest, _) = self.pack_forest(
             vec![PackRegion {
                 language: language.clone(),
-                roots: vec![tree.root_node()],
+                roots: vec![PackRoot::Sitter(tree.root_node())],
             }],
             options,
         )?;
         Ok(forest)
     }
 
-    /// Packs caller-defined regions without merging inputs or coordinate frames.
-    pub fn pack_forest(
-        &mut self,
-        inputs: Vec<PackRegion<'_>>,
-        options: PackOptions<'_>,
-    ) -> Result<(Forest, Vec<TreeIx>), Error> {
-        self.pack_mixed_forest(
-            inputs
-                .into_iter()
-                .map(|input| MixedPackRegion {
-                    language: input.language,
-                    roots: input.roots.into_iter().map(PackRoot::Sitter).collect(),
-                })
-                .collect(),
-            options,
-        )
-    }
-
     /// Packs native roots, whole packed trees, and reduction trees in order, preserving coordinates.
     /// Packed and reduction trees must share their region's prepared language instance.
     /// Packed trees retain their groups; reduction trees are encoded directly into the forest.
-    pub fn pack_mixed_forest(
+    pub fn pack_forest(
         &mut self,
-        inputs: Vec<MixedPackRegion<'_>>,
+        inputs: Vec<PackRegion<'_>>,
         options: PackOptions<'_>,
     ) -> Result<(Forest, Vec<TreeIx>), Error> {
         if inputs.iter().any(|input| input.roots.is_empty()) {

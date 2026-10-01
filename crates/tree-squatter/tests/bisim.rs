@@ -20,9 +20,9 @@ use std::{
 use tree_sitter::{Point, StreamingIterator};
 use tree_squatter::{
     CaptureIx, ChildIx, Error, FieldId, Forest, GrammarId, Language, NamedChildIx, Node, NodeId,
-    PackOptions, PackRegion, PackedParseOptions, Packer, PatternIx, PointsData, PresenceCache,
-    Query, QueryCursor, QueryCursorOptions, QueryCursorState, QueryExecutionError, QueryScope,
-    StableSlab, TreeFellerParser, TreeIx,
+    PackOptions, PackRegion, PackRoot, PackedParseOptions, Packer, PatternIx, PointsData,
+    PresenceCache, Query, QueryCursor, QueryCursorOptions, QueryCursorState, QueryExecutionError,
+    QueryScope, StableSlab, TreeFellerParser, TreeIx,
     scan::{GroupScan, Scan},
     traits::{NodeLike, Parse, ParseStateLike},
 };
@@ -1668,7 +1668,7 @@ impl World {
                                     .clone(),
                                 roots: roots[offset..offset + region.len()]
                                     .iter()
-                                    .map(ReferenceRoot::node)
+                                    .map(|root| PackRoot::Sitter(root.node()))
                                     .collect(),
                             };
                             offset += region.len();

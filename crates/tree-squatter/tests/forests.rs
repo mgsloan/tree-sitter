@@ -2,8 +2,8 @@ mod support;
 
 use std::{collections::HashSet, iter, ops::ControlFlow, slice};
 use tree_squatter::{
-    Forest, Language, Node, PackOptions, PackRegion, Packer, PointsData, PresenceCache, StableSlab,
-    TreeIx,
+    Forest, Language, Node, PackOptions, PackRegion, PackRoot, Packer, PointsData, PresenceCache,
+    StableSlab, TreeIx,
 };
 
 fn describe(root: Node<'_>) -> Vec<(tree_squatter::KindId, tree_sitter::Range)> {
@@ -15,7 +15,7 @@ fn describe(root: Node<'_>) -> Vec<(tree_squatter::KindId, tree_sitter::Range)> 
 
 #[test]
 fn mixed_direct_and_native_roots_match_native_forest() -> Result<(), Box<dyn std::error::Error>> {
-    use tree_squatter::{MixedPackRegion, PackRoot, TreeFellerParser};
+    use tree_squatter::TreeFellerParser;
 
     let c = Language::new(&support::c_language())?;
     let json = Language::new(&support::json_language())?;
@@ -38,23 +38,23 @@ fn mixed_direct_and_native_roots_match_native_forest() -> Result<(), Box<dyn std
                 PackRegion {
                     language: c.clone(),
                     roots: vec![
-                        native.root_node(),
-                        native.root_node(),
-                        malformed.root_node(),
-                        malformed.root_node(),
-                        native.root_node(),
+                        PackRoot::Sitter(native.root_node()),
+                        PackRoot::Sitter(native.root_node()),
+                        PackRoot::Sitter(malformed.root_node()),
+                        PackRoot::Sitter(malformed.root_node()),
+                        PackRoot::Sitter(native.root_node()),
                     ],
                 },
                 PackRegion {
                     language: json.clone(),
-                    roots: vec![json_tree.root_node()],
+                    roots: vec![PackRoot::Sitter(json_tree.root_node())],
                 },
             ],
             options,
         )?;
-        let (actual, mapping) = packer.pack_mixed_forest(
+        let (actual, mapping) = packer.pack_forest(
             vec![
-                MixedPackRegion {
+                PackRegion {
                     language: c.clone(),
                     roots: vec![
                         PackRoot::Squatter(direct.trees().next().expect("direct tree")),
@@ -66,7 +66,7 @@ fn mixed_direct_and_native_roots_match_native_forest() -> Result<(), Box<dyn std
                         PackRoot::Reductions(&reductions),
                     ],
                 },
-                MixedPackRegion {
+                PackRegion {
                     language: json.clone(),
                     roots: vec![PackRoot::Sitter(json_tree.root_node())],
                 },
@@ -79,8 +79,8 @@ fn mixed_direct_and_native_roots_match_native_forest() -> Result<(), Box<dyn std
     }
     let wrong_language = Language::new(&support::c_language())?;
     assert!(matches!(
-        packer.pack_mixed_forest(
-            vec![MixedPackRegion {
+        packer.pack_forest(
+            vec![PackRegion {
                 language: wrong_language,
                 roots: vec![PackRoot::Reductions(&reductions)],
             }],
@@ -89,8 +89,8 @@ fn mixed_direct_and_native_roots_match_native_forest() -> Result<(), Box<dyn std
         Err(tree_squatter::Error::Language)
     ));
     assert!(matches!(
-        packer.pack_mixed_forest(
-            vec![MixedPackRegion {
+        packer.pack_forest(
+            vec![PackRegion {
                 language: c,
                 roots: vec![PackRoot::Reductions(&reductions)],
             }],
@@ -109,8 +109,6 @@ fn mixed_direct_and_native_roots_match_native_forest() -> Result<(), Box<dyn std
 #[test]
 fn copied_forests_merge_presence_across_word_boundaries() -> Result<(), Box<dyn std::error::Error>>
 {
-    use tree_squatter::{MixedPackRegion, PackRoot};
-
     let native_json = support::json_language();
     let json = Language::new(&native_json)?;
     let c = Language::new(&support::c_language())?;
@@ -146,14 +144,14 @@ fn copied_forests_merge_presence_across_word_boundaries() -> Result<(), Box<dyn 
                 if wide_source {
                     inputs.push(PackRegion {
                         language: c.clone(),
-                        roots: vec![declaration.root_node()],
+                        roots: vec![PackRoot::Sitter(declaration.root_node())],
                     });
                 }
-                let mut roots = vec![prefix.root_node(); source_prefix];
+                let mut roots = vec![PackRoot::Sitter(prefix.root_node()); source_prefix];
                 roots.extend([
-                    native.root_node(),
-                    malformed.root_node(),
-                    suffix.root_node(),
+                    PackRoot::Sitter(native.root_node()),
+                    PackRoot::Sitter(malformed.root_node()),
+                    PackRoot::Sitter(suffix.root_node()),
                 ]);
                 inputs.push(PackRegion {
                     language: json.clone(),
@@ -176,8 +174,8 @@ fn copied_forests_merge_presence_across_word_boundaries() -> Result<(), Box<dyn 
                     }
                 };
                 assert!(matches!(
-                    packer.pack_mixed_forest(
-                        vec![MixedPackRegion {
+                    packer.pack_forest(
+                        vec![PackRegion {
                             language: json.clone(),
                             roots: vec![PackRoot::Squatter(copied)],
                         }],
@@ -192,13 +190,13 @@ fn copied_forests_merge_presence_across_word_boundaries() -> Result<(), Box<dyn 
                     let mut inputs = Vec::new();
                     let mut expected_inputs = Vec::new();
                     if !wide_source {
-                        inputs.push(MixedPackRegion {
+                        inputs.push(PackRegion {
                             language: c.clone(),
                             roots: vec![PackRoot::Sitter(declaration.root_node())],
                         });
                         expected_inputs.push(PackRegion {
                             language: c.clone(),
-                            roots: vec![declaration.root_node()],
+                            roots: vec![PackRoot::Sitter(declaration.root_node())],
                         });
                     }
                     let mut roots: Vec<_> = (0..destination_prefix)
@@ -211,23 +209,23 @@ fn copied_forests_merge_presence_across_word_boundaries() -> Result<(), Box<dyn 
                         PackRoot::Squatter(uncached.trees().next().expect("uncached tree")),
                         PackRoot::Squatter(copied),
                     ]);
-                    inputs.push(MixedPackRegion {
+                    inputs.push(PackRegion {
                         language: json.clone(),
                         roots,
                     });
-                    let mut roots = vec![filler.root_node(); destination_prefix];
+                    let mut roots = vec![PackRoot::Sitter(filler.root_node()); destination_prefix];
                     roots.extend([
-                        native.root_node(),
-                        filler.root_node(),
-                        malformed.root_node(),
-                        filler.root_node(),
-                        native.root_node(),
+                        PackRoot::Sitter(native.root_node()),
+                        PackRoot::Sitter(filler.root_node()),
+                        PackRoot::Sitter(malformed.root_node()),
+                        PackRoot::Sitter(filler.root_node()),
+                        PackRoot::Sitter(native.root_node()),
                     ]);
                     expected_inputs.push(PackRegion {
                         language: json.clone(),
                         roots,
                     });
-                    let (actual, mapping) = packer.pack_mixed_forest(inputs, options)?;
+                    let (actual, mapping) = packer.pack_forest(inputs, options)?;
                     let (expected, expected_mapping) =
                         packer.pack_forest(expected_inputs, options)?;
                     assert_eq!(mapping, expected_mapping);
@@ -301,7 +299,7 @@ fn trusted_loaders_preserve_forest_storage() {
                     .take(count)
                     .map(|(language, tree)| PackRegion {
                         language: language.clone(),
-                        roots: vec![tree.root_node()],
+                        roots: vec![PackRoot::Sitter(tree.root_node())],
                     })
                     .collect::<Vec<_>>(),
                 PackOptions::default(),
@@ -364,7 +362,7 @@ fn grammar_caches_follow_cursor_resets_and_forest_copies() {
                     .zip(&native)
                     .map(|(language, tree)| PackRegion {
                         language: language.clone(),
-                        roots: vec![tree.root_node()],
+                        roots: vec![PackRoot::Sitter(tree.root_node())],
                     })
                     .collect::<Vec<_>>(),
                 PackOptions::default(),
@@ -500,15 +498,15 @@ fn forest_packing_and_round_trip() {
             vec![
                 PackRegion {
                     language: languages[0].clone(),
-                    roots: vec![roots[0]],
+                    roots: vec![PackRoot::Sitter(roots[0])],
                 },
                 PackRegion {
                     language: languages[1].clone(),
-                    roots: vec![roots[1]],
+                    roots: vec![PackRoot::Sitter(roots[1])],
                 },
                 PackRegion {
                     language: languages[2].clone(),
-                    roots: vec![roots[2], roots[3]],
+                    roots: vec![PackRoot::Sitter(roots[2]), PackRoot::Sitter(roots[3])],
                 },
             ],
             PackOptions {
@@ -596,7 +594,7 @@ fn forest_packing_and_round_trip() {
         Packer::new().unwrap().pack_forest(
             vec![PackRegion {
                 language: languages[0].clone(),
-                roots: vec![roots[0]],
+                roots: vec![PackRoot::Sitter(roots[0])],
             }],
             PackOptions {
                 cancellation_callback: Some(&|| ControlFlow::Break(())),
@@ -724,15 +722,18 @@ fn region_queries_select_sources_by_tree() {
             vec![
                 PackRegion {
                     language: language.clone(),
-                    roots: native[..3].iter().map(|tree| tree.root_node()).collect(),
+                    roots: native[..3]
+                        .iter()
+                        .map(|tree| PackRoot::Sitter(tree.root_node()))
+                        .collect(),
                 },
                 PackRegion {
                     language: Language::new(&json).unwrap(),
-                    roots: vec![native[3].root_node()],
+                    roots: vec![PackRoot::Sitter(native[3].root_node())],
                 },
                 PackRegion {
                     language: language.clone(),
-                    roots: vec![native[4].root_node()],
+                    roots: vec![PackRoot::Sitter(native[4].root_node())],
                 },
             ],
             PackOptions {
@@ -804,13 +805,17 @@ fn bounded_region_queries_preserve_ordering_semantics() {
             .iter()
             .map(|source| support::parse_native(&json, source))
             .collect();
-        let roots: Vec<_> = native
-            .iter()
-            .zip(&bounds)
-            .map(|(tree, range)| {
-                tree.root_node_with_offset(range.start, tree_sitter::Point::new(0, range.start))
-            })
-            .collect();
+        let roots: Vec<_> =
+            native
+                .iter()
+                .zip(&bounds)
+                .map(|(tree, range)| {
+                    PackRoot::Sitter(tree.root_node_with_offset(
+                        range.start,
+                        tree_sitter::Point::new(0, range.start),
+                    ))
+                })
+                .collect();
         let sources: Vec<_> = text
             .iter()
             .zip(&bounds)
@@ -873,7 +878,7 @@ fn bounded_region_queries_preserve_ordering_semantics() {
         .pack_forest(
             vec![PackRegion {
                 language: language.clone(),
-                roots: vec![root, root],
+                roots: vec![PackRoot::Sitter(root), PackRoot::Sitter(root)],
             }],
             PackOptions::default(),
         )

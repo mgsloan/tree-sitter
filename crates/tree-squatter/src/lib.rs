@@ -18,7 +18,7 @@ mod side_data;
 mod simd;
 mod storage;
 pub mod traits;
-pub use packing::{MixedPackRegion, PackOptions, PackRegion, PackRoot, Packer};
+pub use packing::{PackOptions, PackRegion, PackRoot, Packer};
 pub use parser::{
     PackedParseOptions, ParseError, ParseOptions, ParseState, Parser, ParserError, ReductionTree,
     TreeFellerParser,
