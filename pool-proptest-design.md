@@ -1,6 +1,6 @@
 # Pool-based property testing
 
-Integration test: `crates/core/tree-squatter/tests/bisim.rs`, run by
+Integration test: `crates/tree-squatter/tests/bisim.rs`, run by
 `cargo test -p tree-squatter --test bisim`. This document describes the
 test. The implementation targets the APIs at main commit `0bc6b8434`.
 

@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/core/tree-squatter"]
+members = ["crates/tree-squatter"]
 resolver = "2"
 
 [workspace.package]

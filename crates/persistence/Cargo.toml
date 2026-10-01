@@ -7,7 +7,7 @@ publish = false
 
 [dependencies]
 tree-sitter.workspace = true
-tree-squatter = { path = "../core/tree-squatter" }
+tree-squatter = { path = "../tree-squatter" }
 blake3 = "1.8"
 heed = { version = "=0.22.1", default-features = false }
 libc = "0.2"

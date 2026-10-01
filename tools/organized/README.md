@@ -3,8 +3,8 @@
 Tree-squatter stores syntax trees in a compact representation with traversal,
 query execution, and direct parsing through tree-feller.
 
-This branch contains the Rust crate in `crates/core/tree-squatter` and the adapted
-tree-feller C sources in `crates/core/tree-squatter/native/tree_feller`. Tree-sitter
+This branch contains the Rust crate in `crates/tree-squatter` and the adapted
+tree-feller C sources in `crates/tree-squatter/native/tree_feller`. Tree-sitter
 is fetched as a pinned dependency; its private headers are required by the native
 build.
 

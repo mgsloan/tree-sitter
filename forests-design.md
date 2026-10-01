@@ -8,7 +8,7 @@ optional materialized points and independently owned side data. Also assume
 navigation APIs and inherit their resolved query contracts, except that query
 restrictions use Tree-sitter-style cursor setters rather than scan selections.
 
-Decision draft for `crates/core/tree-squatter`, not implemented API. Rust excerpts show
+Decision draft for `crates/tree-squatter`, not implemented API. Rust excerpts show
 proposed types and signatures; routine constructors and errors are omitted.
 Prototype formats remain at version 0, with no migration support.
 

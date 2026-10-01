@@ -1,4 +1,4 @@
 [paths]
-"crates/core/tree-squatter" = "crates/core/tree-squatter"
+"crates/tree-squatter" = "crates/tree-squatter"
 "LICENSE" = "LICENSE"
 "tools/organized" = "."

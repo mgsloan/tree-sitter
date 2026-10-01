@@ -218,7 +218,7 @@ little-endian peer and requires `rustup target add i686-unknown-linux-musl`.
 Storage version 0 uses 32-slot groups, 16-bit span deltas, and 8-byte column alignment.
 Grammars whose symbol and grammar IDs fit in eight bits use separate byte columns;
 other grammars use 16-bit symbol codes and an optional 16-bit grammar column.
-See [coverage](../../crates/core/tree-squatter/tests/README.md) for the migrated C checks.
+See [coverage](../../crates/tree-squatter/tests/README.md) for the migrated C checks.
 
 ## Group-scan throughput
 
