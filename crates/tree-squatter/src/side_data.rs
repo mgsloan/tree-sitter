@@ -1,6 +1,6 @@
 use crate::types::{GroupIx, SlotIx, SquatterKindId};
 use crate::{
-    Error, Forest, ForestRegion,
+    Error, Forest, ForestRegion, Tree,
     storage::{GROUP_SIZE, Slab, StableSlab, slab_format},
     types::PackedPoint,
 };
@@ -160,6 +160,11 @@ fn presence_records(bytes: &[u8]) -> Result<Vec<(usize, Header)>, SideDataError>
 /// Coverage changes scan cost, never results.
 pub struct PresenceCache(Sidecar);
 
+pub(crate) struct CopiedPresence<'forest> {
+    pub tree: Tree<'forest>,
+    pub destination: GroupIx,
+}
+
 impl PresenceCache {
     pub fn build(forest: &Forest) -> Result<Self, SideDataError> {
         Self::build_selected(forest, |_| true)
@@ -180,19 +185,21 @@ impl PresenceCache {
         select: impl Fn(ForestRegion<'_>) -> bool,
         cancellation_callback: impl FnMut() -> ControlFlow<()>,
     ) -> Result<Self, SideDataError> {
-        Ok(Self::build_selected_inner(forest, select, cancellation_callback, false)?.unwrap())
+        Ok(Self::build_selected_inner(forest, select, cancellation_callback, false, &[])?.unwrap())
     }
 
     pub(crate) fn build_for_packing(
         forest: &Forest,
         select: impl Fn(ForestRegion<'_>) -> bool,
         cancellation_callback: Option<&dyn Fn() -> ControlFlow<()>>,
+        copied: &[CopiedPresence<'_>],
     ) -> Result<Option<Self>, SideDataError> {
         Self::build_selected_inner(
             forest,
             select,
             || cancellation_callback.map_or(ControlFlow::Continue(()), |callback| callback()),
             true,
+            copied,
         )
     }
 
@@ -201,6 +208,7 @@ impl PresenceCache {
         select: impl Fn(ForestRegion<'_>) -> bool,
         mut cancellation_callback: impl FnMut() -> ControlFlow<()>,
         omit_empty: bool,
+        copied: &[CopiedPresence<'_>],
     ) -> Result<Option<Self>, SideDataError> {
         let mut selected = SmallVec::<[bool; 1]>::new();
         selected
@@ -253,11 +261,33 @@ impl PresenceCache {
                         ptr::write_bytes(payload, 0, record_length - HEADER_BYTES);
                         let first_group = region.data().slots.start.group();
                         let words = (groups as usize).div_ceil(64);
-                        for group in 0..groups {
+                        let mut group = 0;
+                        let mut source_index =
+                            copied.partition_point(|source| source.destination < first_group);
+                        while group < groups {
                             if cancellation_callback().is_break() {
                                 return Err(Error::Canceled);
                             }
                             let physical_group = first_group + group;
+                            if let Some(source) = copied.get(source_index)
+                                && source.destination == physical_group
+                            {
+                                let slots = &source.tree.tree_data().slots;
+                                let count = slots.end.group() - slots.start.group();
+                                let presence =
+                                    source.tree.presence().ok_or(Error::InvalidArgument)?;
+                                presence.merge_into(
+                                    slots.start.group()..slots.end.group(),
+                                    payload,
+                                    words,
+                                    group,
+                                    symbols,
+                                    &mut cancellation_callback,
+                                )?;
+                                group += count;
+                                source_index += 1;
+                                continue;
+                            }
                             for slot in physical_group.first_slot().raw()
                                 ..forest.data().group_end(physical_group).raw()
                             {
@@ -269,6 +299,7 @@ impl PresenceCache {
                                     u64::from_le(bitmap.read_unaligned()) | 1 << (group % 64);
                                 bitmap.write_unaligned(value.to_le());
                             }
+                            group += 1;
                         }
                     }
                     offset += record_length;
@@ -346,6 +377,50 @@ unsafe impl Send for PresenceView {}
 unsafe impl Sync for PresenceView {}
 
 impl PresenceView {
+    unsafe fn merge_into(
+        self,
+        source: Range<GroupIx>,
+        destination: *mut u8,
+        destination_words: usize,
+        destination_start: u32,
+        symbols: u32,
+        cancellation_callback: &mut impl FnMut() -> ControlFlow<()>,
+    ) -> Result<(), Error> {
+        let source_start = source.start - self.first_group;
+        let count = source.end - source.start;
+        let source_words = (self.groups as usize).div_ceil(64);
+        for symbol in 0..symbols as usize {
+            for offset in (0..count).step_by(64) {
+                if cancellation_callback().is_break() {
+                    return Err(Error::Canceled);
+                }
+                let length = (count - offset).min(64);
+                let source_bit = source_start + offset;
+                let source_word = symbol * source_words + source_bit as usize / 64;
+                let source_shift = source_bit % 64;
+                let mut bits = self.word(source_word * 8) >> source_shift;
+                if source_shift != 0 && length > 64 - source_shift {
+                    bits |= self.word((source_word + 1) * 8) << (64 - source_shift);
+                }
+                if length < 64 {
+                    bits &= (1u64 << length) - 1;
+                }
+                let destination_bit = destination_start + offset;
+                let destination_word = symbol * destination_words + destination_bit as usize / 64;
+                let shift = destination_bit % 64;
+                let merge = |index: usize, bits: u64| unsafe {
+                    let word = destination.add(index * 8).cast::<u64>();
+                    word.write_unaligned((u64::from_le(word.read_unaligned()) | bits).to_le());
+                };
+                merge(destination_word, bits << shift);
+                if shift != 0 && length > 64 - shift {
+                    merge(destination_word + 1, bits >> (64 - shift));
+                }
+            }
+        }
+        Ok(())
+    }
+
     #[inline]
     fn word(self, offset: usize) -> u64 {
         u64::from_le(unsafe {
@@ -450,6 +525,22 @@ impl PointsData {
         self.0.0.grow(point_length(groups)?)?;
         let regions = u32::from_le_bytes(self.as_bytes()[12..16].try_into().unwrap());
         self.0.header(0, POINT_FORMAT, groups, regions)
+    }
+
+    pub(crate) fn append_groups(
+        &mut self,
+        source: &Self,
+        groups: Range<GroupIx>,
+    ) -> Result<(), SideDataError> {
+        let start = self.as_bytes().len();
+        let count = groups.end - groups.start;
+        let previous = ((start - HEADER_BYTES) / POINT_GROUP_BYTES) as u32;
+        self.grow(previous.checked_add(count).ok_or(Error::Overflow)?)?;
+        let offset = HEADER_BYTES + groups.start.ix() * POINT_GROUP_BYTES;
+        self.0.bytes_mut()[start..].copy_from_slice(
+            &source.as_bytes()[offset..offset + count as usize * POINT_GROUP_BYTES],
+        );
+        Ok(())
     }
 
     pub(crate) fn put_bases(&mut self, group: GroupIx, start: PackedPoint, end: PackedPoint) {

@@ -2,7 +2,7 @@ use crate::types::{GroupIx, ReductionIx, SlotSpan, SupertypeMask};
 use crate::{
     Error, FieldId, Forest, ForestRegion, Language, RegionIx, SlotIx, TreeIx,
     native::{Point, Reduction},
-    side_data::{PointsData, PresenceCache},
+    side_data::{CopiedPresence, PointsData, PresenceCache},
     storage::*,
     types::{PackedPoint, SlabOffset, SquatterGrammarId, SquatterKindId},
 };
@@ -50,9 +50,10 @@ pub struct PackRegion<'tree> {
     pub roots: Vec<tree_sitter::Node<'tree>>,
 }
 
+#[derive(Clone, Copy)]
 pub enum PackRoot<'tree> {
     Sitter(tree_sitter::Node<'tree>),
-    Squatter(crate::Node<'tree>),
+    Squatter(crate::Tree<'tree>),
 }
 
 pub struct MixedPackRegion<'tree> {
@@ -128,8 +129,8 @@ impl Packer {
         )
     }
 
-    /// Packs native and packed roots together, preserving their order and coordinates.
-    /// Packed roots must share their region's prepared language instance.
+    /// Packs native roots and whole packed trees together, preserving their order and coordinates.
+    /// Packed trees retain their groups and must share their region's prepared language instance.
     pub fn pack_mixed_forest(
         &mut self,
         inputs: Vec<MixedPackRegion<'_>>,
@@ -159,6 +160,7 @@ impl Packer {
         };
         let mut builder = Builder::new_forest(&languages, capacity, options.points)?;
         let mut mapping = Vec::new();
+        let mut copied_presence = Vec::new();
         for (index, input) in inputs.into_iter().enumerate() {
             let region = RegionIx(index as u32);
             for node in input.roots {
@@ -174,11 +176,20 @@ impl Packer {
                             root,
                         )?;
                     }
-                    PackRoot::Squatter(node) => {
-                        if !ptr::eq(node.tables(), input.language.tables()) {
+                    PackRoot::Squatter(tree) => {
+                        if !ptr::eq(tree.tables(), input.language.tables()) {
                             return Err(Error::Language);
                         }
-                        traversal::pack_packed(&mut builder, &mut self.traversal, node)?;
+                        builder.copy_tree(tree)?;
+                        if tree.presence().is_some() {
+                            copied_presence
+                                .try_reserve(1)
+                                .map_err(|_| Error::Allocation)?;
+                            copied_presence.push(CopiedPresence {
+                                tree,
+                                destination: start.group(),
+                            });
+                        }
                     }
                 }
                 let tree = builder.finish_root(start, region)?;
@@ -186,7 +197,10 @@ impl Packer {
                 mapping.push(tree);
             }
         }
-        Ok((builder.finish(options)?, mapping))
+        Ok((
+            builder.finish_with_presence(options, &copied_presence)?,
+            mapping,
+        ))
     }
 
     pub(crate) fn pack_reductions(
@@ -335,6 +349,35 @@ impl Builder {
 
     fn distance(&self) -> SlotIx {
         self.slot_base + self.count
+    }
+
+    fn copy_tree(&mut self, tree: crate::Tree<'_>) -> Result<(), Error> {
+        let source = tree.data();
+        let slots = &tree.tree_data().slots;
+        if self.points.is_some() && !tree.has_points() {
+            return Err(Error::InvalidArgument);
+        }
+        debug_assert_eq!(self.count, 0);
+        let groups = slots.start.group()..slots.end.group();
+        let destination = self.slot_base.group();
+        let needed = destination
+            .raw()
+            .checked_add(groups.end - groups.start)
+            .ok_or(Error::Overflow)?;
+        let end = SlotIx(needed.checked_mul(GROUP_SIZE).ok_or(Error::Overflow)?);
+        if needed > self.forest.group_capacity() {
+            let capacity = needed.max(self.forest.group_capacity().saturating_mul(2));
+            self.forest.resize(capacity, self.forest.data().flags())?;
+        }
+        if let (Some(points), Some(source_points)) = (&mut self.points, &source.point_data) {
+            points.append_groups(source_points, groups.clone())?;
+        }
+        let data = self.forest.data_mut();
+        data.copy_groups_from(source, groups, destination);
+        data.put_word(SlabOffset(0), 1, needed);
+        self.optional |= source.flags() & OPTIONAL;
+        self.slot_base = end;
+        Ok(())
     }
 
     #[inline(always)]
@@ -587,7 +630,15 @@ impl Builder {
         Ok(index)
     }
 
-    fn finish(mut self, options: PackOptions<'_>) -> Result<Forest, Error> {
+    fn finish(self, options: PackOptions<'_>) -> Result<Forest, Error> {
+        self.finish_with_presence(options, &[])
+    }
+
+    fn finish_with_presence(
+        mut self,
+        options: PackOptions<'_>,
+        copied_presence: &[CopiedPresence<'_>],
+    ) -> Result<Forest, Error> {
         self.close();
         if self.forest.data().trees.is_empty() && self.forest.group_count() != 0 {
             self.finish_root(SlotIx(0), RegionIx(0))?;
@@ -604,6 +655,7 @@ impl Builder {
             &self.forest,
             options.symbol_presence,
             options.cancellation_callback,
+            copied_presence,
         )? {
             self.forest.set_presence_cache_trusted(cache);
         }

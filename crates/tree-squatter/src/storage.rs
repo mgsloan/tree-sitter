@@ -654,6 +654,117 @@ impl ForestData {
         unsafe { slice::from_raw_parts(column.as_ptr().add(start), length) }
     }
 
+    pub(crate) fn copy_groups_from(
+        &mut self,
+        source: &Self,
+        groups: Range<GroupIx>,
+        destination: GroupIx,
+    ) {
+        let count = (groups.end - groups.start) as usize;
+        debug_assert!(groups.end.raw() <= source.groups());
+        debug_assert!(destination.raw() as usize + count <= self.capacity() as usize);
+        debug_assert_eq!(self.flags() & OPTIONAL, OPTIONAL);
+        let source_layout = source.layout;
+        let target = self.layout;
+        // Copy logical group lengths, excluding column alignment padding that
+        // would overwrite the next tree when a run contains an odd group count.
+        for (from, to, stride) in [
+            (source_layout.waste, target.waste, 2),
+            (source_layout.start_byte_base, target.start_byte_base, 4),
+            (
+                source_layout.start_byte_delta,
+                target.start_byte_delta,
+                GROUP_SIZE as usize,
+            ),
+            (source_layout.end_byte_base, target.end_byte_base, 4),
+            (
+                source_layout.end_byte_delta,
+                target.end_byte_delta,
+                GROUP_SIZE as usize * 2,
+            ),
+            (source_layout.span_max, target.span_max, 4),
+            (
+                source_layout.span_delta,
+                target.span_delta,
+                (GROUP_SIZE * SPAN_BITS / 8) as usize,
+            ),
+            (source_layout.field, target.field, GROUP_SIZE as usize * 2),
+            (
+                source_layout.supertype,
+                target.supertype,
+                GROUP_SIZE as usize * 2,
+            ),
+            (source_layout.last, target.last, GROUP_SIZE as usize / 8),
+        ] {
+            unsafe {
+                ptr::copy_nonoverlapping(
+                    from.as_ptr().add(groups.start.ix() * stride),
+                    to.as_ptr().add(destination.ix() * stride),
+                    count * stride,
+                );
+            }
+        }
+        let grammar = if source.flags() & SEPARATE_GRAMMAR != 0 {
+            source_layout.grammar
+        } else {
+            source_layout.symbol
+        };
+        for (from, to) in [
+            (source_layout.symbol, target.symbol),
+            (grammar, target.grammar),
+        ] {
+            let source_start = groups.start.first_slot().raw();
+            let target_start = destination.first_slot().raw();
+            let slots = count as u32 * GROUP_SIZE;
+            if source_layout.symbol_width == target.symbol_width {
+                let width = target.symbol_width as usize;
+                unsafe {
+                    ptr::copy_nonoverlapping(
+                        from.as_ptr().add(source_start as usize * width),
+                        to.as_ptr().add(target_start as usize * width),
+                        slots as usize * width,
+                    );
+                }
+            } else {
+                let mut writer = self.writer();
+                for offset in 0..slots {
+                    if target.symbol_width == 1 {
+                        writer.put_byte(
+                            to,
+                            target_start + offset,
+                            source.short(from, source_start + offset) as u8,
+                        );
+                    } else {
+                        writer.put_short(
+                            to,
+                            target_start + offset,
+                            u16::from(source.byte(from, source_start + offset)),
+                        );
+                    }
+                }
+            }
+        }
+        for (flag, from, to) in [
+            (EXTRAS, source_layout.extra, target.extra),
+            (ERRORS, source_layout.error, target.error),
+            (MISSING, source_layout.missing, target.missing),
+        ] {
+            let stride = GROUP_SIZE as usize / 8;
+            unsafe {
+                let to = to.as_ptr().add(destination.ix() * stride);
+                if source.flags() & flag != 0 {
+                    ptr::copy_nonoverlapping(
+                        from.as_ptr().add(groups.start.ix() * stride),
+                        to,
+                        count * stride,
+                    );
+                } else {
+                    ptr::write_bytes(to, 0, count * stride);
+                }
+            }
+        }
+    }
+
     pub(crate) fn writer(&mut self) -> SlabWriter<'_> {
         SlabWriter {
             bytes: self.storage.bytes,

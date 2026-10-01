@@ -244,7 +244,6 @@ pub(super) struct Traversal {
     reductions: Vec<ReductionFrame>,
     positions: Vec<Position>,
     masks: Vec<u64>,
-    boundaries: Vec<SlotIx>,
 }
 
 // A walk clears borrowed frames even on failure or unwind. Moving the retained
@@ -735,66 +734,6 @@ pub(super) fn pack_reductions(
         }
     }
     Ok(())
-}
-
-pub(super) fn pack_packed(
-    builder: &mut Builder,
-    scratch: &mut Traversal,
-    root: crate::Node<'_>,
-) -> Result<(), Error> {
-    if builder.points.is_some() && !root.has_points() {
-        return Err(Error::InvalidArgument);
-    }
-    scratch.boundaries.clear();
-    let mut cursor = root.walk();
-    loop {
-        reserve(&mut scratch.boundaries, 1)?;
-        scratch.boundaries.push(builder.distance());
-        if cursor.goto_last_child() {
-            continue;
-        }
-        loop {
-            let node = cursor.node();
-            let data = node.data();
-            let slot = node.slot().raw();
-            let boundary = scratch.boundaries.pop().ok_or(Error::InvalidArgument)?;
-            let start = node.start_position();
-            let end = node.end_position();
-            builder.emit(
-                &InputNode {
-                    start_byte: node.start_byte() as u32,
-                    end_byte: node.end_byte() as u32,
-                    start_point: Point {
-                        row: start.row as u32,
-                        column: start.column as u32,
-                    },
-                    end_point: Point {
-                        row: end.row as u32,
-                        column: end.column as u32,
-                    },
-                    symbol: data.symbol_index(node.slot()),
-                    grammar: data.grammar_index(node.slot()),
-                    field: if node == root { None } else { node.field_id() },
-                    supertype: SupertypeMask(if node == root {
-                        0
-                    } else {
-                        data.short(data.layout.supertype, slot)
-                    }),
-                    flags: u16::from(node == root || data.bit(data.layout.last, slot))
-                        | (u16::from(node.is_extra()) << 1)
-                        | (u16::from(node.is_missing()) << 2)
-                        | (u16::from(node.has_error()) << 3),
-                },
-                boundary,
-            )?;
-            if cursor.goto_previous_sibling() {
-                break;
-            }
-            if !cursor.goto_parent() {
-                return Ok(());
-            }
-        }
-    }
 }
 
 pub(super) fn pack(

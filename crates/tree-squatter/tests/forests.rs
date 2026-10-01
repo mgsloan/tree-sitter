@@ -54,9 +54,11 @@ fn mixed_direct_and_native_roots_match_native_forest() -> Result<(), Box<dyn std
                 MixedPackRegion {
                     language: c.clone(),
                     roots: vec![
-                        PackRoot::Squatter(direct.root_node()),
+                        PackRoot::Squatter(direct.trees().next().expect("direct tree")),
                         PackRoot::Sitter(malformed.root_node()),
-                        PackRoot::Squatter(malformed_packed.root_node()),
+                        PackRoot::Squatter(
+                            malformed_packed.trees().next().expect("malformed tree"),
+                        ),
                     ],
                 },
                 MixedPackRegion {
@@ -69,6 +71,166 @@ fn mixed_direct_and_native_roots_match_native_forest() -> Result<(), Box<dyn std
         assert_eq!(mapping, expected_mapping);
         support::assert_same_tree(&actual, &expected);
         actual.validate()?;
+    }
+    Ok(())
+}
+
+#[test]
+fn copied_forests_merge_presence_across_word_boundaries() -> Result<(), Box<dyn std::error::Error>>
+{
+    use tree_squatter::{MixedPackRegion, PackRoot};
+
+    let native_json = support::json_language();
+    let json = Language::new(&native_json)?;
+    let c = Language::new(&support::c_language())?;
+    let declaration = support::parse_native(&support::c_language(), "/* extra */ int value;");
+    let prefix = support::parse_native(&native_json, "false");
+    let suffix = support::parse_native(&native_json, "null");
+    let filler = support::parse_native(&native_json, "\"filler\"");
+    let malformed = support::parse_native(&native_json, "[{");
+    let source = format!("[{}true]", "{\"key\": [0, true]},\n".repeat(400));
+    let native = support::parse_native(&native_json, source);
+    let select_json = |region: tree_squatter::ForestRegion<'_>| {
+        region.language().tree_sitter_language() == native_json
+    };
+    let mut packer = Packer::new()?;
+    for points in [false, true] {
+        let options = PackOptions {
+            compact: true,
+            points,
+            symbol_presence: &select_json,
+            ..Default::default()
+        };
+        let uncached = packer.pack_with_options(
+            &json,
+            &filler,
+            PackOptions {
+                symbol_presence: &|_| false,
+                ..options
+            },
+        )?;
+        for wide_source in [false, true] {
+            for source_prefix in [0, 1, 63, 64, 65] {
+                let mut inputs = Vec::new();
+                if wide_source {
+                    inputs.push(PackRegion {
+                        language: c.clone(),
+                        roots: vec![declaration.root_node()],
+                    });
+                }
+                let mut roots = vec![prefix.root_node(); source_prefix];
+                roots.extend([
+                    native.root_node(),
+                    malformed.root_node(),
+                    suffix.root_node(),
+                ]);
+                inputs.push(PackRegion {
+                    language: json.clone(),
+                    roots,
+                });
+                let (source, mapping) = packer.pack_forest(inputs, options)?;
+                let copied_index = source_prefix + usize::from(wide_source);
+                let copied = source.tree(mapping[copied_index]).expect("copied tree");
+                let copied_error = source
+                    .tree(mapping[copied_index + 1])
+                    .expect("copied error");
+                assert!(copied.descendant_count() > 32 * 128);
+                let cancellations = std::cell::Cell::new(0);
+                let cancel = || {
+                    cancellations.set(cancellations.get() + 1);
+                    if cancellations.get() >= 5 {
+                        ControlFlow::Break(())
+                    } else {
+                        ControlFlow::Continue(())
+                    }
+                };
+                assert!(matches!(
+                    packer.pack_mixed_forest(
+                        vec![MixedPackRegion {
+                            language: json.clone(),
+                            roots: vec![PackRoot::Squatter(copied)],
+                        }],
+                        PackOptions {
+                            cancellation_callback: Some(&cancel),
+                            ..options
+                        }
+                    ),
+                    Err(tree_squatter::Error::Canceled)
+                ));
+                for destination_prefix in [0, 1, 63, 64, 65] {
+                    let mut inputs = Vec::new();
+                    let mut expected_inputs = Vec::new();
+                    if !wide_source {
+                        inputs.push(MixedPackRegion {
+                            language: c.clone(),
+                            roots: vec![PackRoot::Sitter(declaration.root_node())],
+                        });
+                        expected_inputs.push(PackRegion {
+                            language: c.clone(),
+                            roots: vec![declaration.root_node()],
+                        });
+                    }
+                    let mut roots: Vec<_> = (0..destination_prefix)
+                        .map(|_| PackRoot::Sitter(filler.root_node()))
+                        .collect();
+                    roots.extend([
+                        PackRoot::Squatter(copied),
+                        PackRoot::Sitter(filler.root_node()),
+                        PackRoot::Squatter(copied_error),
+                        PackRoot::Squatter(uncached.trees().next().expect("uncached tree")),
+                        PackRoot::Squatter(copied),
+                    ]);
+                    inputs.push(MixedPackRegion {
+                        language: json.clone(),
+                        roots,
+                    });
+                    let mut roots = vec![filler.root_node(); destination_prefix];
+                    roots.extend([
+                        native.root_node(),
+                        filler.root_node(),
+                        malformed.root_node(),
+                        filler.root_node(),
+                        native.root_node(),
+                    ]);
+                    expected_inputs.push(PackRegion {
+                        language: json.clone(),
+                        roots,
+                    });
+                    let (actual, mapping) = packer.pack_mixed_forest(inputs, options)?;
+                    let (expected, expected_mapping) =
+                        packer.pack_forest(expected_inputs, options)?;
+                    assert_eq!(mapping, expected_mapping);
+                    for (actual, expected) in actual.trees().zip(expected.trees()) {
+                        assert_eq!(
+                            actual.root_node().descendant_count(),
+                            expected.root_node().descendant_count()
+                        );
+                        for (actual, expected) in
+                            actual.preorder().nodes().zip(expected.preorder().nodes())
+                        {
+                            assert_eq!(actual.attributes(), expected.attributes());
+                            assert_eq!(actual.field_id(), expected.field_id());
+                        }
+                    }
+                    assert_eq!(
+                        actual.point_data().map(PointsData::as_bytes),
+                        expected.point_data().map(PointsData::as_bytes)
+                    );
+                    assert_eq!(
+                        actual.presence_cache().map(PresenceCache::as_bytes),
+                        expected.presence_cache().map(PresenceCache::as_bytes)
+                    );
+                    actual.validate()?;
+                    actual
+                        .presence_cache()
+                        .expect("merged presence")
+                        .validate_for(&actual)?;
+                    if let Some(points) = actual.point_data() {
+                        points.validate_for(&actual)?;
+                    }
+                }
+            }
+        }
     }
     Ok(())
 }
