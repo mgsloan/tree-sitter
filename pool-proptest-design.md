@@ -1,8 +1,8 @@
 # Pool-based property testing
 
-Proposed integration test: `crates/squatter/tests/pool_proptest.rs`, run by
-`cargo test -p tree-squatter --test pool_proptest`. This document describes the
-test; it does not implement it. It targets the APIs at main commit `6a6e117a6`.
+Integration test: `crates/core/tree-squatter/tests/bisim.rs`, run by
+`cargo test -p tree-squatter --test bisim`. This document describes the
+test. The implementation targets the APIs at main commit `0bc6b8434`.
 
 The reference is
 [`shadow_proptest.rs`](../bit-packed/crates/cli/tests/shadow_proptest.rs)
@@ -360,12 +360,17 @@ violations during execution are failures with the offending operation recorded.
 
 Honor `PROPTEST_CASES` and the runner's seed override. Cap shrinking at 4096
 iterations, and persist failures beside the test in
-`pool_proptest.proptest-regressions`. Start with the old test's `TestRunner`
+`bisim.proptest-regressions`. Start with the old test's `TestRunner`
 pattern so one summary can report generated/admitted/executed operations,
 repairs by reason, successful/failed navigation, parser failures, storage modes,
 mixed-language forests, scan results, and completed query matches. Exclude
 shrink attempts from normal coverage counts. Tune weights using actual executed
 coverage.
+
+The `bisim` example shares this harness and accepts `-j N`. Workers own
+independent pools, divide `PROPTEST_CASES`, and use the printed base seed plus
+their worker index. Run fixed regressions once and combine worker coverage;
+each worker shrinks and persists its failures independently.
 
 Failure output includes the repaired case, operation and nested-step indices,
 source/query text, region grammars/options, forest/root provenance, resolved
