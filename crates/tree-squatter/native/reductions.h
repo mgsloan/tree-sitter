@@ -30,5 +30,7 @@ SQParser *sq_native_parser_new(SQGrammar *, SQParseError *);
 void sq_native_parser_delete(SQParser *);
 void sq_native_parser_drop_scratch(SQParser *);
 const SQReduction *sq_native_parser_reductions(const SQParser *, uint32_t *, uint32_t *);
+SQReduction *sq_native_parser_take_reductions(SQParser *, uint32_t *, uint32_t *);
+void sq_native_reductions_delete(SQReduction *);
 
 #endif

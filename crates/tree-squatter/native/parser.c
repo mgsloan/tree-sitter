@@ -295,3 +295,18 @@ const SQReduction *sq_native_parser_reductions(const SQParser *parser, uint32_t 
   *root = parser->root;
   return parser->reductions;
 }
+
+SQReduction *sq_native_parser_take_reductions(SQParser *parser, uint32_t *count,
+                                             uint32_t *root) {
+  *count = parser->count;
+  *root = parser->root;
+  SQReduction *reductions = parser->reductions;
+  parser->reductions = NULL;
+  parser->capacity = 0;
+  sq_native_parser_clear(parser);
+  return reductions;
+}
+
+void sq_native_reductions_delete(SQReduction *reductions) {
+  free(reductions);
+}

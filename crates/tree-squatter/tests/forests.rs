@@ -24,6 +24,7 @@ fn mixed_direct_and_native_roots_match_native_forest() -> Result<(), Box<dyn std
     let malformed = support::parse_native(&support::c_language(), "int main( {");
     let json_tree = support::parse_native(&support::json_language(), "[true, null]");
     let direct = TreeFellerParser::new(&c)?.parse(source)?;
+    let reductions = TreeFellerParser::new(&c)?.parse_reductions(source)?;
     let malformed_packed = Forest::pack(&c, &malformed)?;
     let mut packer = Packer::new()?;
     for points in [false, true] {
@@ -38,8 +39,10 @@ fn mixed_direct_and_native_roots_match_native_forest() -> Result<(), Box<dyn std
                     language: c.clone(),
                     roots: vec![
                         native.root_node(),
+                        native.root_node(),
                         malformed.root_node(),
                         malformed.root_node(),
+                        native.root_node(),
                     ],
                 },
                 PackRegion {
@@ -55,10 +58,12 @@ fn mixed_direct_and_native_roots_match_native_forest() -> Result<(), Box<dyn std
                     language: c.clone(),
                     roots: vec![
                         PackRoot::Squatter(direct.trees().next().expect("direct tree")),
+                        PackRoot::Reductions(&reductions),
                         PackRoot::Sitter(malformed.root_node()),
                         PackRoot::Squatter(
                             malformed_packed.trees().next().expect("malformed tree"),
                         ),
+                        PackRoot::Reductions(&reductions),
                     ],
                 },
                 MixedPackRegion {
@@ -72,6 +77,32 @@ fn mixed_direct_and_native_roots_match_native_forest() -> Result<(), Box<dyn std
         support::assert_same_tree(&actual, &expected);
         actual.validate()?;
     }
+    let wrong_language = Language::new(&support::c_language())?;
+    assert!(matches!(
+        packer.pack_mixed_forest(
+            vec![MixedPackRegion {
+                language: wrong_language,
+                roots: vec![PackRoot::Reductions(&reductions)],
+            }],
+            Default::default(),
+        ),
+        Err(tree_squatter::Error::Language)
+    ));
+    assert!(matches!(
+        packer.pack_mixed_forest(
+            vec![MixedPackRegion {
+                language: c,
+                roots: vec![PackRoot::Reductions(&reductions)],
+            }],
+            PackOptions {
+                symbol_presence: &|_| true,
+                cancellation_callback: Some(&|| ControlFlow::Break(())),
+                ..Default::default()
+            },
+        ),
+        Err(tree_squatter::Error::Canceled)
+    ));
+    support::assert_same_tree(&reductions.pack()?, &direct);
     Ok(())
 }
 

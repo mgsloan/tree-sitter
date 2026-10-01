@@ -20,7 +20,8 @@ mod storage;
 pub mod traits;
 pub use packing::{MixedPackRegion, PackOptions, PackRegion, PackRoot, Packer};
 pub use parser::{
-    PackedParseOptions, ParseError, ParseOptions, ParseState, Parser, ParserError, TreeFellerParser,
+    PackedParseOptions, ParseError, ParseOptions, ParseState, Parser, ParserError, ReductionTree,
+    TreeFellerParser,
 };
 pub use side_data::{PointsData, PresenceCache, SideDataError};
 pub use storage::{BorrowedForest, Forest, ForestRegion, StableSlab, Tree, representation_id};

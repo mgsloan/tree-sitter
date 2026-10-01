@@ -54,6 +54,7 @@ pub struct PackRegion<'tree> {
 pub enum PackRoot<'tree> {
     Sitter(tree_sitter::Node<'tree>),
     Squatter(crate::Tree<'tree>),
+    Reductions(&'tree crate::ReductionTree),
 }
 
 pub struct MixedPackRegion<'tree> {
@@ -129,8 +130,9 @@ impl Packer {
         )
     }
 
-    /// Packs native roots and whole packed trees together, preserving their order and coordinates.
-    /// Packed trees retain their groups and must share their region's prepared language instance.
+    /// Packs native roots, whole packed trees, and reduction trees in order, preserving coordinates.
+    /// Packed and reduction trees must share their region's prepared language instance.
+    /// Packed trees retain their groups; reduction trees are encoded directly into the forest.
     pub fn pack_mixed_forest(
         &mut self,
         inputs: Vec<MixedPackRegion<'_>>,
@@ -146,6 +148,7 @@ impl Packer {
                 let descendants = match root {
                     PackRoot::Sitter(root) => root.descendant_count(),
                     PackRoot::Squatter(root) => root.descendant_count(),
+                    PackRoot::Reductions(root) => root.node_count(),
                 };
                 expected_nodes = expected_nodes
                     .checked_add(descendants as u64)
@@ -190,6 +193,19 @@ impl Packer {
                                 destination: start.group(),
                             });
                         }
+                    }
+                    PackRoot::Reductions(tree) => {
+                        if !ptr::eq(tree.language().tables(), input.language.tables()) {
+                            return Err(Error::Language);
+                        }
+                        let (nodes, root) = tree.0.nodes();
+                        traversal::pack_reductions(
+                            &mut builder,
+                            input.language.tables(),
+                            &mut self.traversal,
+                            nodes,
+                            root,
+                        )?;
                     }
                 }
                 let tree = builder.finish_root(start, region)?;

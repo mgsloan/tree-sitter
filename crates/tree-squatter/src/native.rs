@@ -1179,6 +1179,20 @@ impl Drop for Reductions<'_> {
 }
 
 impl Reductions<'_> {
+    pub fn into_owned(self) -> OwnedReductions {
+        let language = self.0.language.clone();
+        let mut count = 0;
+        let mut root = 0;
+        let nodes =
+            unsafe { sq_native_parser_take_reductions(self.0.raw.as_ptr(), &mut count, &mut root) };
+        OwnedReductions {
+            nodes,
+            count,
+            root: ReductionIx(root),
+            language,
+        }
+    }
+
     pub fn language(&self) -> &Language {
         &self.0.language
     }
@@ -1194,6 +1208,43 @@ impl Reductions<'_> {
             unsafe { slice::from_raw_parts(nodes, count as usize) },
             ReductionIx(root),
         )
+    }
+}
+
+pub(crate) struct OwnedReductions {
+    nodes: *mut Reduction,
+    count: u32,
+    root: ReductionIx,
+    language: Language,
+}
+
+// Detached arenas contain only immutable values and index links. They retain
+// their language and have no pointers into the parser or source document.
+unsafe impl Send for OwnedReductions {}
+unsafe impl Sync for OwnedReductions {}
+
+impl Drop for OwnedReductions {
+    fn drop(&mut self) {
+        unsafe { sq_native_reductions_delete(self.nodes) };
+    }
+}
+
+impl OwnedReductions {
+    pub fn language(&self) -> &Language {
+        &self.language
+    }
+
+    pub fn nodes(&self) -> (&[Reduction], ReductionIx) {
+        // Only a successful parse can detach an arena, so it is nonempty and
+        // remains allocated until this owner drops.
+        (
+            unsafe { slice::from_raw_parts(self.nodes, self.count as usize) },
+            self.root,
+        )
+    }
+
+    pub fn root(&self) -> &Reduction {
+        &self.nodes().0[self.root.ix()]
     }
 }
 
@@ -1221,4 +1272,10 @@ unsafe extern "C" {
         count: *mut u32,
         root: *mut u32,
     ) -> *const Reduction;
+    fn sq_native_parser_take_reductions(
+        parser: *mut ParserHandle,
+        count: *mut u32,
+        root: *mut u32,
+    ) -> *mut Reduction;
+    fn sq_native_reductions_delete(nodes: *mut Reduction);
 }

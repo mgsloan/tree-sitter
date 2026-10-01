@@ -363,6 +363,78 @@ fn direct_callback_failures_and_reuse() {
 }
 
 #[test]
+fn owned_reductions_survive_parser_reuse_and_drop() -> Result<(), Box<dyn std::error::Error>> {
+    fn assert_send_sync<T: Send + Sync>() {}
+    assert_send_sync::<tree_squatter::ReductionTree>();
+
+    let sources = [
+        "/* π */ int value(int argument) { return argument + 1; }\n".repeat(128),
+        String::new(),
+        "int last;".to_owned(),
+    ];
+    let mut expected = Vec::new();
+    let mut reductions = Vec::new();
+    {
+        let language = Language::new(&c_language())?;
+        let mut parser = TreeFellerParser::new(&language)?;
+        for source in &sources {
+            let native = support::parse_native(&c_language(), source);
+            expected.push(Forest::pack(&language, &native)?);
+            reductions.push(parser.parse_reductions(source)?);
+        }
+        assert_eq!(
+            parser
+                .parse_reductions("int broken = ;")
+                .expect_err("invalid syntax")
+                .code,
+            Error::Parse
+        );
+        let panic = panic::catch_unwind(panic::AssertUnwindSafe(|| {
+            parser.parse_reductions_with(&mut |byte, _| {
+                assert!(byte == 0, "input callback panic");
+                b"int value;".to_vec()
+            })
+        }));
+        assert!(panic.is_err());
+        let source = "int after;";
+        let chunked = parser.parse_reductions_with(&mut |byte, _| &source.as_bytes()[byte..])?;
+        assert_same_tree(&chunked.pack()?, &parser.parse(source)?);
+        parser.drop_scratch();
+        parser.parse_reductions("int reused;")?.pack()?.validate()?;
+    }
+    drop(sources);
+    let reductions = std::thread::spawn(move || reductions)
+        .join()
+        .expect("transfer reductions");
+    for (tree, expected) in reductions.iter().zip(&expected) {
+        assert_eq!(tree.language().tree_sitter_language(), c_language());
+        assert_eq!(tree.node_count(), expected.root_node().descendant_count());
+        assert_eq!(tree.range(), expected.root_node().range());
+        assert_same_tree(&tree.pack()?, expected);
+        let options = PackOptions {
+            compact: true,
+            points: false,
+            symbol_presence: &|_| true,
+            ..Default::default()
+        };
+        assert!(matches!(
+            tree.pack_with_options(PackOptions {
+                cancellation_callback: Some(&|| ControlFlow::Break(())),
+                ..options
+            }),
+            Err(Error::Canceled)
+        ));
+        let packed = tree.pack_with_options(options)?;
+        packed.validate()?;
+        assert!(packed.point_data().is_none());
+        assert!(packed.presence_cache().is_some());
+        assert_eq!(packed.root_node().descendant_count(), tree.node_count());
+        assert_same_tree(&tree.pack()?, expected);
+    }
+    Ok(())
+}
+
+#[test]
 fn direct_included_ranges_match_native() {
     use tree_sitter::{Point, Range};
 
@@ -470,6 +542,25 @@ fn direct_included_ranges_match_native() {
                     )
                     .expect("direct ranges");
                 assert_same_tree(&actual, &expected);
+                let reductions = direct
+                    .parse_reductions_with_ranges(
+                        &mut |byte, position| {
+                            check_point(source.as_bytes(), byte, position);
+                            source
+                                .as_bytes()
+                                .get(byte..byte.saturating_add(chunk_size).min(source.len()))
+                                .unwrap_or_default()
+                                .to_vec()
+                        },
+                        &ranges,
+                    )
+                    .expect("owned direct ranges");
+                assert_eq!(reductions.range(), expected.root_node().range());
+                assert_eq!(
+                    reductions.node_count(),
+                    expected.root_node().descendant_count()
+                );
+                assert_same_tree(&reductions.pack().expect("pack reductions"), &expected);
             }
         }
         assert!(

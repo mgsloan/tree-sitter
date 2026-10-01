@@ -3,7 +3,7 @@ use tree_sitter::Point;
 
 use crate::{
     Error, Forest, Language, PackOptions, Packer,
-    native::NativeParser,
+    native::{NativeParser, OwnedReductions},
     traits::{Parse, ParseStateLike},
 };
 
@@ -326,6 +326,54 @@ pub struct TreeFellerParser {
     pack: Packer,
 }
 
+/// An owned, unpacked direct parse, ready for [`crate::PackRoot::Reductions`].
+/// Retains its language and reduction arena without borrowing the parser or input.
+/// It cannot be queried until packed.
+pub struct ReductionTree(pub(crate) OwnedReductions);
+
+impl ReductionTree {
+    pub fn language(&self) -> &Language {
+        self.0.language()
+    }
+
+    /// Exact number of visible nodes, including the root.
+    pub fn node_count(&self) -> usize {
+        self.0.root().visible_descendant_count as usize + 1
+    }
+
+    pub fn range(&self) -> tree_sitter::Range {
+        let root = self.0.root();
+        tree_sitter::Range {
+            start_byte: root.start_byte as usize,
+            end_byte: root.end_byte as usize,
+            start_point: Point::new(
+                root.start_point.row as usize,
+                root.start_point.column as usize,
+            ),
+            end_point: Point::new(root.end_point.row as usize, root.end_point.column as usize),
+        }
+    }
+
+    pub fn pack(&self) -> Result<Forest, Error> {
+        self.pack_with_options(PackOptions::default())
+    }
+
+    pub fn pack_with_options(&self, options: PackOptions<'_>) -> Result<Forest, Error> {
+        let (nodes, root) = self.0.nodes();
+        Packer::default().pack_reductions(self.language(), nodes, root, options)
+    }
+}
+
+impl fmt::Debug for ReductionTree {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ReductionTree")
+            .field("node_count", &self.node_count())
+            .field("range", &self.range())
+            .finish_non_exhaustive()
+    }
+}
+
 impl TreeFellerParser {
     /// Reuses the language's shared direct-parser tables, preparing them on first use.
     pub fn new(language: &Language) -> Result<Self, ParseError> {
@@ -341,6 +389,40 @@ impl TreeFellerParser {
 
     pub fn parse(&mut self, source: impl AsRef<[u8]>) -> Result<Forest, ParseError> {
         Parse::parse(self, source)
+    }
+
+    /// Transfers the reduction arena without copying or packing it.
+    /// The next parse allocates a fresh arena; other parser scratch is reused.
+    pub fn parse_reductions(
+        &mut self,
+        source: impl AsRef<[u8]>,
+    ) -> Result<ReductionTree, ParseError> {
+        Ok(ReductionTree(
+            self.native.parse(source.as_ref())?.into_owned(),
+        ))
+    }
+
+    /// Reads chunks under the same contract as [`Self::parse_with_options`],
+    /// transferring the arena as in [`Self::parse_reductions`].
+    pub fn parse_reductions_with<T: AsRef<[u8]>, F: FnMut(usize, Point) -> T>(
+        &mut self,
+        callback: &mut F,
+    ) -> Result<ReductionTree, ParseError> {
+        self.parse_reductions_with_ranges(callback, &[])
+    }
+
+    /// Parses included ranges under the same contract as [`Self::parse_with_ranges`],
+    /// transferring the arena as in [`Self::parse_reductions`].
+    pub fn parse_reductions_with_ranges<T: AsRef<[u8]>, F: FnMut(usize, Point) -> T>(
+        &mut self,
+        callback: &mut F,
+        ranges: &[tree_sitter::Range],
+    ) -> Result<ReductionTree, ParseError> {
+        Ok(ReductionTree(
+            self.native
+                .parse_chunks_in_ranges(callback, ranges)?
+                .into_owned(),
+        ))
     }
 
     fn parse_contiguous(
