@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Publish the selected contents of dev as merge commits on organized."""
+"""Publish the selected contents of main as merge commits on pristine."""
 
 import argparse
 import os
@@ -135,7 +135,7 @@ def validate_target(target, source):
         if not is_ancestor(previous[2], source):
             raise PublicationError('source does not descend from the previous publication source')
     elif not is_ancestor(target, source):
-        raise PublicationError('target has unpublished changes; incorporate its history into dev first')
+        raise PublicationError('target has unpublished changes; incorporate its history into main first')
 
 
 def prepare(arguments):
@@ -195,8 +195,8 @@ def publish(arguments):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('action', choices=['check', 'prepare', 'publish'])
-    parser.add_argument('--source', default='dev', help='committed source revision (default: dev)')
-    parser.add_argument('--target', default='organized', help='output branch (default: organized)')
+    parser.add_argument('--source', default='main', help='committed source revision (default: main)')
+    parser.add_argument('--target', default='pristine', help='output branch (default: pristine)')
     parser.add_argument('--candidate', help='review branch (default: publish/<target>)')
     arguments = parser.parse_args()
     arguments.candidate = arguments.candidate or f'publish/{arguments.target}'
