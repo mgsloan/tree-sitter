@@ -1,7 +1,7 @@
 use crate::{
-    FieldId, ForestRegion, GrammarId, MatchCaptureIx, Node, PatternIx, Query, QueryCapture,
-    QueryCursorOptions, QueryCursorState, QueryExecutionError, QueryMatch, QueryScope, RawNode,
-    SlotIx, StreamingIterator, TextProvider, TreeIx,
+    CaptureQuantifier, FieldId, ForestRegion, GrammarId, MatchCaptureIx, Node, PatternIx, Query,
+    QueryCapture, QueryCursorOptions, QueryCursorState, QueryExecutionError, QueryMatch,
+    QueryScope, RawNode, SlotIx, StreamingIterator, TextProvider, TreeIx,
     native::{self, GrammarView, Pattern, PatternEntry, Step, flags::*},
     query::Scope,
     query_plan::Relation,
@@ -2892,11 +2892,13 @@ impl<'query, 'tree, Provider: TextProvider<Chunk>, Chunk: AsRef<[u8]>>
                 }
             } else {
                 capture_id = Some(capture.index);
-                let quantifiers = unsafe {
-                    self.query.compiled.view.capture_quantifiers.as_slice()[state.pattern.ix()]
-                        .as_slice()
-                };
-                if !matches!(quantifiers.get(capture.index.ix()), Some(1 | 2)) {
+                let quantifiers = self
+                    .query
+                    .capture_quantifiers(PatternIx(state.pattern.ix()));
+                if !matches!(
+                    quantifiers.get(capture.index.ix()),
+                    Some(CaptureQuantifier::ZeroOrOne | CaptureQuantifier::One)
+                ) {
                     return false;
                 }
             }

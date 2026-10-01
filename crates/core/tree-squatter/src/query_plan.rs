@@ -87,7 +87,7 @@ impl Program {
                 .any(|captures| {
                     unsafe { captures.as_slice() }
                         .iter()
-                        .any(|quantifier| *quantifier >= 3)
+                        .any(|quantifier| matches!(quantifier, 2 | 4))
                 }),
         };
 
