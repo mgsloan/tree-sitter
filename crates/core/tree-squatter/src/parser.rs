@@ -369,6 +369,23 @@ impl TreeFellerParser {
         Parse::parse_with_options(self, callback, options)
     }
 
+    /// Parses sorted, nonoverlapping included ranges in document coordinates.
+    /// Empty ranges are allowed; an empty slice includes the whole document.
+    /// The callback exposes the original document, including excluded text.
+    /// The parse progress callback is ignored.
+    pub fn parse_with_ranges<T: AsRef<[u8]>, F: FnMut(usize, Point) -> T>(
+        &mut self,
+        callback: &mut F,
+        ranges: &[tree_sitter::Range],
+        options: PackedParseOptions<'_>,
+    ) -> Result<Forest, ParseError> {
+        let reductions = self.native.parse_chunks_in_ranges(callback, ranges)?;
+        let (nodes, root) = reductions.nodes();
+        Ok(self
+            .pack
+            .pack_reductions(reductions.language(), nodes, root, options.pack)?)
+    }
+
     /// Release high-water scratch while retaining the prepared language.
     pub fn drop_scratch(&mut self) {
         self.native.drop_scratch();

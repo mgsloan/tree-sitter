@@ -99,6 +99,11 @@ typedef struct {
   char message[TF_ERROR_MESSAGE_SIZE];
 } TFError;
 
+typedef struct {
+  uint32_t start_byte, end_byte;
+  TFPoint start_point, end_point;
+} TFRange;
+
 // Reads UTF-8 bytes starting at the requested position; zero bytes means EOF.
 // The read function is required; nonempty chunks must have a non-NULL pointer.
 // Reads may seek backward, including to the beginning during ambiguity resolution.
@@ -107,6 +112,9 @@ typedef struct {
 typedef struct {
   void *payload;
   const char *(*read)(void *payload, uint32_t byte, TFPoint point, uint32_t *size);
+  // Sorted, nonoverlapping ranges in document coordinates; zero count includes all input.
+  const TFRange *included_ranges;
+  uint32_t included_range_count;
 } TFInput;
 
 // Parses all of `source`. On success, stores the root value in `*root`. On the

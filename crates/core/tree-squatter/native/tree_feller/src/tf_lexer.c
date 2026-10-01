@@ -54,10 +54,21 @@ static void tf_lexer__read(TFLexer *self, uint32_t byte, TFPoint point) {
   } else {
     self->source = (const uint8_t *)source;
     self->size = byte + size;
+    if (input->input.included_range_count) {
+      uint32_t end = input->input.included_ranges[self->range_index].end_byte;
+      if (self->size > end) self->size = end;
+    }
   }
 }
 
 static void tf_lexer__get_chunk_lookahead(TFLexer *self) {
+  if (self->input->input.included_range_count &&
+      self->range_index == self->input->input.included_range_count) {
+    self->at_eof = true;
+    self->data.lookahead = '\0';
+    self->lookahead_size = 1;
+    return;
+  }
   if (!self->source || self->byte < self->chunk_start || self->byte >= self->size) {
     tf_lexer__read(self, self->byte, self->point);
   }
@@ -83,6 +94,10 @@ static void tf_lexer__get_chunk_lookahead(TFLexer *self) {
     TFPoint point = self->point;
     uint32_t scanned = 0;
     while (available < needed) {
+      if (self->input->input.included_range_count &&
+          self->byte + available >= self->input->input.included_ranges[self->range_index].end_byte) {
+        break;
+      }
       while (scanned < available) {
         if (joined[scanned++] == '\n') {
           point.row++;
@@ -107,6 +122,27 @@ static void tf_lexer__get_chunk_lookahead(TFLexer *self) {
 void tf_lexer_seek(TFLexer *self, uint32_t byte, TFPoint point) {
   self->byte = byte;
   self->point = point;
+  if (self->input && self->input->input.included_range_count) {
+    const TFInput *input = &self->input->input;
+    self->range_index = 0;
+    while (self->range_index < input->included_range_count &&
+           (input->included_ranges[self->range_index].end_byte <= byte ||
+            input->included_ranges[self->range_index].start_byte ==
+                input->included_ranges[self->range_index].end_byte)) {
+      self->range_index++;
+    }
+    if (self->range_index == input->included_range_count) {
+      const TFRange *last = &input->included_ranges[input->included_range_count - 1];
+      self->byte = last->end_byte;
+      self->point = last->end_point;
+    } else {
+      const TFRange *range = &input->included_ranges[self->range_index];
+      if (byte <= range->start_byte) {
+        self->byte = range->start_byte;
+        self->point = range->start_point;
+      }
+    }
+  }
   if (self->input) tf_lexer__get_chunk_lookahead(self);
   else tf_lexer__get_lookahead(self);
 }
@@ -118,9 +154,7 @@ void tf_lexer_refresh(TFLexer *self) {
   }
 }
 
-// lexer.c:194-247. The included-range walk collapses to nothing with one range;
-// what remains is the position arithmetic, which must match exactly: only '\n'
-// advances the row, and `column` counts bytes.
+// Only '\n' advances the row, and `column` counts bytes, matching tree-sitter.
 static void tf_lexer__move(TFLexer *self, bool skip) {
   if (self->lookahead_size) {
     if (self->data.lookahead == '\n') {
@@ -166,8 +200,41 @@ static bool tf_lexer__chunk_eof(const TSLexer *lexer) {
   return ((const TFLexer *)lexer)->at_eof;
 }
 
+static void tf_lexer__advance_ranges(TSLexer *lexer, bool skip) {
+  TFLexer *self = (TFLexer *)lexer;
+  if (self->at_eof) return;
+  const TFInput *input = &self->input->input;
+  if (self->lookahead_size < input->included_ranges[self->range_index].end_byte - self->byte) {
+    tf_lexer__advance_chunk(lexer, skip);
+    return;
+  }
+  tf_lexer__move(self, false);
+  while (self->range_index < input->included_range_count &&
+         self->byte >= input->included_ranges[self->range_index].end_byte) {
+    self->range_index++;
+    if (self->range_index < input->included_range_count) {
+      const TFRange *range = &input->included_ranges[self->range_index];
+      self->byte = range->start_byte;
+      self->point = range->start_point;
+    }
+  }
+  if (skip) {
+    self->token_start_byte = self->byte;
+    self->token_start_point = self->point;
+  }
+  tf_lexer__get_chunk_lookahead(self);
+}
+
 static void tf_lexer__mark_end(TSLexer *lexer) {
   TFLexer *self = (TFLexer *)lexer;
+  if (self->input && !self->at_eof && self->range_index > 0 &&
+      self->range_index < self->input->input.included_range_count &&
+      self->byte == self->input->input.included_ranges[self->range_index].start_byte) {
+    const TFRange *previous = &self->input->input.included_ranges[self->range_index - 1];
+    self->token_end_byte = previous->end_byte;
+    self->token_end_point = previous->end_point;
+    return;
+  }
   self->token_end_byte = self->byte;
   self->token_end_point = self->point;
 }
@@ -202,15 +269,18 @@ static uint32_t tf_lexer__get_chunk_column(TSLexer *lexer) {
   uint32_t column = 0;
   while (scan.byte < self->byte && !scan.at_eof) {
     if (scan.byte != 0 || scan.data.lookahead != TF_BOM) column++;
-    tf_lexer__advance_chunk(&scan.data, false);
+    scan.data.advance(&scan.data, false);
   }
   tf_lexer_refresh(self);
   return column;
 }
 
-// lexer.c:325-333. True only at the very start of the one included range.
 static bool tf_lexer__is_at_included_range_start(const TSLexer *lexer) {
   const TFLexer *self = (const TFLexer *)lexer;
+  if (self->input && self->input->input.included_range_count) {
+    return self->range_index < self->input->input.included_range_count &&
+           self->byte == self->input->input.included_ranges[self->range_index].start_byte;
+  }
   return self->byte == 0 && self->size > 0;
 }
 
@@ -243,7 +313,8 @@ void tf_lexer_init_with_callback(TFLexer *self, const TFLanguage *lang, TFInputS
   self->data.advance = tf_lexer__advance_chunk;
   self->data.eof = tf_lexer__chunk_eof;
   self->data.get_column = tf_lexer__get_chunk_column;
-  tf_lexer__get_chunk_lookahead(self);
+  if (input->input.included_range_count) self->data.advance = tf_lexer__advance_ranges;
+  tf_lexer_seek(self, 0, (TFPoint){0});
 }
 
 // lexer.c:/ts_lexer_start/. tree-sitter decodes only when its lookahead was

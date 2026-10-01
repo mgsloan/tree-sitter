@@ -363,6 +363,141 @@ fn direct_callback_failures_and_reuse() {
 }
 
 #[test]
+fn direct_included_ranges_match_native() {
+    use tree_sitter::{Point, Range};
+
+    let fixtures = [
+        (
+            c_language(),
+            "ignored é\n<int first;> omitted\n<int second;> suffix",
+            vec!["int first;", "int second;"],
+        ),
+        (
+            c_language(),
+            "prefix<int na>excluded<me;>suffix",
+            vec!["int na", "me;"],
+        ),
+        (
+            unsafe {
+                tree_sitter::Language::from_raw(tree_sitter_rust::LANGUAGE.into_raw()().cast())
+            },
+            "prefix\n<fn first() { let value = r###\"é\"###; /* outer /* inner */ end */ }>\nomitted<fn second() { println!(\"hi\"); }>",
+            vec![
+                "fn first() { let value = r###\"é\"###; /* outer /* inner */ end */ }",
+                "fn second() { println!(\"hi\"); }",
+            ],
+        ),
+        (
+            unsafe {
+                tree_sitter::Language::from_raw(tree_sitter_python::LANGUAGE.into_raw()().cast())
+            },
+            "excluded\n<def first(value):\n    return f'é {value}'\n>omitted\n<def second():\n    return 2\n>suffix",
+            vec![
+                "def first(value):\n    return f'é {value}'\n",
+                "def second():\n    return 2\n",
+            ],
+        ),
+        (c_language(), "ignored text", vec![""]),
+    ];
+    for (native_language, source, fragments) in fixtures {
+        let point = |byte: usize| {
+            let prefix = &source.as_bytes()[..byte];
+            Point::new(
+                prefix.iter().filter(|byte| **byte == b'\n').count(),
+                prefix
+                    .iter()
+                    .rposition(|byte| *byte == b'\n')
+                    .map_or(byte, |newline| byte - newline - 1),
+            )
+        };
+        let mut ranges: Vec<_> = fragments
+            .iter()
+            .map(|fragment| {
+                let start = if fragment.is_empty() {
+                    3
+                } else {
+                    source.find(fragment).expect("fixture fragment")
+                };
+                let end = start + fragment.len();
+                Range {
+                    start_byte: start,
+                    end_byte: end,
+                    start_point: point(start),
+                    end_point: point(end),
+                }
+            })
+            .collect();
+        let language = Language::new(&native_language).expect("packed language");
+        let mut direct = TreeFellerParser::new(&language).expect("direct language");
+        let mut native = tree_sitter::Parser::new();
+        native
+            .set_language(&native_language)
+            .expect("native language");
+        for add_empty_ranges in [false, true] {
+            if add_empty_ranges {
+                ranges.insert(
+                    0,
+                    Range {
+                        start_byte: 0,
+                        end_byte: 0,
+                        start_point: point(0),
+                        end_point: point(0),
+                    },
+                );
+                ranges.push(Range {
+                    start_byte: source.len(),
+                    end_byte: source.len(),
+                    start_point: point(source.len()),
+                    end_point: point(source.len()),
+                });
+            }
+            native.set_included_ranges(&ranges).expect("valid ranges");
+            let expected = native.parse(source, None).expect("native parse");
+            let expected = Forest::pack(&language, &expected).expect("pack reference");
+            for chunk_size in [1, 2, 7, usize::MAX] {
+                let actual = direct
+                    .parse_with_ranges(
+                        &mut |byte, position| {
+                            check_point(source.as_bytes(), byte, position);
+                            source
+                                .as_bytes()
+                                .get(byte..byte.saturating_add(chunk_size).min(source.len()))
+                                .unwrap_or_default()
+                                .to_vec()
+                        },
+                        &ranges,
+                        Default::default(),
+                    )
+                    .expect("direct ranges");
+                assert_same_tree(&actual, &expected);
+            }
+        }
+        assert!(
+            direct
+                .parse_with_ranges(
+                    &mut |_, _| b"" as &[u8],
+                    &[Range {
+                        start_byte: 2,
+                        end_byte: 1,
+                        start_point: Point::new(0, 2),
+                        end_point: Point::new(0, 1),
+                    }],
+                    Default::default()
+                )
+                .is_err()
+        );
+        let whole = direct
+            .parse_with_ranges(
+                &mut |byte, _| b"".get(byte..).unwrap_or_default(),
+                &[],
+                Default::default(),
+            )
+            .expect("reset ranges");
+        assert_eq!(whole.root_node().byte_range(), 0..0);
+    }
+}
+
+#[test]
 fn non_terminal_extras_match_rust() {
     let native_language =
         unsafe { tree_sitter::Language::from_raw(tree_sitter_rust::LANGUAGE.into_raw()().cast()) };

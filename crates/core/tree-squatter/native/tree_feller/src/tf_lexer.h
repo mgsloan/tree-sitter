@@ -1,7 +1,7 @@
 // Lexer adapter: runs generated lexers and native scanners over UTF-8 input.
 //
 // A stripped-down `Lexer` (lexer.c): contiguous or callback UTF-8 input,
-// no included ranges or incremental reuse. Keeps the observable behaviour the
+// included ranges, and no incremental reuse. Keeps the observable behaviour the
 // lexers, scanners, and byte/point arithmetic depend on.
 #ifndef TF_LEXER_H
 #define TF_LEXER_H
@@ -73,6 +73,7 @@ typedef struct {
   uint32_t chunk_start;
   bool at_eof;
   TFScanner *scanner;
+  uint32_t range_index;
 } TFLexer;
 
 // The source is one contiguous buffer, indexed directly.

@@ -626,7 +626,7 @@ void sq_test_external_lexer(void) {
   assert(tf_parse(prepared, source, sizeof(source) - 1, NULL, NULL, &error));
   for (unsigned chunk_size = 1; chunk_size <= 8; chunk_size++) {
     ChunkInput chunks = {.source = source, .size = sizeof(source) - 1, .chunk_size = chunk_size};
-    assert(tf_parse_with_callback(prepared, (TFInput){&chunks, read_chunk}, NULL, NULL, &error));
+    assert(tf_parse_with_callback(prepared, (TFInput){.payload = &chunks, .read = read_chunk}, NULL, NULL, &error));
   }
   tf_language_free(prepared);
 }
@@ -637,7 +637,7 @@ void sq_test_chunked_lexer(void) {
                         "\xe2\n\xa0\0\xc0\xaf\xed\xa0\x80\xf4\x90\x80\x80\xf0\x9f";
   ChunkInput chunks = {.source = source, .size = sizeof(source) - 1};
   for (chunks.chunk_size = 1; chunks.chunk_size <= sizeof(chunks.buffer); chunks.chunk_size++) {
-    TFInputState input = {.input = {&chunks, read_chunk}};
+    TFInputState input = {.input = {.payload = &chunks, .read = read_chunk}};
     TFLexer contiguous, chunked;
     tf_lexer_init(&contiguous, NULL, source, chunks.size);
     tf_lexer_init_with_callback(&chunked, NULL, &input);
@@ -672,7 +672,7 @@ void sq_test_chunked_lexer(void) {
   TFLanguage *prepared = tf_language_load(&language, &message);
   assert(prepared);
   TFError error;
-  assert(!tf_parse_with_callback(prepared, (TFInput){NULL, overflow_chunk}, NULL, NULL, &error));
+  assert(!tf_parse_with_callback(prepared, (TFInput){.read = overflow_chunk}, NULL, NULL, &error));
   assert(!strcmp(error.message, "input is larger than 4 GiB"));
   tf_language_free(prepared);
 
@@ -682,7 +682,7 @@ void sq_test_chunked_lexer(void) {
   assert(prepared);
   chunks = (ChunkInput){.source = "x + x + x + x\n", .size = 14, .chunk_size = 1};
   assert(tf_parse(prepared, chunks.source, chunks.size, NULL, NULL, &error));
-  assert(tf_parse_with_callback(prepared, (TFInput){&chunks, read_chunk}, NULL, NULL, &error));
+  assert(tf_parse_with_callback(prepared, (TFInput){.payload = &chunks, .read = read_chunk}, NULL, NULL, &error));
   assert(chunks.replays > 0);
   tf_language_free(prepared);
 }
@@ -699,7 +699,7 @@ void sq_test_lexer_fallback(void) {
   assert(token.start_point.row == 0 && token.end_point.row == 1);
   assert(lexer.token_lex_state == 1);
   ChunkInput chunks = {.source = "\nx", .size = 2, .chunk_size = 1};
-  TFInputState input = {.input = {&chunks, read_chunk}};
+  TFInputState input = {.input = {.payload = &chunks, .read = read_chunk}};
   tf_lexer_init_with_callback(&lexer, prepared, &input);
   assert(tf_lexer_next(&lexer, 1, &token));
   assert(token.start_byte == 0 && token.end_byte == 2);

@@ -930,6 +930,16 @@ pub(crate) struct Point {
 struct ParserInput {
     payload: *mut c_void,
     read: unsafe extern "C" fn(*mut c_void, u32, Point, *mut u32) -> *const u8,
+    included_ranges: *const ParserRange,
+    included_range_count: u32,
+}
+
+#[repr(C)]
+struct ParserRange {
+    start_byte: u32,
+    end_byte: u32,
+    start_point: Point,
+    end_point: Point,
 }
 
 #[repr(C)]
@@ -1033,6 +1043,41 @@ impl NativeParser {
         &mut self,
         callback: &mut F,
     ) -> Result<Reductions<'_>, ParseError> {
+        self.parse_chunks_in_ranges(callback, &[])
+    }
+
+    pub fn parse_chunks_in_ranges<T: AsRef<[u8]>, F: FnMut(usize, tree_sitter::Point) -> T>(
+        &mut self,
+        callback: &mut F,
+        ranges: &[tree_sitter::Range],
+    ) -> Result<Reductions<'_>, ParseError> {
+        let mut previous_end = 0;
+        let ranges = ranges
+            .iter()
+            .map(|range| {
+                if range.start_byte < previous_end
+                    || range.end_byte < range.start_byte
+                    || range.end_point < range.start_point
+                {
+                    return Err(Error::InvalidArgument);
+                }
+                previous_end = range.end_byte;
+                let convert = |value| u32::try_from(value).map_err(|_| Error::Overflow);
+                Ok(ParserRange {
+                    start_byte: convert(range.start_byte)?,
+                    end_byte: convert(range.end_byte)?,
+                    start_point: Point {
+                        row: convert(range.start_point.row)?,
+                        column: convert(range.start_point.column)?,
+                    },
+                    end_point: Point {
+                        row: convert(range.end_point.row)?,
+                        column: convert(range.end_point.column)?,
+                    },
+                })
+            })
+            .collect::<Result<Vec<_>, Error>>()?;
+        let included_range_count = u32::try_from(ranges.len()).map_err(|_| Error::Overflow)?;
         struct Payload<'a, F, T> {
             callback: &'a mut F,
             text: Option<T>,
@@ -1088,6 +1133,8 @@ impl NativeParser {
                 ParserInput {
                     payload: (&mut payload as *mut Payload<F, T>).cast(),
                     read: read::<T, F>,
+                    included_ranges: ranges.as_ptr(),
+                    included_range_count,
                 },
                 &mut status,
             )
