@@ -30,3 +30,28 @@ callbacks in optimized and general execution.
 With combined containing and intersecting ranges, Squatter can retain deferred
 matches that Tree-sitter drops while skipping hidden nodes in malformed trees.
 `containing_ranges_finish_deferred_matches_in_error_subtrees` covers this case.
+
+[`bisim.rs`](bisim.rs) runs repaired operation sequences over pools of documents,
+parsers, packers, forests, sidecars, queries, and query cursors. Scoped node and
+cursor pools compare navigation with Tree-sitter; scans use reference traversal
+and queries compare completed matches in both execution modes. Fixed cases cover
+mixed grammars, storage ownership, cancellation, and reuse after partial queries.
+
+Run `cargo test -p tree-squatter --test bisim`. The default is 128 cases;
+`PROPTEST_CASES` and `PROPTEST_RNG_SEED` override the count and seed. Failures
+shrink and persist in `bisim.proptest-regressions`, with repaired operands
+and source/provenance diagnostics. `-- --nocapture` prints executed coverage;
+`BISIM_TRACE=1` also prints operations and resolved range probes.
+
+For concurrent cases, use the shared command-line runner:
+
+```sh
+PROPTEST_CASES=100000 cargo run --release -p tree-squatter --example bisim -- -j 8
+```
+
+`-j N` (or `-jN`) sets the worker count; the default is the available CPU count.
+Workers divide the total case count and replay persisted regressions independently.
+Each owns its pools and uses the base seed plus its zero-based worker index.
+The runner prints those seeds and combined coverage, runs fixed regressions once,
+and exits unsuccessfully if any worker fails. Reproduce a worker with its printed
+`PROPTEST_RNG_SEED`, case count, and `-j 1`. Fork/timeout options use `cargo test`.

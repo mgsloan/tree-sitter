@@ -1,0 +1,9 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 426f3f86ad2135ae7871509ff03c4c3d5fac36ae9a16bc8ad205f8b33c803aa4 # ranged captures
+cc 8ef52707a3eb233e07430face6d2bae43d5e9c33bdafea4668e3af6ce0e0dca6 # supertype scan starting at a descendant
+cc 862f3c4003c5858449c827e813cceab1e640511512b553b18338b259e75a06bd # disabled parent capture with repeated children

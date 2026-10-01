@@ -18,8 +18,13 @@ bindgen = { version = "0.72.1", default-features = false, features = ["runtime"]
 cc.workspace = true
 
 [dev-dependencies]
+proptest = "1.10"
 tree-sitter-json = "0.24"
 tree-sitter-python = "0.25.0"
 tree-sitter-rust = "0.24.2"
 tree-sitter-c = "=0.24.2"
 tree-sitter-c-sharp = "0.23.5"
+
+[[example]]
+name = "bisim"
+test = false
