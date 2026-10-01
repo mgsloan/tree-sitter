@@ -711,10 +711,22 @@ impl Model {
                 }
                 self.cursors[*cursor] = effective;
             }
-            Operation::Execute { cursor, script, .. } if matches!(script % 8, 3 | 6) => {
-                self.cursors[*cursor].byte_range = None
+            Operation::Execute { cursor, script, .. } => {
+                if matches!(script % 8, 3 | 6) {
+                    self.cursors[*cursor].byte_range = None;
+                }
             }
-            _ => {}
+            Operation::ParserScratch(_)
+            | Operation::ResetParser(_)
+            | Operation::PackerScratch(_)
+            | Operation::InvalidParse(_)
+            | Operation::InvalidRegion(_)
+            | Operation::CancelParse(_)
+            | Operation::CancelPresence(_)
+            | Operation::InvalidSide(_)
+            | Operation::InvalidQuery(_)
+            | Operation::WrongGrammar { .. }
+            | Operation::Explore(_) => {}
         }
     }
 }
@@ -1363,7 +1375,7 @@ fn retain(bytes: &[u8], counters: &mut Vec<Arc<AtomicUsize>>) -> SlabOwner {
 
 enum ParserValue {
     Native(tree_sitter::Parser),
-    Compatible(tree_squatter::Parser),
+    ParseAndPack(tree_squatter::Parser),
     Direct(TreeFellerParser),
 }
 
@@ -1377,7 +1389,7 @@ fn parser(backend: Backend, language: usize) -> ParserValue {
         Backend::Compatible => {
             let mut parser = tree_squatter::Parser::new();
             parser.set_language(&LANGUAGES[language].packed).unwrap();
-            ParserValue::Compatible(parser)
+            ParserValue::ParseAndPack(parser)
         }
         Backend::Direct => {
             ParserValue::Direct(TreeFellerParser::new(&LANGUAGES[language].packed).unwrap())
@@ -1560,12 +1572,12 @@ impl World {
             }
             Operation::ParserScratch(index) => match &mut self.parsers[*index] {
                 ParserValue::Native(_) => panic!("invalid scratch backend"),
-                ParserValue::Compatible(parser) => parser.drop_scratch(),
+                ParserValue::ParseAndPack(parser) => parser.drop_scratch(),
                 ParserValue::Direct(parser) => parser.drop_scratch(),
             },
             Operation::ResetParser(index) => match &mut self.parsers[*index] {
                 ParserValue::Native(parser) => parser.reset(),
-                ParserValue::Compatible(parser) => parser.reset(),
+                ParserValue::ParseAndPack(parser) => parser.reset(),
                 ParserValue::Direct(_) => panic!("invalid reset backend"),
             },
             Operation::DropParser(index) => {
@@ -1608,7 +1620,7 @@ impl World {
                         )
                         .unwrap()
                     }
-                    ParserValue::Compatible(parser) => {
+                    ParserValue::ParseAndPack(parser) => {
                         coverage.parses[1] += 1;
                         Parse::parse_with_options(
                             parser,
@@ -1759,7 +1771,7 @@ impl World {
                     calls.set(calls.get() + 1);
                     ControlFlow::Break(())
                 };
-                let ParserValue::Compatible(parser) = &mut self.parsers[*index] else {
+                let ParserValue::ParseAndPack(parser) = &mut self.parsers[*index] else {
                     panic!("invalid repaired backend")
                 };
                 let result = parser.parse_with_options(
