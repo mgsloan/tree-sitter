@@ -61,7 +61,6 @@ class PublicationTests(unittest.TestCase):
         return result.stdout + result.stderr
 
     def publish(self):
-        self.run_publisher('prepare')
         self.run_publisher('publish')
         return self.git('rev-parse', 'pristine')
 
@@ -70,6 +69,7 @@ class PublicationTests(unittest.TestCase):
         self.assertEqual(self.git('show', '-s', '--format=%P', initial),
                          f'{self.base} {self.source}')
         self.assertEqual(self.git('ls-tree', '--name-only', initial), 'squatter')
+        self.assertEqual(self.git('branch', '--format=%(refname:short)'), 'main\npristine')
         self.assertTrue(self.git('ls-tree', initial, 'squatter/executable').startswith('100755'))
         self.assertTrue(self.git('ls-tree', initial, 'squatter/link').startswith('120000'))
 
@@ -90,8 +90,7 @@ class PublicationTests(unittest.TestCase):
         self.assertIn('added', files)
         self.assertEqual(self.git('show', f'{second}:tree-squatter/new\tname'), 'rename me')
         self.assertEqual(self.git('rev-parse', 'main'), source)
-        self.assertIn('unchanged', self.run_publisher('prepare'))
-        self.assertIn('already published', self.run_publisher('publish'))
+        self.assertIn('unchanged', self.run_publisher('publish'))
         self.assertEqual(self.git('rev-parse', 'pristine'), second)
 
     def test_check_leaves_refs_and_index_unchanged(self):
@@ -119,22 +118,16 @@ class PublicationTests(unittest.TestCase):
                 self.commit('Change mapping')
                 self.assertIn(error, self.run_publisher('check', success=False))
 
-    def test_stale_candidates_and_target_changes_are_rejected(self):
-        self.run_publisher('prepare')
-        self.assertIn('Already prepared', self.run_publisher('prepare'))
+    def test_independent_target_changes_are_rejected(self):
+        self.publish()
         self.write('core/keep', 'newer source\n')
-        self.commit('Advance development after preparation')
-        self.assertIn('unpublished candidate', self.run_publisher('prepare', success=False))
-        self.run_publisher('publish')
-        self.write('core/keep', 'second publication\n')
-        self.commit('Change core')
-        self.run_publisher('prepare')
+        self.commit('Advance development')
         target = self.git('rev-parse', 'pristine')
         tree = self.git('rev-parse', 'pristine^{tree}')
         changed = self.git('commit-tree', tree, '-p', target, '-m', 'Independent target commit')
         self.git('update-ref', 'refs/heads/pristine', changed, target)
-        self.assertIn('target moved', self.run_publisher('publish', success=False))
-        self.assertIn('unpublished changes', self.run_publisher('prepare', success=False))
+        self.assertIn('unpublished changes', self.run_publisher('check', success=False))
+        self.assertIn('unpublished changes', self.run_publisher('publish', success=False))
         self.assertEqual(self.git('rev-parse', 'pristine'), changed)
 
     def test_root_templates_and_removing_a_mapping(self):
@@ -148,15 +141,10 @@ class PublicationTests(unittest.TestCase):
         self.publish()
         self.assertEqual(self.git('ls-tree', '--name-only', 'pristine'), 'README.md')
 
-    def test_modified_candidate_tree_is_rejected(self):
-        self.run_publisher('prepare')
-        candidate = self.git('rev-parse', 'publish/pristine')
-        tree = self.git('rev-parse', 'main^{tree}')
-        message = f'Changed candidate\n\nPublished-Source: {self.source}\nPublished-Tree: {tree}'
-        changed = self.git('commit-tree', tree, '-p', self.base, '-p', self.source, '-m', message)
-        self.git('update-ref', 'refs/heads/publish/pristine', changed, candidate)
-        self.assertIn('differs from the exported source tree',
-                      self.run_publisher('publish', success=False))
+    def test_source_branch_is_not_replaced(self):
+        self.assertIn('source and target commits must differ',
+                      self.run_publisher('publish', '--target', 'main', success=False))
+        self.assertEqual(self.git('rev-parse', 'main'), self.source)
         self.assertEqual(self.git('rev-parse', 'pristine'), self.base)
 
     def test_publication_updates_clean_worktree_and_refuses_dirty_one(self):
@@ -165,7 +153,6 @@ class PublicationTests(unittest.TestCase):
         self.git('worktree', 'add', str(checkout), 'pristine')
         self.write('core/keep', 'updated\n')
         self.commit('Change core')
-        self.run_publisher('prepare')
         (checkout / 'squatter/keep').write_text('local edit\n')
         previous = self.git('rev-parse', 'pristine')
         self.assertIn('uncommitted files', self.run_publisher('publish', success=False))
@@ -177,12 +164,12 @@ class PublicationTests(unittest.TestCase):
     def test_exporter_version_and_source_ancestry_are_checked(self):
         self.publish()
         self.write('tools/publish.py', SCRIPT.read_text() + '\n# uncommitted change\n')
-        self.assertIn('source revision', self.run_publisher('prepare', success=False))
+        self.assertIn('source revision', self.run_publisher('publish', success=False))
         shutil.copyfile(SCRIPT, self.root / 'tools/publish.py')
         tree = self.git('rev-parse', 'main^{tree}')
         unrelated = self.git('commit-tree', tree, '-m', 'Unrelated source')
         self.assertIn('does not descend',
-                      self.run_publisher('prepare', '--source', unrelated, success=False))
+                      self.run_publisher('publish', '--source', unrelated, success=False))
 
 
 if __name__ == '__main__':

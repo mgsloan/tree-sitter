@@ -56,7 +56,7 @@ def advance_branch(branch, commit, previous):
         if git('status', '--porcelain', directory=directory):
             raise PublicationError(f'{branch} has uncommitted files in {directory}')
         if branch_tip(branch) != previous:
-            raise PublicationError(f'{branch} moved; prepare again')
+            raise PublicationError(f'{branch} moved; publish again')
         git('merge', '--ff-only', commit, directory=directory)
     else:
         git('update-ref', f'refs/heads/{branch}', commit, previous or '0' * len(commit))
@@ -138,7 +138,7 @@ def validate_target(target, source):
         raise PublicationError('target has unpublished changes; incorporate its history into main first')
 
 
-def prepare(arguments):
+def publish(arguments):
     source = revision(arguments.source)
     target = branch_tip(arguments.target)
     if not target:
@@ -154,62 +154,27 @@ def prepare(arguments):
     if arguments.action == 'check':
         return
     if source == target:
-        raise PublicationError('commit development work before preparing the first merge')
-    candidate = branch_tip(arguments.candidate)
-    if candidate and publication(candidate) == (tree, target, source):
-        print(f'Already prepared {arguments.candidate}: {candidate}')
-        return
-    if candidate and not is_ancestor(candidate, target):
-        raise PublicationError(f'{arguments.candidate} has an unpublished candidate; use another --candidate')
+        raise PublicationError('source and target commits must differ')
     message = (
         f'Publish {arguments.source} to {arguments.target}\n\n'
         f'Published-Source: {source}\nPublished-Tree: {tree}\n'
     )
     commit = git('commit-tree', tree, '-p', target, '-p', source,
                  input=message.encode()).decode().strip()
-    advance_branch(arguments.candidate, commit, candidate)
-    print(f'Prepared {arguments.candidate}: {commit}')
-
-
-def publish(arguments):
-    candidate = branch_tip(arguments.candidate)
-    if not candidate:
-        raise PublicationError(f'no candidate on {arguments.candidate}; run prepare first')
-    target = branch_tip(arguments.target)
-    if candidate == target:
-        print('Candidate is already published.')
-        return
-    prepared = publication(candidate)
-    if not prepared:
-        raise PublicationError('candidate is not a publication merge')
-    tree, parent, source = prepared
-    if parent != target:
-        raise PublicationError('target moved since preparation; prepare a new candidate')
-    validate_target(target, source)
-    if tree != exported_tree(source):
-        raise PublicationError('candidate differs from the exported source tree')
-    advance_branch(arguments.target, candidate, target)
-    print(f'Published {arguments.target}: {candidate}')
+    advance_branch(arguments.target, commit, target)
+    print(f'Published {arguments.target}: {commit}')
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=['check', 'prepare', 'publish'])
+    parser.add_argument('action', choices=['check', 'publish'])
     parser.add_argument('--source', default='main', help='committed source revision (default: main)')
     parser.add_argument('--target', default='pristine', help='output branch (default: pristine)')
-    parser.add_argument('--candidate', help='review branch (default: publish/<target>)')
     arguments = parser.parse_args()
-    arguments.candidate = arguments.candidate or f'publish/{arguments.target}'
     try:
         os.chdir(os.fsdecode(git('rev-parse', '--show-toplevel').rstrip(b'\n')))
-        for branch in (arguments.target, arguments.candidate):
-            git('check-ref-format', f'refs/heads/{branch}')
-        if arguments.target == arguments.candidate:
-            raise PublicationError('target and candidate branches must differ')
-        if arguments.action == 'publish':
-            publish(arguments)
-        else:
-            prepare(arguments)
+        git('check-ref-format', f'refs/heads/{arguments.target}')
+        publish(arguments)
     except (PublicationError, OSError, ValueError, KeyError) as error:
         parser.exit(1, f'error: {error}\n')
 

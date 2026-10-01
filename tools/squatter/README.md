@@ -12,24 +12,19 @@ then run:
 
 ```sh
 python3 tools/publish.py check
-python3 tools/publish.py prepare
-git diff pristine..publish/pristine
-git worktree add ../pristine-review publish/pristine
-cargo test --locked --workspace --manifest-path ../pristine-review/Cargo.toml
 python3 tools/publish.py publish
+git worktree add ../pristine pristine
+cargo test --locked --workspace --manifest-path ../pristine/Cargo.toml
 ```
 
-`prepare` creates the review branch; `publish` fast-forwards `pristine` locally.
-Neither command pushes. The review worktree can be reused on subsequent runs;
+`check` shows the exported changes; `publish` advances `pristine` locally.
+Neither command pushes. The worktree can be reused on subsequent runs;
 it must be clean when the script advances its branch. An unchanged exported tree
 does not create a commit. Source commits containing only excluded changes join
 the ancestry with the next changed publication.
 
-`--source`, `--target`, and `--candidate` override `main`, `pristine`, and
-`publish/<target>`. For a new output branch, first create it at the desired shared
-ancestor with `git branch pristine <base>`. An unpublished review branch is never
-replaced: choose another `--candidate` or explicitly delete the abandoned branch.
-Preparing the same source and target again reuses the pending candidate.
+`--source` and `--target` override `main` and `pristine`. For a new output branch,
+first create it at the desired shared ancestor with `git branch pristine <base>`.
 
 `tools/publish.toml` maps source files and directories to published paths. Directory
 mappings include new files automatically. Each export starts from an empty Git
@@ -40,8 +35,8 @@ destinations are errors. File modes and symlinks are preserved.
 The public root files live in `tools/pristine` on `main`, including a separate
 manifest and lockfile. Tree-sitter comes from the revision pinned there; `main`
 continues to use the local fork. To update public dependencies, regenerate the
-lockfile in a candidate worktree, copy it to `tools/pristine/Cargo.lock`, and
-commit it on `main` before preparing a new candidate.
+lockfile in the `pristine` worktree, copy it to `tools/pristine/Cargo.lock`, and
+commit it on `main` before publishing again.
 
 Exports read committed files, including the mapping and templates. Uncommitted
 changes are excluded. Run the exporter version committed at the selected source
@@ -49,8 +44,8 @@ revision. Independent changes on `pristine` are rejected unless their history
 has been incorporated into `main`; normally make fixes on `main` and publish again.
 Do not merge publication cleanup back into `main`.
 
-The publisher checks Git state and exported contents; run the Cargo checks on
-the candidate before publishing. Its own regression tests use disposable repos:
+The publisher checks Git state and exported contents; run the Cargo checks in
+the `pristine` worktree before pushing. Its own regression tests use disposable repos:
 
 ```sh
 python3 tools/publish_test.py
