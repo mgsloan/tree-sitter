@@ -30,7 +30,7 @@ class PublicationTests(unittest.TestCase):
         (self.root / 'core/link').symlink_to('keep')
         self.write('experimental/private', 'not published\n')
         self.base = self.commit('Initial development')
-        self.git('branch', 'pristine')
+        self.git('branch', 'pub')
         self.write('tools/publish.py', SCRIPT.read_text())
         self.write('tools/publish.toml', '[paths]\n"core" = "squatter"\n')
         self.source = self.commit('Add publisher')
@@ -62,14 +62,14 @@ class PublicationTests(unittest.TestCase):
 
     def publish(self):
         self.run_publisher('publish')
-        return self.git('rev-parse', 'pristine')
+        return self.git('rev-parse', 'pub')
 
     def test_history_deletions_moves_modes_and_repeated_publication(self):
         initial = self.publish()
         self.assertEqual(self.git('show', '-s', '--format=%P', initial),
                          f'{self.base} {self.source}')
         self.assertEqual(self.git('ls-tree', '--name-only', initial), 'squatter')
-        self.assertEqual(self.git('branch', '--format=%(refname:short)'), 'main\npristine')
+        self.assertEqual(self.git('branch', '--format=%(refname:short)'), 'main\npub')
         self.assertTrue(self.git('ls-tree', initial, 'squatter/executable').startswith('100755'))
         self.assertTrue(self.git('ls-tree', initial, 'squatter/link').startswith('120000'))
 
@@ -91,7 +91,7 @@ class PublicationTests(unittest.TestCase):
         self.assertEqual(self.git('show', f'{second}:tree-squatter/new\tname'), 'rename me')
         self.assertEqual(self.git('rev-parse', 'main'), source)
         self.assertIn('unchanged', self.run_publisher('publish'))
-        self.assertEqual(self.git('rev-parse', 'pristine'), second)
+        self.assertEqual(self.git('rev-parse', 'pub'), second)
 
     def test_check_leaves_refs_and_index_unchanged(self):
         self.write('core/staged', 'staged\n')
@@ -122,41 +122,41 @@ class PublicationTests(unittest.TestCase):
         self.publish()
         self.write('core/keep', 'newer source\n')
         self.commit('Advance development')
-        target = self.git('rev-parse', 'pristine')
-        tree = self.git('rev-parse', 'pristine^{tree}')
+        target = self.git('rev-parse', 'pub')
+        tree = self.git('rev-parse', 'pub^{tree}')
         changed = self.git('commit-tree', tree, '-p', target, '-m', 'Independent target commit')
-        self.git('update-ref', 'refs/heads/pristine', changed, target)
+        self.git('update-ref', 'refs/heads/pub', changed, target)
         self.assertIn('unpublished changes', self.run_publisher('check', success=False))
         self.assertIn('unpublished changes', self.run_publisher('publish', success=False))
-        self.assertEqual(self.git('rev-parse', 'pristine'), changed)
+        self.assertEqual(self.git('rev-parse', 'pub'), changed)
 
     def test_root_templates_and_removing_a_mapping(self):
         self.write('public/README.md', 'public documentation\n')
         self.write('tools/publish.toml', '[paths]\n"core" = "squatter"\n"public" = "."\n')
         self.commit('Add root templates')
         self.publish()
-        self.assertEqual(self.git('show', 'pristine:README.md'), 'public documentation')
+        self.assertEqual(self.git('show', 'pub:README.md'), 'public documentation')
         self.write('tools/publish.toml', '[paths]\n"public" = "."\n')
         self.commit('Remove published component')
         self.publish()
-        self.assertEqual(self.git('ls-tree', '--name-only', 'pristine'), 'README.md')
+        self.assertEqual(self.git('ls-tree', '--name-only', 'pub'), 'README.md')
 
     def test_source_branch_is_not_replaced(self):
         self.assertIn('source and target commits must differ',
                       self.run_publisher('publish', '--target', 'main', success=False))
         self.assertEqual(self.git('rev-parse', 'main'), self.source)
-        self.assertEqual(self.git('rev-parse', 'pristine'), self.base)
+        self.assertEqual(self.git('rev-parse', 'pub'), self.base)
 
     def test_publication_updates_clean_worktree_and_refuses_dirty_one(self):
         self.publish()
-        checkout = self.root.parent / 'pristine'
-        self.git('worktree', 'add', str(checkout), 'pristine')
+        checkout = self.root.parent / 'pub'
+        self.git('worktree', 'add', str(checkout), 'pub')
         self.write('core/keep', 'updated\n')
         self.commit('Change core')
         (checkout / 'squatter/keep').write_text('local edit\n')
-        previous = self.git('rev-parse', 'pristine')
+        previous = self.git('rev-parse', 'pub')
         self.assertIn('uncommitted files', self.run_publisher('publish', success=False))
-        self.assertEqual(self.git('rev-parse', 'pristine'), previous)
+        self.assertEqual(self.git('rev-parse', 'pub'), previous)
         (checkout / 'squatter/keep').write_text('original\n')
         self.run_publisher('publish')
         self.assertEqual((checkout / 'squatter/keep').read_text(), 'updated\n')

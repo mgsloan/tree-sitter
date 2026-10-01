@@ -1,11 +1,11 @@
 # Squatter checks and benchmarks
 
-## Publishing `pristine`
+## Publishing `pub`
 
-Development happens on `main`. The `pristine` branch contains only squatter,
+Development happens on `main`. The `pub` branch contains only squatter,
 tree-feller, and their supporting files. Publication merges preserve the previous
-`pristine` commit as first parent and the selected `main` commit as second parent.
-Use `git log --first-parent pristine` to browse publications.
+`pub` commit as first parent and the selected `main` commit as second parent.
+Use `git log --first-parent pub` to browse publications.
 
 The publisher requires Python 3.11 or newer. Commit the development changes,
 then run:
@@ -13,18 +13,18 @@ then run:
 ```sh
 python3 tools/publish.py check
 python3 tools/publish.py publish
-git worktree add ../pristine pristine
-cargo test --locked --workspace --manifest-path ../pristine/Cargo.toml
+git worktree add ../pub pub
+cargo test --locked --workspace --manifest-path ../pub/Cargo.toml
 ```
 
-`check` shows the exported changes; `publish` advances `pristine` locally.
+`check` shows the exported changes; `publish` advances `pub` locally.
 Neither command pushes. The worktree can be reused on subsequent runs;
 it must be clean when the script advances its branch. An unchanged exported tree
 does not create a commit. Source commits containing only excluded changes join
 the ancestry with the next changed publication.
 
-`--source` and `--target` override `main` and `pristine`. For a new output branch,
-first create it at the desired shared ancestor with `git branch pristine <base>`.
+`--source` and `--target` override `main` and `pub`. For a new output branch,
+first create it at the desired shared ancestor with `git branch pub <base>`.
 
 `tools/publish.toml` maps source files and directories to published paths. Directory
 mappings include new files automatically. Each export starts from an empty Git
@@ -32,20 +32,20 @@ index, so deleted files and old destinations disappear. Moving a source outside
 its mapping requires updating the mapping. Missing sources and overlapping
 destinations are errors. File modes and symlinks are preserved.
 
-The public root files live in `tools/pristine` on `main`, including a separate
+The public root files live in `tools/pub` on `main`, including a separate
 manifest and lockfile. Tree-sitter comes from the revision pinned there; `main`
 continues to use the local fork. To update public dependencies, regenerate the
-lockfile in the `pristine` worktree, copy it to `tools/pristine/Cargo.lock`, and
+lockfile in the `pub` worktree, copy it to `tools/pub/Cargo.lock`, and
 commit it on `main` before publishing again.
 
 Exports read committed files, including the mapping and templates. Uncommitted
 changes are excluded. Run the exporter version committed at the selected source
-revision. Independent changes on `pristine` are rejected unless their history
+revision. Independent changes on `pub` are rejected unless their history
 has been incorporated into `main`; normally make fixes on `main` and publish again.
 Do not merge publication cleanup back into `main`.
 
 The publisher checks Git state and exported contents; run the Cargo checks in
-the `pristine` worktree before pushing. Its own regression tests use disposable repos:
+the `pub` worktree before pushing. Its own regression tests use disposable repos:
 
 ```sh
 python3 tools/publish_test.py

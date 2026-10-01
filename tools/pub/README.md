@@ -20,5 +20,5 @@ This is a prototype. Backward compatibility for its APIs and data formats is
 not guaranteed.
 
 Development happens on `main`, including persistence, visualization, and other
-experiments. `pristine` contains publications made by `tools/publish.py` on
+experiments. `pub` contains publications made by `tools/publish.py` on
 `main`. Each publication retains the development commits as merge ancestry.

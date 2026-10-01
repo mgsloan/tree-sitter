@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Publish the selected contents of main as merge commits on pristine."""
+"""Publish the selected contents of main as merge commits on pub."""
 
 import argparse
 import os
@@ -169,7 +169,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('action', choices=['check', 'publish'])
     parser.add_argument('--source', default='main', help='committed source revision (default: main)')
-    parser.add_argument('--target', default='pristine', help='output branch (default: pristine)')
+    parser.add_argument('--target', default='pub', help='output branch (default: pub)')
     arguments = parser.parse_args()
     try:
         os.chdir(os.fsdecode(git('rev-parse', '--show-toplevel').rstrip(b'\n')))
