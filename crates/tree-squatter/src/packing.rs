@@ -143,11 +143,18 @@ impl Packer {
         }
         let languages: Vec<_> = inputs.iter().map(|input| input.language.clone()).collect();
         let mut expected_nodes = 0u64;
+        let mut copied_groups = 0u32;
         for input in &inputs {
             for root in &input.roots {
                 let descendants = match root {
                     PackRoot::Sitter(root) => root.descendant_count(),
-                    PackRoot::Squatter(root) => root.descendant_count(),
+                    PackRoot::Squatter(tree) => {
+                        let slots = &tree.tree_data().slots;
+                        copied_groups = copied_groups
+                            .checked_add(slots.end.group() - slots.start.group())
+                            .ok_or(Error::Overflow)?;
+                        continue;
+                    }
                     PackRoot::Reductions(root) => root.node_count(),
                 };
                 expected_nodes = expected_nodes
@@ -156,10 +163,12 @@ impl Packer {
             }
         }
         let expected_nodes = u32::try_from(expected_nodes).map_err(|_| Error::Overflow)?;
-        let capacity = if inputs.is_empty() {
-            0
+        let capacity = if expected_nodes == 0 {
+            copied_groups
         } else {
-            initial_capacity(expected_nodes)
+            copied_groups
+                .checked_add(initial_capacity(expected_nodes))
+                .ok_or(Error::Overflow)?
         };
         let mut builder = Builder::new_forest(&languages, capacity, options.points)?;
         let mut mapping = Vec::new();

@@ -74,7 +74,7 @@ fn mixed_direct_and_native_roots_match_native_forest() -> Result<(), Box<dyn std
             options,
         )?;
         assert_eq!(mapping, expected_mapping);
-        support::assert_same_tree(&actual, &expected);
+        support::assert_same_tree(&actual.to_compacted()?, &expected.to_compacted()?);
         actual.validate()?;
     }
     let wrong_language = Language::new(&support::c_language())?;
