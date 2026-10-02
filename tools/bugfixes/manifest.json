@@ -1,0 +1,94 @@
+{
+  "version": 1,
+  "upstream": "origin/master",
+  "target": "mgsloan-bugfixes",
+  "fetch_remotes": ["origin", "mgsloan"],
+  "maintenance": {
+    "id": "maintenance",
+    "ref": "mgsloan-bugfix-maintenance",
+    "base": "20cf25c10f13ed9b8c499dd966b4e7a57bedbf81",
+    "allowed_paths": ["tools/bugfixes/"]
+  },
+  "checks": [
+    ["python3", "tools/bugfixes/test_update.py"],
+    ["cargo", "test", "-p", "tree-sitter-cli", "--lib", "--no-default-features"]
+  ],
+  "fixes": [
+    {
+      "id": "disable-wildcard-pattern",
+      "issue": "https://github.com/tree-sitter/tree-sitter/issues/5932",
+      "ref": "fix/disable-wildcard-pattern",
+      "base": "de98c6c970f4c5d3a725ee48199c478090d614af",
+      "regressions": ["test_query_disable_wildcard_pattern"],
+      "notes": "Also present in tree-squatter main as afa791227."
+    },
+    {
+      "id": "hidden-zero-width-descendant",
+      "issue": "https://github.com/tree-sitter/tree-sitter/issues/5934",
+      "ref": "fix/hidden-zero-width-descendant",
+      "base": "de98c6c970f4c5d3a725ee48199c478090d614af",
+      "regressions": [
+        "test_node_descendant_for_range_after_hidden_zero_width_token",
+        "test_node_descendant_for_range_after_hidden_zero_width_subtree"
+      ],
+      "notes": "Issue closed without landing the fix. Included downstream despite reported performance tradeoffs. Also merged into tree-squatter main."
+    },
+    {
+      "id": "previous-sibling-index-underflow",
+      "issue": "https://github.com/tree-sitter/tree-sitter/issues/5950",
+      "ref": "fix-previous-sibling-index-underflow",
+      "base": "1b8407d1e718f2a26e2886c03cc55622d8d1d7bd",
+      "regressions": ["test_tree_cursor_previous_sibling_with_many_comments"],
+      "notes": "Also present in tree-squatter main as 94e3eed35."
+    },
+    {
+      "id": "first-named-child-for-byte",
+      "issue": "https://github.com/tree-sitter/tree-sitter/issues/5987",
+      "ref": "fix/first-named-child-for-byte-upstream",
+      "base": "20cf25c10f13ed9b8c499dd966b4e7a57bedbf81",
+      "regressions": ["test_first_named_child_for_offset_after_anonymous_children"],
+      "notes": "Extracted only 5f4109768 from the original fix/first-named-child-for-byte branch, excluding tree-squatter history."
+    },
+    {
+      "id": "visible-alias-field-lookup",
+      "issue": "https://github.com/tree-sitter/tree-sitter/issues/5948",
+      "ref": "fix/visible-alias-field-lookup",
+      "base": "20cf25c10f13ed9b8c499dd966b4e7a57bedbf81",
+      "regressions": [
+        "test_node_child_by_field_name_does_not_cross_visible_alias",
+        "test_node_child_by_field_name_skips_visible_alias_for_later_field"
+      ],
+      "notes": "Preserves the published reproduction branch; checks both field-name and field-id lookup."
+    },
+    {
+      "id": "child-with-descendant-self",
+      "issue": "https://github.com/tree-sitter/tree-sitter/issues/5949",
+      "ref": "fix/child-with-descendant-self",
+      "base": "20cf25c10f13ed9b8c499dd966b4e7a57bedbf81",
+      "regressions": [
+        "test_node_child_with_descendant_same_range",
+        "test_node_child_with_descendant_checks_ancestry"
+      ],
+      "notes": "Preserves the published reproduction branch; rejects self, ancestors, siblings, and other trees while retaining valid descendants."
+    },
+    {
+      "id": "previous-sibling-alias-after-extra",
+      "issue": null,
+      "ref": "fix/previous-sibling-alias-after-extra",
+      "base": "20cf25c10f13ed9b8c499dd966b4e7a57bedbf81",
+      "regressions": [
+        "test_tree_cursor_previous_sibling_with_alias_after_extra",
+        "test_tree_cursor_previous_sibling_preserves_aliases_when_switching_direction"
+      ],
+      "notes": "Unfiled confirmed bug documented in potential-upstream-bugs.md; original reproduction is 470a8bdcd."
+    },
+    {
+      "id": "descendant-range-optimization",
+      "issue": "https://github.com/tree-sitter/tree-sitter/issues/5935",
+      "enabled": false,
+      "ref": "optimize/descendant-range-queries",
+      "base": "de98c6c970f4c5d3a725ee48199c478090d614af",
+      "notes": "Performance-only alternative touching the same traversal as #5934; excluded from the bugfix aggregate."
+    }
+  ]
+}
