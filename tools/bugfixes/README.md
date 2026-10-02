@@ -1,6 +1,6 @@
 # Maintaining mgsloan-bugfixes
 
-`manifest.json` lists seven bugfix branches, their issue links, regression tests,
+`manifest.json` lists eight bugfix branches, their issue links, regression tests,
 and the exact base commit excluded from each patch series. Source branches remain
 unchanged. `mgsloan-bugfix-maintenance` owns this tooling and manifest; the generated
 `mgsloan-bugfixes` branch includes them too.
@@ -86,6 +86,7 @@ is a performance change that overlaps the #5934 fix.
 | #5948 | `fix/visible-alias-field-lookup` | New fix; preserves the published reproduction branch |
 | #5949 | `fix/child-with-descendant-self` | New fix; preserves the published reproduction branch |
 | Unfiled | `fix/previous-sibling-alias-after-extra` | New fix for the confirmed local cursor reproduction |
+| Unfiled | `fix/non-rooted-query-range` | Rejects non-rooted queries outside the cursor root's byte or point range; preserves sibling matches spanning a range |
 
 The query capture-prefix and hidden-subtree reuse observations in the local
 `potential-upstream-bugs.md` have no filed issues or settled fixes and are not
