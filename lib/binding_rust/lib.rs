@@ -2015,9 +2015,10 @@ impl<'tree> Node<'tree> {
         Self::new(unsafe { ffi::ts_node_parent(self.0) })
     }
 
-    /// Get the node that contains `descendant`.
+    /// Get the immediate child of this node that contains `descendant`.
     ///
-    /// Note that this can return `descendant` itself.
+    /// This returns `descendant` itself if it is an immediate child. Returns
+    /// `None` if `descendant` is this node or is not a descendant in the same tree.
     #[doc(alias = "ts_node_child_with_descendant")]
     #[must_use]
     pub fn child_with_descendant(&self, descendant: Self) -> Option<Self> {

@@ -204,6 +204,57 @@ fn test_node_child_with_descendant_same_range() {
 }
 
 #[test]
+fn test_node_child_with_descendant_checks_ancestry() {
+    let mut parser = Parser::new();
+    parser.set_language(&get_language("javascript")).unwrap();
+    for source in ["(a)", "(a); (b)", "/* one */ (a) /* two */", "(", ""] {
+        let tree = parser.parse(source, None).unwrap();
+        let other_tree = tree.clone();
+        for i in 0..other_tree.root_node().child_count() {
+            assert_eq!(
+                tree.root_node()
+                    .child_with_descendant(other_tree.root_node().child(i as u32).unwrap()),
+                None,
+            );
+        }
+        let mut nodes = Vec::new();
+        let mut pending = vec![tree.root_node()];
+        while let Some(node) = pending.pop() {
+            nodes.push(node);
+            pending.extend((0..node.child_count()).map(|i| node.child(i as u32).unwrap()));
+        }
+
+        for node in &nodes {
+            assert_eq!(node.child_with_descendant(other_tree.root_node()), None);
+            for descendant in &nodes {
+                // Enumerate ancestry using child navigation, independently of
+                // the range-based implementation and Node::parent.
+                let expected = (0..node.child_count())
+                    .map(|i| node.child(i as u32).unwrap())
+                    .find(|child| {
+                        let mut pending = vec![*child];
+                        while let Some(candidate) = pending.pop() {
+                            if candidate == *descendant {
+                                return true;
+                            }
+                            pending.extend(
+                                (0..candidate.child_count())
+                                    .map(|i| candidate.child(i as u32).unwrap()),
+                            );
+                        }
+                        false
+                    });
+                assert_eq!(
+                    node.child_with_descendant(*descendant),
+                    expected,
+                    "source {source:?}, node {node:?}, descendant {descendant:?}",
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn test_node_children() {
     let tree = parse_json_example();
     let mut cursor = tree.walk();
