@@ -631,6 +631,12 @@ recur:
 
       // Hidden nodes' fields are "inherited" by their visible parent.
       if (field_map->inherited) {
+        // A visible alias owns its fields, so they are not inherited.
+        if (ts_node__is_relevant(child, true)) {
+          field_map++;
+          if (field_map == field_map_end) return ts_node__null();
+          continue;
+        }
 
         // If this is the *last* possible child node for this field,
         // then perform a tail call to avoid recursion.
