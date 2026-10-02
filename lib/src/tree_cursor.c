@@ -140,14 +140,14 @@ static inline bool ts_tree_cursor_child_iterator_previous(
 
   if (!extra && self->alias_sequence) {
     *visible |= self->alias_sequence[self->structural_child_index];
-    if (self->structural_child_index > 0) {
-      self->structural_child_index--;
-    }
   }
 
   // unsigned can underflow so compare it to child_count
   if (self->child_index < self->parent.ptr->child_count) {
     Subtree previous_child = ts_subtree_children(self->parent)[self->child_index];
+    // The index counts structural children before the current child. Moving
+    // backward consumes the preceding child, regardless of the current extra.
+    if (!ts_subtree_extra(previous_child)) self->structural_child_index--;
     Length size = ts_subtree_size(previous_child);
     self->position = length_backtrack(self->position, size);
   }
