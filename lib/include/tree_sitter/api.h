@@ -624,9 +624,10 @@ TSStateId ts_node_next_parse_state(TSNode self);
 TSNode ts_node_parent(TSNode self);
 
 /**
- * Get the node that contains `descendant`.
+ * Get the immediate child of this node that contains `descendant`.
  *
- * Note that this can return `descendant` itself.
+ * This returns `descendant` itself if it is an immediate child. Returns a null
+ * node if `descendant` is this node or is not a descendant in the same tree.
  */
 TSNode ts_node_child_with_descendant(TSNode self, TSNode descendant);
 
