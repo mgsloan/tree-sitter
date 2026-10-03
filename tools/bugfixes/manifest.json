@@ -133,7 +133,17 @@
       "regressions": [
         "test_query_nullable_roots_with_ranges_through_hidden_repetitions"
       ],
-      "notes": "Section 7 of potential-upstream-bugs.md. Preserves existing visible-tree empty-root enumeration when ranges would otherwise prune hidden repetitions. Covers optional and zero-or-more roots, byte and point ranges, identical visible trees from fixed and repeated grammars, and nonnullable captured controls."
+      "notes": "Nullable-root report removed from potential-upstream-bugs.md. Preserves existing visible-tree empty-root enumeration when ranges would otherwise prune hidden repetitions. Covers optional and zero-or-more roots, byte and point ranges, identical visible trees from fixed and repeated grammars, and nonnullable captured controls."
+    },
+    {
+      "id": "containing-range-hidden-ascent",
+      "issue": null,
+      "ref": "fix/containing-range-hidden-ascent",
+      "base": "5091247754e69084613e48613fe2215c7df8ec68",
+      "regressions": [
+        "test_query_containing_ranges_preserve_deferred_matches_after_hidden_ascent"
+      ],
+      "notes": "Confirmed containing-range bug from the report originally numbered 8, now section 7 of potential-upstream-bugs.md. Restores visible depth and visibility after ascending from a skipped hidden subtree, so ancestor exits finish deferred matches. Covers byte and point ranges, adjacent-range controls, multiline input, ordinary leaf queries, and successful optional-child matches."
     },
     {
       "id": "api-documentation",
