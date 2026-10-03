@@ -6598,3 +6598,84 @@ fn test_last_child_anchor_looks_past_hidden_node() {
         assert_query_matches(&language, &query, source, &[(0, vec![("last", "int y;")])]);
     });
 }
+
+#[test]
+fn test_query_containing_ranges_preserve_deferred_matches_after_hidden_ascent() {
+    allocations::record(|| {
+        let language = get_language("python");
+        let query = Query::new(&language, "(_ (_)? @child) @root").unwrap();
+        let control = Query::new(&language, "(_) @root").unwrap();
+        let mut parser = Parser::new();
+        parser.set_language(&language).unwrap();
+
+        for source in ["x=1", "x=1\ny=2"] {
+            let tree = parser.parse(source, None).unwrap();
+            let root = tree.root_node();
+            assert!(!root.has_error());
+
+            for (byte_range, point_range, expected) in [
+                (
+                    0..1,
+                    Point::new(0, 0)..Point::new(0, 1),
+                    vec![(0, vec![("root", "x")])],
+                ),
+                (
+                    0..2,
+                    Point::new(0, 0)..Point::new(0, 2),
+                    vec![(0, vec![("root", "x")])],
+                ),
+                (1..2, Point::new(0, 1)..Point::new(0, 2), vec![]),
+                (
+                    2..3,
+                    Point::new(0, 2)..Point::new(0, 3),
+                    vec![(0, vec![("root", "1")])],
+                ),
+            ] {
+                for use_points in [false, true] {
+                    for pattern in [&query, &control] {
+                        // Each cursor starts fresh. The leaf's optional child is
+                        // absent, so adding the adjacent '=' cannot change its match.
+                        let mut cursor = QueryCursor::new();
+                        if use_points {
+                            cursor.set_containing_point_range(point_range.clone());
+                        } else {
+                            cursor.set_containing_byte_range(byte_range.clone());
+                        }
+                        let matches = collect_matches(
+                            cursor.matches(pattern, root, source.as_bytes()),
+                            pattern,
+                            source,
+                        );
+                        assert_eq!(
+                            matches, expected,
+                            "source={source:?}, range={byte_range:?}, use_points={use_points}"
+                        );
+                    }
+                }
+            }
+
+            // A full containing range preserves successful optional-child matches
+            // as well as the leaf matches that must wait for their alternatives.
+            if source == "x=1" {
+                let mut cursor = QueryCursor::new();
+                cursor.set_containing_byte_range(0..source.len());
+                let matches = collect_matches(
+                    cursor.matches(&query, root, source.as_bytes()),
+                    &query,
+                    source,
+                );
+                assert_eq!(
+                    matches,
+                    vec![
+                        (0, vec![("root", "x=1"), ("child", "x=1")]),
+                        (0, vec![("root", "x=1"), ("child", "x=1")]),
+                        (0, vec![("root", "x=1"), ("child", "x")]),
+                        (0, vec![("root", "x")]),
+                        (0, vec![("root", "x=1"), ("child", "1")]),
+                        (0, vec![("root", "1")]),
+                    ]
+                );
+            }
+        }
+    });
+}
