@@ -349,6 +349,7 @@ struct TSQueryCursor {
   bool ascending;
   bool halted;
   bool did_exceed_match_limit;
+  bool has_empty_root;
 };
 
 static const TSQueryError PARENT_DONE = -1;
@@ -3522,6 +3523,17 @@ void ts_query_cursor_exec(
   self->operation_count = 0;
   self->query_options = NULL;
   self->query_state = (TSQueryCursorState) {0};
+  self->has_empty_root = false;
+  if (query) {
+    for (unsigned i = 0; i < query->pattern_map.size; i++) {
+      PatternEntry *entry = array_get(&query->pattern_map, i);
+      if (array_get(&query->steps, entry->step_index)->symbol != WILDCARD_SYMBOL) break;
+      if (array_get(&query->steps, entry->step_index)->depth == PATTERN_DONE_MARKER) {
+        self->has_empty_root = true;
+        break;
+      }
+    }
+  }
 }
 
 void ts_query_cursor_exec_with_options(
@@ -3946,7 +3958,8 @@ static QueryState *ts_query_cursor__copy_state(
 
 static inline bool ts_query_cursor__should_descend(
   TSQueryCursor *self,
-  bool node_intersects_range
+  bool node_intersects_range,
+  bool parent_intersects_range
 ) {
 
   if (node_intersects_range && self->depth < self->max_start_depth) {
@@ -3981,6 +3994,10 @@ static inline bool ts_query_cursor__should_descend(
     // of this type of repetition node.
     Subtree subtree = ts_tree_cursor_current_subtree(&self->cursor);
     if (ts_subtree_is_repetition(subtree)) {
+      // Empty root alternatives start at visible nodes whose parent intersects
+      // the range. They can match even when no node inside this repetition
+      // intersects the range, and do not appear in the non-rooted analysis.
+      if (self->has_empty_root && parent_intersects_range) return true;
       bool exists;
       uint32_t index;
       array_search_sorted_by(
@@ -4629,7 +4646,7 @@ static inline bool ts_query_cursor__advance(
         }
       }
 
-      if (node_intersects_containing_range && ts_query_cursor__should_descend(self, node_intersects_range)) {
+      if (node_intersects_containing_range && ts_query_cursor__should_descend(self, node_intersects_range, parent_intersects_range)) {
         switch (ts_tree_cursor_goto_first_child_internal(&self->cursor)) {
           case TreeCursorStepVisible:
             self->depth++;
