@@ -4133,7 +4133,10 @@ static inline bool ts_query_cursor__advance(
           break;
         default:
           if (ts_tree_cursor_goto_parent(&self->cursor)) {
-            self->depth--;
+            // goto_parent skips hidden ancestors and returns a visible node.
+            // Hidden nodes already use their visible parent's depth.
+            if (self->on_visible_node) self->depth--;
+            self->on_visible_node = true;
           } else {
             LOG("halt at root\n");
             self->halted = true;
