@@ -126,6 +126,16 @@
       "notes": "Confirmed Rust pretty-printing bug from section 6 of potential-upstream-bugs.md. Preserves closing parentheses after quoted missing tokens and reads whitespace and parentheses only outside quoted tokens. Covers MISSING and UNEXPECTED tokens, raw quote characters and backslashes, fields, Node Display, and indentation."
     },
     {
+      "id": "nullable-root-hidden-structure",
+      "issue": null,
+      "ref": "fix/nullable-root-hidden-structure",
+      "base": "5091247754e69084613e48613fe2215c7df8ec68",
+      "regressions": [
+        "test_query_nullable_roots_with_ranges_through_hidden_repetitions"
+      ],
+      "notes": "Section 7 of potential-upstream-bugs.md. Preserves existing visible-tree empty-root enumeration when ranges would otherwise prune hidden repetitions. Covers optional and zero-or-more roots, byte and point ranges, identical visible trees from fixed and repeated grammars, and nonnullable captured controls."
+    },
+    {
       "id": "api-documentation",
       "issue": null,
       "ref": "fix/api-documentation",
