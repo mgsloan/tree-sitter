@@ -513,7 +513,7 @@ unsafe extern "C" {
     pub fn ts_tree_cursor_delete(self_: *mut TSTreeCursor);
 }
 unsafe extern "C" {
-    #[doc = " Re-initialize a tree cursor to start at the original node that the cursor was\n constructed with."]
+    #[doc = " Re-initialize a tree cursor to start at the given node.\n\n The given node becomes the root of the cursor, and the cursor cannot walk\n outside this node."]
     pub fn ts_tree_cursor_reset(self_: *mut TSTreeCursor, node: TSNode);
 }
 unsafe extern "C" {
@@ -692,7 +692,7 @@ unsafe extern "C" {
     );
 }
 unsafe extern "C" {
-    #[doc = " Manage the maximum number of in-progress matches allowed by this query\n cursor.\n\n Query cursors have an optional maximum capacity for storing lists of\n in-progress captures. If this capacity is exceeded, then the\n earliest-starting match will silently be dropped to make room for further\n matches. This maximum capacity is optional — by default, query cursors allow\n any number of pending matches, dynamically allocating new space for them as\n needed as the query is executed."]
+    #[doc = " Manage the maximum number of in-progress matches allowed by this query\n cursor.\n\n Query cursors have an optional maximum capacity for storing lists of\n in-progress captures. If this capacity is exceeded, then the\n earliest-starting match will silently be dropped to make room for further\n matches. This maximum capacity is optional — by default, query cursors allow\n any number of pending matches, dynamically allocating new space for them as\n needed as the query is executed.\n\n The match limit accepts the full uint32_t range, including zero."]
     pub fn ts_query_cursor_did_exceed_match_limit(self_: *const TSQueryCursor) -> bool;
 }
 unsafe extern "C" {
