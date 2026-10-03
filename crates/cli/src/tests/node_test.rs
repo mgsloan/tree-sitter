@@ -949,6 +949,74 @@ fn test_node_sexp() {
 }
 
 #[test]
+fn test_format_sexp_with_quoted_missing_and_unexpected_tokens() {
+    for (sexp, expected) in [
+        (
+            r#"(block_comment (MISSING "*/"))"#,
+            "(block_comment\n  (MISSING \"*/\"))",
+        ),
+        (r#"(root (MISSING ")"))"#, "(root\n  (MISSING \")\"))"),
+        (r#"(root (MISSING "a b"))"#, "(root\n  (MISSING \"a b\"))"),
+        (r#"(root (MISSING "'"))"#, "(root\n  (MISSING \"'\"))"),
+        (r#"(root (MISSING """))"#, "(root\n  (MISSING \"\"\"))"),
+        (r#"(root (MISSING "\"))"#, "(root\n  (MISSING \"\\\"))"),
+        ("(root (UNEXPECTED 'x'))", "(root\n  (UNEXPECTED 'x'))"),
+        ("(root (UNEXPECTED ' '))", "(root\n  (UNEXPECTED ' '))"),
+        ("(root (UNEXPECTED ')'))", "(root\n  (UNEXPECTED ')'))"),
+        ("(root (UNEXPECTED '\"'))", "(root\n  (UNEXPECTED '\"'))"),
+        ("(root (UNEXPECTED '''))", "(root\n  (UNEXPECTED '''))"),
+        (r"(root (UNEXPECTED '\'))", "(root\n  (UNEXPECTED '\\'))"),
+        (
+            r#"(root missing: (MISSING "*/") (after))"#,
+            "(root\n  missing: (MISSING \"*/\")\n  (after))",
+        ),
+    ] {
+        assert_eq!(tree_sitter::format_sexp(sexp, 0), expected, "{sexp}");
+    }
+}
+
+#[test]
+fn test_node_display_with_quoted_missing_token() {
+    let (parser_name, parser_code) = generate_parser(
+        r#"{
+          "name": "missing_comment_terminator",
+          "rules": {
+            "document": {
+              "type": "SEQ",
+              "members": [
+                {"type": "SYMBOL", "name": "block_comment"},
+                {"type": "STRING", "value": ";"}
+              ]
+            },
+            "block_comment": {
+              "type": "SEQ",
+              "members": [
+                {"type": "STRING", "value": "/*"},
+                {"type": "STRING", "value": "*/"}
+              ]
+            }
+          }
+        }"#,
+    )
+    .unwrap();
+    let mut parser = Parser::new();
+    parser
+        .set_language(&get_test_language(&parser_name, &parser_code, None))
+        .unwrap();
+    let tree = parser.parse("/*;", None).unwrap();
+    let node = tree.root_node().named_child(0).unwrap();
+    let sexp = r#"(block_comment (MISSING "*/"))"#;
+
+    assert_eq!(node.to_sexp(), sexp);
+    assert_eq!(format!("{node}"), sexp);
+    assert_eq!(format!("{node:#}"), "(block_comment\n  (MISSING \"*/\"))");
+    assert_eq!(
+        format!("{node:#2}"),
+        "\n    (block_comment\n      (MISSING \"*/\"))",
+    );
+}
+
+#[test]
 fn test_node_field_names() {
     // - "x":
     //      This isn't used in the test, but prevents `_hidden_rule1` from being eliminated as a
