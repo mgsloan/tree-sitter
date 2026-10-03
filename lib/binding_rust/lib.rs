@@ -3960,21 +3960,21 @@ pub fn format_sexp(sexp: &str, initial_indent_level: usize) -> String {
     let mut fetch_next_str = |next: &mut String| {
         next.clear();
         while let Some(c) = c_iter.next() {
-            if c == '\'' || c == '"' {
-                quote = c;
-            } else if c == ' ' || (c == ')' && quote != '\0') {
-                if let Some(next_c) = c_iter.peek()
-                    && *next_c == quote
+            if quote != '\0' {
+                // Token names and unexpected characters are quoted without escaping.
+                // A matching quote at a token boundary closes the quoted token.
+                if c == quote
+                    && c_iter
+                        .peek()
+                        .is_none_or(|next| *next == ' ' || *next == ')')
                 {
-                    next.push(c);
-                    next.push(*next_c);
-                    c_iter.next();
                     quote = '\0';
-                    continue;
                 }
+            } else if c == '\'' || c == '"' {
+                quote = c;
+            } else if c == ' ' {
                 break;
-            }
-            if c == ')' {
+            } else if c == ')' {
                 saw_paren = true;
                 break;
             }
