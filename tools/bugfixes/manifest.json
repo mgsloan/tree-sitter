@@ -104,6 +104,17 @@
       "notes": "Unfiled hidden-repetition pruning bug from potential-upstream-bugs.md. Includes wildcard starts in non-local pattern analysis while excluding completed alternatives. Covers intersecting and containing byte/point ranges, concrete controls, and the original nested-array reproduction."
     },
     {
+      "id": "wildcard-child-guarantees",
+      "issue": null,
+      "ref": "fix/wildcard-child-guarantees",
+      "base": "20cf25c10f13ed9b8c499dd966b4e7a57bedbf81",
+      "regressions": [
+        "test_query_wildcard_child_guarantees_do_not_publish_unmatched_captures",
+        "test_query_wildcard_child_guarantees_preserve_concrete_descendants"
+      ],
+      "notes": "Confirmed query-analysis bug from section 5 of potential-upstream-bugs.md. Clears inherited guarantee flags beneath wildcard parents so capture iteration cannot emit captures for impossible matches. Covers anchors, fields, nested wildcards, concrete controls, positive matches, and valid guarantees within concrete descendants."
+    },
+    {
       "id": "api-documentation",
       "issue": null,
       "ref": "fix/api-documentation",
