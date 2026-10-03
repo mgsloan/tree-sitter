@@ -391,7 +391,9 @@ pub enum QueryPredicateArg {
     String(Box<str>),
 }
 
-/// A key-value pair associated with a particular pattern in a [`Query`].
+/// A predicate associated with a particular pattern in a [`Query`].
+///
+/// Predicates consist of an operator and capture or string arguments.
 #[derive(Debug, PartialEq, Eq)]
 pub struct QueryPredicate {
     pub operator: Box<str>,
@@ -2329,7 +2331,7 @@ impl<'tree> TreeCursor<'tree> {
     }
 
     /// Move this cursor to the first child of its current node that contains or
-    /// starts after the given byte offset.
+    /// starts after the given point.
     ///
     /// This returns the index of the child node if one was found, and returns
     /// `None` if no such child was found.
@@ -2341,8 +2343,10 @@ impl<'tree> TreeCursor<'tree> {
         result.try_into().ok()
     }
 
-    /// Re-initialize this tree cursor to start at the original node that the
-    /// cursor was constructed with.
+    /// Re-initialize this tree cursor to start at the given node.
+    ///
+    /// The given node becomes the root of the cursor, and the cursor cannot
+    /// walk outside this node.
     #[doc(alias = "ts_tree_cursor_reset")]
     pub fn reset(&mut self, node: Node<'tree>) {
         unsafe { ffi::ts_tree_cursor_reset(&raw mut self.0, node.0) };
@@ -3036,7 +3040,12 @@ impl Query {
         unsafe { ffi::ts_query_is_pattern_rooted(self.ptr.as_ptr(), index as u32) }
     }
 
-    /// Check if a given pattern within a query has a single root node.
+    /// Check if a given pattern within a query is non-local.
+    ///
+    /// A non-local pattern has multiple root nodes and can match within a
+    /// repeating sequence of nodes, as specified by the grammar. Non-local
+    /// patterns disable certain optimizations that would otherwise be possible
+    /// when executing a query on a specific range of a syntax tree.
     #[doc(alias = "ts_query_is_pattern_non_local")]
     #[must_use]
     pub fn is_pattern_non_local(&self, index: usize) -> bool {
@@ -3140,8 +3149,9 @@ impl QueryCursor {
         unsafe { ffi::ts_query_cursor_match_limit(self.ptr.as_ptr()) }
     }
 
-    /// Set the maximum number of in-progress matches for this cursor.  The
-    /// limit must be > 0 and <= 65536.
+    /// Set the maximum number of in-progress matches for this cursor.
+    ///
+    /// Accepts the full `u32` range, including zero.
     #[doc(alias = "ts_query_cursor_set_match_limit")]
     pub fn set_match_limit(&mut self, limit: u32) {
         unsafe {
