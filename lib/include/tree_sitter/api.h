@@ -306,7 +306,7 @@ const TSRange *ts_parser_included_ranges(
  *    or `TSInputEncodingCustom`.
  * 4. [`decode`]: A function to read one code point from the given input. This
  *    function should return the number of bytes consumed and write the code point
- *    to the [`code_point`] pointer, or write -1 if the input is invalid.
+ *    to the `code_point` pointer, or write -1 if the input is invalid.
  *
  * This function returns a syntax tree on success, and `NULL` on failure. There
  * are two possible reasons for failure:
@@ -320,7 +320,6 @@ const TSRange *ts_parser_included_ranges(
  * [`encoding`]: TSInput::encoding
  * [`bytes_read`]: TSInput::read
  * [`decode`]: TSInput::decode
- * [`code_point`]: TSDecodeFunction::code_point
  */
 TSTree *ts_parser_parse(
   TSParser *self,
@@ -1327,7 +1326,7 @@ uint32_t ts_language_abi_version(const TSLanguage *self);
  * CLI, and relies on the language author providing the correct metadata in
  * the language's `tree-sitter.json` file.
  *
- * See also [`TSMetadata`].
+ * See also [`TSLanguageMetadata`].
  */
 const TSLanguageMetadata *ts_language_metadata(const TSLanguage *self);
 
