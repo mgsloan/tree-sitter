@@ -790,8 +790,10 @@ TSTreeCursor ts_tree_cursor_new(TSNode node);
 void ts_tree_cursor_delete(TSTreeCursor *self);
 
 /**
- * Re-initialize a tree cursor to start at the original node that the cursor was
- * constructed with.
+ * Re-initialize a tree cursor to start at the given node.
+ *
+ * The given node becomes the root of the cursor, and the cursor cannot walk
+ * outside this node.
  */
 void ts_tree_cursor_reset(TSTreeCursor *self, TSNode node);
 
@@ -1109,6 +1111,8 @@ void ts_query_cursor_exec_with_options(
  * matches. This maximum capacity is optional — by default, query cursors allow
  * any number of pending matches, dynamically allocating new space for them as
  * needed as the query is executed.
+ *
+ * The match limit accepts the full uint32_t range, including zero.
  */
 bool ts_query_cursor_did_exceed_match_limit(const TSQueryCursor *self);
 uint32_t ts_query_cursor_match_limit(const TSQueryCursor *self);
