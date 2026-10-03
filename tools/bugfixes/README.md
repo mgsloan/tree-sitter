@@ -1,6 +1,6 @@
 # Maintaining mgsloan-bugfixes
 
-`manifest.json` lists ten fix branches, their issue links, regression tests,
+`manifest.json` lists eleven fix branches, their issue links, regression tests,
 and the exact base commit excluded from each patch series. Source branches remain
 unchanged. `mgsloan-bugfix-maintenance` owns this tooling and manifest; the generated
 `mgsloan-bugfixes` branch includes them too.
@@ -88,6 +88,7 @@ is a performance change that overlaps the #5934 fix.
 | Unfiled | `fix/previous-sibling-alias-after-extra` | New fix for the confirmed local cursor reproduction |
 | Unfiled | `fix/non-rooted-query-range` | Rejects non-rooted queries outside the cursor root's byte or point range; preserves sibling matches spanning a range |
 | Unfiled | `fix/non-rooted-wildcard-range-pruning` | Preserves wildcard sibling matches when hidden repetitions are pruned by intersecting and containing ranges |
+| Unfiled | `fix/wildcard-child-guarantees` | Prevents phantom captures from inherited guarantee flags beneath wildcard parents; preserves valid concrete-child guarantees |
 | Unfiled | `fix/api-documentation` | Corrects cursor and query API documentation, including the full match-limit range; no implementation changes |
 
 The query capture-prefix and hidden-subtree reuse observations in the local
