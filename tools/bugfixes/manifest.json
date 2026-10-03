@@ -104,6 +104,14 @@
       "notes": "Unfiled hidden-repetition pruning bug from potential-upstream-bugs.md. Includes wildcard starts in non-local pattern analysis while excluding completed alternatives. Covers intersecting and containing byte/point ranges, concrete controls, and the original nested-array reproduction."
     },
     {
+      "id": "api-documentation",
+      "issue": null,
+      "ref": "fix/api-documentation",
+      "base": "20cf25c10f13ed9b8c499dd966b4e7a57bedbf81",
+      "regressions": [],
+      "notes": "Documentation only: correct reset roots, point-based child lookup, non-local query patterns, predicate arguments, and the full match-limit range. The non-local description relates to the wildcard range-pruning fix. Rust docs build and formatting checked; existing rustdoc link warnings remain. Squatter's incorrect match-limit compatibility claim is corrected separately in 81fd1c64e."
+    },
+    {
       "id": "descendant-range-optimization",
       "issue": "https://github.com/tree-sitter/tree-sitter/issues/5935",
       "enabled": false,
