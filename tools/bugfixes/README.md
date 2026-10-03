@@ -1,6 +1,6 @@
 # Maintaining mgsloan-bugfixes
 
-`manifest.json` lists thirteen fix branches, their issue links, regression tests,
+`manifest.json` lists fourteen fix branches, their issue links, regression tests,
 and the exact base commit excluded from each patch series. Source branches remain
 unchanged. `mgsloan-bugfix-maintenance` owns this tooling and manifest; the generated
 `mgsloan-bugfixes` branch includes them too.
@@ -91,6 +91,7 @@ is a performance change that overlaps the #5934 fix.
 | Unfiled | `fix/wildcard-child-guarantees` | Prevents phantom captures from inherited guarantee flags beneath wildcard parents; preserves valid concrete-child guarantees |
 | Unfiled | `fix/quoted-missing-token-formatting` | Preserves quoted missing and unexpected tokens and their closing delimiters in Rust pretty-printing |
 | Unfiled | `fix/nullable-root-hidden-structure` | Preserves empty nullable-root matches across hidden repetition nodes when byte or point ranges prune traversal |
+| Unfiled | `fix/containing-range-hidden-ascent` | Completes deferred matches after skipping a hidden subtree outside containing byte or point ranges |
 | Unfiled | `fix/api-documentation` | Corrects cursor and query API documentation, including the full match-limit range; no implementation changes |
 
 The query capture-prefix and hidden-subtree reuse observations in the local
