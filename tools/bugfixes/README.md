@@ -1,6 +1,6 @@
 # Maintaining mgsloan-bugfixes
 
-`manifest.json` lists sixteen fix branches, their issue links, regression tests,
+`manifest.json` lists eighteen fix branches, their issue links, regression tests,
 and the exact base commit excluded from each patch series. Source branches remain
 unchanged. `mgsloan-bugfix-maintenance` owns this tooling and manifest; the generated
 `mgsloan-bugfixes` branch includes them too.
@@ -94,6 +94,8 @@ is a performance change that overlaps the #5934 fix.
 | Unfiled | `fix/containing-range-hidden-ascent` | Completes deferred matches after skipping a hidden subtree outside containing byte or point ranges |
 | Unfiled | `fix/previous-sibling-descendant-index` | Preserves descendant indices during backward sibling traversal, subsequent forward traversal, and seeking the cursor root |
 | Unfiled | `fix/short-utf8-input-chunks` | Assembles incomplete UTF-8 characters across short input chunks while preserving invalid-input handling and callback buffer lifetimes |
+| Unfiled | `fix/query-capture-cancellation` | Honors progress-callback stops with queued captures and preserves resumable execution |
+| Unfiled | `fix/error-child-guarantees` | Prevents orphan captures from unjustified ERROR-child guarantees while preserving concrete descendant guarantees |
 | Unfiled | `fix/api-documentation` | Corrects cursor and query API documentation, including the full match-limit range; no implementation changes |
 
 The query capture-prefix and hidden-subtree reuse observations in the local

@@ -167,6 +167,26 @@
       "notes": "Confirmed lexer bug from section 8 of potential-bugs.md. Assembles incomplete UTF-8 characters in a four-byte lexer buffer across successive callback offsets. Covers two-, three-, and four-byte characters, chunks of one through four bytes, callback points, owned buffer replacement, invalid UTF-8, and truncated EOF. UTF-16 and custom decoder behavior are unchanged."
     },
     {
+      "id": "query-capture-cancellation",
+      "issue": null,
+      "ref": "fix/query-capture-cancellation",
+      "base": "2ef426e10b4fa8189a761025f17548073249c2fc",
+      "regressions": [
+        "test_query_capture_cancellation_preserves_pending_matches"
+      ],
+      "notes": "Confirmed cancellation bug from section 9 of potential-bugs.md. Returns immediately after a progress-callback stop even when unfinished matches block queued captures, preserving resumable execution. Deterministic regression stops at three callback checkpoints and compares resumed match IDs, capture indices, and full capture snapshots with uninterrupted execution."
+    },
+    {
+      "id": "error-child-guarantees",
+      "issue": null,
+      "ref": "fix/error-child-guarantees",
+      "base": "2ef426e10b4fa8189a761025f17548073249c2fc",
+      "regressions": [
+        "test_query_error_children_do_not_publish_unmatched_captures"
+      ],
+      "notes": "Confirmed query-analysis bug from section 10 of potential-bugs.md. Initializes descendants of ERROR parents as fallible, sharing the conservative policy for wildcard parents. The JSON colon reproducer tests absent required children at root and nested scopes, matches and captures, guarantee flags, present and optional children, alternatives, childless ERROR controls, and valid guarantees within concrete descendants."
+    },
+    {
       "id": "api-documentation",
       "issue": null,
       "ref": "fix/api-documentation",
