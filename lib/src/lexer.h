@@ -31,6 +31,7 @@ typedef struct {
   uint32_t chunk_start;
   uint32_t chunk_size;
   uint32_t lookahead_size;
+  char lookahead_buffer[4];
   bool did_get_column;
   ColumnData column_data;
 
