@@ -1677,6 +1677,7 @@ static bool ts_query__analyze_patterns(TSQuery *self, unsigned *error_offset) {
 
     bool has_children = false;
     bool is_wildcard = step->symbol == WILDCARD_SYMBOL;
+    bool can_analyze = !is_wildcard && step->symbol != ts_builtin_sym_error;
     step->contains_captures = step->capture_ids[0] != NONE;
     for (unsigned j = i + 1; j < self->steps.size; j++) {
       QueryStep *next_step = array_get(&self->steps, j);
@@ -1687,10 +1688,10 @@ static bool ts_query__analyze_patterns(TSQuery *self, unsigned *error_offset) {
       if (next_step->capture_ids[0] != NONE) {
         step->contains_captures = true;
       }
-      if (!is_wildcard) {
-        next_step->root_pattern_guaranteed = true;
-        next_step->parent_pattern_guaranteed = true;
-      }
+      // Wildcard and ERROR parents have no fixed child structure, so descendants
+      // must not inherit guarantees from a concrete ancestor.
+      next_step->root_pattern_guaranteed = can_analyze;
+      next_step->parent_pattern_guaranteed = can_analyze;
       has_children = true;
     }
 
