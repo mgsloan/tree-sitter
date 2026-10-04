@@ -1248,3 +1248,94 @@ fn parse_json_example() -> Tree {
     parser.set_language(&get_language("json")).unwrap();
     parser.parse(JSON_EXAMPLE, None).unwrap()
 }
+
+#[test]
+fn test_first_child_for_byte_preserves_nested_hidden_siblings() {
+    let (parser_name, parser_code) = generate_parser(
+        r#"{
+            "name": "nested_hidden_child_offsets",
+            "extras": [],
+            "rules": {
+                "root": {"type": "SEQ", "members": [
+                    {"type": "SYMBOL", "name": "_outer"},
+                    {"type": "SYMBOL", "name": "tail"}
+                ]},
+                "_outer": {"type": "SEQ", "members": [
+                    {"type": "SYMBOL", "name": "_inner"},
+                    {"type": "STRING", "value": "b"}
+                ]},
+                "_inner": {"type": "SEQ", "members": [
+                    {"type": "SYMBOL", "name": "head"},
+                    {"type": "STRING", "value": "a"}
+                ]},
+                "head": {"type": "STRING", "value": "h"},
+                "tail": {"type": "STRING", "value": "t"}
+            }
+        }"#,
+    )
+    .unwrap();
+    let language = get_test_language(&parser_name, &parser_code, None);
+    let mut parser = Parser::new();
+    parser.set_language(&language).unwrap();
+    let tree = parser.parse("habt", None).unwrap();
+    let root = tree.root_node();
+    assert!(!root.has_error());
+    assert_eq!(root.to_sexp(), "(root (head) (tail))");
+    assert_eq!(root.first_named_child_for_byte(1), root.named_child(1));
+
+    for byte in 0..=5 {
+        let expected = (0..root.child_count())
+            .filter_map(|index| root.child(index as u32))
+            .find(|child| child.end_byte() > byte);
+        assert_eq!(root.first_child_for_byte(byte), expected, "byte={byte}");
+        let expected = (0..root.named_child_count())
+            .filter_map(|index| root.named_child(index as u32))
+            .find(|child| child.end_byte() > byte);
+        assert_eq!(
+            root.first_named_child_for_byte(byte),
+            expected,
+            "byte={byte}"
+        );
+    }
+}
+
+#[test]
+fn test_first_child_for_byte_with_nested_error_nodes() {
+    let mut parser = Parser::new();
+    parser.set_language(&get_language("c")).unwrap();
+    for source in [
+        "int f(a, b) => x + 1;",
+        "int \"π😀\"t 1",
+        "for (;;);",
+        "int broken = ;",
+    ] {
+        let tree = parser.parse(source, None).unwrap();
+        let mut nodes = vec![tree.root_node()];
+        while let Some(node) = nodes.pop() {
+            let children: Vec<_> = (0..node.child_count())
+                .map(|index| node.child(index as u32).unwrap())
+                .collect();
+            for byte in 0..=source.len() + 1 {
+                let expected = children
+                    .iter()
+                    .copied()
+                    .find(|child| child.end_byte() > byte);
+                assert_eq!(
+                    node.first_child_for_byte(byte),
+                    expected,
+                    "source={source:?} node={node:?} byte={byte}"
+                );
+                let expected = children
+                    .iter()
+                    .copied()
+                    .find(|child| child.is_named() && child.end_byte() > byte);
+                assert_eq!(
+                    node.first_named_child_for_byte(byte),
+                    expected,
+                    "source={source:?} node={node:?} byte={byte}"
+                );
+            }
+            nodes.extend(children);
+        }
+    }
+}
