@@ -197,6 +197,28 @@
       "notes": "Extra parents must not inherit the next structural child's alias. The Python ERROR before an aliased block otherwise appears as a block to query execution, allowing wildcard-parent matches inside ERROR and adding empty optional-child matches."
     },
     {
+      "id": "first-child-for-byte-hidden-siblings",
+      "issue": null,
+      "ref": "fix/first-child-for-byte-hidden-siblings",
+      "base": "2ef426e10b4fa8189a761025f17548073249c2fc",
+      "regressions": [
+        "test_first_child_for_byte_preserves_nested_hidden_siblings",
+        "test_first_child_for_byte_with_nested_error_nodes"
+      ],
+      "notes": "Preserves later named siblings after nested hidden nodes exhaust byte-based child lookup. Tracks the public child index without allocating an iterator stack. Covers offsets after a named child inside nested hidden grammar rules and all byte offsets in malformed C trees; also fixes the two C# error-node bisim reproductions."
+    },
+    {
+      "id": "query-containing-range-missing-boundary",
+      "issue": null,
+      "ref": "fix/query-containing-range-missing-boundary",
+      "base": "2ef426e10b4fa8189a761025f17548073249c2fc",
+      "regressions": [
+        "test_query_containing_ranges_include_missing_nodes_at_end",
+        "test_query_containing_range_end_preserves_intersecting_range_boundary"
+      ],
+      "notes": "Containing ranges include zero-width nodes at either boundary. Retains touching ancestors so missing children remain reachable through hidden wrappers. Covers byte and point ranges, multiline C input, disabled captures, match and capture iteration, empty containing ranges, and intersecting-range boundary controls."
+    },
+    {
       "id": "api-documentation",
       "issue": null,
       "ref": "fix/api-documentation",
