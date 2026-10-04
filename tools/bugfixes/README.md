@@ -1,6 +1,6 @@
 # Maintaining mgsloan-bugfixes
 
-`manifest.json` lists fifteen fix branches, their issue links, regression tests,
+`manifest.json` lists sixteen fix branches, their issue links, regression tests,
 and the exact base commit excluded from each patch series. Source branches remain
 unchanged. `mgsloan-bugfix-maintenance` owns this tooling and manifest; the generated
 `mgsloan-bugfixes` branch includes them too.
@@ -93,10 +93,11 @@ is a performance change that overlaps the #5934 fix.
 | Unfiled | `fix/nullable-root-hidden-structure` | Preserves empty nullable-root matches across hidden repetition nodes when byte or point ranges prune traversal |
 | Unfiled | `fix/containing-range-hidden-ascent` | Completes deferred matches after skipping a hidden subtree outside containing byte or point ranges |
 | Unfiled | `fix/previous-sibling-descendant-index` | Preserves descendant indices during backward sibling traversal, subsequent forward traversal, and seeking the cursor root |
+| Unfiled | `fix/short-utf8-input-chunks` | Assembles incomplete UTF-8 characters across short input chunks while preserving invalid-input handling and callback buffer lifetimes |
 | Unfiled | `fix/api-documentation` | Corrects cursor and query API documentation, including the full match-limit range; no implementation changes |
 
 The query capture-prefix and hidden-subtree reuse observations in the local
-`potential-upstream-bugs.md` have no filed issues or settled fixes and are not
+`potential-bugs.md` have no filed issues or settled fixes and are not
 included. The old crates.io version report #610 is unrelated to runtime fixes.
 
 Nothing is pushed by the updater. Publishing a rebuilt aggregate requires a
