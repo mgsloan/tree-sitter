@@ -6100,6 +6100,69 @@ fn test_query_execution_with_timeout() {
 }
 
 #[test]
+fn test_query_capture_cancellation_preserves_pending_matches() {
+    use std::cell::Cell;
+
+    let language = get_language("json");
+    let mut parser = Parser::new();
+    parser.set_language(&language).unwrap();
+    let source = format!("[{}]", vec!["0"; 128].join(","));
+    let tree = parser.parse(&source, None).unwrap();
+    let query = Query::new(&language, r#"((_ (_ [(_) (_)] @capture0 . [(_) (_)] @capture1)? @capture2 . (_ (_) @capture3 . (_) @capture4) @capture5) @capture6 (#set! ""))"#).unwrap();
+    let snapshot = |(m, index): &(tree_sitter::QueryMatch<'_, '_>, usize)| {
+        (
+            m.id(),
+            m.pattern_index,
+            *index,
+            m.captures()
+                .iter()
+                .map(|c| (c.index, c.node.byte_range()))
+                .collect::<Vec<_>>(),
+        )
+    };
+    let mut cursor = QueryCursor::new();
+    cursor.set_match_limit(65_536);
+    let mut expected = Vec::new();
+    let mut captures = cursor.captures(&query, tree.root_node(), source.as_bytes());
+    while let Some(event) = captures.next() {
+        expected.push(snapshot(event));
+    }
+    assert!(!expected.is_empty());
+    drop(captures);
+
+    for stop_after in 1..=3 {
+        let calls = Cell::new(0);
+        let should_stop = Cell::new(true);
+        let mut callback = |_: &QueryCursorState| {
+            calls.set(calls.get() + 1);
+            if should_stop.get() && calls.get() >= stop_after {
+                ControlFlow::Break(())
+            } else {
+                ControlFlow::Continue(())
+            }
+        };
+        let mut captures = cursor.captures_with_options(
+            &query,
+            tree.root_node(),
+            source.as_bytes(),
+            QueryCursorOptions::new().progress_callback(&mut callback),
+        );
+        let mut actual = Vec::new();
+        while let Some(event) = captures.next() {
+            actual.push(snapshot(event));
+        }
+        assert_eq!(calls.get(), stop_after, "iteration ignored cancellation");
+        assert!(actual.len() < expected.len());
+        // Resume the same execution, retaining partial capture lists and match IDs.
+        should_stop.set(false);
+        while let Some(event) = captures.next() {
+            actual.push(snapshot(event));
+        }
+        assert_eq!(actual, expected);
+    }
+}
+
+#[test]
 fn test_query_progress_callback_lives_as_long_as_matches() {
     let language = get_language("javascript");
     let mut parser = Parser::new();
