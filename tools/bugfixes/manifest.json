@@ -187,6 +187,16 @@
       "notes": "Confirmed query-analysis bug from section 10 of potential-bugs.md. Initializes descendants of ERROR parents as fallible, sharing the conservative policy for wildcard parents. The JSON colon reproducer tests absent required children at root and nested scopes, matches and captures, guarantee flags, present and optional children, alternatives, childless ERROR controls, and valid guarantees within concrete descendants."
     },
     {
+      "id": "query-extra-parent-alias",
+      "issue": null,
+      "ref": "fix/query-extra-parent-alias",
+      "base": "2ef426e10b4fa8189a761025f17548073249c2fc",
+      "regressions": [
+        "test_query_extra_error_parents_do_not_inherit_aliases"
+      ],
+      "notes": "Extra parents must not inherit the next structural child's alias. The Python ERROR before an aliased block otherwise appears as a block to query execution, allowing wildcard-parent matches inside ERROR and adding empty optional-child matches."
+    },
+    {
       "id": "api-documentation",
       "issue": null,
       "ref": "fix/api-documentation",
