@@ -321,6 +321,7 @@ struct TSQuery {
   Array(TSSymbol) repeat_symbols_with_rootless_patterns;
   const TSLanguage *language;
   uint16_t wildcard_root_pattern_count;
+  bool has_skipped_root;
 };
 
 /*
@@ -1300,6 +1301,9 @@ static inline void ts_query__pattern_map_insert(
   }
 
   array_insert(&self->pattern_map, index, new_entry);
+  if (array_get(&self->steps, new_entry.step_index)->depth == 1) {
+    self->has_skipped_root = true;
+  }
 }
 
 // Walk the subgraph for this non-terminal, tracking all of the possible
@@ -3407,11 +3411,14 @@ void ts_query_disable_pattern(
 ) {
   // Remove the given pattern from the pattern map. Its steps will still
   // be in the `steps` array, but they will never be read.
+  self->has_skipped_root = false;
   for (unsigned i = 0; i < self->pattern_map.size; i++) {
     PatternEntry *pattern = array_get(&self->pattern_map, i);
     if (pattern->pattern_index == pattern_index) {
       array_erase(&self->pattern_map, i);
       i--;
+    } else if (array_get(&self->steps, pattern->step_index)->depth == 1) {
+      self->has_skipped_root = true;
     }
   }
 }
@@ -3949,7 +3956,13 @@ static inline bool ts_query_cursor__should_descend(
   bool node_intersects_range
 ) {
 
-  if (node_intersects_range && self->depth < self->max_start_depth) {
+  // Patterns with a skipped wildcard root start matching at its children,
+  // one visible level below the allowed root depth.
+  bool depth_allows_children = self->depth < self->max_start_depth || (
+    self->depth == self->max_start_depth && self->query->has_skipped_root
+  );
+
+  if (node_intersects_range && depth_allows_children) {
     return true;
   }
 
@@ -3966,7 +3979,7 @@ static inline bool ts_query_cursor__should_descend(
     }
   }
 
-  if (self->depth >= self->max_start_depth) {
+  if (!depth_allows_children) {
     return false;
   }
 
