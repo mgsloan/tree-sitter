@@ -80,7 +80,7 @@
         "test_tree_cursor_previous_sibling_with_alias_after_extra",
         "test_tree_cursor_previous_sibling_preserves_aliases_when_switching_direction"
       ],
-      "notes": "Unfiled confirmed bug documented in potential-upstream-bugs.md; original reproduction is 470a8bdcd."
+      "notes": "Unfiled confirmed bug documented in potential-bugs.md; original reproduction is 470a8bdcd."
     },
     {
       "id": "non-rooted-query-range",
@@ -91,7 +91,7 @@
         "test_query_matches_with_non_rooted_patterns_outside_cursor_range",
         "test_query_non_rooted_patterns_preserve_matches_spanning_cursor_range"
       ],
-      "notes": "Unfiled cursor-root range bug from potential-upstream-bugs.md. Rejects non-rooted state starts when the cursor root is outside the byte or point range; preserves sibling matches spanning a range."
+      "notes": "Unfiled cursor-root range bug from potential-bugs.md. Rejects non-rooted state starts when the cursor root is outside the byte or point range; preserves sibling matches spanning a range."
     },
     {
       "id": "non-rooted-wildcard-range-pruning",
@@ -101,7 +101,7 @@
       "regressions": [
         "test_query_containing_ranges_preserve_non_rooted_wildcard_matches"
       ],
-      "notes": "Unfiled hidden-repetition pruning bug from potential-upstream-bugs.md. Includes wildcard starts in non-local pattern analysis while excluding completed alternatives. Covers intersecting and containing byte/point ranges, concrete controls, and the original nested-array reproduction."
+      "notes": "Unfiled hidden-repetition pruning bug from potential-bugs.md. Includes wildcard starts in non-local pattern analysis while excluding completed alternatives. Covers intersecting and containing byte/point ranges, concrete controls, and the original nested-array reproduction."
     },
     {
       "id": "wildcard-child-guarantees",
@@ -112,7 +112,7 @@
         "test_query_wildcard_child_guarantees_do_not_publish_unmatched_captures",
         "test_query_wildcard_child_guarantees_preserve_concrete_descendants"
       ],
-      "notes": "Confirmed query-analysis bug from section 5 of potential-upstream-bugs.md. Clears inherited guarantee flags beneath wildcard parents so capture iteration cannot emit captures for impossible matches. Covers anchors, fields, nested wildcards, concrete controls, positive matches, and valid guarantees within concrete descendants."
+      "notes": "Confirmed query-analysis bug from section 5 of potential-bugs.md. Clears inherited guarantee flags beneath wildcard parents so capture iteration cannot emit captures for impossible matches. Covers anchors, fields, nested wildcards, concrete controls, positive matches, and valid guarantees within concrete descendants."
     },
     {
       "id": "quoted-missing-token-formatting",
@@ -123,7 +123,7 @@
         "test_format_sexp_with_quoted_missing_and_unexpected_tokens",
         "test_node_display_with_quoted_missing_token"
       ],
-      "notes": "Confirmed Rust pretty-printing bug from section 6 of potential-upstream-bugs.md. Preserves closing parentheses after quoted missing tokens and reads whitespace and parentheses only outside quoted tokens. Covers MISSING and UNEXPECTED tokens, raw quote characters and backslashes, fields, Node Display, and indentation."
+      "notes": "Confirmed Rust pretty-printing bug from section 6 of potential-bugs.md. Preserves closing parentheses after quoted missing tokens and reads whitespace and parentheses only outside quoted tokens. Covers MISSING and UNEXPECTED tokens, raw quote characters and backslashes, fields, Node Display, and indentation."
     },
     {
       "id": "nullable-root-hidden-structure",
@@ -133,7 +133,7 @@
       "regressions": [
         "test_query_nullable_roots_with_ranges_through_hidden_repetitions"
       ],
-      "notes": "Nullable-root report removed from potential-upstream-bugs.md. Preserves existing visible-tree empty-root enumeration when ranges would otherwise prune hidden repetitions. Covers optional and zero-or-more roots, byte and point ranges, identical visible trees from fixed and repeated grammars, and nonnullable captured controls."
+      "notes": "Nullable-root report removed from potential-bugs.md. Preserves existing visible-tree empty-root enumeration when ranges would otherwise prune hidden repetitions. Covers optional and zero-or-more roots, byte and point ranges, identical visible trees from fixed and repeated grammars, and nonnullable captured controls."
     },
     {
       "id": "containing-range-hidden-ascent",
@@ -143,7 +143,7 @@
       "regressions": [
         "test_query_containing_ranges_preserve_deferred_matches_after_hidden_ascent"
       ],
-      "notes": "Confirmed containing-range bug from the report originally numbered 8, now section 7 of potential-upstream-bugs.md. Restores visible depth and visibility after ascending from a skipped hidden subtree, so ancestor exits finish deferred matches. Covers byte and point ranges, adjacent-range controls, multiline input, ordinary leaf queries, and successful optional-child matches."
+      "notes": "Confirmed containing-range bug from the report originally numbered 8, now section 7 of potential-bugs.md. Restores visible depth and visibility after ascending from a skipped hidden subtree, so ancestor exits finish deferred matches. Covers byte and point ranges, adjacent-range controls, multiline input, ordinary leaf queries, and successful optional-child matches."
     },
     {
       "id": "previous-sibling-descendant-index",
@@ -154,7 +154,17 @@
         "test_tree_cursor_previous_sibling_descendant_index",
         "test_tree_cursor_previous_sibling_descendant_indices_in_subtrees"
       ],
-      "notes": "Confirmed cursor bug from section 7 of potential-upstream-bugs.md. Preserves entry descendant indices and subtracts the preceding subtree's visible size when traversing backward. Covers subsequent forward traversal and seeking descendant zero, nested and malformed JSON, hidden wrappers, aliases, extras, and every visible subtree origin. Includes the structural-index adjustment shared with previous-sibling-alias-after-extra."
+      "notes": "Confirmed cursor bug from section 7 of potential-bugs.md. Preserves entry descendant indices and subtracts the preceding subtree's visible size when traversing backward. Covers subsequent forward traversal and seeking descendant zero, nested and malformed JSON, hidden wrappers, aliases, extras, and every visible subtree origin. Includes the structural-index adjustment shared with previous-sibling-alias-after-extra."
+    },
+    {
+      "id": "short-utf8-input-chunks",
+      "issue": null,
+      "ref": "fix/short-utf8-input-chunks",
+      "base": "43e82a2767cf75df4f668752cd884368e21a5ccd",
+      "regressions": [
+        "test_parsing_utf8_with_short_input_chunks"
+      ],
+      "notes": "Confirmed lexer bug from section 8 of potential-bugs.md. Assembles incomplete UTF-8 characters in a four-byte lexer buffer across successive callback offsets. Covers two-, three-, and four-byte characters, chunks of one through four bytes, callback points, owned buffer replacement, invalid UTF-8, and truncated EOF. UTF-16 and custom decoder behavior are unchanged."
     },
     {
       "id": "api-documentation",
