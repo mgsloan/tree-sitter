@@ -4162,8 +4162,13 @@ static inline bool ts_query_cursor__advance(
       };
       bool node_intersects_range =
         parent_intersects_range && range_intersects(&node_range, &self->included_range);
+      // Containing ranges include empty nodes at either boundary. Keep touching
+      // ancestors so their leading or trailing empty descendants remain reachable.
       bool node_intersects_containing_range =
-        range_intersects(&node_range, &self->containing_range);
+        node_range.end_byte >= self->containing_range.start_byte &&
+        node_range.start_byte <= self->containing_range.end_byte &&
+        point_gte(node_range.end_point, self->containing_range.start_point) &&
+        point_lte(node_range.start_point, self->containing_range.end_point);
       bool node_within_containing_range =
         range_within(&node_range, &self->containing_range);
 
