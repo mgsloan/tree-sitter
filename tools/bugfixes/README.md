@@ -1,6 +1,6 @@
 # Maintaining mgsloan-bugfixes
 
-`manifest.json` lists nineteen fix branches, their issue links, regression tests,
+`manifest.json` lists twenty-one fix branches, their issue links, regression tests,
 and the exact base commit excluded from each patch series. Source branches remain
 unchanged. `mgsloan-bugfix-maintenance` owns this tooling and manifest; the generated
 `mgsloan-bugfixes` branch includes them too.
@@ -97,6 +97,8 @@ is a performance change that overlaps the #5934 fix.
 | Unfiled | `fix/query-capture-cancellation` | Honors progress-callback stops with queued captures and preserves resumable execution |
 | Unfiled | `fix/error-child-guarantees` | Prevents orphan captures from unjustified ERROR-child guarantees while preserving concrete descendant guarantees |
 | Unfiled | `fix/query-extra-parent-alias` | Prevents extra ERROR parents from inheriting structural-child aliases during query execution |
+| Unfiled | `fix/first-child-for-byte-hidden-siblings` | Preserves later siblings after byte lookup exhausts nested hidden nodes |
+| Unfiled | `fix/query-containing-range-missing-boundary` | Includes missing nodes at containing-range boundaries while preserving intersecting-range boundaries |
 | Unfiled | `fix/api-documentation` | Corrects cursor and query API documentation, including the full match-limit range; no implementation changes |
 
 The query capture-prefix and hidden-subtree reuse observations in the local
