@@ -219,6 +219,17 @@
       "notes": "Containing ranges include zero-width nodes at either boundary. Retains touching ancestors so missing children remain reachable through hidden wrappers. Covers byte and point ranges, multiline C input, disabled captures, match and capture iteration, empty containing ranges, and intersecting-range boundary controls."
     },
     {
+      "id": "query-wildcard-parent-depth",
+      "issue": null,
+      "ref": "fix/query-wildcard-parent-depth",
+      "base": "2ef426e10b4fa8189a761025f17548073249c2fc",
+      "regressions": [
+        "test_query_max_start_depth_preserves_wildcard_parents_through_hidden_nodes",
+        "test_query_max_start_depth_uses_visible_pattern_roots"
+      ],
+      "notes": "Skipped wildcard roots start matching one visible level below their logical roots. Preserves traversal through hidden wrappers at the maximum start depth. Covers all three bisim reproductions, valid and malformed JSON, matches and captures, standalone patterns, nested trees, and depth limits from zero through four."
+    },
+    {
       "id": "api-documentation",
       "issue": null,
       "ref": "fix/api-documentation",
