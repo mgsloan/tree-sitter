@@ -170,6 +170,41 @@ fn test_parsing_with_custom_utf8_input() {
 }
 
 #[test]
+fn test_parsing_utf8_with_short_input_chunks() {
+    let mut parser = Parser::new();
+    parser.set_language(&get_language("javascript")).unwrap();
+
+    for source in [
+        "π;\n変;𐐀;\n\"€😀\";".as_bytes(),
+        b"\"\xf0\x9f\x98", // Truncated character at EOF.
+        b"\xc0\xaf;\n\xe2\x82;\n\xed\xa0\x80;\n\xf4\x90\x80\x80;", // Invalid UTF-8.
+    ] {
+        let expected = parser.parse(source, None).unwrap();
+        for size in 1..=4 {
+            let actual = parser
+                .parse_with_options(
+                    &mut |offset, point| {
+                        let prefix = &source[..offset];
+                        let row = prefix.iter().filter(|&&b| b == b'\n').count();
+                        let column = prefix
+                            .iter()
+                            .rposition(|&b| b == b'\n')
+                            .map_or(offset, |i| offset - i - 1);
+                        assert_eq!(point, Point::new(row, column));
+                        // Owned chunks exercise buffer replacement on each read.
+                        source[offset..source.len().min(offset + size)].to_vec()
+                    },
+                    None,
+                    None,
+                )
+                .unwrap();
+            assert_eq!(actual.root_node().to_sexp(), expected.root_node().to_sexp());
+            assert_eq!(actual.root_node().range(), expected.root_node().range());
+        }
+    }
+}
+
+#[test]
 fn test_parsing_with_custom_utf16le_input() {
     let mut parser = Parser::new();
     parser.set_language(&get_language("rust")).unwrap();
