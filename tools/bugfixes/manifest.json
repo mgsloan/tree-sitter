@@ -146,6 +146,17 @@
       "notes": "Confirmed containing-range bug from the report originally numbered 8, now section 7 of potential-upstream-bugs.md. Restores visible depth and visibility after ascending from a skipped hidden subtree, so ancestor exits finish deferred matches. Covers byte and point ranges, adjacent-range controls, multiline input, ordinary leaf queries, and successful optional-child matches."
     },
     {
+      "id": "previous-sibling-descendant-index",
+      "issue": null,
+      "ref": "fix/previous-sibling-descendant-index",
+      "base": "5091247754e69084613e48613fe2215c7df8ec68",
+      "regressions": [
+        "test_tree_cursor_previous_sibling_descendant_index",
+        "test_tree_cursor_previous_sibling_descendant_indices_in_subtrees"
+      ],
+      "notes": "Confirmed cursor bug from section 7 of potential-upstream-bugs.md. Preserves entry descendant indices and subtracts the preceding subtree's visible size when traversing backward. Covers subsequent forward traversal and seeking descendant zero, nested and malformed JSON, hidden wrappers, aliases, extras, and every visible subtree origin. Includes the structural-index adjustment shared with previous-sibling-alias-after-extra."
+    },
+    {
       "id": "api-documentation",
       "issue": null,
       "ref": "fix/api-documentation",
