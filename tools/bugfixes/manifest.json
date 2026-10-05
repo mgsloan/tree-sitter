@@ -147,7 +147,7 @@
     },
     {
       "id": "previous-sibling-descendant-index",
-      "issue": null,
+      "issue": "https://github.com/tree-sitter/tree-sitter/issues/6005",
       "ref": "fix/previous-sibling-descendant-index",
       "base": "5091247754e69084613e48613fe2215c7df8ec68",
       "regressions": [

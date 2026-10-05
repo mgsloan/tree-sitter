@@ -97,7 +97,7 @@ is a performance change that overlaps the #5934 fix.
 | Unfiled | `fix/quoted-missing-token-formatting` | Preserves quoted missing and unexpected tokens and their closing delimiters in Rust pretty-printing |
 | Unfiled | `fix/nullable-root-hidden-structure` | Preserves empty nullable-root matches across hidden repetition nodes when byte or point ranges prune traversal |
 | Unfiled | `fix/containing-range-hidden-ascent` | Completes deferred matches after skipping a hidden subtree outside containing byte or point ranges |
-| Unfiled | `fix/previous-sibling-descendant-index` | Preserves descendant indices during backward sibling traversal, subsequent forward traversal, and seeking the cursor root |
+| [#6005](https://github.com/tree-sitter/tree-sitter/issues/6005) | `fix/previous-sibling-descendant-index` | Preserves descendant indices during backward sibling traversal, subsequent forward traversal, and seeking the cursor root |
 | Unfiled | `fix/short-utf8-input-chunks` | Assembles incomplete UTF-8 characters across short input chunks while preserving invalid-input handling and callback buffer lifetimes |
 | Unfiled | `fix/query-capture-cancellation` | Honors progress-callback stops with queued captures and preserves resumable execution |
 | Unfiled | `fix/error-child-guarantees` | Prevents orphan captures from unjustified ERROR-child guarantees while preserving concrete descendant guarantees |
