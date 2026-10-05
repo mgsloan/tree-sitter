@@ -51,7 +51,7 @@
   issue URL, source ref, classification, or upstream base changes. Preserve the
   upstream Tree-sitter introduction below the fork-specific sections.
 - List every enabled manifest entry exactly once in the three fix sections;
-  omit disabled entries. Include the source branch, a short behavioral
+  omit disabled entries. Include a GitHub link to the source branch, a short behavioral
   description, and an issue link for reported issues. Mark documentation-only
   patches as such.
 - Keep existing clean fixes in their current section. New agent-authored fixes
