@@ -6,6 +6,7 @@
 
 #include <stdarg.h>
 #include <stdio.h>
+#include <string.h>
 
 #define LOG(message, character)              \
   if (self->logger.log) {                    \
@@ -128,13 +129,39 @@ static void ts_lexer__get_lookahead(Lexer *self) {
 
   self->lookahead_size = decode(chunk, size, &self->data.lookahead);
 
-  // If this chunk ended in the middle of a multi-byte character,
-  // try again with a fresh chunk.
+  // Join incomplete UTF-8 characters across arbitrarily short input chunks.
   if (self->data.lookahead == TS_DECODE_ERROR && size < 4) {
-    ts_lexer__get_chunk(self);
-    chunk = (const uint8_t *)self->chunk;
-    size = self->chunk_size;
-    self->lookahead_size = decode(chunk, size, &self->data.lookahead);
+    if (self->input.encoding == TSInputEncodingUTF8 && U8_IS_LEAD(chunk[0])) {
+      uint32_t character_size = 1 + U8_COUNT_TRAIL_BYTES(chunk[0]);
+      memmove(self->lookahead_buffer, chunk, size);
+      // A decode error that consumed the entire prefix may mean truncation.
+      while (self->data.lookahead == TS_DECODE_ERROR &&
+             self->lookahead_size == size && size < character_size) {
+        TSPoint point = self->current_position.extent;
+        point.column += size;
+        uint32_t bytes_read = 0;
+        const char *next = self->input.read(
+          self->input.payload, self->current_position.bytes + size, point, &bytes_read
+        );
+        if (!bytes_read) break;
+        if (bytes_read > character_size - size) bytes_read = character_size - size;
+        memcpy(self->lookahead_buffer + size, next, bytes_read);
+        size += bytes_read;
+        self->lookahead_size = decode(
+          (const uint8_t *)self->lookahead_buffer, size, &self->data.lookahead
+        );
+      }
+      // The callback may have replaced its buffer, including on speculative EOF.
+      self->chunk = self->lookahead_buffer;
+      self->chunk_start = self->current_position.bytes;
+      self->chunk_size = size;
+    } else {
+      // Other encodings retain the retry at the character's starting offset.
+      ts_lexer__get_chunk(self);
+      self->lookahead_size = decode(
+        (const uint8_t *)self->chunk, self->chunk_size, &self->data.lookahead
+      );
+    }
   }
 
   if (self->data.lookahead == TS_DECODE_ERROR) {
