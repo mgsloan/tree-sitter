@@ -231,6 +231,18 @@
       "notes": "Skipped wildcard roots start matching one visible level below their logical roots. Preserves traversal through hidden wrappers at the maximum start depth. Covers all three bisim reproductions, valid and malformed JSON, matches and captures, standalone patterns, nested trees, and depth limits from zero through four. Preserves skipped-root traversal metadata in deep clones, including after disabling the original query."
     },
     {
+      "id": "query-captured-wildcard-order",
+      "issue": null,
+      "ref": "fix/query-captured-wildcard-order",
+      "base": "6070dbfefd326bd735e5683eb128cc1b57dad0c0",
+      "regressions": [
+        "test_query_captured_wildcard_parents_preserve_capture_order",
+        "test_query_is_pattern_rooted",
+        "test_query_is_pattern_non_local"
+      ],
+      "notes": "Confirmed on unmodified v0.27.0 using the C reproduction from section 4 of potential-bugs.md: capture positions decrease from 32 to 31. Keeps captured wildcard roots in parent-first matching so pending parent captures participate in source ordering. Covers both pattern orders, alternatives, multiple parent captures, optional children, and an uncaptured-root control; checks the capture multiset against complete matches. Affected captured roots are now classified as rooted and local; uncaptured roots retain child-start optimization and its classification. This may increase matching and capture-buffering work for captured wildcard parents."
+    },
+    {
       "id": "descendant-range-hidden-end",
       "issue": null,
       "ref": "fix/descendant-range-hidden-end",
