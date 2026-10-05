@@ -1688,10 +1688,10 @@ static bool ts_query__analyze_patterns(TSQuery *self, unsigned *error_offset) {
       if (next_step->capture_ids[0] != NONE) {
         step->contains_captures = true;
       }
-      if (!is_wildcard) {
-        next_step->root_pattern_guaranteed = true;
-        next_step->parent_pattern_guaranteed = true;
-      }
+      // Wildcard parents cannot be structurally analyzed, so their descendants
+      // must not inherit guarantees from a concrete ancestor.
+      next_step->root_pattern_guaranteed = !is_wildcard;
+      next_step->parent_pattern_guaranteed = !is_wildcard;
       has_children = true;
     }
 
