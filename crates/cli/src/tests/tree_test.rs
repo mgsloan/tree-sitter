@@ -1,4 +1,4 @@
-use tree_sitter::{InputEdit, Parser, Point, Range, Tree};
+use tree_sitter::{InputEdit, Node, Parser, Point, Range, Tree};
 
 use super::helpers::fixtures::get_language;
 use crate::{
@@ -529,6 +529,106 @@ fn test_tree_cursor_previous_sibling_with_many_comments() {
     for index in (0..children.len()).rev() {
         assert_eq!(cursor.node(), children[index]);
         assert_eq!(cursor.goto_previous_sibling(), index > 0, "child {index}");
+    }
+}
+
+#[test]
+fn test_tree_cursor_previous_sibling_descendant_index() {
+    let mut parser = Parser::new();
+    parser.set_language(&get_language("json")).unwrap();
+    let tree = parser.parse("[1,2]", None).unwrap();
+    let mut cursor = tree.walk();
+
+    cursor.goto_descendant(5);
+    assert_eq!(cursor.node().kind(), "number");
+    assert_eq!(cursor.node().byte_range(), 3..4);
+    assert!(cursor.goto_previous_sibling());
+    assert_eq!(cursor.node().kind(), ",");
+    assert_eq!(cursor.node().byte_range(), 2..3);
+    assert_eq!(cursor.descendant_index(), 4);
+
+    let mut copy = cursor.clone();
+    assert!(copy.goto_next_sibling());
+    assert_eq!(copy.node().kind(), "number");
+    assert_eq!(copy.descendant_index(), 5);
+
+    cursor.goto_descendant(0);
+    assert_eq!(cursor.node(), tree.root_node());
+    assert_eq!(cursor.descendant_index(), 0);
+}
+
+#[test]
+fn test_tree_cursor_previous_sibling_descendant_indices_in_subtrees() {
+    fn collect_nodes<'a>(node: Node<'a>, nodes: &mut Vec<Node<'a>>) {
+        nodes.push(node);
+        for i in 0..node.child_count() {
+            collect_nodes(node.child(i).unwrap(), nodes);
+        }
+    }
+
+    let cases = [
+        (get_language("json"), "[1,2]"),
+        (get_language("json"), "[1, [2, 3], {\"x\": [4, 5]}]"),
+        (get_language("json"), "[1,\n/* comment */ [2, 3],\n4]"),
+        (get_language("json"), "[1, {\"x\": }, [2,]]"),
+        (
+            get_test_fixture_language("aliases_in_root"),
+            "# before\nfoo # between\nfoo # after\n",
+        ),
+        (
+            get_test_fixture_language("aliased_unit_reductions"),
+            "a b c d;",
+        ),
+    ];
+    let mut parser = Parser::new();
+    for (language, source) in cases {
+        parser.set_language(&language).unwrap();
+        let tree = parser.parse(source, None).unwrap();
+        let mut roots = Vec::new();
+        collect_nodes(tree.root_node(), &mut roots);
+        for root in roots {
+            // Use node children to obtain preorder indices independently of the cursor.
+            let mut nodes = Vec::new();
+            collect_nodes(root, &mut nodes);
+            for (index, node) in nodes.iter().enumerate() {
+                let mut cursor = root.walk();
+                cursor.goto_descendant(index);
+                assert_eq!(cursor.node(), *node);
+                while let Some(previous) = cursor.node().prev_sibling() {
+                    // A cursor cannot leave its original root.
+                    if cursor.node() == root {
+                        break;
+                    }
+                    let next = cursor.node();
+                    assert!(cursor.goto_previous_sibling());
+                    assert_eq!(cursor.node(), previous, "source: {source}");
+                    let expected_index = nodes.iter().position(|n| *n == previous).unwrap();
+                    assert_eq!(
+                        cursor.descendant_index(),
+                        expected_index,
+                        "source: {source}"
+                    );
+
+                    let mut copy = cursor.clone();
+                    assert!(copy.goto_next_sibling());
+                    assert_eq!(copy.node(), next);
+                    assert_eq!(
+                        copy.descendant_index(),
+                        nodes.iter().position(|n| *n == next).unwrap()
+                    );
+
+                    let mut copy = cursor.clone();
+                    copy.goto_descendant(0);
+                    assert_eq!(copy.node(), root);
+                    assert_eq!(copy.descendant_index(), 0);
+                }
+                let node = cursor.node();
+                let index = cursor.descendant_index();
+                assert!(!cursor.goto_previous_sibling());
+                assert_eq!(cursor.node(), node);
+                assert_eq!(cursor.descendant_index(), index);
+            }
+        }
     }
 }
 
