@@ -49,7 +49,7 @@ export interface QueryOptions {
 
   /**
    * The maximum number of in-progress matches for this query.
-   * The limit must be > 0 and <= 65536.
+   * Accepts integers from 0 to 4294967295, inclusive.
    */
   matchLimit?: number;
 
@@ -1012,7 +1012,14 @@ export class Query {
     return C._ts_query_is_pattern_rooted(this[0], patternIndex) === 1;
   }
 
-  /** Check if a given pattern within a query has a single root node. */
+  /**
+   * Check if a given pattern within a query is non-local.
+   *
+   * A non-local pattern has multiple root nodes and can match within a
+   * repeating sequence of nodes, as specified by the grammar. Non-local
+   * patterns disable certain optimizations that would otherwise be possible
+   * when executing a query on a specific range of a syntax tree.
+   */
   isPatternNonLocal(patternIndex: number): boolean {
     return C._ts_query_is_pattern_non_local(this[0], patternIndex) === 1;
   }

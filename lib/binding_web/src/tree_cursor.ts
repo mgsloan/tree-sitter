@@ -300,8 +300,10 @@ export class TreeCursor {
   }
 
   /**
-   * Re-initialize this tree cursor to start at the original node that the
-   * cursor was constructed with.
+   * Re-initialize this tree cursor to start at the given node.
+   *
+   * The given node becomes the root of the cursor, and the cursor cannot walk
+   * outside this node.
    */
   reset(node: Node): void {
     marshalNode(node);
