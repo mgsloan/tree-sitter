@@ -577,8 +577,14 @@ TSNode ts_node_parent(TSNode self) {
 }
 
 TSNode ts_node_child_with_descendant(TSNode self, TSNode descendant) {
+  if (self.tree != descendant.tree || self.id == descendant.id) {
+    return ts_node__null();
+  }
   uint32_t start_byte = ts_node_start_byte(descendant);
   uint32_t end_byte = ts_node_end_byte(descendant);
+  if (start_byte < ts_node_start_byte(self) || end_byte > ts_node_end_byte(self)) {
+    return ts_node__null();
+  }
   bool is_empty = start_byte == end_byte;
 
   do {
@@ -605,6 +611,15 @@ TSNode ts_node_child_with_descendant(TSNode self, TSNode descendant) {
       }
     } while ((is_empty ? iter.position.bytes <= end_byte : iter.position.bytes < end_byte) || ts_node_child_count(self) == 0);
   } while (!ts_node__is_relevant(self, true));
+
+  // Equal ranges do not establish ancestry: `descendant` can be an ancestor
+  // of this child. Follow the equal-range chain to verify its identity.
+  if (
+    ts_node_start_byte(self) == start_byte && ts_node_end_byte(self) == end_byte &&
+    ts_node_is_null(ts_node_child_with_descendant(self, descendant))
+  ) {
+    return ts_node__null();
+  }
 
   return self;
 }
