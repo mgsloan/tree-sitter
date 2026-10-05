@@ -51,9 +51,10 @@
   issue URL, source ref, classification, or upstream base changes. Preserve the
   upstream Tree-sitter introduction below the fork-specific sections.
 - List every enabled manifest entry exactly once in the three fix sections;
-  omit disabled entries. Include a GitHub link to the source branch, a short behavioral
-  description, and an issue link for reported issues. Mark documentation-only
-  patches as such.
+  omit disabled entries. Link each source branch to its GitHub diff using
+  `https://github.com/mgsloan/tree-sitter/compare/<base>...<ref>?expand=1`, with
+  `base` and `ref` from its manifest entry. Include a short behavioral description
+  and an issue link for reported issues. Mark documentation-only patches as such.
 - Keep existing clean fixes in their current section. New agent-authored fixes
   belong in a vibecoded section unless the user identifies them as cleaned up.
   Passing tests alone does not change this classification. Use the manifest's
