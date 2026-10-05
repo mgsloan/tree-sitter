@@ -348,6 +348,7 @@ struct TSQueryCursor {
   bool on_visible_node;
   bool ascending;
   bool halted;
+  bool did_stop;
   bool did_exceed_match_limit;
   bool has_empty_root;
 };
@@ -3522,6 +3523,7 @@ void ts_query_cursor_exec(
   self->depth = 0;
   self->ascending = false;
   self->halted = false;
+  self->did_stop = false;
   self->query = query;
   self->did_exceed_match_limit = false;
   self->operation_count = 0;
@@ -4053,6 +4055,7 @@ static inline bool ts_query_cursor__advance(
   bool stop_on_definite_step
 ) {
   bool did_match = false;
+  self->did_stop = false;
   for (;;) {
     if (self->halted) {
       while (self->states.size > 0) {
@@ -4071,17 +4074,16 @@ static inline bool ts_query_cursor__advance(
     if (self->query_options && self->query_options->progress_callback) {
       self->query_state.current_byte_offset = ts_node_start_byte(ts_tree_cursor_current_node(&self->cursor));
     }
-    if (
-      did_match ||
-      self->halted ||
-      (
-        self->operation_count == 0 &&
-        (
-          (self->query_options && self->query_options->progress_callback && self->query_options->progress_callback(&self->query_state))
-        )
-      )
-    ) {
+    if (did_match || self->halted) {
       return did_match;
+    }
+    if (
+      self->operation_count == 0 &&
+      self->query_options && self->query_options->progress_callback &&
+      self->query_options->progress_callback(&self->query_state)
+    ) {
+      self->did_stop = true;
+      return false;
     }
 
     // Exit the current node.
@@ -4889,10 +4891,12 @@ bool ts_query_cursor_next_capture(
 
     // If there are no finished matches that are ready to be returned, then
     // continue finding more matches.
-    if (
-      !ts_query_cursor__advance(self, true) &&
-      self->finished_states.size == 0
-    ) return false;
+    bool did_advance = ts_query_cursor__advance(self, true);
+    // Cancellation must return even when unfinished matches block queued captures.
+    // Keep both queues intact so the next call can resume this execution.
+    if (self->did_stop || (!did_advance && self->finished_states.size == 0)) {
+      return false;
+    }
   }
 }
 
