@@ -5856,6 +5856,64 @@ fn test_query_max_start_depth_preserves_wildcard_parents_through_hidden_nodes() 
 }
 
 #[test]
+fn test_query_max_start_depth_preserves_cloned_wildcard_parents() {
+    let language = get_language("json");
+    let mut parser = Parser::new();
+    parser.set_language(&language).unwrap();
+
+    for (source, pattern, depth) in [
+        ("false", "(_ [(array) (_)] @child) @root", 0),
+        (r#"{"":true}"#, "(_ (string) @child) @root", 2),
+        (r#"{"":[}"#, "(_ (array) @child) @root", 2),
+        ("}", "(_ (ERROR) @child) @root", 0),
+    ] {
+        let tree = parser.parse(source, None).unwrap();
+        let query = Query::new(&language, pattern).unwrap();
+        let mut matches_cursor = QueryCursor::new();
+        let mut captures_cursor = QueryCursor::new();
+        let mut cursor = QueryCursor::new();
+        matches_cursor.set_max_start_depth(Some(depth));
+        captures_cursor.set_max_start_depth(Some(depth));
+        cursor.set_max_start_depth(Some(depth));
+        let expected_matches = collect_matches(
+            matches_cursor.matches(&query, tree.root_node(), source.as_bytes()),
+            &query,
+            source,
+        );
+        let expected_captures = collect_captures(
+            captures_cursor.captures(&query, tree.root_node(), source.as_bytes()),
+            &query,
+            source,
+        );
+        assert!(!expected_matches.is_empty(), "{source}: {pattern}");
+
+        let mut original = query.deep_clone();
+        let copy = original.deep_clone();
+        original.disable_pattern(0);
+        for query in [&copy, &copy.deep_clone()] {
+            assert_eq!(
+                collect_matches(
+                    cursor.matches(query, tree.root_node(), source.as_bytes()),
+                    query,
+                    source,
+                ),
+                expected_matches,
+                "{source}: {pattern}, depth={depth}",
+            );
+            assert_eq!(
+                collect_captures(
+                    cursor.captures(query, tree.root_node(), source.as_bytes()),
+                    query,
+                    source,
+                ),
+                expected_captures,
+                "{source}: {pattern}, depth={depth}",
+            );
+        }
+    }
+}
+
+#[test]
 fn test_query_max_start_depth_uses_visible_pattern_roots() {
     let language = get_language("json");
     let mut parser = Parser::new();
