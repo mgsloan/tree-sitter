@@ -3240,6 +3240,7 @@ TSQuery *ts_query_copy(const TSQuery *self) {
     .predicate_values = symbol_table_new(),
     .language = ts_language_copy(self->language),
     .wildcard_root_pattern_count = self->wildcard_root_pattern_count,
+    .has_skipped_root = self->has_skipped_root,
   };
 
   array_assign(&copy->steps, &self->steps);
