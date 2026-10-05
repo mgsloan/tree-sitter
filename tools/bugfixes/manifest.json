@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "upstream": "origin/master",
+  "upstream": "refs/tags/v0.27.0",
   "target": "mgsloan-bugfixes",
   "fetch_remotes": ["origin", "mgsloan"],
   "maintenance": {
