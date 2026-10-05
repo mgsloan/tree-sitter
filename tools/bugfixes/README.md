@@ -13,8 +13,8 @@ python3 tools/bugfixes/update.py
 ```
 
 The updater fetches `origin` and `mgsloan`, snapshots all selected source refs,
-rebases temporary `bugfixes/rebased/*` branches onto `origin/master`, and merges
-them into `bugfixes/integration-candidate` with one merge per fix. It runs its
+rebases temporary `bugfixes/rebased/*` branches onto the pinned Tree-sitter tag
+`v0.27.0`, and merges them into `bugfixes/integration-candidate` with one merge per fix. It runs its
 own updater tests and the native Tree-sitter CLI library suite before updating
 `mgsloan-bugfixes`. It also keeps the previous tip at `refs/bugfixes/previous`
 and records the source, upstream, and result commits in
