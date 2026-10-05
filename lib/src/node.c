@@ -344,6 +344,49 @@ static inline TSNode ts_node__first_child_for_byte(
     : ts_node__child(self, child_index, include_anonymous);
 }
 
+// Hidden children ending at this node's end may contain empty visible children.
+// Track the public child index so exhausted hidden branches retain later siblings.
+static TSNode ts_node__first_empty_child_at_end(TSNode self, bool use_points) {
+  TSNode node = self;
+  uint32_t child_index = 0;
+  uint32_t end_byte = ts_node_end_byte(self);
+  TSPoint end_point = ts_node_end_point(self);
+  bool did_descend = true;
+
+  while (did_descend) {
+    did_descend = false;
+    TSNode child;
+    NodeChildIterator iterator = ts_node_iterate_children(&node);
+    while (ts_node_child_iterator_next(&iterator, &child)) {
+      bool relevant = ts_node__is_relevant(child, true);
+      uint32_t count = relevant ? 1 : ts_node__relevant_child_count(child, true);
+      bool at_end = use_points
+        ? point_eq(iterator.position.extent, end_point)
+        : iterator.position.bytes == end_byte;
+      if (at_end) {
+        if (relevant) {
+          bool is_empty = use_points
+            ? point_eq(ts_node_start_point(child), end_point)
+            : ts_node_start_byte(child) == end_byte;
+          if (is_empty) return child;
+        } else if (count > 0) {
+          node = child;
+          did_descend = true;
+          break;
+        }
+      }
+      child_index += count;
+    }
+  }
+
+  TSNode child = ts_node__child(self, child_index, true);
+  if (ts_node_is_null(child)) return child;
+  bool is_empty = use_points
+    ? point_eq(ts_node_start_point(child), end_point)
+    : ts_node_start_byte(child) == end_byte;
+  return is_empty ? child : ts_node__null();
+}
+
 static inline TSNode ts_node__descendant_for_byte_range(
   TSNode self,
   uint32_t range_start,
@@ -384,8 +427,10 @@ static inline TSNode ts_node__descendant_for_byte_range(
           // sibling may have visible matches for the query.
           if (!ts_node__is_relevant(child, true) && ts_node_child_count(child) == 0) continue;
         } else {
-          // Empty query does not include the end of a non-empty node.
-          continue;
+          // Nonempty hidden nodes can contain empty visible descendants.
+          if (ts_node__is_relevant(child, true)) continue;
+          child = ts_node__first_empty_child_at_end(child, false);
+          if (ts_node_is_null(child)) continue;
         }
       }
 
@@ -440,8 +485,10 @@ static inline TSNode ts_node__descendant_for_point_range(
           // sibling may have visible matches for the query.
           if (!ts_node__is_relevant(child, true) && ts_node_child_count(child) == 0) continue;
         } else {
-          // Empty query does not include the end of a non-empty node.
-          continue;
+          // Nonempty hidden nodes can contain empty visible descendants.
+          if (ts_node__is_relevant(child, true)) continue;
+          child = ts_node__first_empty_child_at_end(child, true);
+          if (ts_node_is_null(child)) continue;
         }
       }
 
