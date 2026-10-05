@@ -19,6 +19,7 @@ describe how to rebuild it. Maintain this README on `mgsloan-bugfix-maintenance`
 
 - [#5948](https://github.com/tree-sitter/tree-sitter/issues/5948): Keep inherited field lookup from crossing visible aliases (`fix/visible-alias-field-lookup`).
 - [#5949](https://github.com/tree-sitter/tree-sitter/issues/5949): Verify ancestry when looking up a child containing a descendant with the same range (`fix/child-with-descendant-self`).
+- [#6005](https://github.com/tree-sitter/tree-sitter/issues/6005): Preserve descendant indices during backward sibling traversal (`fix/previous-sibling-descendant-index`).
 
 ## Vibecoded fixes for unreported issues
 
@@ -29,7 +30,6 @@ describe how to rebuild it. Maintain this README on `mgsloan-bugfix-maintenance`
 - Preserve quoted missing and unexpected tokens during Rust S-expression formatting (`fix/quoted-missing-token-formatting`).
 - Preserve nullable-root query matches through hidden repetitions when traversal is restricted by ranges (`fix/nullable-root-hidden-structure`).
 - Complete deferred query matches after ascending from a skipped hidden subtree (`fix/containing-range-hidden-ascent`).
-- Preserve descendant indices during backward sibling traversal (`fix/previous-sibling-descendant-index`).
 - Decode UTF-8 characters split across short input callback chunks (`fix/short-utf8-input-chunks`).
 - Honor query progress-callback cancellation with queued captures and preserve resumable execution (`fix/query-capture-cancellation`).
 - Prevent orphan captures from unjustified ERROR-child guarantees (`fix/error-child-guarantees`).
