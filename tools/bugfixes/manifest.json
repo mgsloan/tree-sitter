@@ -1,0 +1,272 @@
+{
+  "version": 1,
+  "upstream": "refs/tags/v0.27.0",
+  "target": "mgsloan-bugfixes",
+  "fetch_remotes": ["origin", "mgsloan"],
+  "maintenance": {
+    "id": "maintenance",
+    "ref": "mgsloan-bugfix-maintenance",
+    "base": "20cf25c10f13ed9b8c499dd966b4e7a57bedbf81",
+    "allowed_paths": ["tools/bugfixes/", "README.md", "AGENTS.md", "CLAUDE.md", "potential-bugs.md"]
+  },
+  "checks": [
+    ["python3", "tools/bugfixes/test_update.py"],
+    ["cargo", "test", "-p", "tree-sitter-cli", "--lib", "--no-default-features"]
+  ],
+  "fixes": [
+    {
+      "id": "disable-wildcard-pattern",
+      "issue": "https://github.com/tree-sitter/tree-sitter/issues/5932",
+      "ref": "fix/disable-wildcard-pattern",
+      "base": "de98c6c970f4c5d3a725ee48199c478090d614af",
+      "regressions": ["test_query_disable_wildcard_pattern"],
+      "notes": "Also present in tree-squatter main as afa791227."
+    },
+    {
+      "id": "hidden-zero-width-descendant",
+      "issue": "https://github.com/tree-sitter/tree-sitter/issues/5934",
+      "ref": "fix/hidden-zero-width-descendant",
+      "base": "de98c6c970f4c5d3a725ee48199c478090d614af",
+      "regressions": [
+        "test_node_descendant_for_range_after_hidden_zero_width_token",
+        "test_node_descendant_for_range_after_hidden_zero_width_subtree"
+      ],
+      "notes": "Issue closed without landing the fix. Included downstream despite reported performance tradeoffs. Also merged into tree-squatter main."
+    },
+    {
+      "id": "previous-sibling-index-underflow",
+      "issue": "https://github.com/tree-sitter/tree-sitter/issues/5950",
+      "ref": "fix-previous-sibling-index-underflow",
+      "base": "1b8407d1e718f2a26e2886c03cc55622d8d1d7bd",
+      "regressions": ["test_tree_cursor_previous_sibling_with_many_comments"],
+      "notes": "Also present in tree-squatter main as 94e3eed35."
+    },
+    {
+      "id": "first-named-child-for-byte",
+      "issue": "https://github.com/tree-sitter/tree-sitter/issues/5987",
+      "ref": "fix/first-named-child-for-byte-upstream",
+      "base": "20cf25c10f13ed9b8c499dd966b4e7a57bedbf81",
+      "regressions": ["test_first_named_child_for_offset_after_anonymous_children"],
+      "notes": "Extracted only 5f4109768 from the original fix/first-named-child-for-byte branch, excluding tree-squatter history."
+    },
+    {
+      "id": "visible-alias-field-lookup",
+      "issue": "https://github.com/tree-sitter/tree-sitter/issues/5948",
+      "ref": "fix/visible-alias-field-lookup",
+      "base": "20cf25c10f13ed9b8c499dd966b4e7a57bedbf81",
+      "regressions": [
+        "test_node_child_by_field_name_does_not_cross_visible_alias",
+        "test_node_child_by_field_name_skips_visible_alias_for_later_field"
+      ],
+      "notes": "Preserves the published reproduction branch; checks both field-name and field-id lookup."
+    },
+    {
+      "id": "child-with-descendant-self",
+      "issue": "https://github.com/tree-sitter/tree-sitter/issues/5949",
+      "ref": "fix/child-with-descendant-self",
+      "base": "20cf25c10f13ed9b8c499dd966b4e7a57bedbf81",
+      "regressions": [
+        "test_node_child_with_descendant_same_range",
+        "test_node_child_with_descendant_checks_ancestry"
+      ],
+      "notes": "Preserves the published reproduction branch; rejects self, ancestors, siblings, and other trees while retaining valid descendants."
+    },
+    {
+      "id": "previous-sibling-alias-after-extra",
+      "issue": null,
+      "ref": "fix/previous-sibling-alias-after-extra",
+      "base": "20cf25c10f13ed9b8c499dd966b4e7a57bedbf81",
+      "regressions": [
+        "test_tree_cursor_previous_sibling_with_alias_after_extra",
+        "test_tree_cursor_previous_sibling_preserves_aliases_when_switching_direction"
+      ],
+      "notes": "Unfiled confirmed bug documented in potential-bugs.md; original reproduction is 470a8bdcd."
+    },
+    {
+      "id": "non-rooted-query-range",
+      "issue": null,
+      "ref": "fix/non-rooted-query-range",
+      "base": "20cf25c10f13ed9b8c499dd966b4e7a57bedbf81",
+      "regressions": [
+        "test_query_matches_with_non_rooted_patterns_outside_cursor_range",
+        "test_query_non_rooted_patterns_preserve_matches_spanning_cursor_range"
+      ],
+      "notes": "Unfiled cursor-root range bug from potential-bugs.md. Rejects non-rooted state starts when the cursor root is outside the byte or point range; preserves sibling matches spanning a range."
+    },
+    {
+      "id": "non-rooted-wildcard-range-pruning",
+      "issue": null,
+      "ref": "fix/non-rooted-wildcard-range-pruning",
+      "base": "20cf25c10f13ed9b8c499dd966b4e7a57bedbf81",
+      "regressions": [
+        "test_query_containing_ranges_preserve_non_rooted_wildcard_matches"
+      ],
+      "notes": "Unfiled hidden-repetition pruning bug from potential-bugs.md. Includes wildcard starts in non-local pattern analysis while excluding completed alternatives. Covers intersecting and containing byte/point ranges, concrete controls, and the original nested-array reproduction."
+    },
+    {
+      "id": "wildcard-child-guarantees",
+      "issue": null,
+      "ref": "fix/wildcard-child-guarantees",
+      "base": "20cf25c10f13ed9b8c499dd966b4e7a57bedbf81",
+      "regressions": [
+        "test_query_wildcard_child_guarantees_do_not_publish_unmatched_captures",
+        "test_query_wildcard_child_guarantees_preserve_concrete_descendants"
+      ],
+      "notes": "Confirmed query-analysis bug from section 5 of potential-bugs.md. Clears inherited guarantee flags beneath wildcard parents so capture iteration cannot emit captures for impossible matches. Covers anchors, fields, nested wildcards, concrete controls, positive matches, and valid guarantees within concrete descendants."
+    },
+    {
+      "id": "quoted-missing-token-formatting",
+      "issue": null,
+      "ref": "fix/quoted-missing-token-formatting",
+      "base": "9b9de365078b0c82f8f8d7af175b1a4207c9b4d5",
+      "regressions": [
+        "test_format_sexp_with_quoted_missing_and_unexpected_tokens",
+        "test_node_display_with_quoted_missing_token"
+      ],
+      "notes": "Confirmed Rust pretty-printing bug from section 6 of potential-bugs.md. Preserves closing parentheses after quoted missing tokens and reads whitespace and parentheses only outside quoted tokens. Covers MISSING and UNEXPECTED tokens, raw quote characters and backslashes, fields, Node Display, and indentation."
+    },
+    {
+      "id": "nullable-root-hidden-structure",
+      "issue": null,
+      "ref": "fix/nullable-root-hidden-structure",
+      "base": "5091247754e69084613e48613fe2215c7df8ec68",
+      "regressions": [
+        "test_query_nullable_roots_with_ranges_through_hidden_repetitions"
+      ],
+      "notes": "Nullable-root report removed from potential-bugs.md. Preserves existing visible-tree empty-root enumeration when ranges would otherwise prune hidden repetitions. Covers optional and zero-or-more roots, byte and point ranges, identical visible trees from fixed and repeated grammars, and nonnullable captured controls."
+    },
+    {
+      "id": "containing-range-hidden-ascent",
+      "issue": null,
+      "ref": "fix/containing-range-hidden-ascent",
+      "base": "5091247754e69084613e48613fe2215c7df8ec68",
+      "regressions": [
+        "test_query_containing_ranges_preserve_deferred_matches_after_hidden_ascent"
+      ],
+      "notes": "Confirmed containing-range bug from the report originally numbered 8, now section 7 of potential-bugs.md. Restores visible depth and visibility after ascending from a skipped hidden subtree, so ancestor exits finish deferred matches. Covers byte and point ranges, adjacent-range controls, multiline input, ordinary leaf queries, and successful optional-child matches."
+    },
+    {
+      "id": "previous-sibling-descendant-index",
+      "issue": "https://github.com/tree-sitter/tree-sitter/issues/6005",
+      "ref": "fix/previous-sibling-descendant-index",
+      "base": "5091247754e69084613e48613fe2215c7df8ec68",
+      "regressions": [
+        "test_tree_cursor_previous_sibling_descendant_index",
+        "test_tree_cursor_previous_sibling_descendant_indices_in_subtrees"
+      ],
+      "notes": "Confirmed cursor bug from section 7 of potential-bugs.md. Preserves entry descendant indices and subtracts the preceding subtree's visible size when traversing backward. Covers subsequent forward traversal and seeking descendant zero, nested and malformed JSON, hidden wrappers, aliases, extras, and every visible subtree origin. Includes the structural-index adjustment shared with previous-sibling-alias-after-extra."
+    },
+    {
+      "id": "short-utf8-input-chunks",
+      "issue": null,
+      "ref": "fix/short-utf8-input-chunks",
+      "base": "43e82a2767cf75df4f668752cd884368e21a5ccd",
+      "regressions": [
+        "test_parsing_utf8_with_short_input_chunks"
+      ],
+      "notes": "Confirmed lexer bug from section 8 of potential-bugs.md. Assembles incomplete UTF-8 characters in a four-byte lexer buffer across successive callback offsets. Covers two-, three-, and four-byte characters, chunks of one through four bytes, callback points, owned buffer replacement, invalid UTF-8, and truncated EOF. UTF-16 and custom decoder behavior are unchanged."
+    },
+    {
+      "id": "query-capture-cancellation",
+      "issue": null,
+      "ref": "fix/query-capture-cancellation",
+      "base": "2ef426e10b4fa8189a761025f17548073249c2fc",
+      "regressions": [
+        "test_query_capture_cancellation_preserves_pending_matches"
+      ],
+      "notes": "Confirmed cancellation bug from section 9 of potential-bugs.md. Returns immediately after a progress-callback stop even when unfinished matches block queued captures, preserving resumable execution. Deterministic regression stops at three callback checkpoints and compares resumed match IDs, capture indices, and full capture snapshots with uninterrupted execution."
+    },
+    {
+      "id": "error-child-guarantees",
+      "issue": null,
+      "ref": "fix/error-child-guarantees",
+      "base": "2ef426e10b4fa8189a761025f17548073249c2fc",
+      "regressions": [
+        "test_query_error_children_do_not_publish_unmatched_captures"
+      ],
+      "notes": "Confirmed query-analysis bug from section 10 of potential-bugs.md. Initializes descendants of ERROR parents as fallible, sharing the conservative policy for wildcard parents. The JSON colon reproducer tests absent required children at root and nested scopes, matches and captures, guarantee flags, present and optional children, alternatives, childless ERROR controls, and valid guarantees within concrete descendants."
+    },
+    {
+      "id": "query-extra-parent-alias",
+      "issue": null,
+      "ref": "fix/query-extra-parent-alias",
+      "base": "2ef426e10b4fa8189a761025f17548073249c2fc",
+      "regressions": [
+        "test_query_extra_error_parents_do_not_inherit_aliases"
+      ],
+      "notes": "Extra parents must not inherit the next structural child's alias. The Python ERROR before an aliased block otherwise appears as a block to query execution, allowing wildcard-parent matches inside ERROR and adding empty optional-child matches."
+    },
+    {
+      "id": "first-child-for-byte-hidden-siblings",
+      "issue": null,
+      "ref": "fix/first-child-for-byte-hidden-siblings",
+      "base": "2ef426e10b4fa8189a761025f17548073249c2fc",
+      "regressions": [
+        "test_first_child_for_byte_preserves_nested_hidden_siblings",
+        "test_first_child_for_byte_with_nested_error_nodes"
+      ],
+      "notes": "Preserves later named siblings after nested hidden nodes exhaust byte-based child lookup. Tracks the public child index without allocating an iterator stack. Covers offsets after a named child inside nested hidden grammar rules and all byte offsets in malformed C trees; also fixes the two C# error-node bisim reproductions."
+    },
+    {
+      "id": "query-containing-range-missing-boundary",
+      "issue": null,
+      "ref": "fix/query-containing-range-missing-boundary",
+      "base": "2ef426e10b4fa8189a761025f17548073249c2fc",
+      "regressions": [
+        "test_query_containing_ranges_include_missing_nodes_at_end",
+        "test_query_containing_range_end_preserves_intersecting_range_boundary"
+      ],
+      "notes": "Containing ranges include zero-width nodes at either boundary. Retains touching ancestors so missing children remain reachable through hidden wrappers. Covers byte and point ranges, multiline C input, disabled captures, match and capture iteration, empty containing ranges, and intersecting-range boundary controls."
+    },
+    {
+      "id": "query-wildcard-parent-depth",
+      "issue": null,
+      "ref": "fix/query-wildcard-parent-depth",
+      "base": "2ef426e10b4fa8189a761025f17548073249c2fc",
+      "regressions": [
+        "test_query_max_start_depth_preserves_wildcard_parents_through_hidden_nodes",
+        "test_query_max_start_depth_uses_visible_pattern_roots",
+        "test_query_max_start_depth_preserves_cloned_wildcard_parents"
+      ],
+      "notes": "Skipped wildcard roots start matching one visible level below their logical roots. Preserves traversal through hidden wrappers at the maximum start depth. Covers all three bisim reproductions, valid and malformed JSON, matches and captures, standalone patterns, nested trees, and depth limits from zero through four. Preserves skipped-root traversal metadata in deep clones, including after disabling the original query."
+    },
+    {
+      "id": "query-captured-wildcard-order",
+      "issue": null,
+      "ref": "fix/query-captured-wildcard-order",
+      "base": "6070dbfefd326bd735e5683eb128cc1b57dad0c0",
+      "regressions": [
+        "test_query_captured_wildcard_parents_preserve_capture_order",
+        "test_query_is_pattern_rooted",
+        "test_query_is_pattern_non_local"
+      ],
+      "notes": "Confirmed on unmodified v0.27.0 using the C reproduction from section 4 of potential-bugs.md: capture positions decrease from 32 to 31. Keeps captured wildcard roots in parent-first matching so pending parent captures participate in source ordering. Covers both pattern orders, alternatives, multiple parent captures, optional children, and an uncaptured-root control; checks the capture multiset against complete matches. Affected captured roots are now classified as rooted and local; uncaptured roots retain child-start optimization and its classification. This may increase matching and capture-buffering work for captured wildcard parents."
+    },
+    {
+      "id": "descendant-range-hidden-end",
+      "issue": null,
+      "ref": "fix/descendant-range-hidden-end",
+      "base": "6070dbfefd326bd735e5683eb128cc1b57dad0c0",
+      "regressions": [
+        "test_node_descendant_for_empty_range_at_hidden_subtree_end"
+      ],
+      "notes": "Finds empty visible descendants at the end of nonempty hidden subtrees. Tracks public child indices to retain later siblings when a hidden branch is exhausted, without allocating a traversal stack. Covers missing JSON values inside hidden repetitions, byte and point ranges, named and unnamed lookup, multiline input, subtree origins, missing closing brackets, and complete-array controls."
+    },
+    {
+      "id": "api-documentation",
+      "issue": null,
+      "ref": "fix/api-documentation",
+      "base": "20cf25c10f13ed9b8c499dd966b4e7a57bedbf81",
+      "regressions": [],
+      "notes": "Documentation only: correct reset roots, point-based child lookup, non-local query patterns, predicate arguments, and the full match-limit range. Also fixes four broken rustdoc links and three private links, including raw query ownership and deletion guidance. The non-local description relates to the wildcard range-pruning fix. Generated C bindings updated; Rust docs pass with RUSTDOCFLAGS='-D warnings', and formatting checked. Squatter's incorrect match-limit compatibility claim is corrected separately in 81fd1c64e."
+    },
+    {
+      "id": "descendant-range-optimization",
+      "issue": "https://github.com/tree-sitter/tree-sitter/issues/5935",
+      "enabled": false,
+      "ref": "optimize/descendant-range-queries",
+      "base": "de98c6c970f4c5d3a725ee48199c478090d614af",
+      "notes": "Performance-only alternative touching the same traversal as #5934; excluded from the bugfix aggregate."
+    }
+  ]
+}
