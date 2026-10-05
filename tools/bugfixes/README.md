@@ -99,7 +99,7 @@ is a performance change that overlaps the #5934 fix.
 | Unfiled | `fix/query-extra-parent-alias` | Prevents extra ERROR parents from inheriting structural-child aliases during query execution |
 | Unfiled | `fix/first-child-for-byte-hidden-siblings` | Preserves later siblings after byte lookup exhausts nested hidden nodes |
 | Unfiled | `fix/query-containing-range-missing-boundary` | Includes missing nodes at containing-range boundaries while preserving intersecting-range boundaries |
-| Unfiled | `fix/query-wildcard-parent-depth` | Preserves wildcard-parent matches at the maximum start depth through hidden wrappers |
+| Unfiled | `fix/query-wildcard-parent-depth` | Preserves wildcard-parent matches at the maximum start depth through hidden wrappers and query cloning |
 | Unfiled | `fix/api-documentation` | Corrects cursor and query API documentation, including the full match-limit range; no implementation changes |
 
 The query capture-prefix and hidden-subtree reuse observations in the local
