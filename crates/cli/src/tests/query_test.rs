@@ -5995,6 +5995,204 @@ fn test_query_max_start_depth() {
 }
 
 #[test]
+fn test_query_max_start_depth_preserves_wildcard_parents_through_hidden_nodes() {
+    let language = get_language("json");
+    let mut parser = Parser::new();
+    parser.set_language(&language).unwrap();
+
+    let cases = [
+        (
+            [r#"{"":""}"#, r#"{"":"""#],
+            "(object (pair key: (string) @key) @pair) @root\n\
+             (_ [(object) (_)] @child) @root",
+            5,
+        ),
+        (
+            [r#"{"":[]}"#, r#"{"":[}"#],
+            "(_ (array) @child) @root\n\
+             (object (pair key: (string) @key) @pair) @root",
+            2,
+        ),
+        (
+            [r#"{"":true}"#, r#"{"":true"#],
+            "(pair key: (string) @key) @root\n\
+             (_ (string (string_content) @content)? @string . (_) @child) @root",
+            5,
+        ),
+    ];
+
+    for (sources, pattern, count) in cases {
+        let query = Query::new(&language, pattern).unwrap();
+        for source in sources {
+            let tree = parser.parse(source, None).unwrap();
+            let mut matches_cursor = QueryCursor::new();
+            let mut captures_cursor = QueryCursor::new();
+            let mut cursor = QueryCursor::new();
+            let expected_matches = collect_matches(
+                matches_cursor.matches(&query, tree.root_node(), source.as_bytes()),
+                &query,
+                source,
+            );
+            let expected_captures = collect_captures(
+                captures_cursor.captures(&query, tree.root_node(), source.as_bytes()),
+                &query,
+                source,
+            );
+            assert_eq!(expected_matches.len(), count, "{source}: {pattern}");
+
+            for depth in [Some(2), Some(3), None] {
+                cursor.set_max_start_depth(depth);
+                assert_eq!(
+                    collect_matches(
+                        cursor.matches(&query, tree.root_node(), source.as_bytes()),
+                        &query,
+                        source,
+                    ),
+                    expected_matches,
+                    "{source}: {pattern}, depth={depth:?}",
+                );
+                assert_eq!(
+                    collect_captures(
+                        cursor.captures(&query, tree.root_node(), source.as_bytes()),
+                        &query,
+                        source,
+                    ),
+                    expected_captures,
+                    "{source}: {pattern}, depth={depth:?}",
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn test_query_max_start_depth_preserves_cloned_wildcard_parents() {
+    let language = get_language("json");
+    let mut parser = Parser::new();
+    parser.set_language(&language).unwrap();
+
+    for (source, pattern, depth) in [
+        ("false", "(_ [(array) (_)] @child) @root", 0),
+        (r#"{"":true}"#, "(_ (string) @child) @root", 2),
+        (r#"{"":[}"#, "(_ (array) @child) @root", 2),
+        ("}", "(_ (ERROR) @child) @root", 0),
+    ] {
+        let tree = parser.parse(source, None).unwrap();
+        let query = Query::new(&language, pattern).unwrap();
+        let mut matches_cursor = QueryCursor::new();
+        let mut captures_cursor = QueryCursor::new();
+        let mut cursor = QueryCursor::new();
+        matches_cursor.set_max_start_depth(Some(depth));
+        captures_cursor.set_max_start_depth(Some(depth));
+        cursor.set_max_start_depth(Some(depth));
+        let expected_matches = collect_matches(
+            matches_cursor.matches(&query, tree.root_node(), source.as_bytes()),
+            &query,
+            source,
+        );
+        let expected_captures = collect_captures(
+            captures_cursor.captures(&query, tree.root_node(), source.as_bytes()),
+            &query,
+            source,
+        );
+        assert!(!expected_matches.is_empty(), "{source}: {pattern}");
+
+        let mut original = query.deep_clone();
+        let copy = original.deep_clone();
+        original.disable_pattern(0);
+        for query in [&copy, &copy.deep_clone()] {
+            assert_eq!(
+                collect_matches(
+                    cursor.matches(query, tree.root_node(), source.as_bytes()),
+                    query,
+                    source,
+                ),
+                expected_matches,
+                "{source}: {pattern}, depth={depth}",
+            );
+            assert_eq!(
+                collect_captures(
+                    cursor.captures(query, tree.root_node(), source.as_bytes()),
+                    query,
+                    source,
+                ),
+                expected_captures,
+                "{source}: {pattern}, depth={depth}",
+            );
+        }
+    }
+}
+
+#[test]
+fn test_query_max_start_depth_uses_visible_pattern_roots() {
+    let language = get_language("json");
+    let mut parser = Parser::new();
+    parser.set_language(&language).unwrap();
+
+    for source in [r#"{"":true}"#, r#"{"outer":{"":[],"nested":{"":""}}}"#] {
+        let tree = parser.parse(source, None).unwrap();
+        for pattern in [
+            "(_ [(object) (_)] @child) @root",
+            "(_ (array) @child) @root",
+            "(_ (string (string_content) @content)? @string . (_) @child) @root",
+            "(_ (pair) @child) @root",
+            "(pair key: (string) @key) @root",
+            "(object (pair key: (string) @key) @pair) @root",
+        ] {
+            let query = Query::new(&language, pattern).unwrap();
+            let root_capture = query.capture_index_for_name("root").unwrap();
+            let mut cursor = QueryCursor::new();
+            let mut expected = Vec::new();
+            let mut matches = cursor.matches(&query, tree.root_node(), source.as_bytes());
+            while let Some(result) = matches.next() {
+                let mut node = result
+                    .captures()
+                    .iter()
+                    .find(|capture| capture.index == root_capture)
+                    .unwrap()
+                    .node;
+                let mut depth = 0;
+                while let Some(parent) = node.parent() {
+                    depth += 1;
+                    node = parent;
+                }
+                let captures = result
+                    .captures()
+                    .iter()
+                    .map(|capture| (capture.index, capture.node.id()))
+                    .collect::<Vec<_>>();
+                expected.push((depth, (result.pattern_index, captures)));
+            }
+            drop(matches);
+
+            for depth in 0..=4 {
+                cursor.set_max_start_depth(Some(depth));
+                let mut matches = cursor.matches(&query, tree.root_node(), source.as_bytes());
+                let mut actual = Vec::new();
+                while let Some(result) = matches.next() {
+                    actual.push((
+                        result.pattern_index,
+                        result
+                            .captures()
+                            .iter()
+                            .map(|capture| (capture.index, capture.node.id()))
+                            .collect::<Vec<_>>(),
+                    ));
+                }
+                let mut expected = expected
+                    .iter()
+                    .filter(|(root_depth, _)| *root_depth <= depth)
+                    .map(|(_, result)| result.clone())
+                    .collect::<Vec<_>>();
+                actual.sort_unstable();
+                expected.sort_unstable();
+                assert_eq!(actual, expected, "{source}: {pattern}, depth={depth}");
+            }
+        }
+    }
+}
+
+#[test]
 fn test_query_error_does_not_oob() {
     let language = get_language("javascript");
 
