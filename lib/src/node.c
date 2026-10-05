@@ -313,41 +313,35 @@ static inline TSNode ts_node__first_child_for_byte(
   bool include_anonymous
 ) {
   TSNode node = self;
+  uint32_t child_index = 0;
   bool did_descend = true;
-
-  NodeChildIterator last_iterator;
-  bool has_last_iterator = false;
 
   while (did_descend) {
     did_descend = false;
 
     TSNode child;
     NodeChildIterator iterator = ts_node_iterate_children(&node);
-  loop:
     while (ts_node_child_iterator_next(&iterator, &child)) {
+      bool relevant = ts_node__is_relevant(child, include_anonymous);
+      uint32_t count = relevant ? 1 : ts_node__relevant_child_count(child, include_anonymous);
       if (ts_node_end_byte(child) > goal) {
-        if (ts_node__is_relevant(child, include_anonymous)) {
+        if (relevant) {
           return child;
-        } else if (ts_node_child_count(child) > 0) {
-          if (!ts_node_child_iterator_done(&iterator)) {
-            last_iterator = iterator;
-            has_last_iterator = true;
-          }
+        } else if (count > 0) {
           did_descend = true;
           node = child;
           break;
         }
       }
-    }
-
-    if (!did_descend && has_last_iterator) {
-      iterator = last_iterator;
-      has_last_iterator = false;
-      goto loop;
+      child_index += count;
     }
   }
 
-  return ts_node__null();
+  // A hidden subtree can end after the goal even when its relevant children do
+  // not. Resume by public child index to retain every ancestor's later siblings.
+  return node.id == self.id
+    ? ts_node__null()
+    : ts_node__child(self, child_index, include_anonymous);
 }
 
 static inline TSNode ts_node__descendant_for_byte_range(
