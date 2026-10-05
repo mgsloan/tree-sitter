@@ -6806,6 +6806,31 @@ fn test_query_with_anonymous_error_node() {
 }
 
 #[test]
+fn test_query_extra_error_parents_do_not_inherit_aliases() {
+    let language = get_language("python");
+    let source = "if True:=1";
+    let query = Query::new(&language, r#"(_ "=" @child) @parent"#).unwrap();
+
+    // The extra ERROR before the block shares its structural index.
+    assert_query_matches(&language, &query, source, &[]);
+    assert_query_matches(
+        &language,
+        &query,
+        "x=1",
+        &[(0, vec![("parent", "x=1"), ("child", "=")])],
+    );
+
+    for quantifier in ["?", "*"] {
+        let query = Query::new(
+            &language,
+            &format!("(_ (function_definition){quantifier} @child) @parent"),
+        )
+        .unwrap();
+        assert_query_matches(&language, &query, source, &vec![(0, Vec::new()); 8]);
+    }
+}
+
+#[test]
 fn test_query_allows_error_nodes_with_children() {
     allocations::record(|| {
         let language = get_language("cpp");
