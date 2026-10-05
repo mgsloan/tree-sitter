@@ -757,6 +757,63 @@ fn test_node_descendant_for_range() {
 }
 
 #[test]
+fn test_node_descendant_for_empty_range_at_hidden_subtree_end() {
+    let language = get_language("json");
+    let mut parser = Parser::new();
+    parser.set_language(&language).unwrap();
+
+    for count in [4, 8, 32] {
+        for separator in [",", ",\n"] {
+            let prefix = format!("[{}", format!("0{separator}").repeat(count));
+            for suffix in ["", "0", "0]"] {
+                let source = format!("{prefix}{suffix}");
+                let tree = parser.parse(&source, None).unwrap();
+                let root = tree.root_node();
+                let array = root.named_child(0).unwrap();
+                assert_eq!(array.kind(), "array");
+                let mut cursor = array.walk();
+                let missing = array
+                    .children(&mut cursor)
+                    .filter(|node| node.is_missing())
+                    .collect::<Vec<_>>();
+                let expected = if suffix.is_empty() {
+                    assert_eq!(missing.len(), 2, "{source:?}");
+                    assert!(missing[0].is_named());
+                    missing[0]
+                } else if suffix == "0" {
+                    assert_eq!(missing.len(), 1, "{source:?}");
+                    assert_eq!(missing[0].kind(), "]");
+                    missing[0]
+                } else {
+                    assert!(missing.is_empty());
+                    array
+                };
+                let expected_named = if expected.is_named() { expected } else { array };
+                let end = array.end_byte();
+                let point = array.end_position();
+                for node in [root, array] {
+                    let expected = if node == root { root } else { expected };
+                    let expected_named = if node == root { root } else { expected_named };
+                    assert_eq!(node.descendant_for_byte_range(end, end), Some(expected));
+                    assert_eq!(
+                        node.named_descendant_for_byte_range(end, end),
+                        Some(expected_named)
+                    );
+                    assert_eq!(
+                        node.descendant_for_point_range(point, point),
+                        Some(expected)
+                    );
+                    assert_eq!(
+                        node.named_descendant_for_point_range(point, point),
+                        Some(expected_named)
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn test_node_edit() {
     let mut code = JSON_EXAMPLE.as_bytes().to_vec();
     let mut tree = parse_json_example();
