@@ -2825,6 +2825,126 @@ fn test_query_cursor_next_capture_with_point_range() {
 }
 
 #[test]
+fn test_query_matches_with_non_rooted_patterns_outside_cursor_range() {
+    allocations::record(|| {
+        let language = get_language("json");
+        let source = "[1, 2]";
+        let mut parser = Parser::new();
+        parser.set_language(&language).unwrap();
+        let tree = parser.parse(source, None).unwrap();
+        let root = tree.root_node();
+        assert!(!root.has_error());
+
+        for pattern in [
+            "(_) @node",
+            "(_)+ @node",
+            "(_)+",
+            "(_)* @node",
+            "(_)? @node",
+            "(_ (ERROR)? @child) @parent",
+            "((_) @first (_)? @second)",
+            "(document)+ @node",
+            "(document)+",
+            "(document)* @node",
+            "(document)? @node",
+        ] {
+            let query = Query::new(&language, pattern).unwrap();
+            // Check both the pattern-map wildcard path and concrete symbols,
+            // with the range beyond the document or touching its end.
+            for range in [20..30, source.len()..source.len() + 1] {
+                let mut cursor = QueryCursor::new();
+                cursor.set_byte_range(range.clone());
+                assert!(
+                    cursor
+                        .matches(&query, root, source.as_bytes())
+                        .next()
+                        .is_none(),
+                    "pattern {pattern:?}, byte range {range:?}",
+                );
+            }
+            for range in [
+                Point::new(2, 0)..Point::new(3, 0),
+                Point::new(0, source.len())..Point::new(0, source.len() + 1),
+            ] {
+                let mut cursor = QueryCursor::new();
+                cursor.set_point_range(range.clone());
+                assert!(
+                    cursor
+                        .matches(&query, root, source.as_bytes())
+                        .next()
+                        .is_none(),
+                    "pattern {pattern:?}, point range {range:?}",
+                );
+            }
+        }
+
+        // The cursor root can also be a subtree within a larger document.
+        let number = root.named_child(0).unwrap().named_child(1).unwrap();
+        assert_eq!(number.kind(), "number");
+        let query = Query::new(&language, "(number)+ @node").unwrap();
+        for range in [0..1, 20..30] {
+            let mut cursor = QueryCursor::new();
+            cursor.set_byte_range(range);
+            assert!(
+                cursor
+                    .matches(&query, number, source.as_bytes())
+                    .next()
+                    .is_none()
+            );
+        }
+        for range in [
+            Point::new(0, 0)..Point::new(0, 1),
+            Point::new(2, 0)..Point::new(3, 0),
+        ] {
+            let mut cursor = QueryCursor::new();
+            cursor.set_point_range(range);
+            assert!(
+                cursor
+                    .matches(&query, number, source.as_bytes())
+                    .next()
+                    .is_none()
+            );
+        }
+    });
+}
+
+#[test]
+fn test_query_non_rooted_patterns_preserve_matches_spanning_cursor_range() {
+    allocations::record(|| {
+        let language = get_language("json");
+        let source = "[1,\n 2]";
+        let mut parser = Parser::new();
+        parser.set_language(&language).unwrap();
+        let tree = parser.parse(source, None).unwrap();
+        let root = tree.root_node();
+        assert!(!root.has_error());
+
+        for (pattern, expected) in [
+            (
+                "((number) @left (number) @right)",
+                vec![(0, vec![("left", "1"), ("right", "2")])],
+            ),
+            ("(document)+ @node", vec![(0, vec![("node", source)])]),
+        ] {
+            let query = Query::new(&language, pattern).unwrap();
+            assert!(!query.is_pattern_rooted(0));
+            let mut cursor = QueryCursor::new();
+            // Both number captures lie outside this range, but their sibling
+            // match spans it. A document match also intersects the range.
+            let matches = cursor
+                .set_byte_range(2..5)
+                .matches(&query, root, source.as_bytes());
+            assert_eq!(collect_matches(matches, &query, source), expected);
+            cursor.set_byte_range(0..source.len());
+            let matches = cursor
+                .set_point_range(Point::new(0, 2)..Point::new(1, 1))
+                .matches(&query, root, source.as_bytes());
+            assert_eq!(collect_matches(matches, &query, source), expected);
+        }
+    });
+}
+
+#[test]
 fn test_query_matches_with_unrooted_patterns_intersecting_byte_range() {
     allocations::record(|| {
         let language = get_language("rust");
