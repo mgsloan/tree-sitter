@@ -4257,6 +4257,7 @@ fn test_query_captured_wildcard_parents_preserve_capture_order() {
         "(_ (identifier) @identifier) @parent\n(identifier) @identifier",
         "[(identifier) (_ (identifier))] @node",
         "(_ (identifier) @identifier) @parent @other_parent",
+        "(_ (identifier)? @identifier) @parent",
         "(identifier) @identifier\n(_ (identifier) @identifier)",
     ] {
         let query = Query::new(&language, pattern).unwrap();
