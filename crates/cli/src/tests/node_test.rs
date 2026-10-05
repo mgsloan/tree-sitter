@@ -1076,6 +1076,103 @@ fn test_node_field_names() {
 }
 
 #[test]
+fn test_node_child_by_field_name_does_not_cross_visible_alias() {
+    let (parser_name, parser_code) = generate_parser(
+        r#"
+        {
+            "name": "test_grammar_with_fields_behind_alias",
+            "rules": {
+                "parent": {
+                    "type": "ALIAS",
+                    "value": "aliased_child",
+                    "named": true,
+                    "content": {
+                        "type": "SYMBOL",
+                        "name": "_hidden_child"
+                    }
+                },
+                "_hidden_child": {
+                    "type": "SEQ",
+                    "members": [
+                        {
+                            "type": "FIELD",
+                            "name": "value",
+                            "content": {"type": "STRING", "value": "x"}
+                        },
+                        {"type": "STRING", "value": "."}
+                    ]
+                }
+            }
+        }
+    "#,
+    )
+    .unwrap();
+
+    let mut parser = Parser::new();
+    let language = get_test_language(&parser_name, &parser_code, None);
+    parser.set_language(&language).unwrap();
+
+    let tree = parser.parse("x.", None).unwrap();
+    let parent = tree.root_node();
+    let aliased_child = parent.child(0).unwrap();
+    let field_id = language.field_id_for_name("value").unwrap().get();
+
+    assert_eq!(aliased_child.kind(), "aliased_child");
+    assert_eq!(
+        aliased_child.child_by_field_name("value"),
+        aliased_child.child(0),
+    );
+    assert_eq!(
+        aliased_child.child_by_field_id(field_id),
+        aliased_child.child(0),
+    );
+
+    // The underlying rule is hidden, but its alias is visible. Its fields belong
+    // to the aliased node and must not be inherited by `parent`.
+    assert_eq!(parent.field_name_for_child(0), None);
+    assert_eq!(parent.child_by_field_name("value"), None);
+    assert_eq!(parent.child_by_field_id(field_id), None);
+}
+
+#[test]
+fn test_node_child_by_field_name_skips_visible_alias_for_later_field() {
+    let (parser_name, parser_code) = generate_parser(
+        r#"{
+            "name": "fields_after_visible_alias",
+            "rules": {
+                "parent": {"type": "SEQ", "members": [
+                    {"type": "ALIAS", "value": "aliased_child", "named": true,
+                     "content": {"type": "SYMBOL", "name": "_hidden_child"}},
+                    {"type": "FIELD", "name": "value",
+                     "content": {"type": "STRING", "value": "y"}}
+                ]},
+                "_hidden_child": {"type": "SEQ", "members": [
+                    {"type": "FIELD", "name": "value",
+                     "content": {"type": "STRING", "value": "x"}},
+                    {"type": "STRING", "value": "."}
+                ]}
+            }
+        }"#,
+    )
+    .unwrap();
+    let language = get_test_language(&parser_name, &parser_code, None);
+    let mut parser = Parser::new();
+    parser.set_language(&language).unwrap();
+    let tree = parser.parse("x.y", None).unwrap();
+    let parent = tree.root_node();
+    assert!(!parent.has_error());
+    let field_id = language.field_id_for_name("value").unwrap().get();
+    let aliased_child = parent.child(0).unwrap();
+    assert_eq!(aliased_child.kind(), "aliased_child");
+    assert_eq!(
+        aliased_child.child_by_field_id(field_id),
+        aliased_child.child(0)
+    );
+    assert_eq!(parent.child_by_field_name("value"), parent.child(1));
+    assert_eq!(parent.child_by_field_id(field_id), parent.child(1));
+}
+
+#[test]
 fn test_node_field_calls_in_language_without_fields() {
     let (parser_name, parser_code) = generate_parser(
         r#"
