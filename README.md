@@ -1,12 +1,10 @@
 # `mgsloan-bugfixes` soft fork
 
-This is a soft-fork of [Tree-sitter](https://github.com/tree-sitter/tree-sitter) which includes a variety of bugfixes discovered while doing bisimulation property testing vs a new implementation of Tree-sitter's representation of trees.
+This is a soft-fork of [Tree-sitter](https://github.com/tree-sitter/tree-sitter), based on `v0.27.0`, which includes a variety of bugfixes discovered while doing bisimulation property testing vs a new implementation of Tree-sitter's representation of trees.
 
-The fixes vary in quality, due to negative and/or silent response to opening these issues.
+The fixes vary in quality, due to negative and/or silent response to opening these issues causing me to no longer put in the effort.  For me the purpose of these fixes is for the bisimulation property test to not need to work around upstream bugs.
 
-The aggregate is based on Tree-sitter `v0.27.0`. The [manifest](tools/bugfixes/manifest.json)
-records the source branches and regression tests; [maintenance instructions](tools/bugfixes/README.md)
-describe how to rebuild it. Maintain this README on `mgsloan-bugfix-maintenance`.
+This branch is automatically generated based on the [`mgsloan-bugfix-maintenance` branch](https://github.com/mgsloan/tree-sitter/tree/mgsloan-bugfix-maintenance).
 
 ## Clean fixes for reported issues
 
