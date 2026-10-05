@@ -7352,3 +7352,121 @@ fn test_query_error_children_do_not_publish_unmatched_captures() {
         assert!(query.is_pattern_guaranteed_at_step(pattern.find(step).unwrap()));
     }
 }
+
+#[test]
+fn test_query_containing_ranges_include_missing_nodes_at_end() {
+    let language = get_language("c");
+    let mut parser = Parser::new();
+    parser.set_language(&language).unwrap();
+    for source in ["int broken = ;", "\nint broken = ;"] {
+        let tree = parser.parse(source, None).unwrap();
+        let declaration = tree.root_node().named_child(0).unwrap();
+        let declarator = declaration.child_by_field_name("declarator").unwrap();
+        let identifier = declarator.child_by_field_name("declarator").unwrap();
+        let missing = declarator.child_by_field_name("value").unwrap();
+        assert!(missing.is_missing());
+        assert_eq!(
+            missing.byte_range(),
+            missing.start_byte()..missing.start_byte()
+        );
+        let offset = declaration.start_byte();
+        let row = declaration.start_position().row;
+
+        for points in [false, true] {
+            for end in [
+                missing.start_byte() - 1,
+                missing.start_byte(),
+                missing.start_byte() + 1,
+            ] {
+                for disabled in [false, true] {
+                    let mut query = Query::new(&language, "(_) @node").unwrap();
+                    if disabled {
+                        query.disable_capture("node");
+                    }
+                    let mut cursor = QueryCursor::new();
+                    cursor.set_max_start_depth(Some(5));
+                    if points {
+                        cursor.set_containing_point_range(
+                            Point::new(row, 2)..Point::new(row, end - offset),
+                        );
+                    } else {
+                        cursor.set_containing_byte_range(offset + 2..end);
+                    }
+                    let expected: Vec<_> = [declarator, identifier, missing]
+                        .into_iter()
+                        .filter(|node| node.end_byte() <= end)
+                        .collect();
+                    let mut matches = cursor.matches(&query, declaration, source.as_bytes());
+                    let mut actual = Vec::new();
+                    let mut count = 0;
+                    while let Some(found) = matches.next() {
+                        count += 1;
+                        if disabled {
+                            assert!(found.captures().is_empty());
+                        } else {
+                            assert_eq!(found.captures().len(), 1);
+                            actual.push(found.captures()[0].node);
+                        }
+                    }
+                    assert_eq!(
+                        count,
+                        expected.len(),
+                        "source={source:?} points={points} end={end} disabled={disabled}"
+                    );
+                    if !disabled {
+                        assert_eq!(
+                            actual, expected,
+                            "source={source:?} points={points} end={end}"
+                        );
+                    }
+                    drop(matches);
+                    let mut captures = cursor.captures(&query, declaration, source.as_bytes());
+                    let mut actual = Vec::new();
+                    while let Some((found, index)) = captures.next() {
+                        actual.push(found.captures()[*index].node);
+                    }
+                    assert_eq!(actual, if disabled { Vec::new() } else { expected });
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn test_query_containing_range_end_preserves_intersecting_range_boundary() {
+    let language = get_language("c");
+    let source = "int broken = ;";
+    let mut parser = Parser::new();
+    parser.set_language(&language).unwrap();
+    let tree = parser.parse(source, None).unwrap();
+    let declaration = tree.root_node().named_child(0).unwrap();
+    let declarator = declaration.child_by_field_name("declarator").unwrap();
+    let identifier = declarator.child_by_field_name("declarator").unwrap();
+    let missing = declarator.child_by_field_name("value").unwrap();
+    let query = Query::new(&language, "(_) @node").unwrap();
+    for points in [false, true] {
+        let mut cursor = QueryCursor::new();
+        if points {
+            cursor.set_containing_point_range(missing.start_position()..missing.end_position());
+        } else {
+            cursor.set_containing_byte_range(missing.byte_range());
+        }
+        let mut matches = cursor.matches(&query, declaration, source.as_bytes());
+        assert_eq!(matches.next().unwrap().captures()[0].node, missing);
+        assert!(matches.next().is_none());
+        drop(matches);
+
+        if points {
+            cursor.set_containing_point_range(Point::new(0, 2)..missing.end_position());
+            cursor.set_point_range(Point::new(0, 2)..missing.end_position());
+        } else {
+            cursor.set_containing_byte_range(2..missing.end_byte());
+            cursor.set_byte_range(2..missing.end_byte());
+        }
+        let mut matches = cursor.matches(&query, declaration, source.as_bytes());
+        for expected in [declarator, identifier] {
+            assert_eq!(matches.next().unwrap().captures()[0].node, expected);
+        }
+        assert!(matches.next().is_none());
+    }
+}
