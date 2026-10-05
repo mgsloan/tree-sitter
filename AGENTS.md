@@ -2,8 +2,8 @@
 
 ## Source and generated branches
 
-- `mgsloan-bugfix-maintenance` owns `tools/bugfixes/`, the root `README.md`, and
-  this file. Its usual worktree is `~/oss/tree-sitter-bugfixes`.
+- `mgsloan-bugfix-maintenance` owns `tools/bugfixes/`, the root `README.md`,
+  `potential-bugs.md`, and this file. Its usual worktree is `~/oss/tree-sitter-bugfixes`.
 - `mgsloan-bugfixes` is generated from the pinned upstream tag and the source
   branches in `tools/bugfixes/manifest.json`. Put durable changes on their source
   branches; edits committed only to the aggregate are lost during regeneration.
@@ -61,6 +61,8 @@
   `issue` URL versus `null` to distinguish reported and unreported fixes.
 - Keep the patch table and fix count in `tools/bugfixes/README.md` consistent with
   the manifest and root README.
+- Maintain unresolved reports in `potential-bugs.md` on the maintenance branch.
+  Remove a report after its fix and regressions pass in the rebuilt aggregate.
 
 ## Regenerating the aggregate
 

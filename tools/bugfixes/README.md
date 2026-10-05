@@ -5,8 +5,8 @@ and the exact base commit excluded from each patch series. Source branches remai
 unchanged. `mgsloan-bugfix-maintenance` owns this tooling and manifest; the generated
 `mgsloan-bugfixes` branch includes them too.
 
-The maintenance branch also owns the root `README.md`, `AGENTS.md`, and the
-`CLAUDE.md` symlink to `AGENTS.md`. Edit these files there so subsequent builds
+The maintenance branch also owns the root `README.md`, `potential-bugs.md`,
+`AGENTS.md`, and the `CLAUDE.md` symlink to `AGENTS.md`. Edit these files there so subsequent builds
 retain them. Keep the root README's three fix lists consistent with the enabled
 manifest entries and the patch table below.
 
@@ -109,9 +109,9 @@ is a performance change that overlaps the #5934 fix.
 | Unfiled | `fix/descendant-range-hidden-end` | Finds empty visible descendants at hidden-subtree ends while retaining later siblings |
 | Unfiled | `fix/api-documentation` | Corrects cursor and query API documentation, including the full match-limit range; no implementation changes |
 
-The query capture-prefix and hidden-subtree reuse observations in the local
-`potential-bugs.md` have no filed issues or settled fixes and are not
-included. The old crates.io version report #610 is unrelated to runtime fixes.
+The unresolved query capture-prefix, hidden-subtree reuse, and lexer-optimization
+observations in [potential-bugs.md](../../potential-bugs.md) have no settled fixes
+and are not included. The old crates.io version report #610 is unrelated to runtime fixes.
 
 Nothing is pushed by the updater. Publishing a rebuilt aggregate requires a
 force push because its merge history is regenerated; use `--force-with-lease`
