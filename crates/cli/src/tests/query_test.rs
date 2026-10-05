@@ -4437,6 +4437,61 @@ fn test_query_captures_with_definite_pattern_containing_many_nested_matches() {
 }
 
 #[test]
+fn test_query_captured_wildcard_parents_preserve_capture_order() {
+    let language = get_language("c");
+    let source = "int f() { return outer(a, inner(b, c), d); } int g() { return h(e); }";
+    let mut parser = Parser::new();
+    parser.set_language(&language).unwrap();
+    let tree = parser.parse(source, None).unwrap();
+    assert!(!tree.root_node().has_error());
+
+    for pattern in [
+        "(identifier) @identifier\n(_ (identifier) @identifier) @parent",
+        "(_ (identifier) @identifier) @parent\n(identifier) @identifier",
+        "[(identifier) (_ (identifier))] @node",
+        "(_ (identifier) @identifier) @parent @other_parent",
+        "(_ (identifier)? @identifier) @parent",
+        "(identifier) @identifier\n(_ (identifier) @identifier)",
+    ] {
+        let query = Query::new(&language, pattern).unwrap();
+        let mut cursor = QueryCursor::new();
+        let mut expected = Vec::new();
+        let mut matches = cursor.matches(&query, tree.root_node(), source.as_bytes());
+        while let Some(m) = matches.next() {
+            expected.extend(
+                m.captures()
+                    .iter()
+                    .map(|capture| (m.pattern_index, capture.index, capture.node.byte_range())),
+            );
+        }
+        drop(matches);
+
+        let mut actual = Vec::new();
+        let mut previous_start = 0;
+        let mut captures = cursor.captures(&query, tree.root_node(), source.as_bytes());
+        while let Some((m, index)) = captures.next() {
+            let capture = m.captures()[*index];
+            let range = capture.node.byte_range();
+            assert!(
+                range.start >= previous_start,
+                "{pattern}: {previous_start} -> {}",
+                range.start
+            );
+            previous_start = range.start;
+            actual.push((m.pattern_index, capture.index, range));
+        }
+        // Ordering must not discard captures or change which patterns match.
+        let key = |(pattern, capture, range): &(usize, u32, std::ops::Range<usize>)| {
+            (*pattern, *capture, range.start, range.end)
+        };
+        expected.sort_by_key(key);
+        actual.sort_by_key(key);
+        assert!(!expected.is_empty());
+        assert_eq!(actual, expected, "{pattern}");
+    }
+}
+
+#[test]
 fn test_query_captures_ordered_by_both_start_and_end_positions() {
     allocations::record(|| {
         let language = get_language("javascript");
@@ -5378,6 +5433,16 @@ fn test_query_is_pattern_rooted() {
             is_rooted: true,
         },
         Row {
+            description: "captured wildcard parent",
+            pattern: r"(_ (identifier) (identifier)) @parent",
+            is_rooted: true,
+        },
+        Row {
+            description: "uncaptured wildcard parent with optimized child starts",
+            pattern: r"(_ (identifier) (identifier))",
+            is_rooted: false,
+        },
+        Row {
             description: "alternative of many tokens",
             pattern: r#"["if" "def" (identifier) (comment)]"#,
             is_rooted: true,
@@ -5496,8 +5561,14 @@ fn test_query_is_pattern_non_local() {
             is_non_local: false,
         },
         Row {
-            description: "siblings that can occur in a class body, wildcard root",
+            description: "captured wildcard parent containing class-body siblings",
             pattern: r"(_ (method_definition) (method_definition)) @foo",
+            language: get_language("javascript"),
+            is_non_local: false,
+        },
+        Row {
+            description: "siblings that can occur in a class body, uncaptured wildcard root",
+            pattern: r"(_ (method_definition) (method_definition))",
             language: get_language("javascript"),
             is_non_local: true,
         },
