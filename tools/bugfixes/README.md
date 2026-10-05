@@ -5,6 +5,11 @@ and the exact base commit excluded from each patch series. Source branches remai
 unchanged. `mgsloan-bugfix-maintenance` owns this tooling and manifest; the generated
 `mgsloan-bugfixes` branch includes them too.
 
+The maintenance branch also owns the root `README.md`, `AGENTS.md`, and the
+`CLAUDE.md` symlink to `AGENTS.md`. Edit these files there so subsequent builds
+retain them. Keep the root README's three fix lists consistent with the enabled
+manifest entries and the patch table below.
+
 From the maintenance worktree:
 
 ```sh

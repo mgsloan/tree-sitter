@@ -7,7 +7,7 @@
     "id": "maintenance",
     "ref": "mgsloan-bugfix-maintenance",
     "base": "20cf25c10f13ed9b8c499dd966b4e7a57bedbf81",
-    "allowed_paths": ["tools/bugfixes/"]
+    "allowed_paths": ["tools/bugfixes/", "README.md", "AGENTS.md", "CLAUDE.md"]
   },
   "checks": [
     ["python3", "tools/bugfixes/test_update.py"],
