@@ -8,35 +8,35 @@ This branch is automatically generated based on the [`mgsloan-bugfix-maintenance
 
 ## Clean fixes for reported issues
 
-- [#5932](https://github.com/tree-sitter/tree-sitter/issues/5932): Update the wildcard-pattern count when disabling query patterns (`fix/disable-wildcard-pattern`).
-- [#5934](https://github.com/tree-sitter/tree-sitter/issues/5934): Skip hidden zero-width subtrees during descendant lookup (`fix/hidden-zero-width-descendant`). This fix has reported performance tradeoffs.
-- [#5950](https://github.com/tree-sitter/tree-sitter/issues/5950): Avoid child-index truncation during backward sibling traversal (`fix-previous-sibling-index-underflow`).
-- [#5987](https://github.com/tree-sitter/tree-sitter/issues/5987): Retain siblings during byte-based named-child lookup (`fix/first-named-child-for-byte-upstream`).
+- [#5932](https://github.com/tree-sitter/tree-sitter/issues/5932): Update the wildcard-pattern count when disabling query patterns ([`fix/disable-wildcard-pattern`](https://github.com/mgsloan/tree-sitter/tree/fix/disable-wildcard-pattern)).
+- [#5934](https://github.com/tree-sitter/tree-sitter/issues/5934): Skip hidden zero-width subtrees during descendant lookup ([`fix/hidden-zero-width-descendant`](https://github.com/mgsloan/tree-sitter/tree/fix/hidden-zero-width-descendant)). This fix has reported performance tradeoffs.
+- [#5950](https://github.com/tree-sitter/tree-sitter/issues/5950): Avoid child-index truncation during backward sibling traversal ([`fix-previous-sibling-index-underflow`](https://github.com/mgsloan/tree-sitter/tree/fix-previous-sibling-index-underflow)).
+- [#5987](https://github.com/tree-sitter/tree-sitter/issues/5987): Retain siblings during byte-based named-child lookup ([`fix/first-named-child-for-byte-upstream`](https://github.com/mgsloan/tree-sitter/tree/fix/first-named-child-for-byte-upstream)).
 
 ## Vibecoded fixes for reported issues
 
-- [#5948](https://github.com/tree-sitter/tree-sitter/issues/5948): Keep inherited field lookup from crossing visible aliases (`fix/visible-alias-field-lookup`).
-- [#5949](https://github.com/tree-sitter/tree-sitter/issues/5949): Verify ancestry when looking up a child containing a descendant with the same range (`fix/child-with-descendant-self`).
-- [#6005](https://github.com/tree-sitter/tree-sitter/issues/6005): Preserve descendant indices during backward sibling traversal (`fix/previous-sibling-descendant-index`).
+- [#5948](https://github.com/tree-sitter/tree-sitter/issues/5948): Keep inherited field lookup from crossing visible aliases ([`fix/visible-alias-field-lookup`](https://github.com/mgsloan/tree-sitter/tree/fix/visible-alias-field-lookup)).
+- [#5949](https://github.com/tree-sitter/tree-sitter/issues/5949): Verify ancestry when looking up a child containing a descendant with the same range ([`fix/child-with-descendant-self`](https://github.com/mgsloan/tree-sitter/tree/fix/child-with-descendant-self)).
+- [#6005](https://github.com/tree-sitter/tree-sitter/issues/6005): Preserve descendant indices during backward sibling traversal ([`fix/previous-sibling-descendant-index`](https://github.com/mgsloan/tree-sitter/tree/fix/previous-sibling-descendant-index)).
 
 ## Vibecoded fixes for unreported issues
 
-- Preserve aliases when traversing backward past extras (`fix/previous-sibling-alias-after-extra`).
-- Reject non-rooted query starts outside the cursor root's range while retaining matches spanning a range (`fix/non-rooted-query-range`).
-- Preserve non-rooted wildcard matches when ranges prune hidden repetitions (`fix/non-rooted-wildcard-range-pruning`).
-- Prevent phantom captures from unjustified wildcard-child guarantees (`fix/wildcard-child-guarantees`).
-- Preserve quoted missing and unexpected tokens during Rust S-expression formatting (`fix/quoted-missing-token-formatting`).
-- Preserve nullable-root query matches through hidden repetitions when traversal is restricted by ranges (`fix/nullable-root-hidden-structure`).
-- Complete deferred query matches after ascending from a skipped hidden subtree (`fix/containing-range-hidden-ascent`).
-- Decode UTF-8 characters split across short input callback chunks (`fix/short-utf8-input-chunks`).
-- Honor query progress-callback cancellation with queued captures and preserve resumable execution (`fix/query-capture-cancellation`).
-- Prevent orphan captures from unjustified ERROR-child guarantees (`fix/error-child-guarantees`).
-- Prevent extra ERROR parents from inheriting structural-child aliases during query execution (`fix/query-extra-parent-alias`).
-- Preserve later siblings when byte-based child lookup exhausts nested hidden nodes (`fix/first-child-for-byte-hidden-siblings`).
-- Include missing nodes at containing-range boundaries (`fix/query-containing-range-missing-boundary`).
-- Preserve wildcard-parent matches at the maximum start depth, including through hidden wrappers and query cloning (`fix/query-wildcard-parent-depth`).
-- Find empty visible descendants at the end of hidden subtrees while retaining later siblings (`fix/descendant-range-hidden-end`).
-- Correct cursor and query API documentation and Rust documentation links (`fix/api-documentation`; documentation only).
+- Preserve aliases when traversing backward past extras ([`fix/previous-sibling-alias-after-extra`](https://github.com/mgsloan/tree-sitter/tree/fix/previous-sibling-alias-after-extra)).
+- Reject non-rooted query starts outside the cursor root's range while retaining matches spanning a range ([`fix/non-rooted-query-range`](https://github.com/mgsloan/tree-sitter/tree/fix/non-rooted-query-range)).
+- Preserve non-rooted wildcard matches when ranges prune hidden repetitions ([`fix/non-rooted-wildcard-range-pruning`](https://github.com/mgsloan/tree-sitter/tree/fix/non-rooted-wildcard-range-pruning)).
+- Prevent phantom captures from unjustified wildcard-child guarantees ([`fix/wildcard-child-guarantees`](https://github.com/mgsloan/tree-sitter/tree/fix/wildcard-child-guarantees)).
+- Preserve quoted missing and unexpected tokens during Rust S-expression formatting ([`fix/quoted-missing-token-formatting`](https://github.com/mgsloan/tree-sitter/tree/fix/quoted-missing-token-formatting)).
+- Preserve nullable-root query matches through hidden repetitions when traversal is restricted by ranges ([`fix/nullable-root-hidden-structure`](https://github.com/mgsloan/tree-sitter/tree/fix/nullable-root-hidden-structure)).
+- Complete deferred query matches after ascending from a skipped hidden subtree ([`fix/containing-range-hidden-ascent`](https://github.com/mgsloan/tree-sitter/tree/fix/containing-range-hidden-ascent)).
+- Decode UTF-8 characters split across short input callback chunks ([`fix/short-utf8-input-chunks`](https://github.com/mgsloan/tree-sitter/tree/fix/short-utf8-input-chunks)).
+- Honor query progress-callback cancellation with queued captures and preserve resumable execution ([`fix/query-capture-cancellation`](https://github.com/mgsloan/tree-sitter/tree/fix/query-capture-cancellation)).
+- Prevent orphan captures from unjustified ERROR-child guarantees ([`fix/error-child-guarantees`](https://github.com/mgsloan/tree-sitter/tree/fix/error-child-guarantees)).
+- Prevent extra ERROR parents from inheriting structural-child aliases during query execution ([`fix/query-extra-parent-alias`](https://github.com/mgsloan/tree-sitter/tree/fix/query-extra-parent-alias)).
+- Preserve later siblings when byte-based child lookup exhausts nested hidden nodes ([`fix/first-child-for-byte-hidden-siblings`](https://github.com/mgsloan/tree-sitter/tree/fix/first-child-for-byte-hidden-siblings)).
+- Include missing nodes at containing-range boundaries ([`fix/query-containing-range-missing-boundary`](https://github.com/mgsloan/tree-sitter/tree/fix/query-containing-range-missing-boundary)).
+- Preserve wildcard-parent matches at the maximum start depth, including through hidden wrappers and query cloning ([`fix/query-wildcard-parent-depth`](https://github.com/mgsloan/tree-sitter/tree/fix/query-wildcard-parent-depth)).
+- Find empty visible descendants at the end of hidden subtrees while retaining later siblings ([`fix/descendant-range-hidden-end`](https://github.com/mgsloan/tree-sitter/tree/fix/descendant-range-hidden-end)).
+- Correct cursor and query API documentation and Rust documentation links ([`fix/api-documentation`](https://github.com/mgsloan/tree-sitter/tree/fix/api-documentation); documentation only).
 
 The optional [#5935](https://github.com/tree-sitter/tree-sitter/issues/5935)
 descendant-range optimization is disabled and is excluded from these lists.
