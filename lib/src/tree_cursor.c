@@ -653,12 +653,15 @@ TSNode ts_tree_cursor_parent_node(const TSTreeCursor *_self) {
     bool is_visible = true;
     TSSymbol alias_symbol = 0;
     if (i > 0) {
-      TreeCursorEntry *parent_entry = array_get(&self->stack, i - 1);
-      alias_symbol = ts_language_alias_at(
-        self->tree->language,
-        parent_entry->subtree->ptr->production_id,
-        entry->structural_child_index
-      );
+      // Extras share the next structural child's index, but not its alias.
+      if (!ts_subtree_extra(*entry->subtree)) {
+        TreeCursorEntry *parent_entry = array_get(&self->stack, i - 1);
+        alias_symbol = ts_language_alias_at(
+          self->tree->language,
+          parent_entry->subtree->ptr->production_id,
+          entry->structural_child_index
+        );
+      }
       is_visible = (alias_symbol != 0) || ts_subtree_visible(*entry->subtree);
     }
     if (is_visible) {
