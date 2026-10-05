@@ -6,6 +6,8 @@ The fixes vary in quality, due to negative and/or silent response to opening the
 
 This branch is automatically generated based on the [`mgsloan-bugfix-maintenance` branch](https://github.com/mgsloan/tree-sitter/tree/mgsloan-bugfix-maintenance).
 
+Unresolved observations are tracked in [potential-bugs.md](potential-bugs.md).
+
 ## Clean fixes for reported issues
 
 - [#5932](https://github.com/tree-sitter/tree-sitter/issues/5932): Update the wildcard-pattern count when disabling query patterns ([`fix/disable-wildcard-pattern`](https://github.com/mgsloan/tree-sitter/compare/de98c6c970f4c5d3a725ee48199c478090d614af...fix/disable-wildcard-pattern?expand=1)).
