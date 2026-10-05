@@ -3278,6 +3278,79 @@ fn test_query_matches_contained_within_range() {
 }
 
 #[test]
+fn test_query_containing_ranges_preserve_non_rooted_wildcard_matches() {
+    allocations::record(|| {
+        let language = get_language("json");
+        let mut parser = Parser::new();
+        parser.set_language(&language).unwrap();
+        let large = format!("[{}0]", "[1,2],".repeat(63));
+        for (source, intersecting, containing, kind, expected_ranges) in [
+            ("[0,1,2]", 0..1, 3..6, "number", [3..4, 5..6]),
+            ("[0,1,2,3]", 7..7, 3..6, "number", [3..4, 5..6]),
+            (
+                "[[1,2],[1,2],[1,2],0]",
+                19..19,
+                2..18,
+                "array",
+                [7..12, 13..18],
+            ),
+            (large.as_str(), 78..78, 2..18, "array", [7..12, 13..18]),
+        ] {
+            let tree = parser.parse(source, None).unwrap();
+            assert!(!tree.root_node().has_error());
+            let concrete = format!("(({kind}) @left . ({kind}) @right)");
+            // Broadening a concrete sibling pattern to named wildcards must
+            // retain its matches, including ones within a hidden repetition.
+            for pattern in [concrete.as_str(), "((_) @left . (_) @right)"] {
+                let query = Query::new(&language, pattern).unwrap();
+                assert!(!query.is_pattern_rooted(0));
+                for points in [false, true] {
+                    let mut cursor = QueryCursor::new();
+                    if points {
+                        cursor
+                            .set_point_range(
+                                Point::new(0, intersecting.start)..Point::new(0, intersecting.end),
+                            )
+                            .set_containing_point_range(
+                                Point::new(0, containing.start)..Point::new(0, containing.end),
+                            );
+                    } else {
+                        cursor
+                            .set_byte_range(intersecting.clone())
+                            .set_containing_byte_range(containing.clone());
+                    }
+                    let mut matches = cursor.matches(&query, tree.root_node(), source.as_bytes());
+                    let mut actual = Vec::new();
+                    while let Some(found) = matches.next() {
+                        actual.push(
+                            found
+                                .captures()
+                                .iter()
+                                .map(|capture| {
+                                    (
+                                        query.capture_names()[capture.index as usize],
+                                        capture.node.byte_range(),
+                                    )
+                                })
+                                .collect::<Vec<_>>(),
+                        );
+                    }
+                    assert_eq!(
+                        actual,
+                        vec![vec![
+                            ("left", expected_ranges[0].clone()),
+                            ("right", expected_ranges[1].clone()),
+                        ]],
+                        "pattern {pattern:?}, source {source:?}, intersecting {intersecting:?}, containing {containing:?}, points {points}",
+                    );
+                }
+                assert!(query.is_pattern_non_local(0));
+            }
+        }
+    });
+}
+
+#[test]
 fn test_query_matches_different_queries_same_cursor() {
     allocations::record(|| {
         let language = get_language("javascript");
