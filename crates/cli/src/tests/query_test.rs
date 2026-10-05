@@ -7246,3 +7246,84 @@ fn test_query_containing_ranges_preserve_deferred_matches_after_hidden_ascent() 
         }
     });
 }
+
+#[test]
+fn test_query_error_children_do_not_publish_unmatched_captures() {
+    let language = get_language("json");
+    let mut parser = Parser::new();
+    parser.set_language(&language).unwrap();
+    let source = ":";
+    let tree = parser.parse(source, None).unwrap();
+    assert_eq!(tree.root_node().to_sexp(), "(document (ERROR))");
+
+    for child in ["number", "array", "string"] {
+        for nested in [false, true] {
+            let pattern = format!("(ERROR ({child}) @child) @parent");
+            let pattern = if nested {
+                format!("(document {pattern})")
+            } else {
+                pattern
+            };
+            let query = Query::new(&language, &pattern).unwrap();
+            let mut cursor = QueryCursor::new();
+            assert!(
+                collect_matches(
+                    cursor.matches(&query, tree.root_node(), source.as_bytes()),
+                    &query,
+                    source
+                )
+                .is_empty()
+            );
+            assert!(
+                collect_captures(
+                    cursor.captures(&query, tree.root_node(), source.as_bytes()),
+                    &query,
+                    source
+                )
+                .is_empty()
+            );
+            assert!(
+                !query.is_pattern_guaranteed_at_step(pattern.find(&format!("({child}")).unwrap())
+            );
+        }
+    }
+
+    for (pattern, expected) in [
+        ("(ERROR) @parent", vec![("parent", source)]),
+        ("(ERROR (number)? @child) @parent", vec![("parent", source)]),
+        (
+            r#"(ERROR ":" @child) @parent"#,
+            vec![("parent", source), ("child", ":")],
+        ),
+        (
+            r#"(ERROR [(number) ":"] @child) @parent"#,
+            vec![("parent", source), ("child", ":")],
+        ),
+    ] {
+        let query = Query::new(&language, pattern).unwrap();
+        let mut cursor = QueryCursor::new();
+        assert_eq!(
+            collect_matches(
+                cursor.matches(&query, tree.root_node(), source.as_bytes()),
+                &query,
+                source
+            ),
+            vec![(0, expected.clone())]
+        );
+        assert_eq!(
+            collect_captures(
+                cursor.captures(&query, tree.root_node(), source.as_bytes()),
+                &query,
+                source
+            ),
+            expected
+        );
+    }
+
+    // Concrete descendants still have a structure that can prove guarantees.
+    let pattern = r#"(ERROR (array "[" @open "]" @close))"#;
+    let query = Query::new(&language, pattern).unwrap();
+    for step in ["\"[\"", "\"]\""] {
+        assert!(query.is_pattern_guaranteed_at_step(pattern.find(step).unwrap()));
+    }
+}
