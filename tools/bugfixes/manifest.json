@@ -231,6 +231,16 @@
       "notes": "Skipped wildcard roots start matching one visible level below their logical roots. Preserves traversal through hidden wrappers at the maximum start depth. Covers all three bisim reproductions, valid and malformed JSON, matches and captures, standalone patterns, nested trees, and depth limits from zero through four. Preserves skipped-root traversal metadata in deep clones, including after disabling the original query."
     },
     {
+      "id": "descendant-range-hidden-end",
+      "issue": null,
+      "ref": "fix/descendant-range-hidden-end",
+      "base": "6070dbfefd326bd735e5683eb128cc1b57dad0c0",
+      "regressions": [
+        "test_node_descendant_for_empty_range_at_hidden_subtree_end"
+      ],
+      "notes": "Finds empty visible descendants at the end of nonempty hidden subtrees. Tracks public child indices to retain later siblings when a hidden branch is exhausted, without allocating a traversal stack. Covers missing JSON values inside hidden repetitions, byte and point ranges, named and unnamed lookup, multiline input, subtree origins, missing closing brackets, and complete-array controls."
+    },
+    {
       "id": "api-documentation",
       "issue": null,
       "ref": "fix/api-documentation",

@@ -1,6 +1,6 @@
 # Maintaining mgsloan-bugfixes
 
-`manifest.json` lists twenty-two fix branches, their issue links, regression tests,
+`manifest.json` lists twenty-three fix branches, their issue links, regression tests,
 and the exact base commit excluded from each patch series. Source branches remain
 unchanged. `mgsloan-bugfix-maintenance` owns this tooling and manifest; the generated
 `mgsloan-bugfixes` branch includes them too.
@@ -105,6 +105,7 @@ is a performance change that overlaps the #5934 fix.
 | Unfiled | `fix/first-child-for-byte-hidden-siblings` | Preserves later siblings after byte lookup exhausts nested hidden nodes |
 | Unfiled | `fix/query-containing-range-missing-boundary` | Includes missing nodes at containing-range boundaries while preserving intersecting-range boundaries |
 | Unfiled | `fix/query-wildcard-parent-depth` | Preserves wildcard-parent matches at the maximum start depth through hidden wrappers and query cloning |
+| Unfiled | `fix/descendant-range-hidden-end` | Finds empty visible descendants at hidden-subtree ends while retaining later siblings |
 | Unfiled | `fix/api-documentation` | Corrects cursor and query API documentation, including the full match-limit range; no implementation changes |
 
 The query capture-prefix and hidden-subtree reuse observations in the local
