@@ -414,6 +414,64 @@ fn test_tree_cursor_previous_sibling_with_aliases() {
 }
 
 #[test]
+fn test_tree_cursor_previous_sibling_with_alias_after_extra() {
+    let mut parser = Parser::new();
+    parser
+        .set_language(&get_test_fixture_language("aliases_in_root"))
+        .unwrap();
+    let tree = parser.parse("foo # comment\nfoo", None).unwrap();
+    assert!(!tree.root_node().has_error());
+
+    let mut cursor = tree.walk();
+    assert!(cursor.goto_first_child());
+    assert_eq!(cursor.node().kind(), "bar");
+    let first_child = cursor.node();
+
+    assert!(cursor.goto_next_sibling());
+    assert_eq!(cursor.node().kind(), "comment");
+
+    // Switching direction at an extra must preserve the preceding child's alias.
+    assert!(cursor.goto_previous_sibling());
+    assert_eq!(cursor.node().byte_range(), first_child.byte_range());
+    assert_eq!(cursor.node().kind(), first_child.kind());
+}
+
+#[test]
+fn test_tree_cursor_previous_sibling_preserves_aliases_when_switching_direction() {
+    let mut parser = Parser::new();
+    parser
+        .set_language(&get_test_fixture_language("aliases_in_root"))
+        .unwrap();
+    for source in [
+        "foo foo",
+        "foo # middle\nfoo",
+        "# first\nfoo # middle\n# again\nfoo # last",
+    ] {
+        let tree = parser.parse(source, None).unwrap();
+        let root = tree.root_node();
+        assert!(!root.has_error());
+        let mut cursor = tree.walk();
+        let children: Vec<_> = root.children(&mut cursor).collect();
+        for index in 0..children.len() {
+            cursor.reset(root);
+            assert!(cursor.goto_first_child());
+            for _ in 0..index {
+                assert!(cursor.goto_next_sibling());
+            }
+            for previous in (0..=index).rev() {
+                assert_eq!(cursor.node(), children[previous]);
+                assert_eq!(cursor.node().kind(), children[previous].kind());
+                assert_eq!(
+                    cursor.node().start_position(),
+                    children[previous].start_position()
+                );
+                assert_eq!(cursor.goto_previous_sibling(), previous > 0);
+            }
+        }
+    }
+}
+
+#[test]
 fn test_tree_cursor_previous_sibling() {
     let mut parser = Parser::new();
     parser.set_language(&get_language("rust")).unwrap();
