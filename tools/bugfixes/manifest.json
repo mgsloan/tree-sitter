@@ -225,9 +225,10 @@
       "base": "2ef426e10b4fa8189a761025f17548073249c2fc",
       "regressions": [
         "test_query_max_start_depth_preserves_wildcard_parents_through_hidden_nodes",
-        "test_query_max_start_depth_uses_visible_pattern_roots"
+        "test_query_max_start_depth_uses_visible_pattern_roots",
+        "test_query_max_start_depth_preserves_cloned_wildcard_parents"
       ],
-      "notes": "Skipped wildcard roots start matching one visible level below their logical roots. Preserves traversal through hidden wrappers at the maximum start depth. Covers all three bisim reproductions, valid and malformed JSON, matches and captures, standalone patterns, nested trees, and depth limits from zero through four."
+      "notes": "Skipped wildcard roots start matching one visible level below their logical roots. Preserves traversal through hidden wrappers at the maximum start depth. Covers all three bisim reproductions, valid and malformed JSON, matches and captures, standalone patterns, nested trees, and depth limits from zero through four. Preserves skipped-root traversal metadata in deep clones, including after disabling the original query."
     },
     {
       "id": "api-documentation",
