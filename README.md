@@ -35,6 +35,7 @@ This branch is automatically generated based on the [`mgsloan-bugfix-maintenance
 - Preserve later siblings when byte-based child lookup exhausts nested hidden nodes (`fix/first-child-for-byte-hidden-siblings`).
 - Include missing nodes at containing-range boundaries (`fix/query-containing-range-missing-boundary`).
 - Preserve wildcard-parent matches at the maximum start depth, including through hidden wrappers and query cloning (`fix/query-wildcard-parent-depth`).
+- Find empty visible descendants at the end of hidden subtrees while retaining later siblings (`fix/descendant-range-hidden-end`).
 - Correct cursor and query API documentation and Rust documentation links (`fix/api-documentation`; documentation only).
 
 The optional [#5935](https://github.com/tree-sitter/tree-sitter/issues/5935)
