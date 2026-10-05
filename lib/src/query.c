@@ -1656,7 +1656,8 @@ static bool ts_query__analyze_patterns(TSQuery *self, unsigned *error_offset) {
     PatternEntry *pattern = array_get(&self->pattern_map, i);
     if (!pattern->is_rooted) {
       QueryStep *step = array_get(&self->steps, pattern->step_index);
-      if (step->symbol != WILDCARD_SYMBOL) {
+      // Include wildcard roots, but skip completed alternatives that match no nodes.
+      if (step->depth != PATTERN_DONE_MARKER) {
         array_push(&non_rooted_pattern_start_steps, i);
       }
     }
