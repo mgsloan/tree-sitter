@@ -6425,10 +6425,11 @@ fn test_query_extra_error_parents_do_not_inherit_aliases() {
         &[(0, vec![("parent", "x=1"), ("child", "=")])],
     );
 
+    // Keep empty-match controls independent of captured-root scheduling.
     for quantifier in ["?", "*"] {
         let query = Query::new(
             &language,
-            &format!("(_ (function_definition){quantifier} @child) @parent"),
+            &format!("(_ (function_definition){quantifier} @child)"),
         )
         .unwrap();
         assert_query_matches(&language, &query, source, &vec![(0, Vec::new()); 8]);
